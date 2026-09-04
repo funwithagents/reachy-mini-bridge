@@ -1,6 +1,6 @@
-# Reachy Mini Bridge
+# Specs index
 
-Reachy Mini Bridge sits between the Reachy Mini robot's API and the things that want to drive it. It wraps the robot's native API, adds its own management and higher-level APIs layered on top (mediating and orchestrating between the underlying endpoints), and exposes tools that let agents and LLMs perceive and control the robot. The core idea is a single, stable bridging layer so callers — human, service, or agent — never talk to the raw robot API directly.
+The index of concept specs and their status. For the project overview — what Reachy Mini Bridge is and how the layers fit together — see [_overview.md](_overview.md).
 
 ## Specs
 
@@ -10,11 +10,14 @@ Reachy Mini Bridge sits between the Reachy Mini robot's API and the things that 
 |---|---|---|
 | [project.md](project.md) | Project structure and tooling: Python version, packaging with uv, layout conventions | Implemented |
 | [testing.md](testing.md) | Testing strategy: two-tier `tests/`/`tests-e2e/` split, functional-test philosophy, skip-without-credentials live tier | Implemented |
+| [client.md](client.md) | Connection seam to upstream `reachy_mini`: a `RobotClient` Protocol + adapter, lifecycle, and raw escape hatch | Draft |
+| [api.md](api.md) | `ReachyMiniApi` — high-level interaction verbs in human units (movement, expression, perception, audio) over the client | Draft |
+| [tools.md](tools.md) | `ReachyMiniTools` — the API exposed as plain typed, docstring'd functions for agent/LLM runtimes | Draft |
 | _(add concept specs here — see [_spec-template.md](_spec-template.md))_ | | |
 
 Each spec also opens with a YAML **frontmatter** block declaring the `code:` and `tests:` files it governs — the spec → code/tests mapping the spec-drift checks use to scope what they compare. Keep it current when files move, and see [AGENTS.md](../AGENTS.md) ("Spec frontmatter") for the full convention.
 
-### Status legend
+## Status legend
 
 - **Not started** — no design decisions made yet
 - **Draft** — actively being brainstormed/defined, contains open questions

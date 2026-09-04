@@ -28,6 +28,13 @@ Tests split into two directories, and the split is structural — a directory bo
 
 The `tests/` tier mirrors the `src/reachy_mini_bridge/` module layout (`test_<module>.py`, plus the `test_project_map.py` drift-guard); `tests-e2e/` is organized around live scenarios rather than modules.
 
+### The fake robot is what makes the default tier possible
+
+The bridge talks to the robot only through the `RobotClient` seam ([client.md](client.md)), which has three backends — `real`, `sim`, and `fake`. The tiers map onto them:
+
+- **`tests/` uses the `fake` backend** — the first-party `FakeRobot` that needs no daemon, no hardware, and no `reachy_mini` import. It is the whole reason the default tier can exercise the `api`/`tools` stack deterministically and offline. Assert against the commands it recorded and the synthetic perception it returns.
+- **`tests-e2e/` uses the `sim` or `real` backends** — both need a running daemon (MuJoCo for `sim`, hardware for `real`), are non-deterministic, and are therefore live-tier only. The `sim` backend also needs the `sim` extra installed (`reachy_mini[mujoco]`, see [project.md](project.md)); like any live test it should **skip** when its prerequisites are absent, not fail.
+
 ## What a good test asserts
 
 - **Functional, not tautological.** Exercise what a feature actually does — inputs → outputs, state changes, side effects — not that it runs or matches its own signature. A test that would pass against a broken implementation (asserting a constant, that an object isn't `None`, that a mock was called) isn't worth writing.

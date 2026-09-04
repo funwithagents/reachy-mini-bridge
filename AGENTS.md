@@ -1,6 +1,6 @@
 # Agent instructions
 
-Start at [specs/_index.md](specs/_index.md) for an overview of the specs and their status before making design decisions or writing code — it lists each spec and whether it's still open ("Draft"/"Not started"), design-validated ("Stable"), or built ("Implemented"). For what's been (or is being) built, see [plans/_index.md](plans/_index.md), which lists each implementation plan and its status ("Todo"/"In progress"/"Done").
+Start with [specs/_overview.md](specs/_overview.md) for the global view of the project (architecture, the three layers, the backends), then [specs/_index.md](specs/_index.md) for the index of the specs and their status — before making design decisions or writing code — it lists each spec and whether it's still open ("Draft"/"Not started"), design-validated ("Stable"), or built ("Implemented"). For what's been (or is being) built, see [plans/_index.md](plans/_index.md), which lists each implementation plan and its status ("Todo"/"In progress"/"Done").
 
 ## Project map
 
@@ -10,11 +10,13 @@ Where things live. This is a coarse, module-level map — for the full file inve
 
 | Path | What's there |
 |---|---|
+| `README.md` | Packaging front page — short intro + doc pointers |
 | `src/reachy_mini_bridge/` | The library itself — one module per core concept (see below) |
 | `specs/` | Pre-implementation design docs, one per concept, each with a `**Status:**` — indexed by [specs/_index.md](specs/_index.md) |
 | `plans/` | Implementation plans turning settled specs into buildable steps — indexed by [plans/_index.md](plans/_index.md) |
 | `tests/` | Fast, deterministic, no-network tests; mirrors the `src/reachy_mini_bridge/` module structure |
 | `tests-e2e/` | Opt-in live tests that call real external services (not collected by default `pytest`) |
+| `docs/` | Reference notes (not specs) — e.g. [docs/reachy-mini-api.md](docs/reachy-mini-api.md), what we learned about the upstream `reachy_mini` SDK |
 
 ### `src/reachy_mini_bridge/` modules
 
@@ -22,7 +24,9 @@ Where things live. This is a coarse, module-level map — for the full file inve
 
 | Module | Role | Spec |
 |---|---|---|
-| _(add your modules here as you build them)_ | | |
+| `src/reachy_mini_bridge/client.py` | Connection seam to upstream `reachy_mini` — `RobotClient` Protocol + adapter (placeholder; Draft) | [specs/client.md](specs/client.md) |
+| `src/reachy_mini_bridge/api.py` | `ReachyMiniApi` high-level interaction verbs (placeholder; Draft) | [specs/api.md](specs/api.md) |
+| `src/reachy_mini_bridge/tools.py` | `ReachyMiniTools` agent/LLM tools (placeholder; Draft) | [specs/tools.md](specs/tools.md) |
 
 **Keep this map current:** when you add, rename, or remove a top-level `src/reachy_mini_bridge/` module or a root directory, update the map in the same change — same discipline as keeping spec/plan statuses honest (below). A test (`tests/test_project_map.py`) enforces that every `src/reachy_mini_bridge/*.py` module appears here and vice-versa — and that the spec frontmatter (see below) stays honest too.
 
@@ -84,6 +88,7 @@ After any code change, run linting, type checking, and tests, and fix any failur
 ```
 uv sync --dev
 uv run ruff check .
+uv run ruff format .
 uv run pyright
 uv run pytest
 ```
