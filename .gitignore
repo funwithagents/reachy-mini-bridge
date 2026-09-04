@@ -1,0 +1,23 @@
+# Byte-compiled / caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+
+# Virtual environments (uv materializes .venv/ from the lockfile — don't commit it)
+.venv/
+venv/
+
+# Packaging / build artifacts
+build/
+dist/
+*.egg-info/
+
+# Secrets / local env — live-tier credentials come from the environment, never committed
+.env
+.env.*
+
+# OS cruft
+.DS_Store

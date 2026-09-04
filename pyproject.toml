@@ -1,0 +1,35 @@
+[project]
+name = "reachy-mini-bridge"
+version = "0.1.0"
+description = "A bridge to the Reachy Mini robot's API plus management/APIs between them, with tools for integrating agents/LLMs."
+readme = "README.md"
+authors = [
+    { name = "Thibault Hervier", email = "thibault@fr2g.io" }
+]
+requires-python = ">=3.12"
+dependencies = []
+
+[build-system]
+requires = ["uv_build>=0.11.29,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.411",
+    "pytest>=9.1.1",
+    "ruff>=0.16.6",
+]
+
+[tool.ruff]
+target-version = "py312"  # keep in sync with requires-python
+
+[tool.pytest.ini_options]
+# Only the fast, deterministic tier is collected by default; tests-e2e/ is opt-in.
+testpaths = ["tests"]
+
+[tool.pyright]
+include = ["src", "tests", "tests-e2e"]  # type-check test code too, not just src
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.12"
+typeCheckingMode = "standard"
