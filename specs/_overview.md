@@ -4,7 +4,7 @@ The global view of the project: what it is and how it's put together. For the li
 
 Reachy Mini Bridge sits between the [Reachy Mini](https://github.com/pollen-robotics/reachy_mini) robot's API and the things that want to drive it — a human, a service, or an LLM/agent. It wraps the robot's native SDK, adds its own management and higher-level interaction APIs on top (mediating and orchestrating between the underlying endpoints), and exposes those as tools that let agents and LLMs perceive and control the robot. The core idea is a single, stable bridging layer so callers never talk to the raw robot API directly unless they choose to.
 
-> **Status: design phase.** All three concept specs are `Draft` and no implementation exists yet — the `src/` modules are placeholders. This describes the intended shape, not shipped code.
+> **Status: design phase.** The concept specs (`client`, `api`, `audio`, `tools`) are `Draft` and no implementation exists yet — the `src/` modules are placeholders. This describes the intended shape, not shipped code.
 
 ## Architecture — three layers
 
@@ -22,7 +22,9 @@ flowchart TD
     end
     client -->|real / sim| upstream["reachy_mini SDK → daemon → robot"]
     client -->|fake| fake["FakeRobot (in-package, no deps)"]
-    api -.->|say| tts["tts-engine (first-party)"]
+    api -.-> audio["audio.py — media session<br/>(routes through daemon for echo cancellation)"]
+    audio -.->|say · TTS out| synth["SpeechSynthesizer<br/>(pluggable; tts-engine default)"]
+    audio -.->|mic stream out| yourasr(["your ASR<br/>(e.g. asr-engine — not a bridge dep)"])
 ```
 
 | Layer | Module · class | Role | Spec |
@@ -42,7 +44,8 @@ The layers above are backend-agnostic — they only see `RobotClient` (see [clie
 ## External pieces
 
 - **[`reachy_mini`](https://github.com/pollen-robotics/reachy_mini)** — the upstream SDK we wrap. Hard runtime dependency, installed by default. What we learned about its API is in [../docs/reachy-mini-api.md](../docs/reachy-mini-api.md).
-- **[`tts-engine`](../../tts-engine)** — our first-party streaming TTS engine, backing `ReachyMiniApi.say`. A local path dependency during development, a pinned git URL later.
+- **[`tts-engine`](../../tts-engine)** — our first-party streaming TTS engine, the **default** (but swappable) backend for `ReachyMiniApi.say` behind the bridge-owned `SpeechSynthesizer` interface. Shipped under the optional `tts` extra — a local path dependency during development, a pinned git URL later.
+- **[`asr-engine`](../../asr-engine)** — our first-party streaming ASR engine. **Not a bridge dependency.** The bridge exposes the robot's echo-cancelled microphone as a stream (see [audio.md](audio.md)) and a caller runs ASR on top; `asr-engine` is one natural choice a caller can attach in a few lines.
 
 ## Tech stack
 

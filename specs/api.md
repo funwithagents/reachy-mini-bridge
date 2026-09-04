@@ -12,7 +12,15 @@ tests:
 
 `ReachyMiniApi` is the high-level, intention-level surface for driving the robot. Where the upstream SDK speaks in 4x4 pose matrices and radians, `ReachyMiniApi` speaks in **human intent and human units**: "look at this point", "nod", "play the happy emotion", "say this", in degrees / seconds / named emotions. It orchestrates the lower-level [client.md](client.md) primitives (composing `goto_target`/`set_target` calls, recorded moves, and media) into single semantic verbs.
 
-It is the layer a human, service, or agent codes against directly, and the layer [tools.md](tools.md) wraps for LLM/agent use. It is **synchronous** (matching the upstream SDK) and returns plain, JSON-friendly Python values so it composes cleanly into tools.
+It is the layer a human, service, or agent codes against directly, and the layer [tools.md](tools.md) wraps for LLM/agent use. It returns plain, JSON-friendly Python values so it composes cleanly into tools.
+
+### Async, not sync
+
+Earlier drafts made this layer **synchronous** to mirror the upstream SDK. That is reversed: `ReachyMiniApi` is **async-native**. The forcing reason is audio (see [audio.md](audio.md)): speech synthesis is `async`, and a **live microphone stream** must run concurrently with playback and with the robot moving — a per-call `asyncio.run()` cannot interleave a continuously-draining mic stream with other actions. Full-duplex interaction (a caller's ASR consuming the mic while `say` speaks, barge-in) needs both audio paths on one event loop.
+
+- The upstream SDK's **blocking** calls (`goto_target`, `wake_up`, …) are wrapped in `asyncio.to_thread(...)` so a move never stalls the audio loops.
+- The [client.md](client.md) seam stays **sync** (it mirrors the upstream SDK 1:1 — that's its isolation job); this layer is where async lives.
+- If a consuming agent runtime needs **sync** tool callables, the sync↔async bridging is done at the [tools.md](tools.md) layer (a managed background loop), not by making this layer sync.
 
 ## Core concepts / Decided
 
@@ -38,9 +46,12 @@ All four groups are in scope for the first version (final method names/signature
   - `get_head_pose()` — current head pose, reported in human units.
   - `get_imu()` — IMU reading.
   - Face tracking on/off and `get_tracked_face()`; sound direction of arrival (`get_sound_direction()`), where the hardware/backend supports it.
+- **Audio in (microphone)** — see [audio.md](audio.md)
+  - `audio_input()` / `mic_sample_rate` — an async stream of the robot's **echo-cancelled** microphone PCM, for the caller to feed their **own** ASR. The bridge embeds no ASR engine and exposes no recognizer; it provides clean mic audio and manages the media session so echo cancellation applies. The stream is shaped to drop easily into common ASR engines (see [audio.md](audio.md)).
 - **Audio out**
-  - `say(text, ...)` — speak text via our first-party [`tts-engine`](../../tts-engine) (`TTSEngine.speak`). Referenced as a local path dependency now, a git URL later (see [project.md](project.md), "Runtime-dependency policy").
+  - `say(text, ...)` — synthesize speech via a **pluggable** `SpeechSynthesizer` ([audio.md](audio.md)); the default adapter wraps our first-party [`tts-engine`](../../tts-engine) (optional `tts` extra), but callers can supply any synthesizer. On a real/sim robot the audio is routed through the robot speaker (required for echo cancellation), not the local device.
   - `play_sound(...)` — play a sound file / built-in sound (upstream `media.play_sound`).
+  - `stop_talking()` — barge-in: flush queued speaker audio (see [audio.md](audio.md)).
 
 ### Orchestration is the point
 
@@ -48,9 +59,9 @@ Verbs that don't map 1:1 to an upstream call are where this layer earns its keep
 
 ## Open questions
 
-1. **`say` / TTS integration shape (resolved: backend, open: wiring).** The TTS backend is decided — our first-party [`tts-engine`](../../tts-engine) (`TTSEngine.speak`), sourced per [project.md](project.md). Two integration details remain for the implementation plan:
-   - **Async → sync.** `TTSEngine.speak` is `async`; `ReachyMiniApi` is sync, so `say` must drive the coroutine (e.g. `asyncio.run` / a managed loop) behind a sync signature.
-   - **Audio routing.** `tts-engine` streams to a local output device (sounddevice); the robot's speaker lives behind the daemon's media pipeline. Decide whether `say` plays to the local device (fine for a laptop/Lite setup) or feeds samples to the robot via `media.push_audio_sample` — likely a configurable output target.
+1. **`say` / microphone audio wiring — moved to [audio.md](audio.md).** The shape is decided there: `say` uses a bridge-owned **pluggable** `SpeechSynthesizer` (default adapter over first-party [`tts-engine`](../../tts-engine), optional `tts` extra); the microphone is **exposed as a stream** for the caller's own ASR (the bridge does not embed ASR). The two integration details that used to sit here are resolved:
+   - **Async → sync** is resolved by this layer being **async-native** (see "Async, not sync" above) — no per-call `asyncio.run()`.
+   - **Audio routing** (local device vs. robot speaker/mic through the daemon media pipeline, and why echo cancellation requires the robot path) is specified in [audio.md](audio.md). This layer's `say` / microphone verbs are thin wrappers over that.
 2. **Frame/units conventions to document.** Exact axes, origin, and angle conventions for `look_at`/`set_head_pose` need to be stated so tools and callers agree (upstream world frame is x forward, y left, z up).
 3. **Emotions library source.** Which HF dataset(s) back `play_emotion` by default, and how loading/caching is handled (it is network + HF-hub at call time), is deferred to the implementation plan.
 4. **Return shapes for perception.** Exact JSON-friendly return types for `get_view` / `get_imu` / `get_tracked_face` settle alongside [tools.md](tools.md), since tools need them serializable.
