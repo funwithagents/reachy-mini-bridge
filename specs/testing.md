@@ -8,7 +8,7 @@ tests:
 
 # Testing
 
-**Status:** Updated
+**Status:** Implemented
 
 ## Purpose
 
@@ -61,7 +61,7 @@ Environment quirks decide what actually works — audio needs `start_recording()
 
 ```python
 def test_say_is_audible(live_robot):
-    requires_caps("audio")  # runs on sim and robot; skips where audio isn't probed
+    requires_caps(live_robot, "audio")  # skips where audio isn't probed
     ...
 ```
 
@@ -74,9 +74,9 @@ def test_say_is_audible(live_robot):
 
 The sim covers **motion and audio** (audio via the host's audio device with *software* AEC — only the XVF3800's hardware AEC/beamforming/DoA are robot-only); the sim **camera** needs a GL context, so it works headfull (or with a headless GL backend) but not headless plain-python on macOS.
 
-### Current state
+### The harness
 
-Only the **`motion`** path is wired today: the `sim_daemon` fixture runs `--sim --headless --no-media` and asserts a status read. The media-on fixture, capability probing, `requires_caps`, the `real` target, and the headfull launch mode are specced here but **not yet built** — see the implementation plan in [../plans/_index.md](../plans/_index.md). Launch recipes for every mode: [../docs/running-the-sim-daemon.md](../docs/running-the-sim-daemon.md).
+A single `live_robot` fixture (in `tests-e2e/conftest.py`) is the entry point: it resolves the target, brings up a daemon under the own-it-or-borrow-it rule, connects the client with media on (`media_backend="local"`), probes capabilities, and yields `(robot, capabilities)`. `requires_caps(...)` (in `tests-e2e/support.py`) takes that yielded value and skips a test whose needs the target can't meet. The headless `sim` target spawns the media-on MuJoCo daemon and probes **motion** and **audio** (the sim camera stays unprobed headless, so `requires_caps("camera")` skips; `doa` is robot-only and reserved). The `motion` e2e test drives this harness. Spawning the daemon from a process that has already imported `reachy_mini` scrubs the inherited GStreamer-bundle env vars first, so the child sets fresh ones — see [../docs/running-the-sim-daemon.md](../docs/running-the-sim-daemon.md) for that gotcha and the launch recipes for every mode. The `audio`/`camera` e2e *tests* that plug into this harness arrive with the [audio.md](audio.md) / perception work.
 
 ## What a good test asserts
 

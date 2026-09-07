@@ -1,6 +1,6 @@
 # E2E targets and capability gating
 
-**Status:** Todo
+**Status:** Done
 
 Implements [specs/testing.md](../specs/testing.md) ("E2E targets & capabilities"): turn the single motion-only `sim_daemon` fixture into a target-selectable, capability-probing e2e harness — `sim` (headless/headfull) and `real` targets, an "own-it-or-borrow-it" daemon lifecycle, runtime capability probing, and a `requires_caps(...)` skip gate. It deliberately leaves the actual `audio`/`camera` e2e *tests* to the `audio.py` / perception work; this plan delivers the harness they'll plug into, plus keeps the existing motion test green. Flips `testing.md` back to `Implemented` when done.
 

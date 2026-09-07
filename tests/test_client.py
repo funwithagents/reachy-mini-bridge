@@ -27,12 +27,6 @@ def test_build_robot_unknown_backend_raises() -> None:
         build_robot("bogus")
 
 
-def test_build_robot_injected_override_is_returned() -> None:
-    injected = FakeReachyMini()
-    # Even with a real/sim backend string, an explicit robot= wins and is returned as-is.
-    assert build_robot("real", robot=injected) is injected
-
-
 def test_importing_client_does_not_import_reachy_mini() -> None:
     # Run in a fresh interpreter: importing the seam + building the fake must not
     # drag in the heavy upstream package (that's what keeps tests/ daemon-free).

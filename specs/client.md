@@ -48,7 +48,7 @@ An in-package class that implements the slice of `ReachyMini` the bridge uses an
 - `fake` → `FakeReachyMini()`;
 - `real` (default) / `sim` → lazy `from reachy_mini import ReachyMini`, then `ReachyMini(use_sim=(backend == "sim"), **opts)`.
 
-`build_robot` forwards the upstream connection options that matter (`robot_name`, `host`, `port`, `connection_mode`, `timeout`, …) with bridge-appropriate defaults, and returns a context-managed object for deterministic teardown (mirroring `ReachyMini`'s own `with`). A `robot=` override accepts a pre-built `FakeReachyMini` for tests; the backend string is the primary path.
+`build_robot` forwards the upstream connection options that matter (`robot_name`, `host`, `port`, `connection_mode`, `timeout`, …) with bridge-appropriate defaults, and returns a context-managed object for deterministic teardown (mirroring `ReachyMini`'s own `with`). The backend string is the only way in: `fake` builds a fresh `FakeReachyMini`, and a test that needs to assert on it reaches it back through the escape hatch (below).
 
 ### The robot object is the escape hatch
 

@@ -225,21 +225,13 @@ type RobotClient = ReachyMini | FakeReachyMini
 _BACKENDS = ("real", "sim", "fake")
 
 
-def build_robot(
-    backend: str = "real",
-    *,
-    robot: FakeReachyMini | None = None,
-    **opts: Any,
-) -> RobotClient:
+def build_robot(backend: str = "real", **opts: Any) -> RobotClient:
     """Build (and connect) the robot for ``backend``.
 
     ``fake`` returns a :class:`FakeReachyMini`; ``real``/``sim`` lazily import and
     construct the upstream ``reachy_mini.ReachyMini`` (``sim`` sets ``use_sim=True``).
-    Pass ``robot=`` to inject a pre-built fake (for tests); it is returned as-is.
     ``opts`` forwards upstream connection options (``host``, ``port``, ``timeout``, …).
     """
-    if robot is not None:
-        return robot
     if backend not in _BACKENDS:
         raise ValueError(f"unknown backend {backend!r}; expected one of {_BACKENDS}")
     if backend == "fake":
