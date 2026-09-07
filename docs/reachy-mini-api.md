@@ -49,8 +49,9 @@ Reference notes on the upstream [`pollen-robotics/reachy_mini`](https://github.c
 - **Recorded moves** (emotions) come from **Hugging Face datasets**:
   ```python
   from reachy_mini.motion.recorded_move import RecordedMoves
+
   moves = RecordedMoves("pollen-robotics/reachy-mini-emotions-library")
-  moves.list_moves()                 # -> ["happy", ...]
+  moves.list_moves()  # -> ["happy", ...]
   mini.play_move(moves.get("happy"), initial_goto_duration=1.0)
   ```
   Loading hits the network / HF hub at call time.
@@ -59,14 +60,14 @@ Reference notes on the upstream [`pollen-robotics/reachy_mini`](https://github.c
 ### Perception
 - Camera: `mini.media.get_frame()` → numpy BGR array; `get_frame_jpeg()` → bytes.
 - Audio in: `media.get_audio_sample()`, `get_input_audio_samplerate()`, `get_input_channels()`; **direction of arrival** `media.get_DoA()` → `(angle, ok)`.
-  - **Native mic format:** `get_audio_sample()` returns an **`int16` numpy array, mono**, at the rate from `get_input_audio_samplerate()` — the XVF3800 voice pipeline runs at **16 kHz**. Confirmed against `reachy_mini_conversation_app` (`reachy-mini>=1.9.0`): its frame type is `tuple[int, NDArray[np.int16]]` and it does **no resampling** on capture — it reads the rate and forwards frames as-is. So a consumer wanting 16 kHz / mono / linear16 (the streaming-ASR norm) needs no dtype/rate conversion. (The multichannel-collapse code in the app is defensive; the processed comms stream is mono.)
+  - **Native mic format (per SDK source, this checkout):** `get_audio_sample()` returns a **`float32` numpy array, interleaved, `get_input_channels()` channels — `2` (stereo) in the GStreamer backend** (`AudioBase.get_audio_sample` → `np.frombuffer(sample, np.float32).reshape(-1, 2)`; the appsink caps are `F32LE, channels=2, rate=16000`), at the rate from `get_input_audio_samplerate()` = **16 kHz**. The conversation app's `record_loop` forwards this frame as-is; its own streaming handler does any mono downmix. A consumer wanting 16 kHz / mono / linear16 (the streaming-ASR norm) applies a **stereo→mono downmix and float32→int16 conversion** (no resample — the rate already matches), driven off the getters rather than hardcoded assumptions.
 - IMU: `mini.imu()` → dict of accel/gyro/etc.
 - Face tracking (daemon-side): `start_head_tracking(weight=1.0)` / `stop_head_tracking()` / `get_tracked_face(...)`.
 
 ### Audio out
 - `media.play_sound("file.wav")` — plays a file through the daemon speaker.
 - `media.push_audio_sample(np.float32[...])` / `start_playing()` / `stop_playing()` — stream raw samples to the speaker.
-  - **Native output format:** `push_audio_sample` expects a **`float32` mono** numpy array normalized to `[-1, 1]`, at the **16 kHz** pipeline rate. There is **no rate argument and no `get_output_audio_samplerate()` getter** — the rate is fixed by the XVF3800 pipeline (same as input). Confirmed against `reachy_mini_conversation_app` (converts to float32 + collapses to mono before pushing, no resample) and `speech-to-speech` (resamples every TTS backend to 16 kHz "to match the audio output"). So a 16 kHz / mono synthesizer needs only an int16→float32 cast, no resampling.
+  - **Native output format (per SDK source, this checkout):** `push_audio_sample` expects a **`float32`** numpy array normalized to `[-1, 1]`, at the **16 kHz** pipeline rate, with no rate argument. The rate and channel count are queryable: `get_output_audio_samplerate()` returns 16 kHz and `get_output_channels()` returns `2`. The expected **channel count is version-dependent** — this checkout's playback appsrc caps are `F32LE, channels=2` (stereo interleaved), while `reachy_mini_conversation_app`'s `play_loop` downmixes to **mono** before pushing. Read `get_output_channels()` and match it (duplicating a mono synth stream when it reports 2). A synthesizer at 16 kHz needs no resample, only the dtype/channel match.
 - `enable_wobbling()` / `disable_wobbling()` — audio-reactive head motion synced to whatever audio is playing.
 - **No text-to-speech upstream** — that's why our `say` uses our own `tts-engine` (see [`api.md`](../specs/api.md)). Note `tts-engine` streams to a local device, so routing TTS through the robot speaker means feeding `push_audio_sample`.
 

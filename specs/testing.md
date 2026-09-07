@@ -8,7 +8,7 @@ tests:
 
 # Testing
 
-**Status:** Implemented
+**Status:** Updated
 
 ## Purpose
 
@@ -32,8 +32,51 @@ The `tests/` tier mirrors the `src/reachy_mini_bridge/` module layout (`test_<mo
 
 The bridge talks to the robot only through the `RobotClient` seam ([client.md](client.md)), which has three backends — `real`, `sim`, and `fake`. The tiers map onto them:
 
-- **`tests/` uses the `fake` backend** — the first-party `FakeRobot` that needs no daemon, no hardware, and no `reachy_mini` import. It is the whole reason the default tier can exercise the `api`/`tools` stack deterministically and offline. Assert against the commands it recorded and the synthetic perception it returns.
-- **`tests-e2e/` uses the `sim` or `real` backends** — both need a running daemon (MuJoCo for `sim`, hardware for `real`), are non-deterministic, and are therefore live-tier only. The `sim` backend also needs the `sim` extra installed (`reachy_mini[mujoco]`, see [project.md](project.md)); like any live test it should **skip** when its prerequisites are absent, not fail.
+- **`tests/` uses the `fake` backend** — the first-party `FakeReachyMini` that needs no daemon, no hardware, and no `reachy_mini` import. It is the whole reason the default tier can exercise the `api`/`tools` stack deterministically and offline. Assert against the commands it recorded and the synthetic perception it returns.
+- **`tests-e2e/` uses the `sim` or `real` backends** — both need a running daemon (MuJoCo for `sim`, hardware for `real`) and are non-deterministic, so they are live-tier only; the `sim` backend needs the `sim` extra (`reachy_mini[mujoco]`, see [project.md](project.md)). The in-process `FakeReachyMini` already covers the mock level, so the e2e tier drives a real daemon rather than the daemon's own `--mockup-sim` mock. How the tier chooses a target, manages the daemon, and gates each test on capabilities is specified in "E2E targets & capabilities" below.
+
+## E2E targets & capabilities
+
+The e2e tier runs one suite against a **live daemon**, choosing the *target* at runtime and letting each test declare the capabilities it needs. A test is written once and runs wherever its needs are met — no per-environment duplication.
+
+### Targets
+
+Selected by `REACHY_MINI_E2E_TARGET`:
+
+- **`sim`** (default) — the harness spawns and manages a MuJoCo daemon, in one of two **launch modes**:
+  - **headless** (default, for CI): `--sim --headless` — no window, runs anywhere.
+  - **headfull** (`REACHY_MINI_E2E_SIM_VIEWER=1`, local): the MuJoCo viewer, to watch the sim as a robot stand-in. On macOS the viewer must run under `mjpython` from a GUI session (see the doc).
+  Both modes are the same daemon with the same capabilities, except the camera (below).
+- **`real`** — connects to a robot's daemon at `REACHY_MINI_HOST` / `REACHY_MINI_PORT`.
+
+Any target **reuses a daemon already reachable** at the address (a viewer sim you started by hand, or the robot), instead of spawning its own.
+
+### Daemon lifecycle — own it or borrow it
+
+The harness stops only daemons **it spawned** (the `sim` target, either launch mode) and connects to but **never tears down** ones it didn't (`real`, or an already-running daemon it reused). The spawned `sim` daemon is **module-scoped**: one per test file, started once and stopped at the end — never per test.
+
+### Capabilities are probed, not assumed
+
+Environment quirks decide what actually works — audio needs `start_recording()` first, the sim camera needs a GL context, DoA needs the mic array — so inferring from the backend type is unreliable. The fixture instead **probes** each capability against the live daemon at setup, and a `requires_caps(...)` gate **skips** (never fails) a test whose needs the current target can't meet:
+
+```python
+def test_say_is_audible(live_robot):
+    requires_caps("audio")  # runs on sim and robot; skips where audio isn't probed
+    ...
+```
+
+| Capability | probe | sim headless | sim headfull | real robot |
+|---|---|---|---|---|
+| `motion` | backend reports a status | ✅ | ✅ | ✅ |
+| `audio` | `start_recording()` then a sample arrives | ✅ software AEC, host device | ✅ | ✅ hardware AEC |
+| `camera` | `get_frame()` returns a frame | ⚠️ needs a GL context (not headless plain-python on macOS) | ✅ | ✅ |
+| `doa` · hardware-AEC quality · beamforming | — | ❌ | ❌ | ✅ |
+
+The sim covers **motion and audio** (audio via the host's audio device with *software* AEC — only the XVF3800's hardware AEC/beamforming/DoA are robot-only); the sim **camera** needs a GL context, so it works headfull (or with a headless GL backend) but not headless plain-python on macOS.
+
+### Current state
+
+Only the **`motion`** path is wired today: the `sim_daemon` fixture runs `--sim --headless --no-media` and asserts a status read. The media-on fixture, capability probing, `requires_caps`, the `real` target, and the headfull launch mode are specced here but **not yet built** — see the implementation plan in [../plans/_index.md](../plans/_index.md). Launch recipes for every mode: [../docs/running-the-sim-daemon.md](../docs/running-the-sim-daemon.md).
 
 ## What a good test asserts
 

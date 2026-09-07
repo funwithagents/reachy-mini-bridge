@@ -17,11 +17,11 @@ flowchart TD
     subgraph bridge["reachy_mini_bridge"]
         tools["ReachyMiniTools  (tools.py)<br/>plain typed, docstring'd functions"]
         api["ReachyMiniApi  (api.py)<br/>intent verbs in human units"]
-        client["RobotClient seam  (client.py)<br/>Protocol + backends"]
+        client["client.py seam<br/>ReachyMini (real/sim) · FakeReachyMini"]
         tools --> api --> client
     end
-    client -->|real / sim| upstream["reachy_mini SDK → daemon → robot"]
-    client -->|fake| fake["FakeRobot (in-package, no deps)"]
+    client -->|real / sim| upstream["reachy_mini.ReachyMini → daemon → robot"]
+    client -->|fake| fake["FakeReachyMini (in-package, no deps)"]
     api -.-> audio["audio.py — media session<br/>(routes through daemon for echo cancellation)"]
     audio -.->|say · TTS out| synth["SpeechSynthesizer<br/>(pluggable; tts-engine default)"]
     audio -.->|mic stream out| yourasr(["your ASR<br/>(e.g. asr-engine — not a bridge dep)"])
@@ -31,15 +31,15 @@ flowchart TD
 |---|---|---|---|
 | 2 — agent tools | `tools.py` · `ReachyMiniTools` | The API exposed as plain, fully-typed, docstring'd functions an agent runtime can introspect and call. JSON-friendly in/out (frames as base64). | [tools.md](tools.md) |
 | 1 — interaction API | `api.py` · `ReachyMiniApi` | Intent-level verbs in **human units** (degrees, seconds, named emotions): `look_at`, `nod`, `play_emotion`, `say`, `get_view`, … Orchestrates the low-level calls. | [api.md](api.md) |
-| 0 — connection seam | `client.py` · `RobotClient` + adapters | A narrow `Protocol` we own, with three backends, isolating everything above from the heavy upstream SDK. Exposes `.raw` as an escape hatch to the full native API. | [client.md](client.md) |
+| 0 — connection seam | `client.py` · `RobotClient` alias + `FakeReachyMini` | `real`/`sim` use `reachy_mini.ReachyMini` directly, `fake` is our in-package stand-in; `RobotClient` is just a `ReachyMini \| FakeReachyMini` union alias (no Protocol, no adapter) that lets pyright keep the fake honest. The robot object *is* the escape hatch to the full native API. | [client.md](client.md) |
 
-## Three backends, one Protocol
+## Three backends, one seam
 
-The layers above are backend-agnostic — they only see `RobotClient` (see [client.md](client.md)):
+The layers above are backend-agnostic — they are typed against `RobotClient`, the `ReachyMini | FakeReachyMini` union alias (see [client.md](client.md)):
 
-- **`real`** *(default)* — adapter over `reachy_mini.ReachyMini`, talking to the daemon and hardware.
-- **`sim`** — the same adapter with `use_sim=True`, driving the upstream MuJoCo mockup. Needs the `sim` extra (`reachy_mini[mujoco]`).
-- **`fake`** — a first-party `FakeRobot` with no daemon, no hardware, no `reachy_mini` import. Records commands and returns synthetic perception. Powers the deterministic `tests/` tier and offline dev/demos.
+- **`real`** *(default)* — the upstream `reachy_mini.ReachyMini` used directly (no wrapper), talking to the daemon and hardware.
+- **`sim`** — the same `ReachyMini` constructed with `use_sim=True`, driving the upstream MuJoCo mockup. Needs the `sim` extra (`reachy_mini[mujoco]`).
+- **`fake`** — a first-party `FakeReachyMini` with no daemon, no hardware, no `reachy_mini` import: a duck-typed stand-in that records commands and returns synthetic perception. Powers the deterministic `tests/` tier and offline dev/demos.
 
 ## External pieces
 
@@ -54,4 +54,4 @@ The layers above are backend-agnostic — they only see `RobotClient` (see [clie
 ## Roadmap (next steps)
 
 1. Settle the remaining `api.md` open questions (`say` audio routing, frame conventions) and promote specs `Draft` → `Stable`.
-2. Build bottom-up: `client` (+ `FakeRobot`) → `api` → `tools`, each with its own implementation plan (indexed in [../plans/_index.md](../plans/_index.md)).
+2. Build bottom-up: `client` (+ `FakeReachyMini`) → `api` → `tools`, each with its own implementation plan (indexed in [../plans/_index.md](../plans/_index.md)).

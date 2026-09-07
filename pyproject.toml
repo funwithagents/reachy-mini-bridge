@@ -7,7 +7,14 @@ authors = [
     { name = "Thibault Hervier", email = "thibault@fr2g.io" }
 ]
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "numpy>=1.26",
+    "reachy-mini>=1.10",
+]
+
+[project.optional-dependencies]
+# The `sim` backend drives the upstream MuJoCo mockup (see specs/client.md).
+sim = ["reachy-mini[mujoco]>=1.10"]
 
 [build-system]
 requires = ["uv_build>=0.11.29,<0.12.0"]
@@ -18,6 +25,21 @@ dev = [
     "pyright>=1.1.411",
     "pytest>=9.1.1",
     "ruff>=0.16.6",
+    # Pull the sim backend into the dev env so the sim e2e tests run (not skip).
+    # `sim` stays an optional extra for consumers; only dev installs it by default.
+    "reachy-mini-bridge[sim]",
+]
+
+[tool.uv]
+# reachy-mini gates PyGObject to Linux (macOS/Windows use the self-contained
+# gstreamer-bundle). PyGObject/pycairo are sdist-only in the pinned range, so uv's
+# universal lock would try to *build* them on a non-Linux host just to read their
+# metadata (needs system cairo) and fail. Declaring their metadata lets uv resolve
+# the Linux side of the lock without building them; markers still keep them off
+# non-Linux installs.
+dependency-metadata = [
+    { name = "pygobject", version = "3.46.0", requires-dist = ["pycairo>=1.16.0"] },
+    { name = "pycairo", version = "1.29.1" },
 ]
 
 [tool.ruff]

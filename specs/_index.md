@@ -9,9 +9,9 @@ The index of concept specs and their status. For the project overview — what R
 | Spec | Description | Status |
 |---|---|---|
 | [project.md](project.md) | Project structure and tooling: Python version, packaging with uv, layout conventions | Implemented |
-| [testing.md](testing.md) | Testing strategy: two-tier `tests/`/`tests-e2e/` split, functional-test philosophy, skip-without-credentials live tier | Implemented |
-| [client.md](client.md) | Connection seam to upstream `reachy_mini`: a `RobotClient` Protocol + adapter, lifecycle, and raw escape hatch | Draft |
-| [api.md](api.md) | `ReachyMiniApi` — high-level interaction verbs in human units (movement, expression, perception, audio) over the client | Draft |
+| [testing.md](testing.md) | Testing strategy: two-tier `tests/`/`tests-e2e/` split, functional-test philosophy, skip-without-credentials live tier, e2e targets (sim headless/headfull, real) with probed capabilities | Updated |
+| [client.md](client.md) | Connection seam to upstream `reachy_mini`: `real`/`sim` use `ReachyMini` directly, `fake` is a first-party `FakeReachyMini`; `RobotClient` is a union type alias (no Protocol, no adapter) | Implemented |
+| [api.md](api.md) | `ReachyMiniApi` — high-level interaction verbs in human units (movement, expression, perception, audio) over the client | Stable |
 | [audio.md](audio.md) | Audio & media session: `say` via a pluggable `SpeechSynthesizer` (tts-engine default) routed to the robot speaker, and the echo-cancelled mic exposed as a stream for the caller's own ASR — keeping the XVF3800 echo cancellation working | Draft |
 | [tools.md](tools.md) | `ReachyMiniTools` — the API exposed as plain typed, docstring'd functions for agent/LLM runtimes | Draft |
 | _(add concept specs here — see [_spec-template.md](_spec-template.md))_ | | |

@@ -8,7 +8,8 @@ Implementation plans for Reachy Mini Bridge — each plan turns a settled part o
 
 | Plan | Description | Status |
 |---|---|---|
-| _(add plans here — see [_plan-template.md](_plan-template.md))_ | | |
+| [202609041726_client-seam-and-fake-reachy-mini.md](202609041726_client-seam-and-fake-reachy-mini.md) | Build the `client.py` seam: `RobotClient` union alias, `build_robot(...)` factory (lazy upstream import), and the `FakeReachyMini` stand-in for the v1 consumed slice; adds `numpy`/`reachy_mini` base deps + `sim` extra | Done |
+| [202609071702_e2e-targets-and-capability-gating.md](202609071702_e2e-targets-and-capability-gating.md) | Turn the sim-only e2e fixture into a target-selectable (`sim` headless/headfull, `real`), capability-probing harness with a `requires_caps(...)` skip gate | Todo |
 
 ## Status legend
 
