@@ -2,7 +2,7 @@
 
 Driven on the ``fake`` backend with a trivial in-test ``SpeechSynthesizer`` (a tone) —
 no ``reachy_mini``, no ``tts_engine``, no device. Async code runs via ``asyncio.run``,
-matching the fast tier's no-plugin convention (see tests/test_client.py).
+matching the fast tier's no-plugin convention (see tests/test_robot.py).
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from reachy_mini_bridge.audio import (
     float32_to_int16,
     int16_to_float32,
 )
-from reachy_mini_bridge.client import FakeReachyMini
+from reachy_mini_bridge.fake_reachy_mini import FakeReachyMini
 
 
 class _ToneSynth:
@@ -79,7 +79,7 @@ def test_downmix_to_mono_passthrough_when_single_channel() -> None:
 
 
 def test_say_pushes_matched_rate_without_resampling() -> None:
-    robot = FakeReachyMini()  # speaker reports 16 kHz (see client.py)
+    robot = FakeReachyMini()  # speaker reports 16 kHz (see fake_reachy_mini.py)
 
     async def run() -> None:
         async with MediaSession(robot) as session:

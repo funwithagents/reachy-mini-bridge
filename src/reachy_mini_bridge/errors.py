@@ -1,4 +1,4 @@
-"""Exception types the bridge raises (specs/api.md, specs/client.md).
+"""Exception types the bridge raises (specs/api.md, specs/robot.md).
 
 One small hierarchy so callers and the tools layer catch a single named base rather
 than guessing at ad-hoc types. State errors (e.g. a movement verb called while motors

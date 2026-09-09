@@ -17,7 +17,7 @@ flowchart TD
     subgraph bridge["reachy_mini_bridge"]
         tools["ReachyMiniTools  (tools.py)<br/>plain typed, docstring'd functions"]
         api["ReachyMiniApi  (api.py)<br/>intent verbs in human units"]
-        client["client.py seam<br/>ReachyMini (real/sim) · FakeReachyMini"]
+        client["robot.py seam<br/>ReachyMini (real/sim) · FakeReachyMini (fake_reachy_mini.py)"]
         tools --> api --> client
     end
     client -->|real / sim| upstream["reachy_mini.ReachyMini → daemon → robot"]
@@ -31,11 +31,11 @@ flowchart TD
 |---|---|---|---|
 | 2 — agent tools | `tools.py` · `ReachyMiniTools` | The API exposed as plain, fully-typed, docstring'd functions an agent runtime can introspect and call. JSON-friendly in/out (frames as base64). | [tools.md](tools.md) |
 | 1 — interaction API | `api.py` · `ReachyMiniApi` | Intent-level verbs in **human units** (degrees, seconds, named emotions): `look_at`, `nod`, `play_emotion`, `say`, `get_view`, … Orchestrates the low-level calls. | [api.md](api.md) |
-| 0 — connection seam | `client.py` · `RobotClient` alias + `FakeReachyMini` | `real`/`sim` use `reachy_mini.ReachyMini` directly, `fake` is our in-package stand-in; `RobotClient` is just a `ReachyMini \| FakeReachyMini` union alias (no Protocol, no adapter) that lets pyright keep the fake honest. The robot object *is* the escape hatch to the full native API. | [client.md](client.md) |
+| 0 — connection seam | `robot.py` · `AnyReachyMini` alias + `build_robot`; `fake_reachy_mini.py` · `FakeReachyMini` | `real`/`sim` use `reachy_mini.ReachyMini` directly, `fake` is our in-package stand-in; `AnyReachyMini` is just a `ReachyMini \| FakeReachyMini` union alias (no Protocol, no adapter) that lets pyright keep the fake honest. The robot object *is* the escape hatch to the full native API. | [robot.md](robot.md) |
 
 ## Three backends, one seam
 
-The layers above are backend-agnostic — they are typed against `RobotClient`, the `ReachyMini | FakeReachyMini` union alias (see [client.md](client.md)):
+The layers above are backend-agnostic — they are typed against `AnyReachyMini`, the `ReachyMini | FakeReachyMini` union alias (see [robot.md](robot.md)):
 
 - **`real`** *(default)* — the upstream `reachy_mini.ReachyMini` used directly (no wrapper), talking to the daemon and hardware.
 - **`sim`** — the same `ReachyMini` constructed with `use_sim=True`, driving the upstream MuJoCo mockup. Needs the `sim` extra (`reachy_mini[mujoco]`).

@@ -42,7 +42,7 @@ Nothing to start — the robot runs its own daemon. Point the client at it (`con
 ## Connecting the client
 
 ```python
-from reachy_mini_bridge.client import build_robot
+from reachy_mini_bridge.robot import build_robot
 
 with build_robot(
     "real", connection_mode="network", host="127.0.0.1", port=8000

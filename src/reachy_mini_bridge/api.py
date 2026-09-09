@@ -2,7 +2,7 @@
 
 ``ReachyMiniApi`` is the intention-level surface for driving the robot in **human
 units** (degrees, seconds, named emotions), orchestrating the lower-level
-[client](client.py) primitives into single semantic verbs. It is **async-native**
+[robot](robot.py) primitives into single semantic verbs. It is **async-native**
 because audio forces it (see [audio](audio.py)): synthesis is async and a live mic
 stream runs concurrently with playback and motion on one event loop, so the upstream
 SDK's blocking calls run under ``asyncio.to_thread``.
@@ -18,14 +18,15 @@ import asyncio
 from typing import TYPE_CHECKING, Any, Self
 
 from .audio import MediaSession
-from .client import FakeReachyMini, build_robot
 from .errors import BridgeError, MotorsNotEnabledError
+from .fake_reachy_mini import FakeReachyMini
+from .robot import build_robot
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     from .audio import SpeechSynthesizer
-    from .client import RobotClient
+    from .robot import AnyReachyMini
 
 __all__ = ["ReachyMiniApi"]
 
@@ -76,7 +77,7 @@ class ReachyMiniApi:
         audio_config: object | None = None,
         **opts: Any,
     ) -> None:
-        self._robot: RobotClient = build_robot(backend, **opts)
+        self._robot: AnyReachyMini = build_robot(backend, **opts)
         self._synthesizer = synthesizer
         self._media = MediaSession(self._robot, audio_config=audio_config)
         self._recorded_moves: Any = None  # lazy, cached once per connection
@@ -96,12 +97,12 @@ class ReachyMiniApi:
     # --- escape hatch ---
 
     @property
-    def robot(self) -> RobotClient:
+    def robot(self) -> AnyReachyMini:
         """The underlying robot object — full native ``ReachyMini`` on real/sim."""
         return self._robot
 
     @property
-    def raw(self) -> RobotClient:
+    def raw(self) -> AnyReachyMini:
         """Alias of :attr:`robot`."""
         return self._robot
 

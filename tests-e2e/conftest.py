@@ -28,7 +28,7 @@ from typing import Any
 import pytest
 
 from reachy_mini_bridge.api import ReachyMiniApi
-from reachy_mini_bridge.client import RobotClient, build_robot
+from reachy_mini_bridge.robot import AnyReachyMini, build_robot
 
 _DEFAULT_HOST = "127.0.0.1"
 _DEFAULT_PORT = 8000
@@ -259,7 +259,7 @@ def _probe_camera(media: Any) -> bool:
         return False
 
 
-def _probe_capabilities(robot: RobotClient) -> frozenset[str]:
+def _probe_capabilities(robot: AnyReachyMini) -> frozenset[str]:
     """Probe what the live daemon can actually do — never inferred from backend type.
 
     Environment quirks decide: audio needs `start_recording()` first, the sim camera
@@ -293,7 +293,7 @@ def _live_daemon() -> Iterator[tuple[str, int]]:
 @pytest.fixture(scope="module")
 def live_robot(
     _live_daemon: tuple[str, int],
-) -> Iterator[tuple[RobotClient, frozenset[str]]]:
+) -> Iterator[tuple[AnyReachyMini, frozenset[str]]]:
     """Connected robot + its probed capability set, for the selected target.
 
     Media is served over local IPC (`media_backend="local"`) since a same-machine
@@ -319,7 +319,7 @@ def live_api(
     """A connected ``ReachyMiniApi`` + its probed capability set, for the selected target.
 
     Builds the api against the fixture-managed daemon (no robot injection — construction
-    stays backend-string-only per specs/client.md) and probes capabilities through
+    stays backend-string-only per specs/robot.md) and probes capabilities through
     ``api.robot``. The api's async lifecycle is driven on a throwaway loop; tests run
     their own coroutines via ``asyncio.run`` (nothing in the api binds to a loop).
 

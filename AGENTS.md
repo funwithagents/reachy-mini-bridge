@@ -24,7 +24,8 @@ Where things live. This is a coarse, module-level map — for the full file inve
 
 | Module | Role | Spec |
 |---|---|---|
-| `src/reachy_mini_bridge/client.py` | Connection seam to upstream `reachy_mini` — `RobotClient` union alias + `FakeReachyMini` stand-in + `build_robot` | [specs/client.md](specs/client.md) |
+| `src/reachy_mini_bridge/robot.py` | Connection seam to upstream `reachy_mini` — `AnyReachyMini` union alias + `build_robot` backend factory | [specs/robot.md](specs/robot.md) |
+| `src/reachy_mini_bridge/fake_reachy_mini.py` | First-party `FakeReachyMini` stand-in (imports no `reachy_mini`) — records commands, returns synthetic perception/audio | [specs/robot.md](specs/robot.md) |
 | `src/reachy_mini_bridge/api.py` | `ReachyMiniApi` high-level interaction verbs (motors, expression, gaze, audio) | [specs/api.md](specs/api.md) |
 | `src/reachy_mini_bridge/audio.py` | Audio & media session — `say` via a pluggable `SpeechSynthesizer` to the robot speaker + echo-cancelled mic stream for the caller's ASR + conversion helpers | [specs/audio.md](specs/audio.md) |
 | `src/reachy_mini_bridge/errors.py` | Bridge exception hierarchy — `BridgeError` base + `MotorsNotEnabledError` | [specs/api.md](specs/api.md) |

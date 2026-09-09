@@ -13,7 +13,7 @@ tests:
 
 ## Purpose
 
-`ReachyMiniApi` is the high-level, intention-level surface for driving the robot. Where the upstream SDK speaks in 4x4 pose matrices and radians, `ReachyMiniApi` speaks in **human intent and human units**: "look at this point", "nod", "play the happy emotion", "say this", in degrees / seconds / named emotions. It orchestrates the lower-level [client.md](client.md) primitives (composing `goto_target`/`set_target` calls, recorded moves, and media) into single semantic verbs.
+`ReachyMiniApi` is the high-level, intention-level surface for driving the robot. Where the upstream SDK speaks in 4x4 pose matrices and radians, `ReachyMiniApi` speaks in **human intent and human units**: "look at this point", "nod", "play the happy emotion", "say this", in degrees / seconds / named emotions. It orchestrates the lower-level [robot.md](robot.md) primitives (composing `goto_target`/`set_target` calls, recorded moves, and media) into single semantic verbs.
 
 It is the layer a human, service, or agent codes against directly, and the layer [tools.md](tools.md) wraps for LLM/agent use. It returns plain, JSON-friendly Python values so it composes cleanly into tools.
 
@@ -27,7 +27,7 @@ It is the layer a human, service, or agent codes against directly, and the layer
 
 ## Core concepts / Decided
 
-- **Constructed from a backend string.** `ReachyMiniApi(backend="real"|"sim"|"fake", **opts)` builds the robot internally (see [client.md](client.md)) — the real `reachy_mini.ReachyMini` for `real`/`sim`, our `FakeReachyMini` for `fake` — so the Api is fully unit-testable on the `fake` backend. A `connect(...)` convenience mirrors it. A test asserts on the fake by reaching it back through `api.robot` (the escape hatch), not by injecting one.
+- **Constructed from a backend string.** `ReachyMiniApi(backend="real"|"sim"|"fake", **opts)` builds the robot internally (see [robot.md](robot.md)) — the real `reachy_mini.ReachyMini` for `real`/`sim`, our `FakeReachyMini` for `fake` — so the Api is fully unit-testable on the `fake` backend. A `connect(...)` convenience mirrors it. A test asserts on the fake by reaching it back through `api.robot` (the escape hatch), not by injecting one.
 - **Raw access preserved.** The underlying robot object stays reachable through the Api as `api.robot` (a.k.a. `api.raw`) so nothing is a dead end — for `real`/`sim` it *is* the full native `ReachyMini`.
 - **Human units.** Angles in **degrees**, durations in **seconds**, positions in a documented frame. The Api converts to the upstream's matrices/radians internally (via `reachy_mini.utils.create_head_pose` and friends).
 - **Idempotent, forgiving verbs.** Methods validate/clamp to safe ranges and fail with clear `ValueError`s rather than sending bad poses downstream.
@@ -71,7 +71,7 @@ Verbs that don't map 1:1 to an upstream call are where this layer earns its keep
 
 ## Open questions
 
-1. ~~**Error type when motors aren't enabled (v1).**~~ **Resolved:** movement verbs (`play_emotion`, `start_head_tracking`) raise `MotorsNotEnabledError` (a subclass of `BridgeError`, the bridge's base in `errors.py`) when `get_motors_state()` isn't `"enabled"` — a *state* error, distinct from the `ValueError` used for out-of-range input validation. Matches [client.md](client.md)'s error taxonomy.
+1. ~~**Error type when motors aren't enabled (v1).**~~ **Resolved:** movement verbs (`play_emotion`, `start_head_tracking`) raise `MotorsNotEnabledError` (a subclass of `BridgeError`, the bridge's base in `errors.py`) when `get_motors_state()` isn't `"enabled"` — a *state* error, distinct from the `ValueError` used for out-of-range input validation. Matches [robot.md](robot.md)'s error taxonomy.
 2. **Frame/units conventions (post-v1).** Exact axes, origin, and angle conventions for the deferred manual gaze/pose verbs (`look_at` / `set_head_pose`), so tools and callers agree (upstream world frame: x forward, y left, z up). Settles when those verbs land.
 3. **Perception return shapes (post-v1).** JSON-friendly return types for the deferred perception verbs (`get_view` / `get_head_pose` / `get_imu` / `get_tracked_face` / DoA), settled alongside [tools.md](tools.md). The only v1 return shapes are the mic stream's (in [audio.md](audio.md)) and `list_emotions()`.
 4. **Does `set_motors_state` actually honor the state? — confirm on real hardware.** The **sim daemon ignores every motor-state change**: after `set_motors_state("disabled")` or `"gravity_compensation"`, `get_motors_state()` keeps reporting `"enabled"` (verified on both the headless and headfull-viewer sim — see `tests-e2e/test_api.py::test_motor_state_reads_and_dispatches_over_the_live_path`). So the live tier can only assert the read + dispatch work over the network, not that the target *honors* the state; the exact dispatch→state mapping is pinned deterministically on the `fake` instead. **Open until tested on a real robot** whether hardware honors these transitions or shares the sim's behavior. If real hardware *does* honor them, add a `motors` capability that probes honoring (set disabled → read back disabled) and gate a stronger equality assertion on it; if it does **not**, that is itself a finding to document (and the bridge's fail-fast motor precondition would then rest only on the daemon's own wake/sleep lifecycle, never on a caller `disable`).

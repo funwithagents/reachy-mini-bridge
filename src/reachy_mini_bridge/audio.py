@@ -31,7 +31,7 @@ import samplerate
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-    from .client import RobotClient
+    from .robot import AnyReachyMini
 
 __all__ = [
     "MediaSession",
@@ -121,7 +121,7 @@ class MediaSession:
     """
 
     def __init__(
-        self, robot: RobotClient, *, audio_config: object | None = None
+        self, robot: AnyReachyMini, *, audio_config: object | None = None
     ) -> None:
         self._robot = robot
         # The XVF3800 tuning profile applied on start. Left None by default (firmware

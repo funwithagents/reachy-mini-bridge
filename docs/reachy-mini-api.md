@@ -1,6 +1,6 @@
 # Upstream `reachy_mini` API — reference notes
 
-Reference notes on the upstream [`pollen-robotics/reachy_mini`](https://github.com/pollen-robotics/reachy_mini) SDK — the package this project bridges. It's background for designing [`client.md`](../specs/client.md) / [`api.md`](../specs/api.md) / [`tools.md`](../specs/tools.md), **not** a spec: nothing here is a commitment about *our* code, and it can lag upstream. Verify against the installed version before relying on a detail — this reflects `main` as read on 2026-09-04.
+Reference notes on the upstream [`pollen-robotics/reachy_mini`](https://github.com/pollen-robotics/reachy_mini) SDK — the package this project bridges. It's background for designing [`robot.md`](../specs/robot.md) / [`api.md`](../specs/api.md) / [`tools.md`](../specs/tools.md), **not** a spec: nothing here is a commitment about *our* code, and it can lag upstream. Verify against the installed version before relying on a detail — this reflects `main` as read on 2026-09-04.
 
 ## The shape of it
 
@@ -17,7 +17,7 @@ Reference notes on the upstream [`pollen-robotics/reachy_mini`](https://github.c
       )
   ```
 
-- **Client ↔ daemon architecture.** `ReachyMini` is a *client*; it talks to a **daemon** that owns the hardware (motors, camera, mic, speaker). The daemon runs on the robot (wireless) or locally (Lite / `spawn_daemon`), or is a **mockup/MuJoCo simulation** (`use_sim=True`). This is why the SDK needs a running daemon and can't be exercised headless in unit tests — the seam in [`client.md`](../specs/client.md) exists to mock it.
+- **Client ↔ daemon architecture.** `ReachyMini` is a *client*; it talks to a **daemon** that owns the hardware (motors, camera, mic, speaker). The daemon runs on the robot (wireless) or locally (Lite / `spawn_daemon`), or is a **mockup/MuJoCo simulation** (`use_sim=True`). This is why the SDK needs a running daemon and can't be exercised headless in unit tests — the seam in [`robot.md`](../specs/robot.md) exists to mock it.
 - **Heavy native deps.** GStreamer-based media, HF-hub downloads for emotions, numpy/scipy. Another reason our deterministic `tests/` tier must not import it.
 
 ### Constructor (key args)

@@ -30,9 +30,9 @@ The `tests/` tier mirrors the `src/reachy_mini_bridge/` module layout (`test_<mo
 
 ### The fake robot is what makes the default tier possible
 
-The bridge talks to the robot only through the `RobotClient` seam ([client.md](client.md)), which has three backends — `real`, `sim`, and `fake`. The tiers map onto them:
+The bridge talks to the robot only through the `AnyReachyMini` seam ([robot.md](robot.md)), which has three backends — `real`, `sim`, and `fake`. The tiers map onto them:
 
-- **`tests/` uses the `fake` backend** — the first-party `FakeReachyMini` that needs no daemon, no hardware, and no `reachy_mini` import. It is the whole reason the default tier can exercise the `api`/`tools` stack deterministically and offline. Assert against the commands it recorded and the synthetic perception it returns.
+- **`tests/` uses the `fake` backend** — the first-party `FakeReachyMini` (which imports no `reachy_mini` itself) that needs no daemon, no hardware, and no network. It is the whole reason the default tier can exercise the `api`/`tools` stack deterministically and offline. (Importing the package pulls in `reachy_mini` as the base dependency it is; that needs its libs installed, not a live daemon.) Assert against the commands it recorded and the synthetic perception it returns.
 - **`tests-e2e/` uses the `sim` or `real` backends** — both need a running daemon (MuJoCo for `sim`, hardware for `real`) and are non-deterministic, so they are live-tier only; the `sim` backend needs the `sim` extra (`reachy_mini[mujoco]`, see [project.md](project.md)). The in-process `FakeReachyMini` already covers the mock level, so the e2e tier drives a real daemon rather than the daemon's own `--mockup-sim` mock. How the tier chooses a target, manages the daemon, and gates each test on capabilities is specified in "E2E targets & capabilities" below.
 
 ## E2E targets & capabilities

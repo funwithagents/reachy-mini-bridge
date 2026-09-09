@@ -2,7 +2,7 @@
 
 Drives the public api the way a caller would and asserts through the escape hatch
 (`api.robot`, the FakeReachyMini) and its recorded commands. No network, no daemon,
-no reachy_mini import. Async runs via `asyncio.run` (fast-tier convention).
+no hardware. Async runs via `asyncio.run` (fast-tier convention).
 """
 
 from __future__ import annotations
@@ -15,8 +15,8 @@ import numpy.typing as npt
 import pytest
 
 from reachy_mini_bridge.api import ReachyMiniApi
-from reachy_mini_bridge.client import FakeReachyMini
 from reachy_mini_bridge.errors import BridgeError, MotorsNotEnabledError
+from reachy_mini_bridge.fake_reachy_mini import FakeReachyMini
 
 
 class _ToneSynth:

@@ -8,7 +8,7 @@ the target isn't reachable. On the default `sim` target it drives the real MuJoC
 physics simulator, not the kinematic mock (the in-process `FakeReachyMini` covers that
 level in the fast tier).
 
-Run explicitly: ``uv run pytest tests-e2e/test_client.py``.
+Run explicitly: ``uv run pytest tests-e2e/test_robot.py``.
 """
 
 from __future__ import annotations
@@ -17,11 +17,11 @@ from typing import Any
 
 from support import requires_caps
 
-from reachy_mini_bridge.client import RobotClient
+from reachy_mini_bridge.robot import AnyReachyMini
 
 
-def test_client_connects_and_reads_motor_state(
-    live_robot: tuple[RobotClient, frozenset[str]],
+def test_robot_connects_and_reads_motor_state(
+    live_robot: tuple[AnyReachyMini, frozenset[str]],
 ) -> None:
     """Read the live daemon's motor state via the client over the network."""
     requires_caps(live_robot, "motion")
@@ -38,7 +38,7 @@ def test_client_connects_and_reads_motor_state(
 
 
 def test_camera_delivers_a_frame(
-    live_robot: tuple[RobotClient, frozenset[str]],
+    live_robot: tuple[AnyReachyMini, frozenset[str]],
 ) -> None:
     """A live camera frame comes back as a BGR image.
 

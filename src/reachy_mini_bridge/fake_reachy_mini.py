@@ -1,26 +1,23 @@
-"""Connection seam to the upstream ``reachy_mini`` SDK.
+"""First-party fake stand-in for the upstream ``reachy_mini.ReachyMini``.
 
-Specified by [specs/client.md](../../specs/client.md). ``real``/``sim`` drive the
-upstream ``reachy_mini.ReachyMini`` directly; ``fake`` drives the first-party
-``FakeReachyMini`` here, which imports no ``reachy_mini`` and records the commands
-it receives. ``RobotClient`` is a union type alias over the two so pyright keeps the
-fake in lockstep with the surface the layers above call. ``build_robot`` selects a
-backend, importing ``reachy_mini`` lazily so importing this module never pulls in the
-heavy upstream package.
+Specified by [specs/robot.md](../../specs/robot.md). ``FakeReachyMini`` implements the
+v1 consumed slice the layers above call, imports no ``reachy_mini`` itself, records
+every command it receives (so tests assert on them), and returns synthetic
+perception/audio. It is the backbone of the deterministic ``tests/`` tier — no daemon,
+hardware, or network — and runs the full api/audio stack offline for dev and demos.
+
+The union alias and backend factory that select between this fake and the real robot
+live in [robot.py](robot.py).
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Self
+from typing import Any, Self
 
 import numpy as np
 import numpy.typing as npt
 
-if TYPE_CHECKING:
-    # Type-only: loaded at type-check time, never imported when running the fake path.
-    from reachy_mini import ReachyMini
-
-__all__ = ["FakeReachyMini", "RobotClient", "build_robot"]
+__all__ = ["FakeReachyMini"]
 
 # The XVF3800 voice pipeline: 16 kHz, and float32 stereo capture in the current
 # GStreamer backend (see specs/audio.md). The fake reports these via the getters so
@@ -143,7 +140,7 @@ class _FakeMedia:
 class FakeReachyMini:
     """First-party stand-in for ``reachy_mini.ReachyMini`` (imports no ``reachy_mini``).
 
-    Implements the v1 consumed slice (see specs/client.md), records every command on
+    Implements the v1 consumed slice (see specs/robot.md), records every command on
     ``commands`` for tests to assert on, and returns synthetic perception/audio. Motor
     state is reflected on ``client`` (as the real SDK does), not a bespoke getter.
     """
@@ -217,25 +214,3 @@ class FakeReachyMini:
 
     def __exit__(self, *exc: object) -> None:
         self.commands.append(("__exit__", {}))
-
-
-# A readable name for "either backend"; the union keeps the fake honest under pyright.
-type RobotClient = ReachyMini | FakeReachyMini
-
-_BACKENDS = ("real", "sim", "fake")
-
-
-def build_robot(backend: str = "real", **opts: Any) -> RobotClient:
-    """Build (and connect) the robot for ``backend``.
-
-    ``fake`` returns a :class:`FakeReachyMini`; ``real``/``sim`` lazily import and
-    construct the upstream ``reachy_mini.ReachyMini`` (``sim`` sets ``use_sim=True``).
-    ``opts`` forwards upstream connection options (``host``, ``port``, ``timeout``, …).
-    """
-    if backend not in _BACKENDS:
-        raise ValueError(f"unknown backend {backend!r}; expected one of {_BACKENDS}")
-    if backend == "fake":
-        return FakeReachyMini()
-    from reachy_mini import ReachyMini  # lazy: only the real/sim path imports upstream
-
-    return ReachyMini(use_sim=(backend == "sim"), **opts)

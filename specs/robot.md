@@ -1,10 +1,13 @@
 ---
 code:
-  - src/reachy_mini_bridge/client.py
+  - src/reachy_mini_bridge/robot.py
+  - src/reachy_mini_bridge/fake_reachy_mini.py
 tests:
+  - tests/test_robot.py
+  - tests/test_fake_reachy_mini.py
 ---
 
-# Client (connection seam)
+# Robot (connection seam)
 
 **Status:** Implemented
 
@@ -14,8 +17,8 @@ The seam between Reachy Mini Bridge and the upstream `reachy_mini` SDK. It lets 
 
 The seam delivers two things:
 
-1. **Testability.** `reachy_mini` pulls in native dependencies (GStreamer, etc.) and expects a running daemon, so the deterministic `tests/` tier (see [testing.md](testing.md)) runs against `FakeReachyMini` and exercises the layers above with no hardware, daemon, or network.
-2. **A checked slice.** The `RobotClient` union alias and the `FakeReachyMini` class together pin the exact upstream surface the bridge depends on; pyright flags the fake when it diverges from what the Api calls.
+1. **Testability.** `reachy_mini` expects a *running daemon* and hardware to do anything, so the deterministic `tests/` tier (see [testing.md](testing.md)) runs against `FakeReachyMini` and exercises the layers above with no hardware, daemon, or network. (`reachy_mini` is a base dependency and is imported normally — importing it needs its native libs installed, not a live daemon.)
+2. **A checked slice.** The `AnyReachyMini` union alias and the `FakeReachyMini` class together pin the exact upstream surface the bridge depends on; pyright flags the fake when it diverges from what the Api calls.
 
 ## Core concepts / Decided
 
@@ -23,30 +26,41 @@ The seam delivers two things:
 
 `real` and `sim` are one upstream class — `ReachyMini(use_sim=False)` and `ReachyMini(use_sim=True)` — each talking to a daemon (hardware, or the MuJoCo mockup). The Api calls its methods directly; the human-unit surface (degrees, seconds, named emotions) lives one layer up in [api.md](api.md). `sim` selects the same class with `use_sim=True` and requires the `sim` extra (`reachy_mini[mujoco]`, see [project.md](project.md)).
 
-### `RobotClient` — a union type alias
+### `AnyReachyMini` — a union type alias
 
-`RobotClient` is a union type alias over the two concrete robot types:
+`AnyReachyMini` is a union type alias over the two concrete robot types — *any* Reachy Mini implementation, the real SDK object or our fake:
 
 ```python
-if TYPE_CHECKING:
-    from reachy_mini import ReachyMini  # type-only; loaded at type-check time only
-RobotClient: TypeAlias = "ReachyMini | FakeReachyMini"
+from reachy_mini import ReachyMini
+
+type AnyReachyMini = ReachyMini | FakeReachyMini
 ```
 
-The Api holds `self._robot: RobotClient`. pyright checks every `self._robot.<method>(...)` against both members, so `FakeReachyMini` stays in lockstep with the surface the Api calls — a missing method or a drifted signature is a type error. `ReachyMini` is referenced under `TYPE_CHECKING`, so runtime code loads `reachy_mini` only on the real/sim path. Adding a backend later extends the union.
+The Api holds `self._robot: AnyReachyMini`. pyright checks every `self._robot.<method>(...)` against both members, so `FakeReachyMini` stays in lockstep with the surface the Api calls — a missing method or a drifted signature is a type error. Adding a backend later extends the union.
+
+**Why not `RobotClient`.** The upstream `ReachyMini` *is itself* the client to the daemon, and it *holds its own* daemon client at `.client` (the api reads `robot.client.get_status()`). A `RobotClient` alias over that object made `robot.client` read as "the client's client," and clashed with the rest of the code, which calls the object "the robot" everywhere (`self._robot`, `api.robot`, `build_robot`). `AnyReachyMini` names what the union actually is and leaves `.client` to mean plainly "the robot's daemon client." It is **not** a wrapper — the two members are peer implementations; `ReachyMiniApi` ([api.md](api.md)) is the layer that wraps.
 
 Units at this layer are the upstream's (4×4 matrices, radians); human units are [api.md](api.md)'s job. The upstream-typed returns (`get_status()`) are covered below.
 
+### Module layout: `robot.py` + `fake_reachy_mini.py`
+
+The concept is split across two modules, one spec:
+
+- **`robot.py`** — the seam proper: the `AnyReachyMini` union alias and the `build_robot` backend factory. It imports `reachy_mini` (for `ReachyMini`) and `FakeReachyMini` from `fake_reachy_mini.py` — a clean one-way dependency (seam → fake).
+- **`fake_reachy_mini.py`** — `FakeReachyMini` and its stand-in helpers (the fake daemon `client`, `media`, and `media.audio`). Imports no `reachy_mini`.
+
+The fake lives in its own file because it's a substantial chunk of stand-in code with a different job from the seam (it *is* a backend, not the machinery that selects one) — keeping `robot.py` down to the alias and the factory. Callers/tests that need the fake directly import it from its module (`from reachy_mini_bridge.fake_reachy_mini import FakeReachyMini`); everyone else goes through `build_robot("fake")`.
+
 ### `FakeReachyMini` — a first-party stand-in
 
-An in-package class that implements the slice of `ReachyMini` the bridge uses and imports no `reachy_mini`. It records the commands it receives (so tests assert on them) and returns synthetic perception / audio (a generated frame, zeroed IMU, synthetic mic samples). It is the backbone of the deterministic `tests/` tier (see [testing.md](testing.md)) and runs the full api/audio stack offline for development and demos. The real path imports `reachy_mini` lazily (inside `build_robot`), so importing the seam or the fake stays free of the heavy upstream package even though `reachy_mini` is a base dependency.
+An in-package class (in `fake_reachy_mini.py`) that implements the slice of `ReachyMini` the bridge uses and imports no `reachy_mini` itself. It records the commands it receives (so tests assert on them) and returns synthetic perception / audio (a generated frame, zeroed IMU, synthetic mic samples). It is the backbone of the deterministic `tests/` tier (see [testing.md](testing.md)) and runs the full api/audio stack offline for development and demos — no daemon, hardware, or network. (The `robot.py` module imports `reachy_mini` at module load for the union alias and `build_robot`; the fake itself needs no live daemon to run.)
 
 ### Construction from a backend string
 
-`ReachyMiniApi(backend="real"|"sim"|"fake", **opts)` (with a `connect(...)` convenience) builds the robot through a `build_robot(backend, **opts)` helper in `client.py`:
+`ReachyMiniApi(backend="real"|"sim"|"fake", **opts)` (with a `connect(...)` convenience) builds the robot through a `build_robot(backend, **opts)` helper in `robot.py`:
 
 - `fake` → `FakeReachyMini()`;
-- `real` (default) / `sim` → lazy `from reachy_mini import ReachyMini`, then `ReachyMini(use_sim=(backend == "sim"), **opts)`.
+- `real` (default) / `sim` → `ReachyMini(use_sim=(backend == "sim"), **opts)`.
 
 `build_robot` forwards the upstream connection options that matter (`robot_name`, `host`, `port`, `connection_mode`, `timeout`, …) with bridge-appropriate defaults, and returns a context-managed object for deterministic teardown (mirroring `ReachyMini`'s own `with`). The backend string is the only way in: `fake` builds a fresh `FakeReachyMini`, and a test that needs to assert on it reaches it back through the escape hatch (below).
 
@@ -71,7 +85,7 @@ A few members return upstream types — the daemon `client` and its `client.get_
 
 ### Extending the seam
 
-`RobotClient` is a type alias, so a translating adapter or a `Protocol` can sit behind the same name without changing the layers above — the seam accommodates that shape if upstream churn ever warrants it.
+`AnyReachyMini` is a type alias, so a translating adapter or a `Protocol` can sit behind the same name without changing the layers above — the seam accommodates that shape if upstream churn ever warrants it.
 
 ## Open questions
 
