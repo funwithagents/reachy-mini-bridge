@@ -24,9 +24,10 @@ Where things live. This is a coarse, module-level map — for the full file inve
 
 | Module | Role | Spec |
 |---|---|---|
-| `src/reachy_mini_bridge/client.py` | Connection seam to upstream `reachy_mini` — `RobotClient` union alias + `FakeReachyMini` stand-in + `build_robot` (placeholder; Draft) | [specs/client.md](specs/client.md) |
-| `src/reachy_mini_bridge/api.py` | `ReachyMiniApi` high-level interaction verbs (placeholder; Draft) | [specs/api.md](specs/api.md) |
-| `src/reachy_mini_bridge/audio.py` | Audio & media session — `say` via a pluggable `SpeechSynthesizer` to the robot speaker + echo-cancelled mic stream for the caller's ASR (placeholder; Draft) | [specs/audio.md](specs/audio.md) |
+| `src/reachy_mini_bridge/client.py` | Connection seam to upstream `reachy_mini` — `RobotClient` union alias + `FakeReachyMini` stand-in + `build_robot` | [specs/client.md](specs/client.md) |
+| `src/reachy_mini_bridge/api.py` | `ReachyMiniApi` high-level interaction verbs (motors, expression, gaze, audio) | [specs/api.md](specs/api.md) |
+| `src/reachy_mini_bridge/audio.py` | Audio & media session — `say` via a pluggable `SpeechSynthesizer` to the robot speaker + echo-cancelled mic stream for the caller's ASR + conversion helpers | [specs/audio.md](specs/audio.md) |
+| `src/reachy_mini_bridge/errors.py` | Bridge exception hierarchy — `BridgeError` base + `MotorsNotEnabledError` | [specs/api.md](specs/api.md) |
 | `src/reachy_mini_bridge/tools.py` | `ReachyMiniTools` agent/LLM tools (placeholder; Draft) | [specs/tools.md](specs/tools.md) |
 
 **Keep this map current:** when you add, rename, or remove a top-level `src/reachy_mini_bridge/` module or a root directory, update the map in the same change — same discipline as keeping spec/plan statuses honest (below). A test (`tests/test_project_map.py`) enforces that every `src/reachy_mini_bridge/*.py` module appears here and vice-versa — and that the spec frontmatter (see below) stays honest too.

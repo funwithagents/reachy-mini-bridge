@@ -2,7 +2,7 @@
 
 These drive the public surface on the ``fake`` backend only — no ``reachy_mini``
 import, no daemon, no hardware. The real/sim construction path is covered by the
-opt-in ``tests-e2e/test_client_sim.py``.
+opt-in ``tests-e2e/test_client.py``.
 """
 
 from __future__ import annotations

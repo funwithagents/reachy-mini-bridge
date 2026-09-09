@@ -24,7 +24,11 @@ Drop `--headless` to open the MuJoCo viewer. The viewer supplies a **GL context*
 mjpython -m reachy_mini.daemon.app.main --sim --scene minimal --no-preload-datasets
 ```
 
-From a real Terminal (your GUI session) this opens the window. From a **background/agent/CI** process tree it **segfaults (exit 139)** at window creation — the viewer only opens inside a GUI (Aqua) session. To launch it from a non-GUI shell while you're logged in graphically:
+From a real Terminal (your GUI session) this opens the window. From a **background/agent/CI** process tree it **segfaults (exit 139)** at window creation — the viewer only opens inside a GUI (Aqua) session.
+
+> **The screen must be unlocked.** Even inside your GUI session, a **locked screen** (or a display asleep) denies the window server a GL context, so the viewer daemon either **hangs** (produces no output → the e2e harness times out) or **segfaults** (`exit -11` in the harness). This is the main source of "flaky" `REACHY_MINI_E2E_SIM_VIEWER=1` runs: unlock the screen and re-run. The headless target has no such requirement — it exercises the same api/audio/motion paths without a display (only the camera needs the viewer's GL context).
+
+To launch it from a non-GUI shell while you're logged in graphically:
 
 ```
 launchctl asuser $(id -u) \

@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 import socket
@@ -26,6 +27,7 @@ from typing import Any
 
 import pytest
 
+from reachy_mini_bridge.api import ReachyMiniApi
 from reachy_mini_bridge.client import RobotClient, build_robot
 
 _DEFAULT_HOST = "127.0.0.1"
@@ -183,18 +185,29 @@ def _managed_daemon(target: str) -> Iterator[tuple[str, int]]:
         stderr=subprocess.DEVNULL,
         env=_daemon_env(),
     )
+    # The headfull viewer needs an unlocked GUI session with a real display: mjpython's
+    # MuJoCo viewer can't get a GL context from the window server when the screen is
+    # locked (or over plain SSH), so it hangs (no output → startup timeout) or segfaults
+    # (exit -11). This hint turns those otherwise-cryptic skips into an actionable one.
+    viewer_hint = (
+        " — the headfull viewer (REACHY_MINI_E2E_SIM_VIEWER) needs an unlocked GUI "
+        "session with a display; a locked screen makes mjpython's viewer hang or crash"
+        if _sim_viewer()
+        else ""
+    )
     try:
         deadline = time.monotonic() + _STARTUP_TIMEOUT
         while time.monotonic() < deadline:
             if proc.poll() is not None:
                 pytest.skip(
                     f"sim daemon exited during startup (exit {proc.returncode})"
+                    f"{viewer_hint}"
                 )
             if _backend_ready(host, port):
                 break
             time.sleep(1.0)
         else:
-            pytest.skip("sim daemon did not become ready in time")
+            pytest.skip(f"sim daemon did not become ready in time{viewer_hint}")
         yield host, port
     finally:
         proc.terminate()
@@ -297,3 +310,36 @@ def live_robot(
     ) as robot:
         caps = _probe_capabilities(robot)
         yield robot, caps
+
+
+@pytest.fixture(scope="module")
+def live_api(
+    _live_daemon: tuple[str, int],
+) -> Iterator[tuple[ReachyMiniApi, frozenset[str]]]:
+    """A connected ``ReachyMiniApi`` + its probed capability set, for the selected target.
+
+    Builds the api against the fixture-managed daemon (no robot injection — construction
+    stays backend-string-only per specs/client.md) and probes capabilities through
+    ``api.robot``. The api's async lifecycle is driven on a throwaway loop; tests run
+    their own coroutines via ``asyncio.run`` (nothing in the api binds to a loop).
+
+    The capability probe's audio check stops recording in its cleanup, but the api's
+    MediaSession opened it on ``__aenter__`` — so recording is restored before yielding,
+    or the mic tap would see no samples (the conflict flagged in the plan).
+    """
+    host, port = _live_daemon
+    api = ReachyMiniApi(
+        "real",
+        connection_mode="network",
+        host=host,
+        port=port,
+        media_backend="local",
+    )
+    asyncio.run(api.__aenter__())
+    try:
+        caps = _probe_capabilities(api.robot)
+        if "audio" in caps:
+            api.robot.media.start_recording()  # restore what the session needs
+        yield api, caps
+    finally:
+        asyncio.run(api.__aexit__(None, None, None))

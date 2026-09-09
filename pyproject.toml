@@ -10,11 +10,19 @@ requires-python = ">=3.12"
 dependencies = [
     "numpy>=1.26",
     "reachy-mini>=1.10",
+    # Streaming, stateful resampler for the TTS output path (synth rate -> speaker
+    # rate); MIT, wraps BSD-2-Clause libsamplerate, ships prebuilt wheels. Permissive
+    # and small, so it sits in the core rather than an extra (see specs/audio.md).
+    "samplerate>=0.2",
 ]
 
 [project.optional-dependencies]
 # The `sim` backend drives the upstream MuJoCo mockup (see specs/client.md).
 sim = ["reachy-mini[mujoco]>=1.10"]
+# The default `say` synthesizer adapter wraps our first-party tts-engine (see
+# specs/audio.md). Optional: a caller supplying their own SpeechSynthesizer needs none
+# of it. Local path dependency during development; a pinned git URL later.
+tts = ["tts-engine"]
 
 [build-system]
 requires = ["uv_build>=0.11.29,<0.12.0"]
@@ -28,7 +36,15 @@ dev = [
     # Pull the sim backend into the dev env so the sim e2e tests run (not skip).
     # `sim` stays an optional extra for consumers; only dev installs it by default.
     "reachy-mini-bridge[sim]",
+    # Pull the tts extra into the dev env so the default synthesizer adapter is
+    # type-checked and its lazy import is exercised; stays optional for consumers.
+    "reachy-mini-bridge[tts]",
 ]
+
+[tool.uv.sources]
+# tts-engine is a first-party sibling repo; a local path dependency during
+# development (a pinned git URL later, per specs/project.md).
+tts-engine = { path = "../tts-engine" }
 
 [tool.uv]
 # reachy-mini gates PyGObject to Linux (macOS/Windows use the self-contained

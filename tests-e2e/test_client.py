@@ -8,7 +8,7 @@ the target isn't reachable. On the default `sim` target it drives the real MuJoC
 physics simulator, not the kinematic mock (the in-process `FakeReachyMini` covers that
 level in the fast tier).
 
-Run explicitly: ``uv run pytest tests-e2e/test_client_sim.py``.
+Run explicitly: ``uv run pytest tests-e2e/test_client.py``.
 """
 
 from __future__ import annotations
