@@ -6,11 +6,11 @@
 # few lines are duplicated rather than shared. (The library holds no process-global
 # state today, so no reset fixture is needed yet — see specs/testing.md.)
 #
-# `live_robot` is the one entry point: it resolves a *target* (`REACHY_MINI_E2E_TARGET`
-# = `sim` default | `real`), brings up a daemon ("own it or borrow it": reuse one
-# already reachable, else spawn a sim one and own its teardown; never spawn for
-# `real`), connects the client, then *probes* capabilities against the live daemon and
-# yields `(robot, capabilities)`. Tests gate on the probed set via `requires_caps(...)`
+# `live_api` is the entry point: it resolves a *target* (`REACHY_MINI_E2E_TARGET` =
+# `sim` default | `real`), brings up a daemon ("own it or borrow it": reuse one already
+# reachable, else spawn a sim one and own its teardown; never spawn for `real`), builds
+# a `ReachyMiniApi` over it, then *probes* capabilities against the live daemon and
+# yields `(api, capabilities)`. Tests gate on the probed set via `requires_caps(...)`
 # (in support.py). See ../specs/testing.md ("E2E targets & capabilities") for the
 # strategy and ../docs/running-the-sim-daemon.md for the launch recipes.
 
@@ -42,6 +42,23 @@ _CAMERA_PROBE_TIMEOUT = 5.0
 
 def _target() -> str:
     return os.environ.get("REACHY_MINI_E2E_TARGET", "sim").strip().lower()
+
+
+def _backend() -> str:
+    """The bridge backend string for the selected target.
+
+    The `REACHY_MINI_E2E_TARGET` values map straight onto `build_robot`'s backends:
+    `real` → `"real"`, anything else (the default `sim`) → `"sim"` — mirroring
+    `_managed_daemon`'s own real-vs-sim branch. Crucially we always keep
+    `spawn_daemon=False` (its default): the client never brings up its own daemon, it
+    connects to the one this harness manages (own-it-or-borrow-it). With
+    `spawn_daemon=False` the upstream `use_sim` flag is a **no-op** — it's read only when
+    spawning (see `reachy_mini.daemon.utils.daemon_check`), so `"real"` and `"sim"` build
+    the identical network client here. Passing the target's real backend therefore
+    changes no behavior; it just keeps the label honest and exercises the bridge's `sim`
+    construction path instead of hardcoding `"real"` for both.
+    """
+    return "real" if _target() == "real" else "sim"
 
 
 def _address() -> tuple[str, int]:
@@ -84,9 +101,12 @@ def _backend_ready(host: str, port: int) -> bool:
     stays cheap and never negotiates the media path.
     """
     try:
+        # A plain network client (spawn_daemon=False) to whatever daemon is at the
+        # address — see `_backend` for why the target's backend is safe to use here.
         with build_robot(
-            "real",
+            _backend(),
             connection_mode="network",
+            spawn_daemon=False,
             host=host,
             port=port,
             media_backend="no_media",
@@ -291,28 +311,6 @@ def _live_daemon() -> Iterator[tuple[str, int]]:
 
 
 @pytest.fixture(scope="module")
-def live_robot(
-    _live_daemon: tuple[str, int],
-) -> Iterator[tuple[AnyReachyMini, frozenset[str]]]:
-    """Connected robot + its probed capability set, for the selected target.
-
-    Media is served over local IPC (`media_backend="local"`) since a same-machine
-    daemon serves it there — the default WebRTC-producer path errors. The probed set
-    rides in the yielded value; a test passes it to `requires_caps(...)` (support.py).
-    """
-    host, port = _live_daemon
-    with build_robot(
-        "real",
-        connection_mode="network",
-        host=host,
-        port=port,
-        media_backend="local",
-    ) as robot:
-        caps = _probe_capabilities(robot)
-        yield robot, caps
-
-
-@pytest.fixture(scope="module")
 def live_api(
     _live_daemon: tuple[str, int],
 ) -> Iterator[tuple[ReachyMiniApi, frozenset[str]]]:
@@ -328,9 +326,14 @@ def live_api(
     or the mic tap would see no samples (the conflict flagged in the plan).
     """
     host, port = _live_daemon
+    # Build the api on the target's own backend (`sim`/`real`) with `spawn_daemon=False`,
+    # so it connects as a plain network client to the daemon this harness already manages
+    # rather than bringing up its own. See `_backend` for why that's safe (with
+    # spawn_daemon False the two backends build the identical client).
     api = ReachyMiniApi(
-        "real",
+        _backend(),
         connection_mode="network",
+        spawn_daemon=False,
         host=host,
         port=port,
         media_backend="local",

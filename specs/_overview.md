@@ -4,7 +4,7 @@ The global view of the project: what it is and how it's put together. For the li
 
 Reachy Mini Bridge sits between the [Reachy Mini](https://github.com/pollen-robotics/reachy_mini) robot's API and the things that want to drive it — a human, a service, or an LLM/agent. It wraps the robot's native SDK, adds its own management and higher-level interaction APIs on top (mediating and orchestrating between the underlying endpoints), and exposes those as tools that let agents and LLMs perceive and control the robot. The core idea is a single, stable bridging layer so callers never talk to the raw robot API directly unless they choose to.
 
-> **Status: layers 0–1 built.** The connection seam (`client`), the interaction API (`api`), and the audio/media session (`audio`) are `Implemented` — the v1 conversational-presence slice (talk, listen, express, follow a face, manage motors) runs on all three backends. The agent-tools layer (`tools`) is still `Draft`. See [_index.md](_index.md) for per-spec status.
+> **Status: layers 0–1 built.** The connection seam (`client`), the interaction API (`api`), and the audio/media session (`audio`) are `Implemented` — the v1 conversational-presence slice (talk, listen, express, follow a face, read a camera frame, manage motors) runs on all three backends. The agent-tools layer (`tools`) is still `Draft`. See [_index.md](_index.md) for per-spec status.
 
 ## Architecture — three layers
 
@@ -30,7 +30,7 @@ flowchart TD
 | Layer | Module · class | Role | Spec |
 |---|---|---|---|
 | 2 — agent tools | `tools.py` · `ReachyMiniTools` | The API exposed as plain, fully-typed, docstring'd functions an agent runtime can introspect and call. JSON-friendly in/out (frames as base64). | [tools.md](tools.md) |
-| 1 — interaction API | `api.py` · `ReachyMiniApi` | Intent-level verbs in **human units** (degrees, seconds, named emotions): `look_at`, `nod`, `play_emotion`, `say`, `get_view`, … Orchestrates the low-level calls. | [api.md](api.md) |
+| 1 — interaction API | `api.py` · `ReachyMiniApi` | Intent-level verbs in **human units** (degrees, seconds, named emotions): `play_emotion`, `say`, `get_camera_frame`, … Orchestrates the low-level calls. | [api.md](api.md) |
 | 0 — connection seam | `robot.py` · `AnyReachyMini` alias + `build_robot`; `fake_reachy_mini.py` · `FakeReachyMini` | `real`/`sim` use `reachy_mini.ReachyMini` directly, `fake` is our in-package stand-in; `AnyReachyMini` is just a `ReachyMini \| FakeReachyMini` union alias (no Protocol, no adapter) that lets pyright keep the fake honest. The robot object *is* the escape hatch to the full native API. | [robot.md](robot.md) |
 
 ## Three backends, one seam

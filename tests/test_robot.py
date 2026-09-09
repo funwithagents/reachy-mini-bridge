@@ -1,8 +1,9 @@
 """Functional tests for the connection seam (specs/robot.md).
 
 These drive ``build_robot`` on the ``fake`` backend only — no daemon, no hardware.
-The real/sim construction path is covered by the opt-in ``tests-e2e/test_robot.py``;
-the fake's own behavior is covered by ``tests/test_fake_reachy_mini.py``.
+The real/sim construction path is exercised end-to-end by the opt-in
+``tests-e2e/test_api.py`` (which builds the api over a live daemon); the fake's own
+behavior is covered by ``tests/test_fake_reachy_mini.py``.
 """
 
 from __future__ import annotations

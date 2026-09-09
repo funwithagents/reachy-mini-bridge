@@ -25,6 +25,9 @@ from .robot import build_robot
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+    import numpy as np
+    import numpy.typing as npt
+
     from .audio import SpeechSynthesizer
     from .robot import AnyReachyMini
 
@@ -253,3 +256,15 @@ class ReachyMiniApi:
     def mic_channels(self) -> int:
         """Raw capture channel count (the ``mono=False`` layout)."""
         return self._media.mic_channels
+
+    # --- perception (camera) ---
+
+    async def get_camera_frame(self) -> npt.NDArray[np.uint8] | None:
+        """Grab the latest camera frame as a numpy BGR array (``HxWx3``, uint8).
+
+        A perception verb: it returns the raw frame object, not a JSON-friendly value
+        (the base64/JPEG encoding for a model is the tools layer's job). Mirrors the
+        upstream ``media.get_frame`` exactly — returns ``None`` when no frame is
+        available yet (e.g. the headless sim has no GL context). Needs no motors.
+        """
+        return await asyncio.to_thread(self._robot.media.get_frame)

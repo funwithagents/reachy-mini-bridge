@@ -27,6 +27,10 @@ _SAMPLE_RATE = 16000
 _CHANNELS = 2
 _CHUNK_FRAMES = 160  # 10 ms at 16 kHz
 
+# Synthetic camera frame size (small; just enough for tests to assert real HxWx3 shape).
+_FRAME_WIDTH = 64
+_FRAME_HEIGHT = 48
+
 
 class _FakeBackendStatus:
     """Stand-in for the upstream ``RobotBackendStatus`` (only the field we read)."""
@@ -135,6 +139,20 @@ class _FakeMedia:
 
     def play_sound(self, sound_file: str) -> None:
         self._commands.append(("media.play_sound", {"sound_file": sound_file}))
+
+    # --- camera ---
+    def get_frame(self) -> npt.NDArray[np.uint8]:
+        """Return one synthetic camera frame: BGR, ``(H, W, 3)`` uint8.
+
+        A deterministic horizontal gradient (not a flat constant) so tests assert real
+        structure. Mirrors the upstream ``media.get_frame`` shape; the fake always has a
+        frame ready, so unlike the real daemon it never returns ``None``. Not recorded
+        as a command — a perception getter, like ``get_audio_sample``.
+        """
+        frame = np.zeros((_FRAME_HEIGHT, _FRAME_WIDTH, 3), dtype=np.uint8)
+        ramp = np.linspace(0, 255, _FRAME_WIDTH, dtype=np.uint8)
+        frame[:, :, 0] = ramp  # B channel ramps left→right
+        return frame
 
 
 class FakeReachyMini:

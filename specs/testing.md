@@ -60,8 +60,8 @@ The harness stops only daemons **it spawned** (the `sim` target, either launch m
 Environment quirks decide what actually works — audio needs `start_recording()` first, the sim camera needs a GL context, DoA needs the mic array — so inferring from the backend type is unreliable. The fixture instead **probes** each capability against the live daemon at setup, and a `requires_caps(...)` gate **skips** (never fails) a test whose needs the current target can't meet:
 
 ```python
-def test_say_is_audible(live_robot):
-    requires_caps(live_robot, "audio")  # skips where audio isn't probed
+def test_say_is_audible(live_api):
+    requires_caps(live_api, "audio")  # skips where audio isn't probed
     ...
 ```
 
@@ -76,7 +76,7 @@ The sim covers **motion and audio** (audio via the host's audio device with *sof
 
 ### The harness
 
-A single `live_robot` fixture (in `tests-e2e/conftest.py`) is the entry point: it resolves the target, brings up a daemon under the own-it-or-borrow-it rule, connects the client with media on (`media_backend="local"`), probes capabilities, and yields `(robot, capabilities)`. `requires_caps(...)` (in `tests-e2e/support.py`) takes that yielded value and skips a test whose needs the target can't meet. The headless `sim` target spawns the media-on MuJoCo daemon and probes **motion** and **audio** (the sim camera stays unprobed headless, so `requires_caps("camera")` skips; `doa` is robot-only and reserved). The `motion` e2e test drives this harness. Spawning the daemon from a process that has already imported `reachy_mini` scrubs the inherited GStreamer-bundle env vars first, so the child sets fresh ones — see [../docs/running-the-sim-daemon.md](../docs/running-the-sim-daemon.md) for that gotcha and the launch recipes for every mode. The `audio`/`camera` e2e *tests* that plug into this harness arrive with the [audio.md](audio.md) / perception work.
+The `live_api` fixture (in `tests-e2e/conftest.py`) is the entry point: it resolves the target, brings up a daemon under the own-it-or-borrow-it rule, builds a `ReachyMiniApi` over it with media on (`media_backend="local"`), probes capabilities through `api.robot`, and yields `(api, capabilities)`. `requires_caps(...)` (in `tests-e2e/support.py`) takes that yielded value and skips a test whose needs the target can't meet. The headless `sim` target spawns the media-on MuJoCo daemon and probes **motion** and **audio** (the sim camera stays unprobed headless, so `requires_caps("camera")` skips; `doa` is robot-only and reserved). Spawning the daemon from a process that has already imported `reachy_mini` scrubs the inherited GStreamer-bundle env vars first, so the child sets fresh ones — see [../docs/running-the-sim-daemon.md](../docs/running-the-sim-daemon.md) for that gotcha and the launch recipes for every mode. The **motion**, **audio**, and **camera** e2e tests all plug into this harness (in `tests-e2e/test_api.py`), each gated on the capability it needs; the camera test runs only where a GL context exists (headfull sim / real robot).
 
 ## What a good test asserts
 

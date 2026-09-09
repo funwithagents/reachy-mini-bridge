@@ -211,3 +211,23 @@ def test_play_emotion_plays_a_real_move(
 
     played = asyncio.run(scenario())
     print(f"\n[e2e] played emotion: {played!r}")
+
+
+def test_camera_frame_delivers_a_frame(
+    live_api: tuple[ReachyMiniApi, frozenset[str]],
+) -> None:
+    """A live camera frame comes back from `get_camera_frame` as a BGR image.
+
+    Gated on `camera`, which the fixture probes true only where a GL context is
+    available — the headfull sim viewer (`REACHY_MINI_E2E_SIM_VIEWER=1`) or a real
+    robot. So this **skips** on the headless sim / CI and runs where the camera exists,
+    driving the public API rather than reaching into `robot.media`.
+    """
+    requires_caps(live_api, "camera")
+    api, _caps = live_api
+    frame = asyncio.run(api.get_camera_frame())
+    assert frame is not None, "camera probed but get_camera_frame() returned None"
+    assert frame.ndim == 3 and frame.shape[2] == 3, (
+        f"expected HxWx3 BGR, got {frame.shape}"
+    )
+    assert frame.size > 0

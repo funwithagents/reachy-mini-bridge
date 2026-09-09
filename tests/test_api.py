@@ -228,3 +228,20 @@ def test_audio_input_streams_mic_bytes_and_exposes_format() -> None:
     assert sr == 16000
     assert ch == 2
     assert len(chunk) > 0 and len(chunk) % 2 == 0  # whole int16 samples
+
+
+# --- perception (camera) -----------------------------------------------------------
+
+
+def test_get_camera_frame_returns_a_bgr_frame() -> None:
+    async def run() -> npt.NDArray[np.uint8] | None:
+        async with ReachyMiniApi("fake") as api:
+            return await api.get_camera_frame()
+
+    frame = asyncio.run(run())
+    assert frame is not None  # the fake always has a frame ready
+    assert frame.ndim == 3 and frame.shape[2] == 3  # HxWx3 BGR
+    assert frame.dtype == np.uint8
+    assert frame.size > 0
+    # The synthetic frame carries real structure (a gradient), not a flat constant.
+    assert frame.min() != frame.max()

@@ -74,7 +74,7 @@ The members the v1 [api.md](api.md) / [audio.md](audio.md) surface calls — the
 
 - **Motion / expression:** `goto_target`; `async_play_move` (with `RecordedMoves` loaded at the api layer for `play_emotion`); `start_head_tracking` / `stop_head_tracking`.
 - **Motors:** `enable_motors` / `disable_motors` / `enable_gravity_compensation`, and the daemon client `client.get_status()`. The public `ReachyMini` has no motor-mode getter, so `get_motors_state` reads mode the way the SDK itself does — `robot.client.get_status().backend_status.motor_control_mode` (the setters above update what it reports).
-- **Media** (see [audio.md](audio.md)): `media.start_recording` / `stop_recording`, `media.get_audio_sample`, `media.get_input_audio_samplerate`, `media.start_playing` / `stop_playing`, `media.push_audio_sample`, `media.play_sound`, `media.audio.apply_audio_config`, `media.audio.clear_player`.
+- **Media** (see [audio.md](audio.md)): `media.start_recording` / `stop_recording`, `media.get_audio_sample`, `media.get_input_audio_samplerate`, `media.start_playing` / `stop_playing`, `media.push_audio_sample`, `media.play_sound`, `media.audio.apply_audio_config`, `media.audio.clear_player`, and `media.get_frame` (camera, for `get_camera_frame` — returns a BGR frame or `None`; see [api.md](api.md)).
 - **Lifecycle:** context-manager enter/exit.
 
 Exact signatures are pinned against the installed `reachy_mini` once the media capture-format facts settle (see open questions).
