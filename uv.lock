@@ -2106,7 +2106,7 @@ requires-dist = [
     { name = "reachy-mini", specifier = ">=1.10" },
     { name = "reachy-mini", extras = ["mujoco"], marker = "extra == 'sim'", specifier = ">=1.10" },
     { name = "samplerate", specifier = ">=0.2" },
-    { name = "tts-engine", marker = "extra == 'tts'", directory = "../tts-engine" },
+    { name = "tts-engine", marker = "extra == 'tts'", editable = "../tts-engine" },
 ]
 provides-extras = ["sim", "tts"]
 
@@ -2597,7 +2597,7 @@ wheels = [
 [[package]]
 name = "tts-engine"
 version = "0.1.0"
-source = { directory = "../tts-engine" }
+source = { editable = "../tts-engine" }
 dependencies = [
     { name = "elevenlabs" },
     { name = "mcp", extra = ["cli"] },

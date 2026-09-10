@@ -44,7 +44,7 @@ dev = [
 [tool.uv.sources]
 # tts-engine is a first-party sibling repo; a local path dependency during
 # development (a pinned git URL later, per specs/project.md).
-tts-engine = { path = "../tts-engine" }
+tts-engine = { path = "../tts-engine", editable = true }
 
 [tool.uv]
 # reachy-mini gates PyGObject to Linux (macOS/Windows use the self-contained
