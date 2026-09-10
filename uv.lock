@@ -2088,6 +2088,9 @@ dependencies = [
 sim = [
     { name = "reachy-mini", extra = ["mujoco"] },
 ]
+test = [
+    { name = "pytest" },
+]
 tts = [
     { name = "tts-engine" },
 ]
@@ -2096,25 +2099,27 @@ tts = [
 dev = [
     { name = "pyright" },
     { name = "pytest" },
-    { name = "reachy-mini-bridge", extra = ["sim", "tts"] },
+    { name = "reachy-mini-bridge", extra = ["sim", "test", "tts"] },
     { name = "ruff" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "numpy", specifier = ">=1.26" },
+    { name = "pytest", marker = "extra == 'test'", specifier = ">=9.1.1" },
     { name = "reachy-mini", specifier = ">=1.10" },
     { name = "reachy-mini", extras = ["mujoco"], marker = "extra == 'sim'", specifier = ">=1.10" },
     { name = "samplerate", specifier = ">=0.2" },
     { name = "tts-engine", marker = "extra == 'tts'", editable = "../tts-engine" },
 ]
-provides-extras = ["sim", "tts"]
+provides-extras = ["sim", "tts", "test"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "pyright", specifier = ">=1.1.411" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "reachy-mini-bridge", extras = ["sim"] },
+    { name = "reachy-mini-bridge", extras = ["test"] },
     { name = "reachy-mini-bridge", extras = ["tts"] },
     { name = "ruff", specifier = ">=0.16.6" },
 ]

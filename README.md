@@ -9,6 +9,7 @@ A bridge to the [Reachy Mini](https://github.com/pollen-robotics/reachy_mini) ro
 - **[specs/_overview.md](specs/_overview.md)** — global view of the project: architecture, the three layers, the backends. Start here.
 - **[specs/_index.md](specs/_index.md)** — index of the specs and their status.
 - **[AGENTS.md](AGENTS.md)** — operating manual: how specs/plans/statuses work, commands, verification.
+- **[docs/testing-with-the-bridge.md](docs/testing-with-the-bridge.md)** — for projects that depend on the bridge: how to test your own code against the `fake` / `sim` / `real` backends (unit and e2e).
 - **[docs/reachy-mini-api.md](docs/reachy-mini-api.md)** — reference notes on the upstream `reachy_mini` SDK.
 
 ## Development

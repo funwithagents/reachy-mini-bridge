@@ -14,6 +14,7 @@ The index of concept specs and their status. For the project overview — what R
 | [api.md](api.md) | `ReachyMiniApi` — high-level interaction verbs in human units (movement, expression, perception, audio) over the client | Implemented |
 | [audio.md](audio.md) | Audio & media session: `say` via a pluggable `SpeechSynthesizer` (tts-engine default) routed to the robot speaker, and the echo-cancelled mic exposed as a stream for the caller's own ASR — keeping the XVF3800 echo cancellation working | Implemented |
 | [tools.md](tools.md) | `ReachyMiniTools` — the API exposed as plain typed, docstring'd functions for agent/LLM runtimes | Draft |
+| [testing_support.md](testing_support.md) | `reachy_mini_bridge.testing` — the shipped, importable e2e harness (`live_api` fixture, `requires_caps`) so consumers test their own code against the `fake`/`sim`/`real` backends | Implemented |
 | _(add concept specs here — see [_spec-template.md](_spec-template.md))_ | | |
 
 Each spec also opens with a YAML **frontmatter** block declaring the `code:` and `tests:` files it governs — the spec → code/tests mapping the spec-drift checks use to scope what they compare. Keep it current when files move, and see [AGENTS.md](../AGENTS.md) ("Spec frontmatter") for the full convention.

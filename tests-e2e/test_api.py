@@ -1,6 +1,7 @@
 """E2E tier: ReachyMiniApi over a live daemon (specs/api.md, specs/audio.md).
 
-Target-agnostic: the `live_api` fixture (conftest.py) resolves the target
+Target-agnostic: the shipped `live_api` fixture (reachy_mini_bridge.testing.fixtures,
+wired in via conftest.py) resolves the target
 (`REACHY_MINI_E2E_TARGET`, default `sim`), so the same tests run on the headless sim,
 the headfull viewer, and a real robot — each test gated by `requires_caps(...)` on the
 capability it needs and skipping cleanly where absent.
@@ -23,10 +24,10 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 import pytest
-from support import require_env, requires_caps
 
 from reachy_mini_bridge.api import ReachyMiniApi
 from reachy_mini_bridge.audio import TTSEngineSynthesizer
+from reachy_mini_bridge.testing import require_env, requires_caps
 
 # A public ElevenLabs voice used throughout tts-engine's own docs; override with
 # REACHY_MINI_E2E_TTS_VOICE_ID for an account-specific voice.

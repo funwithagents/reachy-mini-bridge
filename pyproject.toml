@@ -23,6 +23,10 @@ sim = ["reachy-mini[mujoco]>=1.10"]
 # specs/audio.md). Optional: a caller supplying their own SpeechSynthesizer needs none
 # of it. Local path dependency during development; a pinned git URL later.
 tts = ["tts-engine"]
+# The shipped test harness (`reachy_mini_bridge.testing`, see specs/testing_support.md)
+# needs pytest to define its fixtures/skip gates. A downstream project running the e2e
+# tier installs `reachy-mini-bridge[test]` (plus `[sim]` for the sim daemon launcher).
+test = ["pytest>=9.1.1"]
 
 [build-system]
 requires = ["uv_build>=0.11.29,<0.12.0"]
@@ -39,6 +43,9 @@ dev = [
     # Pull the tts extra into the dev env so the default synthesizer adapter is
     # type-checked and its lazy import is exercised; stays optional for consumers.
     "reachy-mini-bridge[tts]",
+    # Pull the test extra into the dev env so the shipped harness type-checks and the
+    # bridge dogfoods it in tests-e2e/; stays optional for consumers.
+    "reachy-mini-bridge[test]",
 ]
 
 [tool.uv.sources]
@@ -64,13 +71,9 @@ target-version = "py312"  # keep in sync with requires-python
 [tool.pytest.ini_options]
 # Only the fast, deterministic tier is collected by default; tests-e2e/ is opt-in.
 testpaths = ["tests"]
-# Put tests-e2e/ on sys.path so its conftest and tests can `import support` regardless
-# of pytest's import mode (harmless for the default `tests/` run, which never uses it).
-pythonpath = ["tests-e2e"]
 
 [tool.pyright]
 include = ["src", "tests", "tests-e2e"]  # type-check test code too, not just src
-extraPaths = ["tests-e2e"]  # resolve tests-e2e's flat `import support` (not a package)
 venvPath = "."
 venv = ".venv"
 pythonVersion = "3.12"
