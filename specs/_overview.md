@@ -4,7 +4,7 @@ The global view of the project: what it is and how it's put together. For the li
 
 Reachy Mini Bridge sits between the [Reachy Mini](https://github.com/pollen-robotics/reachy_mini) robot's API and the things that want to drive it — a human, a service, or an LLM/agent. It wraps the robot's native SDK, adds its own management and higher-level interaction APIs on top (mediating and orchestrating between the underlying endpoints), and exposes those as tools that let agents and LLMs perceive and control the robot. The core idea is a single, stable bridging layer so callers never talk to the raw robot API directly unless they choose to.
 
-> **Status: layers 0–1 built.** The connection seam (`client`), the interaction API (`api`), and the audio/media session (`audio`) are `Implemented` — the v1 conversational-presence slice (talk, listen, express, follow a face, read a camera frame, manage motors) runs on all three backends. The agent-tools layer (`tools`) is still `Draft`. See [_index.md](_index.md) for per-spec status.
+> **Status: layers 0–1 built.** The connection seam (`robot`), the interaction API (`api`), and the audio/media session (`audio`) are `Implemented` — the v1 conversational-presence slice (talk, listen, express, follow a face, read a camera frame, manage motors) runs on all three backends. The agent-tools layer (`tools`) is still `Draft`. See [_index.md](_index.md) for per-spec status.
 
 ## Architecture — three layers
 
@@ -53,6 +53,6 @@ The layers above are backend-agnostic — they are typed against `AnyReachyMini`
 
 ## Roadmap (next steps)
 
-1. **Done:** `client` (+ `FakeReachyMini`), then the coupled `api` + `audio` layer — the v1 verbs over a media session, with fast `tests/` and a capability-gated `tests-e2e/` tier.
+1. **Done:** `robot` (+ `FakeReachyMini`), then the coupled `api` + `audio` layer — the v1 verbs over a media session, with fast `tests/` and a capability-gated `tests-e2e/` tier.
 2. **Next:** build the `tools` layer — the v1 api verbs exposed as plain typed, docstring'd functions for an agent/LLM runtime (settle `tools.md` `Draft` → `Stable`, then its implementation plan).
 3. **Deferred (post-v1):** manual movement/gaze verbs and rich perception (see `api.md`), plus the hardware-confirmation items in `audio.md` (exact channel count on the physical XVF3800, the tuned audio profile).

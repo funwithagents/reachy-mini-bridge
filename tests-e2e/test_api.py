@@ -50,8 +50,9 @@ def test_real_audio_format_matches_the_fake_assumptions(
     """The live daemon reports the float32 / channel / 16 kHz facts the fake hardcodes.
 
     This is the check the fast tier structurally cannot make: it confirms the numbers
-    the `fake` backend bakes in are what a real daemon actually reports. Closes
-    specs/audio.md open question 1.
+    the `fake` backend bakes in are what a real daemon actually reports. Partially closes
+    specs/audio.md open question 1 (rates + dtype; the physical channel count still
+    needs real hardware).
     """
     requires_caps(live_api, "audio")
     api, _caps = live_api

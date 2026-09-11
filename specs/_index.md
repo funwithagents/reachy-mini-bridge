@@ -11,7 +11,7 @@ The index of concept specs and their status. For the project overview — what R
 | [project.md](project.md) | Project structure and tooling: Python version, packaging with uv, layout conventions | Implemented |
 | [testing.md](testing.md) | Testing strategy: two-tier `tests/`/`tests-e2e/` split, functional-test philosophy, skip-without-credentials live tier, e2e targets (sim headless/headfull, real) with probed capabilities | Implemented |
 | [robot.md](robot.md) | Connection seam to upstream `reachy_mini` (`robot.py` + `fake_reachy_mini.py`): `real`/`sim` use `ReachyMini` directly, `fake` is a first-party `FakeReachyMini`; `AnyReachyMini` is a union type alias (no Protocol, no adapter) | Implemented |
-| [api.md](api.md) | `ReachyMiniApi` — high-level interaction verbs in human units (movement, expression, perception, audio) over the client | Implemented |
+| [api.md](api.md) | `ReachyMiniApi` — high-level interaction verbs in human units (motors, expression, gaze, perception, audio) over the robot seam | Implemented |
 | [audio.md](audio.md) | Audio & media session: `say` via a pluggable `SpeechSynthesizer` (tts-engine default) routed to the robot speaker, and the echo-cancelled mic exposed as a stream for the caller's own ASR — keeping the XVF3800 echo cancellation working | Implemented |
 | [tools.md](tools.md) | `ReachyMiniTools` — the API exposed as plain typed, docstring'd functions for agent/LLM runtimes | Draft |
 | [testing_support.md](testing_support.md) | `reachy_mini_bridge.testing` — the shipped, importable e2e harness (`live_api` fixture, `requires_caps`) so consumers test their own code against the `fake`/`sim`/`real` backends | Implemented |

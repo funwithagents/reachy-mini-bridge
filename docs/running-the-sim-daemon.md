@@ -12,7 +12,7 @@ Real MuJoCo physics, no viewer, no display — runs anywhere:
 reachy-mini-daemon --sim --headless --no-preload-datasets
 ```
 
-- Serves `http://127.0.0.1:8000` in ~1s. Add `--no-media` for a pure **motion** daemon (no camera/audio) — the lightest option, what today's motion fixture uses.
+- Serves `http://127.0.0.1:8000` in ~1s. Add `--no-media` for a pure **motion** daemon (no camera/audio) — the lightest option for motion-only work; the e2e harness spawns media-on so it can probe audio.
 - **Media on** (omit `--no-media`) brings up **audio**: the daemon falls back to the host's default mic/speaker and enables **software AEC** (`No hardware AEC; enabled software echo cancellation`). The macOS `libgstpython.dylib` GStreamer warning is harmless.
 - **Camera does not work here on macOS**: the virtual-camera offscreen render needs a GL context that headless plain-python lacks (`get_frame()` returns `None`). Use the viewer mode for camera.
 

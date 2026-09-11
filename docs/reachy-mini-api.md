@@ -18,7 +18,7 @@ Reference notes on the upstream [`pollen-robotics/reachy_mini`](https://github.c
   ```
 
 - **Client ↔ daemon architecture.** `ReachyMini` is a *client*; it talks to a **daemon** that owns the hardware (motors, camera, mic, speaker). The daemon runs on the robot (wireless) or locally (Lite / `spawn_daemon`), or is a **mockup/MuJoCo simulation** (`use_sim=True`). This is why the SDK needs a running daemon and can't be exercised headless in unit tests — the seam in [`robot.md`](../specs/robot.md) exists to mock it.
-- **Heavy native deps.** GStreamer-based media, HF-hub downloads for emotions, numpy/scipy. Another reason our deterministic `tests/` tier must not import it.
+- **Heavy native deps.** GStreamer-based media, HF-hub downloads for emotions, numpy/scipy. Importing it needs those native libs installed (not a live daemon), so it is a base dependency the `tests/` tier imports normally; the `FakeReachyMini` stand-in is what keeps that tier daemon-free ([robot.md](../specs/robot.md)).
 
 ### Constructor (key args)
 

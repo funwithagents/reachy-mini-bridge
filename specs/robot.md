@@ -62,7 +62,7 @@ An in-package class (in `fake_reachy_mini.py`) that implements the slice of `Rea
 - `fake` → `FakeReachyMini()`;
 - `real` (default) / `sim` → `ReachyMini(use_sim=(backend == "sim"), **opts)`.
 
-`build_robot` forwards the upstream connection options that matter (`robot_name`, `host`, `port`, `connection_mode`, `timeout`, …) with bridge-appropriate defaults, and returns a context-managed object for deterministic teardown (mirroring `ReachyMini`'s own `with`). The backend string is the only way in: `fake` builds a fresh `FakeReachyMini`, and a test that needs to assert on it reaches it back through the escape hatch (below).
+`build_robot` forwards the upstream connection options verbatim as `**opts` (`robot_name`, `host`, `port`, `connection_mode`, `spawn_daemon`, `media_backend`, `timeout`, …), leaving their defaults to upstream, and returns a context-managed object for deterministic teardown (mirroring `ReachyMini`'s own `with`). The backend string is the only way in: `fake` builds a fresh `FakeReachyMini`, and a test that needs to assert on it reaches it back through the escape hatch (below).
 
 ### The robot object is the escape hatch
 
@@ -72,12 +72,12 @@ An in-package class (in `fake_reachy_mini.py`) that implements the slice of `Rea
 
 The members the v1 [api.md](api.md) / [audio.md](audio.md) surface calls — the checklist `FakeReachyMini` implements and the union type-checks against:
 
-- **Motion / expression:** `goto_target`; `async_play_move` (with `RecordedMoves` loaded at the api layer for `play_emotion`); `start_head_tracking` / `stop_head_tracking`.
+- **Motion / expression:** `async_play_move` (with `RecordedMoves` loaded at the api layer for `play_emotion`); `start_head_tracking` / `stop_head_tracking`. (`goto_target` is called by no v1 verb; the fake implements it anyway, pre-seeded for the deferred manual movement verbs in [api.md](api.md).)
 - **Motors:** `enable_motors` / `disable_motors` / `enable_gravity_compensation`, and the daemon client `client.get_status()`. The public `ReachyMini` has no motor-mode getter, so `get_motors_state` reads mode the way the SDK itself does — `robot.client.get_status().backend_status.motor_control_mode` (the setters above update what it reports).
-- **Media** (see [audio.md](audio.md)): `media.start_recording` / `stop_recording`, `media.get_audio_sample`, `media.get_input_audio_samplerate`, `media.start_playing` / `stop_playing`, `media.push_audio_sample`, `media.play_sound`, `media.audio.apply_audio_config`, `media.audio.clear_player`, and `media.get_frame` (camera, for `get_camera_frame` — returns a BGR frame or `None`; see [api.md](api.md)).
+- **Media** (see [audio.md](audio.md)): `media.start_recording` / `stop_recording`, `media.get_audio_sample`, `media.get_input_audio_samplerate` / `get_input_channels`, `media.start_playing` / `stop_playing`, `media.push_audio_sample`, `media.get_output_audio_samplerate` / `get_output_channels`, `media.play_sound`, `media.audio.apply_audio_config`, `media.audio.clear_player`, and `media.get_frame` (camera, for `get_camera_frame` — returns a BGR frame or `None`; see [api.md](api.md)).
 - **Lifecycle:** context-manager enter/exit.
 
-Exact signatures are pinned against the installed `reachy_mini` once the media capture-format facts settle (see open questions).
+Signatures mirror the installed `reachy_mini` (1.10); the media members' dtype and rates are confirmed on the sim, with the physical channel count still pending hardware (see open questions).
 
 ### The upstream-typed returns
 
@@ -89,6 +89,6 @@ A few members return upstream types — the daemon `client` and its `client.get_
 
 ## Open questions
 
-1. **Exact consumed-slice signatures.** The member *list* is fixed by the v1 api/audio surface (above); the exact parameter/return signatures are pinned against the installed `reachy_mini`. The **media capture members depend on the capture-format facts** (dtype / channels / rate) that [audio.md](audio.md) normalizes — finalized alongside that audio verification.
+1. **Physical channel count.** The member *list* is fixed by the v1 api/audio surface (above) and the parameter/return signatures mirror the installed `reachy_mini` 1.10. What remains is the **channel count the media capture members report on real hardware** (the fake assumes 2 / stereo) — the same fact [audio.md](audio.md) open question 1 tracks; dtype and rates are confirmed on the sim.
 2. **Fake fidelity.** How faithful `FakeReachyMini`'s synthetic perception/audio needs to be (a static placeholder frame, or data that exercises face-tracking and the say/mic loop) is set by the implementation plan, driven by what the api/audio tests need.
 3. ~~**Error taxonomy.**~~ **Resolved:** the bridge ships a small hierarchy in `errors.py` — `BridgeError(RuntimeError)` as the base, with `MotorsNotEnabledError` for the motors-disabled state error (see [api.md](api.md) resolved open question 1). `ValueError` stays reserved for out-of-range input validation. Connection-error types remain upstream `reachy_mini`'s until a concrete need to wrap them appears.

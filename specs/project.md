@@ -24,13 +24,14 @@ Structure and tooling for the Reachy Mini Bridge project itself: Python version,
 - **Optional extras.** `[project.optional-dependencies]` covers the upstream extras we actually need plus the optional first-party backends. For now:
   - **`sim`** → `reachy_mini[mujoco]`, adding the MuJoCo simulator so the `sim` backend works (see [robot.md](robot.md)). Symmetric with the upstream extra by design, so `reachy-mini-bridge[sim]` maps to `reachy_mini[mujoco]`.
   - **`tts`** → `tts-engine`, the default `SpeechSynthesizer` backend for `say` (see [audio.md](audio.md)). Optional so the core bridge stays free of `tts-engine` / `sounddevice` / cloud-TTS SDKs for callers who plug in their own synthesizer. Enters with the audio implementation plan.
+  - **`test`** → `pytest`, for the shipped testing harness `reachy_mini_bridge.testing` (see [testing_support.md](testing_support.md)): its fixtures and skip gates need pytest, which the base package must not drag in. A downstream project running e2e against `sim` installs `reachy-mini-bridge[sim,test]`; against `real`, `[test]` alone.
 
   The base install already includes `reachy_mini` (hard dep), so no `robot` extra is needed. The **`fake` backend needs no extra** — it's pure Python + numpy in the base package. Other upstream extras (`opencv`, `rerun`, `placo_kinematics`, …) are deliberately not mirrored yet; add one only when a spec needs it. Extras land in `pyproject.toml` with the implementation plan that first needs them, same as runtime deps.
 - **Linting/formatting:** `ruff`.
 - **Testing:** `pytest`, in two physically-separated tiers — a fast, deterministic, no-network default run (`tests/`, the only tier `testpaths` collects) and an opt-in live tier (`tests-e2e/`) that calls real external services. Full strategy is specced in [testing.md](testing.md).
 - **Type checking:** `pyright` (`standard` mode), a dev dependency run via `uv run pyright`. Config lives in `[tool.pyright]` in `pyproject.toml`, targeting `src`, `tests`, and `tests-e2e`, pinned to the `.venv`.
 - **Repo shape:**
-  - `src/reachy_mini_bridge/` — the package, one module per core concept.
+  - `src/reachy_mini_bridge/` — the package, one module per core concept (the shipped testing harness is the one subpackage, `testing/`, see [testing_support.md](testing_support.md)).
   - `specs/` — pre-implementation design docs, one per concept (this folder).
   - `plans/` — implementation plans turning settled specs into buildable steps.
   - `tests/` at repo root, mirroring the `src/reachy_mini_bridge/` module structure.

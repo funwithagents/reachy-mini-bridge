@@ -34,7 +34,7 @@ It is the layer a human, service, or agent codes against directly, and the layer
 
 ### v1 scope — the minimum for interaction
 
-v1 is deliberately narrow: the smallest verb set that makes the robot a **conversational, face-following** presence — **talk, listen, express, and follow the person it's talking to**. Manual movement/gaze and rich perception are explicitly **deferred to post-v1** (see below). Final method names/signatures settle before this spec goes `Stable`.
+v1 is deliberately narrow: the smallest verb set that makes the robot a **conversational, face-following** presence — **talk, listen, express, and follow the person it's talking to**. Manual movement/gaze and rich perception are explicitly **deferred to post-v1** (see below).
 
 **In scope for v1:**
 
@@ -69,7 +69,7 @@ Named here so the boundary is explicit; each is a straightforward addition once 
 
 ### Orchestration is the point
 
-Verbs that don't map 1:1 to an upstream call are where this layer earns its keep. In v1 that's `play_emotion` resolving a name to a recorded move (and managing torque so the move actually plays). The richer orchestration — `look_at` choosing the right upstream helper, `nod`/`shake_head` sequencing poses — arrives with the deferred movement verbs. Pure pass-throughs (e.g. `play_sound`, and later `get_imu`) are thin by design.
+Verbs that don't map 1:1 to an upstream call are where this layer earns its keep. In v1 that's `play_emotion` resolving a name to a recorded move (and checking torque first so the move actually plays, failing fast otherwise). The richer orchestration — `look_at` choosing the right upstream helper, `nod`/`shake_head` sequencing poses — arrives with the deferred movement verbs. Pure pass-throughs (e.g. `play_sound`, and later `get_imu`) are thin by design.
 
 ## Open questions
 

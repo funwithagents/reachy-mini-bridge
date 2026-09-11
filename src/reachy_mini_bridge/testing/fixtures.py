@@ -93,7 +93,8 @@ def _probe_capabilities(robot: AnyReachyMini) -> frozenset[str]:
     except Exception:  # noqa: BLE001, S110  (no status ⇒ no motion cap)
         pass
 
-    media: Any = robot.media  # real MediaManager; typed loosely (fake lacks get_frame)
+    # Typed loosely: the probes call it defensively (any failure ⇒ capability absent).
+    media: Any = robot.media
     if _probe_audio(media):
         caps.add("audio")
     if _probe_camera(media):

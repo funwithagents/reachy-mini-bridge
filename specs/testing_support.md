@@ -16,7 +16,7 @@ tests:
 
 `reachy_mini_bridge.testing` is the bridge's **shipped, importable testing surface** — the piece that makes it clear to a downstream project *how* to test its own code against the three backends. A consumer adds `reachy-mini-bridge` (with the `sim` extra) as a dependency and needs to write both unit tests and live/e2e tests over the robot; this package hands them the same harness the bridge uses for its own live tier, so they never re-derive the daemon lifecycle and its gotchas.
 
-This is distinct from [testing.md](testing.md): that spec is the bridge's *own* testing practice — a cross-cutting discipline, nothing there ships. This spec governs code that **does** ship in `src/`, so a consumer imports it. The harness that today lives in `tests-e2e/conftest.py` (own-it-or-borrow-it daemon lifecycle, the GStreamer-bundle env scrub, capability probing, the `requires_caps` skip gate) becomes library code here; the bridge's own `tests-e2e/conftest.py` re-exports from it, so the shipped harness is the exact code the bridge exercises rather than a second copy that can rot.
+This is distinct from [testing.md](testing.md): that spec is the bridge's *own* testing practice — a cross-cutting discipline, nothing there ships. This spec governs code that **does** ship in `src/`, so a consumer imports it. The harness (own-it-or-borrow-it daemon lifecycle, the GStreamer-bundle env scrub, capability probing, the `requires_caps` skip gate) is library code here; the bridge's own `tests-e2e/conftest.py` imports its fixtures from it, so the shipped harness is the exact code the bridge exercises rather than a second copy that can rot.
 
 ## Core concepts / Decided
 
@@ -35,7 +35,7 @@ A consumer's two tiers map onto the bridge's three backends exactly as the bridg
 
 ### Shipped as `reachy_mini_bridge.testing`, behind a `test` extra
 
-The harness ships as the `reachy_mini_bridge.testing` package, pulled in by a new **`test` optional-dependency extra** (`reachy-mini-bridge[test]`). The extra carries `pytest` (floor `>=9.1.1`, matching the bridge's own dev pin) — the harness's only added dependency. The sim daemon launcher (`reachy-mini-daemon` / `mjpython`) comes from the `sim` extra, so a consumer running e2e against `sim` installs `reachy-mini-bridge[sim,test]`; against `real`, `reachy-mini-bridge[test]` alone.
+The harness ships as the `reachy_mini_bridge.testing` package, pulled in by the **`test` optional-dependency extra** (`reachy-mini-bridge[test]`). The extra carries `pytest` (floor `>=9.1.1`, matching the bridge's own dev pin) — the harness's only added dependency. The sim daemon launcher (`reachy-mini-daemon` / `mjpython`) comes from the `sim` extra, so a consumer running e2e against `sim` installs `reachy-mini-bridge[sim,test]`; against `real`, `reachy-mini-bridge[test]` alone.
 
 ### Opt-in as a pytest plugin — no auto-registration
 
@@ -52,14 +52,14 @@ Explicit opt-in keeps installation side-effect-free — merely depending on the 
 
 Four modules, with the daemon machinery kept private behind the plugin:
 
-- `reachy_mini_bridge/testing/__init__.py` — re-exports the three public names below.
+- `reachy_mini_bridge/testing/__init__.py` — re-exports the two skip gates (`requires_caps`, `require_env`) from `support.py`. The `live_api` fixture is deliberately *not* re-exported here: a fixture only registers through the plugin module a consumer names in `pytest_plugins`.
 - `testing/fixtures.py` — the pytest-plugin module a consumer names in `pytest_plugins`: the `live_api` fixture and the capability probing it yields.
 - `testing/_daemon.py` — **private** daemon-lifecycle internals: target/backend resolution, the own-it-or-borrow-it spawn/borrow, the readiness poll, and the GStreamer-bundle env scrub. Kept out of `fixtures.py` so the plugin module reads as the fixture surface, not the process-management plumbing.
 - `testing/support.py` — `requires_caps` and `require_env`.
 
 ### Public surface
 
-The package exposes exactly the three names the bridge's own live tier uses, re-exported from `reachy_mini_bridge.testing`:
+The package exposes exactly the three names the bridge's own live tier uses — `live_api` through the `reachy_mini_bridge.testing.fixtures` plugin module, and the two skip gates re-exported from `reachy_mini_bridge.testing`:
 
 - **`live_api`** — a **module-scoped** pytest fixture yielding `(api, capabilities)`: a connected `ReachyMiniApi` over the resolved target and the `frozenset` of capabilities probed against that live daemon. It brings the daemon up under own-it-or-borrow-it (reuse one already reachable, else spawn a `sim` one and own its teardown; never spawn for `real`), builds the api with media on, probes, and tears down what it spawned.
 - **`requires_caps(live, *caps)`** — the skip gate: given the `live_api` value, `pytest.skip(...)` unless every named capability (`motion` / `audio` / `camera` / …) was probed on the current target. A test written once runs wherever its needs are met.

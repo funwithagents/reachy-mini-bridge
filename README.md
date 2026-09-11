@@ -2,7 +2,7 @@
 
 A bridge to the [Reachy Mini](https://github.com/pollen-robotics/reachy_mini) robot's API: it wraps the native SDK, adds a high-level interaction API (`ReachyMiniApi`) on top, and exposes that API as agent/LLM tools (`ReachyMiniTools`) — so callers never talk to the raw robot API directly.
 
-> **Status: design phase.** Specs are being written; no implementation yet.
+> **Status: layers 0–1 built.** The connection seam, the interaction API (`ReachyMiniApi`), and the audio/media session are implemented and run on the `real` / `sim` / `fake` backends; the agent-tools layer (`ReachyMiniTools`) is still in design. See [specs/_index.md](specs/_index.md) for per-spec status.
 
 ## Documentation
 

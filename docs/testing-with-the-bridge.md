@@ -21,22 +21,32 @@ libs installed, **not** a running daemon. The `fake` path needs no daemon and no
 
 ## Unit tests — the `fake` backend
 
-Construct `ReachyMiniApi("fake")` directly. It records the commands it receives and returns
-synthetic perception, with no daemon, network, or hardware. Assert through the `api.robot`
-escape hatch:
+Construct `ReachyMiniApi("fake")` directly. The fake records every command it receives on
+`robot.commands` (a list of `(name, args)` tuples) and returns synthetic perception, with no
+daemon, network, or hardware. Assert through the `api.robot` escape hatch — narrow it to
+`FakeReachyMini` first, since `api.robot` is typed as the real-or-fake union:
 
 ```python
-import pytest
+import asyncio
+
 from reachy_mini_bridge.api import ReachyMiniApi
+from reachy_mini_bridge.fake_reachy_mini import FakeReachyMini
 
 
-@pytest.mark.asyncio  # or drive the coroutine with asyncio.run(...)
-async def test_my_greeting_moves_the_head():
-    async with ReachyMiniApi("fake") as api:
-        await my_greeting(api)  # your code under test
-        # assert on what the fake recorded, via the escape hatch:
-        assert api.robot.recorded_commands  # shape depends on your code
+def test_my_greeting_plays_an_emotion():
+    async def run() -> list[str]:
+        async with ReachyMiniApi("fake") as api:
+            await api.set_motors_state("enabled")
+            await my_greeting(api)  # your code under test
+            robot = api.robot  # the escape hatch: the FakeReachyMini
+            assert isinstance(robot, FakeReachyMini)  # narrows the union for pyright
+            return [name for name, _args in robot.commands]
+
+    assert "async_play_move" in asyncio.run(run())
 ```
+
+The bridge's own fast tier drives coroutines with `asyncio.run` and needs no pytest-asyncio;
+use that plugin if you prefer `async def` tests.
 
 ## E2E tests — `sim` / `real`
 
