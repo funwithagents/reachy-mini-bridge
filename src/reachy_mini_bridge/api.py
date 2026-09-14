@@ -19,6 +19,7 @@ and rich perception are deferred to post-v1 (see specs/api.md).
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
@@ -40,6 +41,8 @@ if TYPE_CHECKING:
     from .robot import AnyReachyMini
 
 __all__ = ["ReachyMiniApi"]
+
+_logger = logging.getLogger(__name__)
 
 # Motor torque states, as the caller-facing single verb takes/returns them.
 _MOTOR_STATES = ("enabled", "disabled", "gravity_compensation")
@@ -96,11 +99,19 @@ class ReachyMiniApi:
             ReachyMiniConfig(backend=config) if isinstance(config, str) else config
         )
         # An explicit synthesizer wins over the config's `tts` block (then not consumed).
-        self._synthesizer: SpeechSynthesizer | None = (
-            synthesizer
-            if synthesizer is not None
-            else _default_synthesizer(self._config.tts)
-        )
+        self._synthesizer: SpeechSynthesizer | None
+        self._synthesizer_error: Exception | None
+        if synthesizer is not None:
+            self._synthesizer, self._synthesizer_error = synthesizer, None
+        else:
+            self._synthesizer, self._synthesizer_error = _default_synthesizer(
+                self._config.tts
+            )
+            if self._synthesizer_error is not None:
+                _logger.warning(
+                    "the configured `tts` block could not be built: %s",
+                    self._synthesizer_error,
+                )
         self._robot: AnyReachyMini | None = None
         self._media: MediaSession | None = None
         self._exit_stack: AsyncExitStack | None = None
@@ -133,6 +144,18 @@ class ReachyMiniApi:
     def config(self) -> ReachyMiniConfig:
         """The config this api was built from."""
         return self._config
+
+    @property
+    def synthesizer_error(self) -> Exception | None:
+        """The cause when the config's `tts` block failed to build a synthesizer.
+
+        ``None`` when the voice built successfully, when an explicit ``synthesizer=``
+        was passed (the block is then not consumed), or when there is no `tts` block.
+        The api still comes up with no voice; `say` raises :class:`BridgeError`
+        chained to this cause. A host that wants hard failure checks this after
+        construction and raises.
+        """
+        return self._synthesizer_error
 
     # --- escape hatch ---
 
@@ -316,6 +339,11 @@ class ReachyMiniApi:
         """
         chosen = synth or self._synthesizer
         if chosen is None:
+            if self._synthesizer_error is not None:
+                raise BridgeError(
+                    "say requires a SpeechSynthesizer: the configured `tts` block "
+                    f"could not be built: {self._synthesizer_error}"
+                ) from self._synthesizer_error
             raise BridgeError(
                 "say requires a SpeechSynthesizer: pass one, configure a default "
                 "synthesizer at construction, or set the config's `tts` block "
@@ -360,14 +388,24 @@ class ReachyMiniApi:
         return await asyncio.to_thread(self.robot.media.get_frame)
 
 
-def _default_synthesizer(tts_block: dict[str, Any] | None) -> SpeechSynthesizer | None:
-    """The config's `tts` block as a ``TTSEngineSynthesizer``, or None without a block."""
+def _default_synthesizer(
+    tts_block: dict[str, Any] | None,
+) -> tuple[SpeechSynthesizer | None, Exception | None]:
+    """The config's `tts` block as a ``TTSEngineSynthesizer``, and any build error.
+
+    ``(None, None)`` without a block. The missing `tts` extra (``ImportError``) still
+    raises ``ConfigError`` — a setup error nothing can fix at runtime. Any other
+    exception from building the adapter is caught and returned as the cause instead,
+    so a bad `tts` block degrades to no voice rather than failing construction.
+    """
     if tts_block is None:
-        return None
+        return None, None
     try:
-        return TTSEngineSynthesizer(tts_block)
+        return TTSEngineSynthesizer(tts_block), None
     except ImportError as e:
         raise ConfigError(
             "the config's `tts` block needs the tts extra: install "
             "reachy-mini-bridge[tts] (or pass your own synthesizer=)"
         ) from e
+    except Exception as e:  # noqa: BLE001 - recorded, not swallowed; see synthesizer_error
+        return None, e

@@ -164,6 +164,47 @@ def test_tts_block_without_the_extra_is_a_config_error(
         ReachyMiniApi(ReachyMiniConfig(backend="fake", tts={"module": {"type": "x"}}))
 
 
+def test_tts_block_build_failure_degrades_to_no_voice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cause = ValueError("environment variable 'X' is unset")
+
+    def failing(_block: object) -> object:
+        raise cause
+
+    monkeypatch.setattr(api_module, "TTSEngineSynthesizer", failing)
+    block = {"module": {"type": "x"}}
+    api = ReachyMiniApi(ReachyMiniConfig(backend="fake", tts=block))
+    assert api.synthesizer_error is cause
+
+    async def run() -> list[str]:
+        async with api:
+            with pytest.raises(BridgeError, match="X") as exc_info:
+                await api.say("hi")
+            assert exc_info.value.__cause__ is cause
+            return await api.list_emotions()  # the robot is still up
+
+    assert asyncio.run(run()) == ["happy", "sad", "curious"]
+
+
+def test_synthesizer_error_is_none_when_the_voice_builds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Adapter(_ToneSynth):
+        def __init__(self, block: object) -> None:
+            del block
+
+    monkeypatch.setattr(api_module, "TTSEngineSynthesizer", _Adapter)
+    api = ReachyMiniApi(ReachyMiniConfig(backend="fake", tts={"module": {"type": "x"}}))
+    assert api.synthesizer_error is None
+
+
+def test_explicit_synthesizer_leaves_no_error() -> None:
+    config = ReachyMiniConfig(backend="fake", tts={"module": {"type": "x"}})
+    api = ReachyMiniApi(config, synthesizer=_ToneSynth())
+    assert api.synthesizer_error is None
+
+
 # --- lifecycle order: daemon -> robot -> media --------------------------------------
 
 

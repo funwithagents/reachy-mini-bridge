@@ -102,7 +102,7 @@ class DaemonConfig:
 The default synthesizer for `say`. When present, it is exactly a tts-engine **`engine` block** (`module` + optional `player`, *not* wrapped under an `"engine"` key), carried as a raw `dict` and handed to `TTSEngineSynthesizer` ([audio.md](audio.md)) at `ReachyMiniApi` construction — which runs it through `TTSEngineConfig.from_dict`, tts-engine's own validation. The config layer checks only the shape it can without importing tts-engine: the block is an object whose `module` is an object with a non-empty string `type`.
 
 - The key is `tts`, not `synthesizer`: it configures the shipped tts-engine adapter specifically. A custom `SpeechSynthesizer` is code, passed as `ReachyMiniApi(config, synthesizer=...)`, and an explicit synthesizer wins over the block (the block is then not consumed, and tts-engine is not imported).
-- The `tts` extra must be installed for the block to be consumed; otherwise `ReachyMiniApi` raises `ConfigError` naming `reachy-mini-bridge[tts]`.
+- The `tts` extra must be installed for the block to be consumed; otherwise `ReachyMiniApi` raises `ConfigError` naming `reachy-mini-bridge[tts]`. Any other adapter-build failure (typically the module's `api_key_env` unset) degrades to no voice instead — see [api.md](api.md) "Constructed from a config".
 - `player` is accepted for symmetry with a tts-engine file and has no effect: the bridge feeds tts-engine a robot-speaker sink in place of its local player.
 - No environment variables are read at config time; a module's `api_key_env` is resolved by the module at engine construction, as in tts-engine.
 

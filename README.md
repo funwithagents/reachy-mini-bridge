@@ -30,7 +30,8 @@ asyncio.run(main())
 `ReachyMiniApi.from_dict(...)` / `from_json(...)` take the same config as a dict or a JSON
 string; `ReachyMiniApi("sim")` / `ReachyMiniApi("real")` connect to a daemon you already run.
 Set `"daemon": {"spawn": "auto"}` with `"backend": "sim"` and the bridge brings the MuJoCo
-daemon up itself (and stops it on exit). See [specs/config.md](specs/config.md).
+daemon up itself (and stops it on exit). See [specs/config.md](specs/config.md). A voice that
+cannot be built leaves the robot up; check `api.synthesizer_error`.
 
 ## Documentation
 
