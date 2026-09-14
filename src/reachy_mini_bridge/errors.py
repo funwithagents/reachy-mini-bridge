@@ -1,14 +1,16 @@
-"""Exception types the bridge raises (specs/api.md, specs/robot.md).
+"""Exception types the bridge raises (specs/api.md, specs/robot.md, specs/config.md,
+specs/daemon.md).
 
 One small hierarchy so callers and the tools layer catch a single named base rather
 than guessing at ad-hoc types. State errors (e.g. a movement verb called while motors
 are off) are distinct from ``ValueError``, which the api reserves for out-of-range
-input validation.
+input validation — and which ``ConfigError`` extends, since a malformed config is
+invalid input data.
 """
 
 from __future__ import annotations
 
-__all__ = ["BridgeError", "MotorsNotEnabledError"]
+__all__ = ["BridgeError", "ConfigError", "DaemonError", "MotorsNotEnabledError"]
 
 
 class BridgeError(RuntimeError):
@@ -22,4 +24,21 @@ class MotorsNotEnabledError(BridgeError):
     reading the live motor state, rather than silently enabling torque or sending a
     command that does nothing. The caller enables motors via
     ``set_motors_state("enabled")`` first (see specs/api.md "Motors").
+    """
+
+
+class DaemonError(BridgeError):
+    """The bridge could not bring up, find, or stop a ``reachy-mini-daemon``.
+
+    Raised by ``daemon.managed_daemon`` (see specs/daemon.md): a missing launcher, a
+    busy port under ``spawn="always"``, a child that exits or never becomes ready
+    within ``startup_timeout``.
+    """
+
+
+class ConfigError(ValueError):
+    """A malformed ``ReachyMiniConfig`` (see specs/config.md).
+
+    A ``ValueError`` — the same taxonomy tts-engine uses — so a caller can catch either
+    ``ConfigError`` for the specific type or ``ValueError`` for any bad-config surface.
     """

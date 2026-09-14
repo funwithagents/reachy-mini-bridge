@@ -11,6 +11,7 @@ Where things live. This is a coarse, module-level map — for the full file inve
 | Path | What's there |
 |---|---|
 | `README.md` | Packaging front page — short intro + doc pointers |
+| `config.example.json` | Every `ReachyMiniConfig` field with placeholder values — kept in sync with [specs/config.md](specs/config.md) |
 | `src/reachy_mini_bridge/` | The library itself — one module per core concept (see below) |
 | `specs/` | Pre-implementation design docs, one per concept, each with a `**Status:**` — indexed by [specs/_index.md](specs/_index.md) |
 | `plans/` | Implementation plans turning settled specs into buildable steps — indexed by [plans/_index.md](plans/_index.md) |
@@ -28,9 +29,11 @@ Where things live. This is a coarse, module-level map — for the full file inve
 | `src/reachy_mini_bridge/fake_reachy_mini.py` | First-party `FakeReachyMini` stand-in (imports no `reachy_mini`) — records commands, returns synthetic perception/audio | [specs/robot.md](specs/robot.md) |
 | `src/reachy_mini_bridge/api.py` | `ReachyMiniApi` high-level interaction verbs (motors, expression, gaze, audio) | [specs/api.md](specs/api.md) |
 | `src/reachy_mini_bridge/audio.py` | Audio & media session — `say` via a pluggable `SpeechSynthesizer` to the robot speaker + echo-cancelled mic stream for the caller's ASR + conversion helpers | [specs/audio.md](specs/audio.md) |
-| `src/reachy_mini_bridge/errors.py` | Bridge exception hierarchy — `BridgeError` base + `MotorsNotEnabledError` | [specs/api.md](specs/api.md) |
+| `src/reachy_mini_bridge/config.py` | `ReachyMiniConfig` (+ `DaemonConfig`, `AudioSettings`) — the declarative api config with `from_dict` / `from_json` / `from_json_file` | [specs/config.md](specs/config.md) |
+| `src/reachy_mini_bridge/daemon.py` | Bridge-owned `reachy-mini-daemon` lifecycle — `managed_daemon` (own-it-or-borrow-it), `is_daemon_ready`, `launch_command`, `scrubbed_env` | [specs/daemon.md](specs/daemon.md) |
+| `src/reachy_mini_bridge/errors.py` | Bridge exception hierarchy — `BridgeError` base + `MotorsNotEnabledError`, `DaemonError`; `ConfigError(ValueError)` | [specs/api.md](specs/api.md), [specs/config.md](specs/config.md), [specs/daemon.md](specs/daemon.md) |
 | `src/reachy_mini_bridge/tools.py` | `ReachyMiniTools` agent/LLM tools (placeholder; Draft) | [specs/tools.md](specs/tools.md) |
-| `src/reachy_mini_bridge/testing/` | Shipped testing harness (package) — `live_api` fixture, `requires_caps`, `require_env` for consumers' e2e tests (`fixtures.py` plugin, private `_daemon.py`, `support.py`) | [specs/testing_support.md](specs/testing_support.md) |
+| `src/reachy_mini_bridge/testing/` | Shipped testing harness (package) — `live_api` fixture, `requires_caps`, `require_env` for consumers' e2e tests (`fixtures.py` plugin, private `_daemon.py` wrapping `daemon.py`, `support.py`) | [specs/testing_support.md](specs/testing_support.md) |
 
 **Keep this map current:** when you add, rename, or remove a top-level `src/reachy_mini_bridge/` module or a root directory, update the map in the same change — same discipline as keeping spec/plan statuses honest (below). A test (`tests/test_project_map.py`) enforces that every `src/reachy_mini_bridge/*.py` module appears here and vice-versa — and that the spec frontmatter (see below) stays honest too.
 

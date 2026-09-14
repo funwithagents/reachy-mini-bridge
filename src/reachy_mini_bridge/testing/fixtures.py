@@ -30,6 +30,7 @@ from typing import Any
 import pytest
 
 from reachy_mini_bridge.api import ReachyMiniApi
+from reachy_mini_bridge.config import ReachyMiniConfig
 from reachy_mini_bridge.robot import AnyReachyMini
 from reachy_mini_bridge.testing import _daemon
 
@@ -127,17 +128,20 @@ def live_api(
     or the mic tap would see no samples (the conflict flagged in the plan).
     """
     host, port = _live_daemon
-    # Build the api on the target's own backend (`sim`/`real`) with `spawn_daemon=False`,
-    # so it connects as a plain network client to the daemon this harness already manages
-    # rather than bringing up its own. See `_daemon.backend` for why that's safe (with
-    # spawn_daemon False the two backends build the identical client).
+    # Build the api on the target's own backend (`sim`/`real`) with the daemon left to
+    # this harness (`daemon.spawn` stays "never"): the api connects as a plain network
+    # client to the daemon `_live_daemon` already manages, so one daemon serves the whole
+    # test module. See `_daemon.backend` for why the backend label is safe here.
     api = ReachyMiniApi(
-        _daemon.backend(),
-        connection_mode="network",
-        spawn_daemon=False,
-        host=host,
-        port=port,
-        media_backend="local",
+        ReachyMiniConfig(
+            backend=_daemon.backend(),
+            robot={
+                "connection_mode": "network",
+                "host": host,
+                "port": port,
+                "media_backend": "local",
+            },
+        )
     )
     asyncio.run(api.__aenter__())
     try:

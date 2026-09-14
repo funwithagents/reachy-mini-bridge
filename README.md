@@ -4,6 +4,34 @@ A bridge to the [Reachy Mini](https://github.com/pollen-robotics/reachy_mini) ro
 
 > **Status: layers 0–1 built.** The connection seam, the interaction API (`ReachyMiniApi`), and the audio/media session are implemented and run on the `real` / `sim` / `fake` backends; the agent-tools layer (`ReachyMiniTools`) is still in design. See [specs/_index.md](specs/_index.md) for per-spec status.
 
+## Usage
+
+```python
+import asyncio
+
+from reachy_mini_bridge import ReachyMiniApi
+
+
+async def main() -> None:
+    # Offline, no daemon: the `fake` backend records commands and returns synthetic data.
+    async with ReachyMiniApi("fake") as api:
+        await api.set_motors_state("enabled")
+        print(await api.list_emotions())
+
+    # From a config file (see config.example.json): backend, connection options, whether
+    # the bridge should spawn the sim daemon, and the tts-engine block for `say`.
+    async with ReachyMiniApi.from_json_file("robot.json") as api:
+        await api.say("hello")
+
+
+asyncio.run(main())
+```
+
+`ReachyMiniApi.from_dict(...)` / `from_json(...)` take the same config as a dict or a JSON
+string; `ReachyMiniApi("sim")` / `ReachyMiniApi("real")` connect to a daemon you already run.
+Set `"daemon": {"spawn": "auto"}` with `"backend": "sim"` and the bridge brings the MuJoCo
+daemon up itself (and stops it on exit). See [specs/config.md](specs/config.md).
+
 ## Documentation
 
 - **[specs/_overview.md](specs/_overview.md)** — global view of the project: architecture, the three layers, the backends. Start here.

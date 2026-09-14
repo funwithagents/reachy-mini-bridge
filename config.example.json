@@ -1,0 +1,28 @@
+{
+  "backend": "sim",
+  "robot": {
+    "host": "127.0.0.1",
+    "port": 8000,
+    "connection_mode": "network",
+    "media_backend": "local",
+    "timeout": 5.0
+  },
+  "daemon": {
+    "spawn": "auto",
+    "headless": true,
+    "scene": null,
+    "preload_datasets": false,
+    "startup_timeout": 45.0
+  },
+  "tts": {
+    "module": {
+      "type": "elevenlabs",
+      "api_key_env": "ELEVENLABS_API_KEY",
+      "voice_id": "JBFqnCBsd6RMkjVDRZzb",
+      "model": "eleven_flash_v2_5"
+    }
+  },
+  "audio": {
+    "xvf3800": null
+  }
+}

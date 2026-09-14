@@ -4,6 +4,13 @@ How to bring up a `reachy_mini` daemon — for the e2e tests, or for developing 
 
 ## Launch modes
 
+The bridge implements these recipes in `reachy_mini_bridge.daemon` (spec:
+[../specs/daemon.md](../specs/daemon.md)): a `ReachyMiniConfig` with `"backend": "sim"`
+and `"daemon": {"spawn": "auto"}` makes `ReachyMiniApi` spawn the headless daemon below
+(or the viewer with `"headless": false`), wait for readiness, and stop it on exit — and the
+e2e harness uses the same code. The commands here are what it runs, for when you want to
+start a daemon by hand.
+
 ### Headless sim — CI (motion + audio, no camera)
 
 Real MuJoCo physics, no viewer, no display — runs anywhere:
@@ -49,6 +56,10 @@ with build_robot(
 ) as robot:
     ...
 ```
+
+(Through the api, these go in the config's `robot` block; when the bridge manages the
+daemon itself it fills `connection_mode="network"`, `host`, `port`, and
+`media_backend="local"` in for you — see [../specs/config.md](../specs/config.md).)
 
 - **Connect over the network.** The default `auto`/`localhost` path uses an IPC transport an externally-started daemon doesn't serve.
 - **For media (camera/audio), pass `media_backend="local"`** (same machine as the daemon). The default WebRTC path errors with `KeyError: 'Producer reachymini not found.'`.

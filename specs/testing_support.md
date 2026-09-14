@@ -54,14 +54,14 @@ Four modules, with the daemon machinery kept private behind the plugin:
 
 - `reachy_mini_bridge/testing/__init__.py` — re-exports the two skip gates (`requires_caps`, `require_env`) from `support.py`. The `live_api` fixture is deliberately *not* re-exported here: a fixture only registers through the plugin module a consumer names in `pytest_plugins`.
 - `testing/fixtures.py` — the pytest-plugin module a consumer names in `pytest_plugins`: the `live_api` fixture and the capability probing it yields.
-- `testing/_daemon.py` — **private** daemon-lifecycle internals: target/backend resolution, the own-it-or-borrow-it spawn/borrow, the readiness poll, and the GStreamer-bundle env scrub. Kept out of `fixtures.py` so the plugin module reads as the fixture surface, not the process-management plumbing.
+- `testing/_daemon.py` — **private** glue between the environment and the bridge's daemon lifecycle: target/backend/address resolution from the env vars below, and a thin wrapper over [daemon.md](daemon.md)'s `managed_daemon` / `is_daemon_ready` that turns a `DaemonError` into a `pytest.skip`. The own-it-or-borrow-it decision, the readiness poll, the launch recipes, and the GStreamer-bundle env scrub live in the library module `daemon.py`, so the harness and `ReachyMiniApi` share one implementation. Kept out of `fixtures.py` so the plugin module reads as the fixture surface.
 - `testing/support.py` — `requires_caps` and `require_env`.
 
 ### Public surface
 
 The package exposes exactly the three names the bridge's own live tier uses — `live_api` through the `reachy_mini_bridge.testing.fixtures` plugin module, and the two skip gates re-exported from `reachy_mini_bridge.testing`:
 
-- **`live_api`** — a **module-scoped** pytest fixture yielding `(api, capabilities)`: a connected `ReachyMiniApi` over the resolved target and the `frozenset` of capabilities probed against that live daemon. It brings the daemon up under own-it-or-borrow-it (reuse one already reachable, else spawn a `sim` one and own its teardown; never spawn for `real`), builds the api with media on, probes, and tears down what it spawned.
+- **`live_api`** — a **module-scoped** pytest fixture yielding `(api, capabilities)`: a connected `ReachyMiniApi` over the resolved target and the `frozenset` of capabilities probed against that live daemon. It brings the daemon up under own-it-or-borrow-it (reuse one already reachable, else spawn a `sim` one and own its teardown; never spawn for `real`), builds the api from a `ReachyMiniConfig` ([config.md](config.md)) whose `robot` block carries the harness's connection options (`connection_mode="network"`, the resolved host/port, `media_backend="local"`) and whose `daemon.spawn` is `"never"` — the fixture, not the api, owns the daemon so one daemon serves a whole test module — with media on, probes, and tears down what it spawned.
 - **`requires_caps(live, *caps)`** — the skip gate: given the `live_api` value, `pytest.skip(...)` unless every named capability (`motion` / `audio` / `camera` / …) was probed on the current target. A test written once runs wherever its needs are met.
 - **`require_env(name)`** — return an env var or skip when it's absent, so a live test skips (never fails) without its credentials.
 
@@ -87,7 +87,7 @@ Target and connection are chosen by the same env vars the bridge's tier uses, so
 
 ### The gotchas move into the shipped code
 
-The two hard-won details a consumer would otherwise have to rediscover are the whole reason to ship this rather than document it: the **GStreamer-bundle env scrub** before spawning a daemon from a process that has imported `reachy_mini` (else a doubled plugin path segfaults the child), and **probing** capabilities against the live daemon rather than inferring them from the backend type. Both live inside `reachy_mini_bridge.testing` (the scrub in `_daemon.py`, the probe behind `live_api`) so a consumer inherits them for free.
+The two hard-won details a consumer would otherwise have to rediscover are the whole reason to ship this rather than document it: the **GStreamer-bundle env scrub** before spawning a daemon from a process that has imported `reachy_mini` (else a doubled plugin path segfaults the child), and **probing** capabilities against the live daemon rather than inferring them from the backend type. The scrub and the spawn live in the library's `daemon.py` ([daemon.md](daemon.md)), the probe behind `live_api`; a consumer inherits both for free.
 
 ### A documented guide accompanies the code
 
@@ -95,4 +95,4 @@ A consumer-facing guide (`docs/testing-with-the-bridge.md`, linked from the [REA
 
 ## Open questions
 
-1. **Consumer daemon knobs.** Beyond the env vars above, some consumer may want to point the harness at its own daemon launcher or MuJoCo scene. Deferred until one actually needs it — the borrow-or-spawn-sim path with the current env vars covers the known cases, and adding configuration ahead of a real need would be speculation. (A genuine deferral, not a load-bearing unknown.)
+1. **Consumer daemon knobs.** Beyond the env vars above, some consumer may want the harness to use a MuJoCo scene or a preloaded-datasets daemon. The knobs exist on `DaemonConfig` ([config.md](config.md)); whether the harness exposes them (env vars, or a `DaemonConfig` a consumer's conftest hands in) is deferred until one actually needs it — the borrow-or-spawn-sim path with the current env vars covers the known cases. (A genuine deferral, not a load-bearing unknown.)

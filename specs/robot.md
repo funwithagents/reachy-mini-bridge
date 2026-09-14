@@ -57,12 +57,12 @@ An in-package class (in `fake_reachy_mini.py`) that implements the slice of `Rea
 
 ### Construction from a backend string
 
-`ReachyMiniApi(backend="real"|"sim"|"fake", **opts)` (with a `connect(...)` convenience) builds the robot through a `build_robot(backend, **opts)` helper in `robot.py`:
+`ReachyMiniApi` builds the robot on entry (see [api.md](api.md) "Lifecycle") through a `build_robot(backend, **opts)` helper in `robot.py`, passing the config's `backend` and its `robot` block as `opts` ([config.md](config.md)):
 
 - `fake` → `FakeReachyMini()`;
 - `real` (default) / `sim` → `ReachyMini(use_sim=(backend == "sim"), **opts)`.
 
-`build_robot` forwards the upstream connection options verbatim as `**opts` (`robot_name`, `host`, `port`, `connection_mode`, `spawn_daemon`, `media_backend`, `timeout`, …), leaving their defaults to upstream, and returns a context-managed object for deterministic teardown (mirroring `ReachyMini`'s own `with`). The backend string is the only way in: `fake` builds a fresh `FakeReachyMini`, and a test that needs to assert on it reaches it back through the escape hatch (below).
+`build_robot` forwards the upstream connection options verbatim as `**opts` (`robot_name`, `host`, `port`, `connection_mode`, `media_backend`, `timeout`, …), leaving their defaults to upstream, and returns a context-managed object for deterministic teardown (mirroring `ReachyMini`'s own `with`). `use_sim` is derived from the backend here and upstream's `spawn_daemon` flag is left at its default: the daemon a `sim` client talks to is managed by the bridge's own lifecycle ([daemon.md](daemon.md)), configured by the `daemon` block ([config.md](config.md)), which rejects both keys in `opts`. The backend string is the only way in: `fake` builds a fresh `FakeReachyMini`, and a test that needs to assert on it reaches it back through the escape hatch (below).
 
 ### The robot object is the escape hatch
 

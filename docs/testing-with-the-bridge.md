@@ -29,7 +29,7 @@ daemon, network, or hardware. Assert through the `api.robot` escape hatch — na
 ```python
 import asyncio
 
-from reachy_mini_bridge.api import ReachyMiniApi
+from reachy_mini_bridge import ReachyMiniApi
 from reachy_mini_bridge.fake_reachy_mini import FakeReachyMini
 
 
@@ -119,3 +119,8 @@ teardown — it never spawns for `real`. When it can't bring one up (missing sim
 port, robot unreachable), the test **skips** rather than failing. See
 [running-the-sim-daemon.md](running-the-sim-daemon.md) for the launch recipes and the
 macOS viewer notes.
+
+**Outside pytest,** the same lifecycle is available to your application: a
+`ReachyMiniConfig` with `"backend": "sim"` and `"daemon": {"spawn": "auto"}` makes
+`async with ReachyMiniApi(config)` spawn (or borrow) the daemon itself — see
+[specs/config.md](../specs/config.md) and [specs/daemon.md](../specs/daemon.md).

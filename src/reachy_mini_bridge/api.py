@@ -7,6 +7,10 @@ because audio forces it (see [audio](audio.py)): synthesis is async and a live m
 stream runs concurrently with playback and motion on one event loop, so the upstream
 SDK's blocking calls run under ``asyncio.to_thread``.
 
+Constructed from a [``ReachyMiniConfig``](config.py) (or a backend-string shorthand for
+one); ``async with`` brings up the managed daemon (when configured), the robot, and the
+media session in that order on an ``AsyncExitStack`` — see "Lifecycle" in the spec.
+
 v1 is the smallest verb set that makes the robot a conversational, face-following
 presence — talk, listen, express, follow a face, manage motors. Manual movement/gaze
 and rich perception are deferred to post-v1 (see specs/api.md).
@@ -15,10 +19,14 @@ and rich perception are deferred to post-v1 (see specs/api.md).
 from __future__ import annotations
 
 import asyncio
+from contextlib import AsyncExitStack
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 
-from .audio import MediaSession
-from .errors import BridgeError, MotorsNotEnabledError
+from . import daemon as _daemon
+from .audio import MediaSession, TTSEngineSynthesizer
+from .config import ReachyMiniConfig
+from .errors import BridgeError, ConfigError, MotorsNotEnabledError
 from .fake_reachy_mini import FakeReachyMini
 from .robot import build_robot
 
@@ -61,64 +69,143 @@ class _FakeRecordedMoves:
 class ReachyMiniApi:
     """Async-native, intention-level API over a robot backend.
 
-    Construct from a backend string (``"real"`` | ``"sim"`` | ``"fake"``); the robot is
-    built internally, so the api is fully unit-testable on ``fake``. Use as an async
-    context manager to open (and tear down) the connection and the shared media session::
+    Construct from a :class:`ReachyMiniConfig` — or a bare backend string (``"real"`` |
+    ``"sim"`` | ``"fake"``), shorthand for ``ReachyMiniConfig(backend=...)``. Nothing
+    connects at construction; use it as an async context manager to bring up the daemon
+    (when the config manages one), the robot, and the shared media session, and to tear
+    them down::
 
         async with ReachyMiniApi("fake") as api:
             await api.say("hello", synth)
 
-    The underlying robot stays reachable as :attr:`robot` (a.k.a. :attr:`raw`) — the
-    escape hatch to the full native API, and how tests assert on the fake.
+        async with ReachyMiniApi.from_json_file("robot.json") as api:
+            await api.say("hello")  # default synthesizer from the config's `tts` block
+
+    While entered, the underlying robot stays reachable as :attr:`robot` (a.k.a.
+    :attr:`raw`) — the escape hatch to the full native API, and how tests assert on
+    the fake.
     """
 
     def __init__(
         self,
-        backend: str = "real",
+        config: ReachyMiniConfig | str = "real",
         *,
         synthesizer: SpeechSynthesizer | None = None,
-        audio_config: object | None = None,
-        **opts: Any,
     ) -> None:
-        self._robot: AnyReachyMini = build_robot(backend, **opts)
-        self._synthesizer = synthesizer
-        self._media = MediaSession(self._robot, audio_config=audio_config)
+        self._config = (
+            ReachyMiniConfig(backend=config) if isinstance(config, str) else config
+        )
+        # An explicit synthesizer wins over the config's `tts` block (then not consumed).
+        self._synthesizer: SpeechSynthesizer | None = (
+            synthesizer
+            if synthesizer is not None
+            else _default_synthesizer(self._config.tts)
+        )
+        self._robot: AnyReachyMini | None = None
+        self._media: MediaSession | None = None
+        self._exit_stack: AsyncExitStack | None = None
         self._recorded_moves: Any = None  # lazy, cached once per connection
 
+    # --- config-based constructors (mirroring ReachyMiniConfig's trio) ---
+
     @classmethod
-    def connect(
-        cls,
-        backend: str = "real",
-        *,
-        synthesizer: SpeechSynthesizer | None = None,
-        audio_config: object | None = None,
-        **opts: Any,
+    def from_dict(
+        cls, data: dict[str, Any], *, synthesizer: SpeechSynthesizer | None = None
     ) -> ReachyMiniApi:
-        """Convenience mirror of the constructor (see class docstring)."""
-        return cls(backend, synthesizer=synthesizer, audio_config=audio_config, **opts)
+        """Build the api from a parsed config dict (see :meth:`ReachyMiniConfig.from_dict`)."""
+        return cls(ReachyMiniConfig.from_dict(data), synthesizer=synthesizer)
+
+    @classmethod
+    def from_json(
+        cls, text: str, *, synthesizer: SpeechSynthesizer | None = None
+    ) -> ReachyMiniApi:
+        """Build the api from a JSON config string."""
+        return cls(ReachyMiniConfig.from_json(text), synthesizer=synthesizer)
+
+    @classmethod
+    def from_json_file(
+        cls, path: str | Path, *, synthesizer: SpeechSynthesizer | None = None
+    ) -> ReachyMiniApi:
+        """Build the api from a JSON config file."""
+        return cls(ReachyMiniConfig.from_json_file(path), synthesizer=synthesizer)
+
+    @property
+    def config(self) -> ReachyMiniConfig:
+        """The config this api was built from."""
+        return self._config
 
     # --- escape hatch ---
 
     @property
     def robot(self) -> AnyReachyMini:
-        """The underlying robot object — full native ``ReachyMini`` on real/sim."""
+        """The underlying robot object — full native ``ReachyMini`` on real/sim.
+
+        Available only while entered (the robot is built and connected on
+        ``__aenter__``); raises :class:`BridgeError` otherwise.
+        """
+        if self._robot is None:
+            raise BridgeError(
+                "the robot is only available inside `async with ReachyMiniApi(...)`"
+            )
         return self._robot
 
     @property
     def raw(self) -> AnyReachyMini:
         """Alias of :attr:`robot`."""
-        return self._robot
+        return self.robot
+
+    def _require_media(self) -> MediaSession:
+        if self._media is None:
+            raise BridgeError(
+                "the media session is only available inside `async with ReachyMiniApi(...)`"
+            )
+        return self._media
 
     # --- lifecycle ---
 
     async def __aenter__(self) -> Self:
-        self._robot.__enter__()
-        await self._media.__aenter__()
+        if self._exit_stack is not None:
+            raise BridgeError("ReachyMiniApi is already entered")
+        cfg = self._config
+        stack = AsyncExitStack()
+        try:
+            if cfg.manages_daemon:
+                opts = cfg.effective_robot_options()
+                daemon_cm = _daemon.managed_daemon(
+                    cfg.daemon, host=opts["host"], port=opts["port"]
+                )
+                await asyncio.to_thread(daemon_cm.__enter__)
+                stack.push_async_callback(
+                    asyncio.to_thread, daemon_cm.__exit__, None, None, None
+                )
+            robot = await asyncio.to_thread(
+                build_robot, cfg.backend, **cfg.effective_robot_options()
+            )
+            await asyncio.to_thread(robot.__enter__)
+            stack.push_async_callback(
+                asyncio.to_thread, lambda: robot.__exit__(None, None, None)
+            )
+            self._robot = robot
+            media = MediaSession(robot, audio_config=cfg.audio.xvf3800)
+            await stack.enter_async_context(media)
+            self._media = media
+        except BaseException:
+            self._robot = None
+            self._media = None
+            await stack.aclose()
+            raise
+        self._exit_stack = stack.pop_all()
         return self
 
     async def __aexit__(self, *exc: object) -> None:
-        await self._media.__aexit__(*exc)
-        self._robot.__exit__(*exc)
+        stack = self._exit_stack
+        # Read as closed even if a teardown step raises.
+        self._exit_stack = None
+        self._robot = None
+        self._media = None
+        self._recorded_moves = None
+        if stack is not None:
+            await stack.aclose()
 
     # --- motors / torque ---
 
@@ -129,7 +216,7 @@ class ReachyMiniApi:
         Reads the daemon's ``motor_control_mode`` the way the SDK itself does (via the
         daemon client), so it reflects the *actual* state, not an assumption.
         """
-        status = await asyncio.to_thread(self._robot.client.get_status)
+        status = await asyncio.to_thread(self.robot.client.get_status)
         backend = status.backend_status
         if backend is None:
             raise BridgeError(
@@ -147,12 +234,13 @@ class ReachyMiniApi:
         Decoupled from the connection: the state, once set, holds until changed. Raises
         ``ValueError`` for an unknown state.
         """
+        robot = self.robot
         if state == "enabled":
-            await asyncio.to_thread(self._robot.enable_motors)
+            await asyncio.to_thread(robot.enable_motors)
         elif state == "disabled":
-            await asyncio.to_thread(self._robot.disable_motors)
+            await asyncio.to_thread(robot.disable_motors)
         elif state == "gravity_compensation":
-            await asyncio.to_thread(self._robot.enable_gravity_compensation)
+            await asyncio.to_thread(robot.enable_gravity_compensation)
         else:
             raise ValueError(
                 f"unknown motor state {state!r}; expected one of {_MOTOR_STATES}"
@@ -183,7 +271,7 @@ class ReachyMiniApi:
         await self._require_motors_enabled("play_emotion")
         moves = await self._get_recorded_moves()
         move = moves.get(name)  # ValueError on unknown name
-        await self._robot.async_play_move(move)
+        await self.robot.async_play_move(move)
 
     async def _get_recorded_moves(self) -> Any:
         if self._recorded_moves is None:
@@ -193,7 +281,7 @@ class ReachyMiniApi:
     def _load_recorded_moves(self) -> Any:
         # Blocking disk/network IO; built lazily, once, off the event loop. The fake
         # path stays offline (no HuggingFace) with a stubbed library.
-        if isinstance(self._robot, FakeReachyMini):
+        if isinstance(self.robot, FakeReachyMini):
             return _FakeRecordedMoves()
         from reachy_mini.motion.recorded_move import (
             DEFAULT_EMOTIONS_DATASET,
@@ -211,31 +299,33 @@ class ReachyMiniApi:
         :class:`MotorsNotEnabledError` otherwise).
         """
         await self._require_motors_enabled("start_head_tracking")
-        await asyncio.to_thread(self._robot.start_head_tracking, weight)
+        await asyncio.to_thread(self.robot.start_head_tracking, weight)
 
     async def stop_head_tracking(self) -> None:
         """Stop the autonomous face tracker."""
-        await asyncio.to_thread(self._robot.stop_head_tracking)
+        await asyncio.to_thread(self.robot.stop_head_tracking)
 
     # --- audio out ---
 
     async def say(self, text: str, synth: SpeechSynthesizer | None = None) -> None:
         """Synthesize ``text`` and play it through the robot speaker.
 
-        Uses ``synth`` if given, else the synthesizer configured at construction. Raises
+        Uses ``synth`` if given, else the synthesizer configured at construction (an
+        explicit ``synthesizer=`` or the config's ``tts`` block). Raises
         :class:`BridgeError` if neither is available. Needs no motors.
         """
         chosen = synth or self._synthesizer
         if chosen is None:
             raise BridgeError(
-                "say requires a SpeechSynthesizer: pass one, or configure a default "
-                "synthesizer at construction (e.g. the tts extra's TTSEngineSynthesizer)"
+                "say requires a SpeechSynthesizer: pass one, configure a default "
+                "synthesizer at construction, or set the config's `tts` block "
+                "(the tts extra's TTSEngineSynthesizer)"
             )
-        await self._media.say(text, chosen)
+        await self._require_media().say(text, chosen)
 
     async def play_sound(self, sound_file: str) -> None:
         """Play a sound file / built-in sound through the robot speaker."""
-        await asyncio.to_thread(self._robot.media.play_sound, sound_file)
+        await asyncio.to_thread(self.robot.media.play_sound, sound_file)
 
     # --- audio in (microphone) ---
 
@@ -245,17 +335,17 @@ class ReachyMiniApi:
         ``mono=True`` (default) is the ASR drop-in; ``mono=False`` yields the raw
         interleaved capture at :attr:`mic_channels` channels. See specs/audio.md.
         """
-        return self._media.audio_input(mono=mono)
+        return self._require_media().audio_input(mono=mono)
 
     @property
     def mic_sample_rate(self) -> int:
         """Sample rate (Hz) of :meth:`audio_input` — configure your ASR to it."""
-        return self._media.mic_sample_rate
+        return self._require_media().mic_sample_rate
 
     @property
     def mic_channels(self) -> int:
         """Raw capture channel count (the ``mono=False`` layout)."""
-        return self._media.mic_channels
+        return self._require_media().mic_channels
 
     # --- perception (camera) ---
 
@@ -267,4 +357,17 @@ class ReachyMiniApi:
         upstream ``media.get_frame`` exactly — returns ``None`` when no frame is
         available yet (e.g. the headless sim has no GL context). Needs no motors.
         """
-        return await asyncio.to_thread(self._robot.media.get_frame)
+        return await asyncio.to_thread(self.robot.media.get_frame)
+
+
+def _default_synthesizer(tts_block: dict[str, Any] | None) -> SpeechSynthesizer | None:
+    """The config's `tts` block as a ``TTSEngineSynthesizer``, or None without a block."""
+    if tts_block is None:
+        return None
+    try:
+        return TTSEngineSynthesizer(tts_block)
+    except ImportError as e:
+        raise ConfigError(
+            "the config's `tts` block needs the tts extra: install "
+            "reachy-mini-bridge[tts] (or pass your own synthesizer=)"
+        ) from e

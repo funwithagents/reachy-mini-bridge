@@ -38,8 +38,12 @@ flowchart TD
 The layers above are backend-agnostic — they are typed against `AnyReachyMini`, the `ReachyMini | FakeReachyMini` union alias (see [robot.md](robot.md)):
 
 - **`real`** *(default)* — the upstream `reachy_mini.ReachyMini` used directly (no wrapper), talking to the daemon and hardware.
-- **`sim`** — the same `ReachyMini` constructed with `use_sim=True`, driving the upstream MuJoCo mockup. Needs the `sim` extra (`reachy_mini[mujoco]`).
+- **`sim`** — the same `ReachyMini` constructed with `use_sim=True`, driving the upstream MuJoCo mockup. Needs the `sim` extra (`reachy_mini[mujoco]`). The bridge brings the MuJoCo daemon up itself when asked (`daemon.spawn` in [config.md](config.md), lifecycle in [daemon.md](daemon.md)) — own-it-or-borrow-it, headless by default, torn down on exit.
 - **`fake`** — a first-party `FakeReachyMini` with no daemon, no hardware, no `reachy_mini` import: a duck-typed stand-in that records commands and returns synthetic perception. Powers the deterministic `tests/` tier and offline dev/demos.
+
+## Configuration
+
+`ReachyMiniApi` is constructed from one declarative `ReachyMiniConfig` ([config.md](config.md)) — backend, the upstream `ReachyMini` connection kwargs forwarded verbatim, daemon management, the tts-engine `engine` block for the default synthesizer, and the XVF3800 audio profile — buildable from a dict, a JSON string, or a JSON file (`ReachyMiniApi.from_json_file("robot.json")`), with `ReachyMiniApi("fake")` as the backend-string shorthand. It mirrors tts-engine's `TTSEngineConfig` so the two first-party libraries configure the same way, and one file switches real ↔ sim ↔ fake by changing `backend`.
 
 ## External pieces
 
@@ -54,5 +58,6 @@ The layers above are backend-agnostic — they are typed against `AnyReachyMini`
 ## Roadmap (next steps)
 
 1. **Done:** `robot` (+ `FakeReachyMini`), then the coupled `api` + `audio` layer — the v1 verbs over a media session, with fast `tests/` and a capability-gated `tests-e2e/` tier.
-2. **Next:** build the `tools` layer — the v1 api verbs exposed as plain typed, docstring'd functions for an agent/LLM runtime (settle `tools.md` `Draft` → `Stable`, then its implementation plan).
-3. **Deferred (post-v1):** manual movement/gaze verbs and rich perception (see `api.md`), plus the hardware-confirmation items in `audio.md` (exact channel count on the physical XVF3800, the tuned audio profile).
+2. **Done:** the config + daemon lifecycle ([config.md](config.md), [daemon.md](daemon.md)): the api is constructed from a `ReachyMiniConfig` (dict / JSON / file) and the bridge spawns or borrows the sim daemon itself.
+3. **Next:** build the `tools` layer — the v1 api verbs exposed as plain typed, docstring'd functions for an agent/LLM runtime (settle `tools.md` `Draft` → `Stable`, then its implementation plan).
+4. **Deferred (post-v1):** manual movement/gaze verbs and rich perception (see `api.md`), plus the hardware-confirmation items in `audio.md` (exact channel count on the physical XVF3800, the tuned audio profile).
