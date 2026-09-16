@@ -46,7 +46,9 @@ _CONSUMED_SLICE: list[tuple[str, type, str]] = [
     *(
         ("", ReachyMini, name)
         for name in (
-            "async_play_move",
+            "set_target",
+            "get_current_head_pose",
+            "get_current_joint_positions",
             "start_head_tracking",
             "stop_head_tracking",
             "enable_wobbling",

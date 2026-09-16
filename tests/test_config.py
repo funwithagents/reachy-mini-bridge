@@ -12,7 +12,12 @@ from pathlib import Path
 
 import pytest
 
-from reachy_mini_bridge.config import AudioSettings, DaemonConfig, ReachyMiniConfig
+from reachy_mini_bridge.config import (
+    AudioSettings,
+    DaemonConfig,
+    MotionSettings,
+    ReachyMiniConfig,
+)
 from reachy_mini_bridge.errors import ConfigError
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -27,6 +32,7 @@ def test_defaults() -> None:
     assert cfg.tts is None
     assert cfg.audio.xvf3800 is None
     assert cfg.wobbling is True
+    assert cfg.motion == MotionSettings()
     assert ReachyMiniConfig.from_dict({}) == cfg
 
 
@@ -52,6 +58,7 @@ def test_from_json_file_round_trips_the_repo_example() -> None:
     assert cfg.tts["module"]["api_key_env"] == "ELEVENLABS_API_KEY"
     assert cfg.audio == AudioSettings(xvf3800=None)
     assert cfg.wobbling is True
+    assert cfg.motion == MotionSettings()
 
 
 def test_from_json_and_from_json_file_delegate_to_from_dict(tmp_path: Path) -> None:
@@ -262,6 +269,41 @@ def test_audio_xvf3800_shape() -> None:
 def test_daemon_field_types(daemon: dict[str, object]) -> None:
     with pytest.raises(ConfigError, match="daemon"):
         ReachyMiniConfig.from_dict({"backend": "sim", "daemon": daemon})
+
+
+def test_motion_defaults_are_on() -> None:
+    assert ReachyMiniConfig.from_dict({}).motion == MotionSettings()
+
+
+def test_motion_block_sets_the_switches() -> None:
+    cfg = ReachyMiniConfig.from_dict(
+        {"motion": {"presence": False, "breathing": False}}
+    )
+    assert cfg.motion == MotionSettings(presence=False, breathing=False)
+    cfg = ReachyMiniConfig.from_dict({"motion": {"breathing": False}})
+    assert cfg.motion == MotionSettings(presence=True, breathing=False)
+
+
+@pytest.mark.parametrize(
+    "motion",
+    [
+        {"presence": "yes"},
+        {"breathing": 1},
+    ],
+)
+def test_motion_rejects_non_booleans(motion: dict[str, object]) -> None:
+    with pytest.raises(ConfigError, match="motion"):
+        ReachyMiniConfig.from_dict({"motion": motion})
+
+
+def test_motion_rejects_unknown_keys() -> None:
+    with pytest.raises(ConfigError, match="idle"):
+        ReachyMiniConfig.from_dict({"motion": {"idle": True}})
+
+
+def test_motion_must_be_an_object() -> None:
+    with pytest.raises(ConfigError, match="motion"):
+        ReachyMiniConfig.from_dict({"motion": True})
 
 
 def test_nested_blocks_have_their_own_constructor_trio(tmp_path: Path) -> None:

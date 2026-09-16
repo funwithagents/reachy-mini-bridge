@@ -22,7 +22,7 @@ from typing import Any
 
 from .errors import ConfigError
 
-__all__ = ["AudioSettings", "DaemonConfig", "ReachyMiniConfig"]
+__all__ = ["AudioSettings", "DaemonConfig", "MotionSettings", "ReachyMiniConfig"]
 
 BACKENDS = ("real", "sim", "fake")
 # The backends with a daemon the bridge can spawn: MuJoCo, or a USB-attached robot.
@@ -181,6 +181,39 @@ class AudioSettings:
         return cls.from_dict(_load_file(path))
 
 
+# --- `motion` block -----------------------------------------------------------------
+
+
+@dataclass
+class MotionSettings:
+    """The motion loop's switches, applied when the session starts (specs/motion.md)."""
+
+    # The background behaviour: idle moments are filled with the idle move.
+    presence: bool = True
+    # Which idle move presence plays: breathing, or a still neutral hold.
+    breathing: bool = True
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MotionSettings:
+        block = _require_object(data, "motion")
+        _reject_unknown_keys(block, "motion", {"presence", "breathing"})
+        presence = block.get("presence", True)
+        breathing = block.get("breathing", True)
+        if not isinstance(presence, bool):
+            raise ConfigError("'motion.presence' must be a boolean")
+        if not isinstance(breathing, bool):
+            raise ConfigError("'motion.breathing' must be a boolean")
+        return cls(presence=presence, breathing=breathing)
+
+    @classmethod
+    def from_json(cls, text: str) -> MotionSettings:
+        return cls.from_dict(_loads(text))
+
+    @classmethod
+    def from_json_file(cls, path: str | Path) -> MotionSettings:
+        return cls.from_dict(_load_file(path))
+
+
 # --- the top-level config -----------------------------------------------------------
 
 
@@ -198,13 +231,17 @@ class ReachyMiniConfig:
     audio: AudioSettings = field(default_factory=AudioSettings)
     # audio-reactive head sway, enabled on entry
     wobbling: bool = True
+    # the motion loop's switches: presence (idle behaviour on) and breathing
+    motion: MotionSettings = field(default_factory=MotionSettings)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ReachyMiniConfig:
         """Build (and validate) a config from a parsed dict — the one validation path."""
         top = _require_object(data, "config")
         _reject_unknown_keys(
-            top, "config", {"backend", "robot", "daemon", "tts", "audio", "wobbling"}
+            top,
+            "config",
+            {"backend", "robot", "daemon", "tts", "audio", "wobbling", "motion"},
         )
 
         backend = top.get("backend", "real")
@@ -246,6 +283,8 @@ class ReachyMiniConfig:
         if not isinstance(wobbling, bool):
             raise ConfigError("'wobbling' must be a boolean")
 
+        motion = MotionSettings.from_dict(top.get("motion", {}))
+
         return cls(
             backend=backend,
             robot=robot,
@@ -253,6 +292,7 @@ class ReachyMiniConfig:
             tts=tts,
             audio=audio,
             wobbling=wobbling,
+            motion=motion,
         )
 
     @classmethod

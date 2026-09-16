@@ -4,7 +4,7 @@ The global view of the project: what it is and how it's put together. For the li
 
 Reachy Mini Bridge sits between the [Reachy Mini](https://github.com/pollen-robotics/reachy_mini) robot's API and the things that want to drive it — a human, a service, or an LLM/agent. It wraps the robot's native SDK, adds its own management and higher-level interaction APIs on top (mediating and orchestrating between the underlying endpoints), and exposes those as tools that let agents and LLMs perceive and control the robot. The core idea is a single, stable bridging layer so callers never talk to the raw robot API directly unless they choose to.
 
-> **Status: layers 0–1 built.** The connection seam (`robot`), the interaction API (`api`), and the audio/media session (`audio`) are `Implemented` — the v1 conversational-presence slice (talk, listen, express, follow a face, read a camera frame, manage motors) runs on all three backends. The agent-tools layer (`tools`) is still `Draft`. See [_index.md](_index.md) for per-spec status.
+> **Status: layers 0–1 built, motion loop built (hardware check pending).** The connection seam (`robot`), the interaction API (`api`), and the audio/media session (`audio`) are built — the v1 conversational-presence slice (talk, listen, express, follow a face, read a camera frame, manage motors, stay visibly alive in between) runs on all three backends. The motion loop (`motion`: presence and breathing, emotions played through one target writer) is coded and passes lint/type-check/tests including the live sim tier; its [implementation plan](../plans/202609162000_motion-loop-presence-and-breathing.md) stays `In progress` until the on-robot checklist is walked, so `motion` reads `Stable` and `api` / `config` / `robot` read `Updated` until then. The agent-tools layer (`tools`) is still `Draft`. See [_index.md](_index.md) for per-spec status.
 
 ## Architecture — three layers
 
@@ -23,6 +23,8 @@ flowchart TD
     client -->|real / sim| upstream["reachy_mini.ReachyMini → daemon → robot"]
     client -->|fake| fake["FakeReachyMini (in-package, no deps)"]
     api -.-> audio["audio.py — media session<br/>(routes through daemon for echo cancellation)"]
+    api -.-> motion["motion.py — motion loop<br/>(one set_target writer, 60 Hz: emotions · breathing · hold)"]
+    motion -->|set_target| client
     audio -.->|say · TTS out| synth["SpeechSynthesizer<br/>(pluggable; tts-engine default)"]
     audio -.->|mic stream out| yourasr(["your ASR<br/>(e.g. asr-engine — not a bridge dep)"])
 ```
@@ -30,11 +32,12 @@ flowchart TD
 | Layer | Module · class | Role | Spec |
 |---|---|---|---|
 | 2 — agent tools | `tools.py` · `ReachyMiniTools` | The API exposed as plain, fully-typed, docstring'd functions an agent runtime can introspect and call. JSON-friendly in/out (frames as base64). | [tools.md](tools.md) |
-| 1 — interaction API | `api.py` · `ReachyMiniApi` | Intent-level verbs in **human units** (degrees, seconds, named emotions): `play_emotion`, `say`, `get_camera_frame`, … Orchestrates the low-level calls. | [api.md](api.md) |
+| 1 — interaction API | `api.py` · `ReachyMiniApi` | Intent-level verbs in **human units** (degrees, seconds, named emotions): `play_emotion`, `say`, `get_camera_frame`, … Orchestrates the low-level calls. Its two sessions: `audio.py` (media: speech out, mic in) and `motion.py` (the motion loop: the one writer of the robot's target, playing emotions and the idle behaviour — presence, breathing). | [api.md](api.md), [audio.md](audio.md), [motion.md](motion.md) |
 | 0 — connection seam | `robot.py` · `AnyReachyMini` alias + `build_robot`; `fake_reachy_mini.py` · `FakeReachyMini` | `real`/`sim` use `reachy_mini.ReachyMini` directly, `fake` is our in-package stand-in; `AnyReachyMini` is just a `ReachyMini \| FakeReachyMini` union alias (no Protocol, no adapter) that lets pyright keep the fake honest. The robot object *is* the escape hatch to the full native API. | [robot.md](robot.md) |
 
 ## Design principles
 
+- **One writer for motion, always alive.** The robot's target pose has exactly one writer: the motion loop ([motion.md](motion.md)), a 60 Hz thread that plays one primary move at a time (an emotion, later a gesture) and otherwise the idle move — breathing, or a still neutral — with every transition a short blend, so the robot never snaps and never goes dead between verbs. Face tracking and audio-reactive wobbling stay daemon-side and compose on top. Presence and breathing are switches, on by default.
 - **Async-native, fully cancellable.** The api is `async` because audio forces it ([audio.md](audio.md)), and cancelling the awaiting task is the one way to interrupt any verb. Three guarantees, defined precisely in [api.md](api.md) "Cancellation": the cancel returns promptly; the verb's effect stops with it (audio flushed, a sound file stopped, a trajectory no longer commanded, the wobbler reset); and the robot and the session stay usable for the next verb. No rewind — the head stays where the cancel caught it. Every verb that spans time has a test on the `fake` that cancels it mid-flight, which is why the fake keeps real timing for those verbs.
 
 ## Three backends, one seam
@@ -63,5 +66,6 @@ The layers above are backend-agnostic — they are typed against `AnyReachyMini`
 
 1. **Done:** `robot` (+ `FakeReachyMini`), then the coupled `api` + `audio` layer — the v1 verbs over a media session, with fast `tests/` and a capability-gated `tests-e2e/` tier.
 2. **Done:** the config + daemon lifecycle ([config.md](config.md), [daemon.md](daemon.md)): the api is constructed from a `ReachyMiniConfig` (dict / JSON / file) and the bridge spawns or borrows the sim daemon — or a USB-attached robot's daemon — itself.
-3. **Next:** build the `tools` layer — the v1 api verbs exposed as plain typed, docstring'd functions for an agent/LLM runtime (settle `tools.md` `Draft` → `Stable`, then its implementation plan).
-4. **Deferred (post-v1):** manual movement/gaze verbs and rich perception (see `api.md`), plus the hardware-tuning items in `audio.md` (the default XVF3800 profile, the full-duplex default).
+3. **In progress:** the motion loop ([motion.md](motion.md)) is coded — presence and breathing over one `set_target` writer, `play_emotion` moved onto it — and green through the live sim tier; only the [plan](../plans/202609162000_motion-loop-presence-and-breathing.md)'s on-robot checklist is outstanding, so the `api` / `config` / `robot` specs read `Updated` until that plan is `Done`.
+4. **Next:** build the `tools` layer — the v1 api verbs exposed as plain typed, docstring'd functions for an agent/LLM runtime (settle `tools.md` `Draft` → `Stable`, then its implementation plan).
+5. **Deferred (post-v1):** manual movement/gaze verbs (as primaries of the motion loop) and rich perception (see `api.md`), plus the hardware-tuning items in `audio.md` (the default XVF3800 profile, the full-duplex default) and `motion.md` (tick rate, blend duration).

@@ -12,7 +12,6 @@ live in [robot.py](robot.py).
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any, Self
 
 import numpy as np
@@ -193,28 +192,68 @@ class FakeReachyMini:
         self.commands: list[tuple[str, dict[str, Any]]] = []
         self.client = _FakeDaemonClient()
         self.media = _FakeMedia(self.commands)
+        # The motion loop's stream (specs/motion.md): recorded here, not on `commands`
+        # (a 60 Hz stream would swamp it). The readers return the last commanded values.
+        self.targets: list[
+            tuple[
+                npt.NDArray[np.float64] | None,
+                npt.NDArray[np.float64] | None,
+                float | None,
+            ]
+        ] = []
+        self._head = np.eye(4)
+        self._antennas = np.array(
+            [-0.1745, 0.1745]
+        )  # upstream INIT_ANTENNAS_JOINT_POSITIONS
+        self._body_yaw = 0.0
 
     # --- motion / expression ---
-    async def async_play_move(
+    def set_target(
         self,
-        move: object,
-        play_frequency: float = 100.0,
-        initial_goto_duration: float = 0.0,
-        sound: bool = True,
+        head: npt.NDArray[np.float64] | None = None,
+        antennas: npt.NDArray[np.float64] | list[float] | None = None,
+        body_yaw: float | None = None,
     ) -> None:
-        self.commands.append(
+        """Record one target of the motion loop's stream and remember it as the present pose."""
+        if head is None and antennas is None and body_yaw is None:
+            raise ValueError(
+                "At least one of head, antennas or body_yaw must be provided."
+            )
+        if head is not None:
+            if head.shape != (4, 4):
+                raise ValueError(
+                    f"Head pose must be a 4x4 matrix, got shape {head.shape}."
+                )
+            self._head = np.array(head, dtype=np.float64)
+        if antennas is not None:
+            if len(antennas) != 2:
+                raise ValueError(
+                    "Antennas must be a list or 1D np array with two elements."
+                )
+            self._antennas = np.array(antennas, dtype=np.float64)
+        if body_yaw is not None:
+            self._body_yaw = float(body_yaw)
+        self.targets.append(
             (
-                "async_play_move",
-                {
-                    "move": move,
-                    "initial_goto_duration": initial_goto_duration,
-                    "sound": sound,
-                },
+                None if head is None else self._head.copy(),
+                None if antennas is None else self._antennas.copy(),
+                body_yaw,
             )
         )
-        # The fake keeps the move's timing (specs/robot.md) so a cancel has something
-        # in flight to interrupt. A move without a duration (a bare name) takes 0 s.
-        await asyncio.sleep(float(getattr(move, "duration", 0.0)))
+
+    @property
+    def last_target(
+        self,
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], float]:
+        """The present pose as the fake knows it: the last commanded head, antennas, body yaw."""
+        return self._head.copy(), self._antennas.copy(), self._body_yaw
+
+    def get_current_head_pose(self) -> npt.NDArray[np.float64]:
+        return self._head.copy()
+
+    def get_current_joint_positions(self) -> tuple[list[float], list[float]]:
+        # Upstream: seven head joints, body yaw first; the fake does no kinematics.
+        return [self._body_yaw, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], list(self._antennas)
 
     def start_head_tracking(self, weight: float = 1.0) -> None:
         self.commands.append(("start_head_tracking", {"weight": weight}))

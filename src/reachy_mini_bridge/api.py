@@ -8,12 +8,15 @@ stream runs concurrently with playback and motion on one event loop, so the upst
 SDK's blocking calls run under ``asyncio.to_thread``.
 
 Constructed from a [``ReachyMiniConfig``](config.py) (or a backend-string shorthand for
-one); ``async with`` brings up the managed daemon (when configured), the robot, and the
-media session in that order on an ``AsyncExitStack`` — see "Lifecycle" in the spec.
+one); ``async with`` brings up the managed daemon (when configured), the robot, the
+media session, and the motion session ([motion](motion.py) — the one ``set_target``
+writer, playing emotions and the idle behaviour) in that order on an
+``AsyncExitStack`` — see "Lifecycle" in the spec.
 
 v1 is the smallest verb set that makes the robot a conversational, face-following
-presence — talk, listen, express, follow a face, manage motors. Manual movement/gaze
-and rich perception are deferred to post-v1 (see specs/api.md).
+presence — talk, listen, express, follow a face, manage motors, and stay visibly alive
+in between. Manual movement/gaze and rich perception are deferred to post-v1 (see
+specs/api.md).
 """
 
 from __future__ import annotations
@@ -21,11 +24,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import urllib.request
 from contextlib import AsyncExitStack
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
+
+from reachy_mini.motion.move import Move
 
 from . import daemon as _daemon
 from .audio import MediaSession, TTSEngineSynthesizer, cancel_safe_step
@@ -37,6 +42,7 @@ from .errors import (
     MotorsNotEnabledError,
 )
 from .fake_reachy_mini import FakeReachyMini
+from .motion import NEUTRAL_ANTENNAS, NEUTRAL_BODY_YAW, NEUTRAL_HEAD, MotionSession
 from .robot import build_robot
 
 if TYPE_CHECKING:
@@ -86,14 +92,31 @@ _FAKE_EMOTIONS = ("happy", "sad", "curious")
 _FAKE_MOVE_DURATION_S = 0.3
 
 
-@dataclass(frozen=True)
-class _FakeRecordedMove:
-    """Offline stand-in for an upstream ``RecordedMove``: the two attributes the bridge
-    and the fake read. ``sad`` has no sound so both `play_emotion` paths are testable."""
+class _FakeRecordedMove(Move):
+    """Offline stand-in for an upstream ``RecordedMove``: a real short trajectory (a
+    small rise-and-fall in z) so the loop path runs in ``tests/``. ``sad`` has no sound
+    so both `play_emotion` paths are testable."""
 
-    name: str
-    duration: float = _FAKE_MOVE_DURATION_S
-    sound_path: Path | None = None
+    def __init__(self, name: str, sound_path: Path | None = None) -> None:
+        self.name = name
+        self._sound_path = sound_path
+
+    @property
+    def duration(self) -> float:
+        return _FAKE_MOVE_DURATION_S
+
+    @property
+    def sound_path(self) -> Path | None:
+        return self._sound_path
+
+    def evaluate(
+        self, t: float
+    ) -> tuple[
+        npt.NDArray[np.float64] | None, npt.NDArray[np.float64] | None, float | None
+    ]:
+        head = NEUTRAL_HEAD.copy()
+        head[2, 3] = 0.01 * math.sin(math.pi * t / self.duration)
+        return head, NEUTRAL_ANTENNAS.copy(), NEUTRAL_BODY_YAW
 
 
 class _FakeRecordedMoves:
@@ -158,11 +181,19 @@ class ReachyMiniApi:
                 )
         self._robot: AnyReachyMini | None = None
         self._media: MediaSession | None = None
+        self._motion: MotionSession | None = None
         self._exit_stack: AsyncExitStack | None = None
         # The emotions library: loaded lazily, once per connection (see _get_recorded_moves).
         self._recorded_moves_future: asyncio.Future[Any] | None = None
         # The bridge's record of the wobbling mode (upstream has no getter).
         self._wobbling = False
+        # The motion loop's switches (specs/motion.md), initialized from the config and
+        # reset to it on exit; set_presence/set_breathing change them while entered.
+        self._presence = self._config.motion.presence
+        self._breathing = self._config.motion.breathing
+        # The api's own record of the tracking weight last requested (as for wobbling),
+        # so play_emotion can dip it to 0 for a move and restore it afterwards.
+        self._tracking_weight: float | None = None
 
     # --- config-based constructors (mirroring ReachyMiniConfig's trio) ---
 
@@ -231,6 +262,13 @@ class ReachyMiniApi:
             )
         return self._media
 
+    def _require_motion(self) -> MotionSession:
+        if self._motion is None:
+            raise BridgeError(
+                "the motion loop is only available inside `async with ReachyMiniApi(...)`"
+            )
+        return self._motion
+
     # --- lifecycle ---
 
     async def __aenter__(self) -> Self:
@@ -278,9 +316,20 @@ class ReachyMiniApi:
             stack.push_async_callback(self._disable_wobbling_if_on, robot)
             if cfg.wobbling:
                 await self.set_wobbling(True)
+            # Entered after wobbling, exits first (specs/motion.md "Lifecycle"): the
+            # stack unwinds in reverse, so the loop eases to neutral before wobbling
+            # (and everything else) tears down.
+            motion = MotionSession(
+                robot, presence=self._presence, breathing=self._breathing
+            )
+            await stack.enter_async_context(motion)
+            self._motion = motion
+            if await self.get_motors_state() == "enabled":
+                motion.resume()
         except BaseException:
             self._robot = None
             self._media = None
+            self._motion = None
             self._wobbling = False
             await stack.aclose()
             raise
@@ -293,12 +342,16 @@ class ReachyMiniApi:
         self._exit_stack = None
         self._robot = None
         self._media = None
+        self._motion = None
         self._recorded_moves_future = None
         try:
             if stack is not None:
                 await stack.aclose()
         finally:
             self._wobbling = False
+            self._tracking_weight = None
+            self._presence = self._config.motion.presence
+            self._breathing = self._config.motion.breathing
 
     async def _disable_wobbling_if_on(self, robot: AnyReachyMini) -> None:
         # The daemon-side switch is shared across clients: never leave it armed.
@@ -336,6 +389,10 @@ class ReachyMiniApi:
         :class:`GravityCompensationUnsupportedError` without sending anything, because
         such a daemon would reject the mode by dropping the connection. A simulation
         ignores motor modes, so there the mode is sent unchecked.
+
+        Also drives the motion loop (specs/motion.md "Motors"): ``enabled`` resumes it
+        — re-anchored on the present pose, so the head eases into the idle move rather
+        than snapping — the two resting states pause it.
         """
         robot = self.robot
         if state == "enabled":
@@ -349,6 +406,10 @@ class ReachyMiniApi:
             raise ValueError(
                 f"unknown motor state {state!r}; expected one of {_MOTOR_STATES}"
             )
+        if state == "enabled":
+            self._require_motion().resume()
+        else:
+            self._require_motion().pause()
 
     async def _require_gravity_compensation_support(self) -> None:
         robot = self.robot
@@ -389,10 +450,22 @@ class ReachyMiniApi:
     async def play_emotion(self, name: str) -> None:
         """Play a named recorded move from the emotions library.
 
-        Completes when the move has played (its trajectory and the sound started
-        alongside it). Cancelling the task stops the emotion — motion and sound — and
-        leaves the head where the cancel caught it, with the session still open; the
-        same stop runs when the move fails. See specs/api.md "Cancellation".
+        The move plays through the bridge's motion loop (specs/motion.md "Emotions
+        through the loop"), never through upstream's ``async_play_move``: the loop is
+        the one writer of the robot's target. Primaries are exclusive and FIFO, so a
+        second ``play_emotion`` while one plays waits its turn. The loop blends into
+        the move's start pose, starts its sidecar sound as the trajectory starts, and
+        plays it for its duration; **completes when the trajectory has played** — the
+        return to neutral that follows is the idle behaviour's, not the verb's.
+
+        Around the move, face tracking (weight 0) and wobbling are paused and restored
+        on every exit path — completion, cancel, or failure — because at full tracking
+        weight the daemon discards the head target, and because the emotion's own
+        sound would otherwise sway the head on top of the choreography.
+
+        Cancelling the task stops the emotion — motion and sound — and leaves the head
+        where the cancel caught it, with the session still open; the same stop runs
+        when the move fails. See specs/api.md "Cancellation".
 
         Moves the robot, so it requires motors ``enabled`` (raises
         :class:`MotorsNotEnabledError` otherwise). Raises ``ValueError`` for an unknown
@@ -402,16 +475,42 @@ class ReachyMiniApi:
         moves = await self._get_recorded_moves()
         move = moves.get(name)  # ValueError on unknown name
         media = self._require_media()
-        has_sound = getattr(move, "sound_path", None) is not None
+        motion = self._require_motion()
+        robot = self.robot
+        sound_path = getattr(move, "sound_path", None)
+        # Pause the two daemon-side layers for the move; restored below on every exit
+        # path, to their *current* record (specs/motion.md "Emotions through the loop").
+        if self._tracking_weight is not None:
+            await asyncio.to_thread(robot.start_head_tracking, 0.0)
+        if self._wobbling:
+            await asyncio.to_thread(robot.disable_wobbling)
+        future = motion.submit(move, None if sound_path is None else Path(sound_path))
         try:
-            await self.robot.async_play_move(move)
+            await asyncio.wrap_future(future)
         except BaseException:
-            # Upstream's loop stops on cancel (or on its own error) but leaves the
-            # move's sound playing — docs/upstream-play-move-cancellation.md. Stop it
-            # before propagating; the media session stays open.
-            if has_sound:
+            future.cancel()  # idempotent; wrap_future already propagated a task cancel
+            if sound_path is not None:
                 media.stop_sound()
             raise
+        finally:
+            await self._restore_layers_after_move()
+
+    async def _restore_layers_after_move(self) -> None:
+        robot = self.robot
+        if self._wobbling:
+            try:
+                await asyncio.to_thread(robot.enable_wobbling)
+            except Exception as e:  # noqa: BLE001 - never mask the verb's own outcome
+                _logger.warning("could not restore wobbling after the emotion: %s", e)
+        if self._tracking_weight is not None:
+            try:
+                await asyncio.to_thread(
+                    robot.start_head_tracking, self._tracking_weight
+                )
+            except Exception as e:  # noqa: BLE001 - never mask the verb's own outcome
+                _logger.warning(
+                    "could not restore head tracking after the emotion: %s", e
+                )
 
     async def _get_recorded_moves(self) -> Any:
         # One load per connection, shielded: a cancelled first caller does not
@@ -446,14 +545,18 @@ class ReachyMiniApi:
         """Have the robot autonomously keep a detected face centered.
 
         Moves the robot, so it requires motors ``enabled`` (raises
-        :class:`MotorsNotEnabledError` otherwise).
+        :class:`MotorsNotEnabledError` otherwise). The bridge keeps the weight last
+        requested (its own record, as for wobbling) so :meth:`play_emotion` can dip it
+        to ``0`` for a move and restore it afterwards.
         """
         await self._require_motors_enabled("start_head_tracking")
         await asyncio.to_thread(self.robot.start_head_tracking, weight)
+        self._tracking_weight = weight
 
     async def stop_head_tracking(self) -> None:
         """Stop the autonomous face tracker."""
         await asyncio.to_thread(self.robot.stop_head_tracking)
+        self._tracking_weight = None
 
     # --- audio out ---
 
@@ -506,6 +609,43 @@ class ReachyMiniApi:
         session.
         """
         return self._wobbling
+
+    # --- presence & breathing (background motion) ---
+
+    async def set_presence(self, enabled: bool) -> None:
+        """Whether the robot stays alive between verbs (specs/motion.md).
+
+        On, the motion loop fills every idle moment with the idle move (breathing, or
+        a still neutral hold); off, the bridge commands the head only while a verb
+        runs and leaves it where the last move ended — for a caller driving the head
+        through the raw robot. Emotions play either way. A mode, not a move: it holds
+        until changed and needs no motors. Idle, it transitions at once (through the
+        usual blend when turning on, at once with no easing when turning off); during
+        an emotion it is recorded and applied when the emotion ends.
+        """
+        self._presence = enabled
+        self._require_motion().set_presence(enabled)
+
+    @property
+    def presence(self) -> bool:
+        """Whether presence is on — the config's value outside a session."""
+        return self._presence
+
+    async def set_breathing(self, enabled: bool) -> None:
+        """Which idle move presence plays (specs/motion.md): breathing (a slow z-axis
+        sine with counter-phase antenna sway) or the still hold at neutral.
+
+        A mode, not a move: it holds until changed and needs no motors. Idle, it
+        transitions at once through the usual blend; during an emotion it is recorded
+        and applied when the emotion ends.
+        """
+        self._breathing = enabled
+        self._require_motion().set_breathing(enabled)
+
+    @property
+    def breathing(self) -> bool:
+        """Whether breathing is on — the config's value outside a session."""
+        return self._breathing
 
     # --- audio in (microphone) ---
 

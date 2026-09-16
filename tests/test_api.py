@@ -8,6 +8,7 @@ no hardware. Async runs via `asyncio.run` (fast-tier convention).
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import threading
 import time
@@ -23,7 +24,7 @@ import pytest
 
 from reachy_mini_bridge import api as api_module
 from reachy_mini_bridge.api import ReachyMiniApi
-from reachy_mini_bridge.config import DaemonConfig, ReachyMiniConfig
+from reachy_mini_bridge.config import DaemonConfig, MotionSettings, ReachyMiniConfig
 from reachy_mini_bridge.errors import (
     BridgeError,
     ConfigError,
@@ -31,6 +32,7 @@ from reachy_mini_bridge.errors import (
     MotorsNotEnabledError,
 )
 from reachy_mini_bridge.fake_reachy_mini import FakeReachyMini
+from reachy_mini_bridge.motion import BLEND_S, BREATH_Z_M, NEUTRAL_ANTENNAS
 
 
 class _ToneSynth:
@@ -48,6 +50,10 @@ def _fake(api: ReachyMiniApi) -> FakeReachyMini:
 
 def _command_names(api: ReachyMiniApi) -> list[str]:
     return [name for name, _ in _fake(api).commands]
+
+
+def _head_z(api: ReachyMiniApi) -> list[float]:
+    return [float(h[2, 3]) for h, _, _ in _fake(api).targets if h is not None]
 
 
 # --- construction / escape hatch ---------------------------------------------------
@@ -450,6 +456,30 @@ def test_set_motors_state_rejects_unknown_state() -> None:
     asyncio.run(run())
 
 
+def test_motors_disabled_pauses_the_loop_and_enabled_resumes_anchored() -> None:
+    async def run() -> tuple[int, int, list[float]]:
+        async with ReachyMiniApi("fake") as api:
+            await api.set_motors_state("enabled")
+            await asyncio.sleep(0.3)
+            await api.set_motors_state("disabled")
+            await asyncio.sleep(0.2)
+            count_after_disable = len(_fake(api).targets)
+            await asyncio.sleep(0.2)
+            count_still = len(_fake(api).targets)  # nothing sent while paused
+            head = np.eye(4)
+            head[2, 3] = 0.05
+            api.robot.set_target(head=head)  # a caller driving the head directly
+            marker = len(_fake(api).targets)
+            await api.set_motors_state("enabled")
+            await asyncio.sleep(0.1)
+            return count_after_disable, count_still, _head_z(api)[marker:]
+
+    count_after_disable, count_still, resumed_zs = asyncio.run(run())
+    assert count_still == count_after_disable
+    assert resumed_zs
+    assert resumed_zs[0] == pytest.approx(0.05, abs=0.01)
+
+
 def test_gravity_compensation_is_refused_off_placo_without_sending() -> None:
     async def run() -> None:
         async with ReachyMiniApi("fake") as api:
@@ -549,7 +579,7 @@ def test_movement_verbs_run_once_motors_enabled() -> None:
             return _command_names(api)
 
     names = asyncio.run(run())
-    assert "async_play_move" in names
+    assert "media.play_sound" in names  # the move played through the motion loop
     assert "start_head_tracking" in names
     assert "stop_head_tracking" in names
 
@@ -577,14 +607,14 @@ def test_list_emotions_returns_the_offline_library() -> None:
 
 
 def test_play_emotion_resolves_name_and_plays_it() -> None:
-    async def run() -> Any:
+    async def run() -> list[tuple[str, dict[str, Any]]]:
         async with ReachyMiniApi("fake") as api:
             await api.set_motors_state("enabled")
             await api.play_emotion("curious")
-            args = next(a for n, a in _fake(api).commands if n == "async_play_move")
-            return args["move"]
+            return list(_fake(api).commands)
 
-    assert asyncio.run(run()).name == "curious"
+    commands = asyncio.run(run())
+    assert ("media.play_sound", {"sound_file": "curious.ogg"}) in commands
 
 
 def test_play_emotion_unknown_name_raises() -> None:
@@ -608,15 +638,19 @@ def test_play_emotion_on_the_fake_takes_the_moves_duration() -> None:
             await api.play_emotion("curious")
             return time.monotonic() - t0
 
-    assert asyncio.run(run()) >= 0.25
+    # The entry blend (BLEND_S) precedes the move's own trajectory.
+    assert asyncio.run(run()) >= BLEND_S + 0.25
 
 
 async def _cancel_emotion_mid_flight(name: str) -> tuple[float, list[str]]:
     async with ReachyMiniApi("fake", synthesizer=_ToneSynth()) as api:
         await api.set_motors_state("enabled")
         task = asyncio.create_task(api.play_emotion(name))
-        while "async_play_move" not in _command_names(api):
-            await asyncio.sleep(0)
+        if name == "sad":  # soundless: nothing to wait on but the entry blend
+            await asyncio.sleep(BLEND_S + 0.1)
+        else:
+            while "media.play_sound" not in _command_names(api):
+                await asyncio.sleep(0)
         t0 = time.monotonic()
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -630,7 +664,7 @@ def test_cancelled_play_emotion_stops_the_sound_and_keeps_the_session() -> None:
     elapsed, names = asyncio.run(_cancel_emotion_mid_flight("happy"))
 
     assert elapsed < 0.05
-    i = names.index("async_play_move")
+    i = names.index("media.play_sound")
     assert names[i + 1 : i + 3] == ["media.stop_sound", "audio.clear_player"]
     assert "media.push_audio_sample" in names[i + 3 :]
 
@@ -639,17 +673,28 @@ def test_cancelled_soundless_emotion_does_not_stop_a_sound() -> None:
     _elapsed, names = asyncio.run(_cancel_emotion_mid_flight("sad"))
 
     assert "media.stop_sound" not in names
-    assert "media.push_audio_sample" in names[names.index("async_play_move") :]
+    assert "media.push_audio_sample" in names
 
 
 def test_play_emotion_failure_stops_the_sound_and_propagates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def boom(self: FakeReachyMini, move: object, **kwargs: object) -> None:
-        self.commands.append(("async_play_move", {"move": move}))
-        raise RuntimeError("boom")
+    class _BoomMove(api_module._FakeRecordedMove):
+        def evaluate(
+            self, t: float
+        ) -> tuple[
+            npt.NDArray[np.float64] | None, npt.NDArray[np.float64] | None, float | None
+        ]:
+            if t > 0.05:
+                raise RuntimeError("boom")
+            return super().evaluate(t)
 
-    monkeypatch.setattr(FakeReachyMini, "async_play_move", boom)
+    def get(
+        self: api_module._FakeRecordedMoves, move_name: str
+    ) -> api_module._FakeRecordedMove:
+        return _BoomMove(move_name, sound_path=Path(f"{move_name}.ogg"))
+
+    monkeypatch.setattr(api_module._FakeRecordedMoves, "get", get)
 
     async def run() -> list[str]:
         async with ReachyMiniApi("fake") as api:
@@ -659,7 +704,8 @@ def test_play_emotion_failure_stops_the_sound_and_propagates(
             return _command_names(api)
 
     names = asyncio.run(run())
-    assert "media.stop_sound" in names[names.index("async_play_move") :]
+    assert "media.play_sound" in names
+    assert names.index("media.stop_sound") > names.index("media.play_sound")
 
 
 def test_completed_play_emotion_does_not_stop_the_sound() -> None:
@@ -671,6 +717,87 @@ def test_completed_play_emotion_does_not_stop_the_sound() -> None:
             return _command_names(api)
 
     assert "media.stop_sound" not in asyncio.run(run())
+
+
+def test_play_emotion_pauses_tracking_and_restores_it() -> None:
+    async def run() -> list[float]:
+        async with ReachyMiniApi("fake") as api:
+            await api.set_motors_state("enabled")
+            await api.start_head_tracking(0.7)
+            await api.play_emotion("sad")
+            return [
+                args["weight"]
+                for name, args in _fake(api).commands
+                if name == "start_head_tracking"
+            ]
+
+    assert asyncio.run(run()) == [0.7, 0.0, 0.7]
+
+
+def test_play_emotion_leaves_tracking_alone_when_off() -> None:
+    async def run() -> list[str]:
+        async with ReachyMiniApi("fake") as api:
+            await api.set_motors_state("enabled")
+            await api.play_emotion("sad")
+            return _command_names(api)
+
+    assert "start_head_tracking" not in asyncio.run(run())
+
+
+def test_play_emotion_pauses_wobbling_and_restores_it() -> None:
+    async def run() -> tuple[list[str], bool]:
+        async with ReachyMiniApi("fake") as api:  # wobbling on by default
+            await api.set_motors_state("enabled")
+            await api.play_emotion("happy")
+            return _command_names(api), api.wobbling
+
+    names, wobbling = asyncio.run(run())
+    sound_i = names.index("media.play_sound")
+    assert "disable_wobbling" in names[:sound_i]
+    assert "enable_wobbling" in names[sound_i:]
+    assert wobbling is True
+
+
+def test_play_emotion_restores_layers_after_a_cancel() -> None:
+    async def run() -> list[tuple[str, dict[str, Any]]]:
+        async with ReachyMiniApi("fake") as api:
+            await api.set_motors_state("enabled")
+            await api.start_head_tracking(0.7)
+            task = asyncio.create_task(api.play_emotion("happy"))
+            while "media.play_sound" not in _command_names(api):
+                await asyncio.sleep(0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            return list(_fake(api).commands)
+
+    commands = asyncio.run(run())
+    tracking_weights = [a["weight"] for n, a in commands if n == "start_head_tracking"]
+    assert tracking_weights[-1] == 0.7
+    wobbling_calls = [
+        n for n, _ in commands if n in ("enable_wobbling", "disable_wobbling")
+    ]
+    assert wobbling_calls[-1] == "enable_wobbling"
+
+
+def test_play_emotion_restores_to_the_current_record() -> None:
+    async def run() -> list[tuple[str, dict[str, Any]]]:
+        async with ReachyMiniApi("fake") as api:
+            await api.set_motors_state("enabled")
+            await api.start_head_tracking(0.7)
+            task = asyncio.create_task(api.play_emotion("sad"))
+            await asyncio.sleep(0)  # let play_emotion dip tracking before we change it
+            await api.stop_head_tracking()
+            await task
+            return list(_fake(api).commands)
+
+    commands = asyncio.run(run())
+    tracking_calls = [
+        (n, a)
+        for n, a in commands
+        if n in ("start_head_tracking", "stop_head_tracking")
+    ]
+    assert tracking_calls[-1][0] == "stop_head_tracking"
 
 
 def test_cancelled_library_load_is_reused_by_the_next_call(
@@ -910,6 +1037,136 @@ def test_wobbling_property_is_false_outside_a_session() -> None:
 def test_set_wobbling_requires_entry() -> None:
     with pytest.raises(BridgeError):
         asyncio.run(ReachyMiniApi("fake").set_wobbling(True))
+
+
+# --- presence & breathing (motion loop) ---------------------------------------------
+
+
+def test_breathing_targets_oscillate_in_z() -> None:
+    async def run() -> tuple[list[float], tuple[float, float]]:
+        async with ReachyMiniApi("fake") as api:
+            await api.set_motors_state("enabled")
+            await asyncio.sleep(BLEND_S + 0.8)
+            z = _head_z(api)[-20:]
+            _head, antennas, _yaw = _fake(api).last_target
+            return z, (float(antennas[0]), float(antennas[1]))
+
+    z, (a0, a1) = asyncio.run(run())
+    assert max(z) - min(z) > 0.0005
+    assert all(abs(v) <= BREATH_Z_M + 1e-6 for v in z)
+    # counter-phase sway: the two antennas' offsets from neutral have opposite signs
+    assert (a0 - NEUTRAL_ANTENNAS[0]) * (a1 - NEUTRAL_ANTENNAS[1]) <= 0
+
+
+def test_breathing_off_holds_neutral() -> None:
+    config = ReachyMiniConfig(backend="fake", motion=MotionSettings(breathing=False))
+
+    async def run() -> list[float]:
+        async with ReachyMiniApi(config) as api:
+            await api.set_motors_state("enabled")
+            await asyncio.sleep(BLEND_S + 0.3)
+            return _head_z(api)[-10:]
+
+    z = asyncio.run(run())
+    assert z
+    assert all(v == pytest.approx(0.0, abs=1e-6) for v in z)
+
+
+def test_presence_off_sends_nothing_when_idle() -> None:
+    config = ReachyMiniConfig(backend="fake", motion=MotionSettings(presence=False))
+
+    async def run() -> tuple[bool, list[float], int, int]:
+        async with ReachyMiniApi(config) as api:
+            await api.set_motors_state("enabled")
+            await asyncio.sleep(0.3)
+            idle_targets = _head_z(api)
+            await api.play_emotion("sad")
+            after_count = len(_fake(api).targets)
+            await asyncio.sleep(0.3)
+            final_count = len(_fake(api).targets)
+            return api.presence, idle_targets, after_count, final_count
+
+    presence, idle_targets, after_count, final_count = asyncio.run(run())
+    assert presence is False
+    assert idle_targets == []
+    assert after_count > 0
+    assert final_count == after_count
+
+
+def test_set_breathing_while_idle_eases_to_neutral() -> None:
+    async def run() -> list[float]:
+        async with ReachyMiniApi("fake") as api:
+            await api.set_motors_state("enabled")
+            await asyncio.sleep(1.0)
+            before = len(_fake(api).targets)
+            await api.set_breathing(False)
+            # A fade-out (continuing breathing's own phase to zero velocity) precedes
+            # the neutral blend, so this settles a full BLEND_S later than a plain one.
+            await asyncio.sleep(2 * BLEND_S + 0.2)
+            return _head_z(api)[before:]
+
+    z = asyncio.run(run())
+    assert z
+    assert all(v == pytest.approx(0.0, abs=1e-3) for v in z[-5:])
+    assert max(abs(b - a) for a, b in itertools.pairwise(z)) < 0.003
+
+
+def test_set_presence_on_resumes_from_the_present_pose() -> None:
+    config = ReachyMiniConfig(backend="fake", motion=MotionSettings(presence=False))
+
+    async def run() -> list[float]:
+        async with ReachyMiniApi(config) as api:
+            await api.set_motors_state("enabled")
+            head = np.eye(4)
+            head[2, 3] = 0.02
+            api.robot.set_target(head=head)  # a caller driving the head directly
+            await api.set_presence(True)
+            await asyncio.sleep(BLEND_S + 0.3)
+            return _head_z(api)
+
+    z = asyncio.run(run())
+    assert z
+    assert z[0] == pytest.approx(0.02, abs=0.003)
+    assert abs(z[-1]) < BREATH_Z_M + 0.002
+
+
+def test_switches_are_recorded_and_default_from_the_config() -> None:
+    config = ReachyMiniConfig(
+        backend="fake", motion=MotionSettings(presence=False, breathing=False)
+    )
+    api = ReachyMiniApi(config)
+    assert api.presence is False
+    assert api.breathing is False
+
+    async def run() -> None:
+        async with api:
+            assert api.presence is False
+            await api.set_presence(True)
+            assert api.presence is True
+
+    asyncio.run(run())
+    assert api.presence is False  # reset to the config's values after exit
+    assert api.breathing is False
+
+
+def test_switch_verbs_require_entry() -> None:
+    with pytest.raises(BridgeError):
+        asyncio.run(ReachyMiniApi("fake").set_presence(True))
+    with pytest.raises(BridgeError):
+        asyncio.run(ReachyMiniApi("fake").set_breathing(True))
+
+
+def test_exit_leaves_the_head_at_neutral() -> None:
+    async def run() -> FakeReachyMini:
+        async with ReachyMiniApi("fake") as api:
+            await api.set_motors_state("enabled")
+            await asyncio.sleep(1.0)
+            return _fake(api)
+
+    robot = asyncio.run(run())
+    head, antennas, _yaw = robot.last_target
+    assert abs(head[2, 3]) < 0.001
+    assert antennas == pytest.approx(NEUTRAL_ANTENNAS, abs=1e-3)
 
 
 # --- perception (camera) -----------------------------------------------------------

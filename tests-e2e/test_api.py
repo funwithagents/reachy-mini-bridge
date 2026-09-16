@@ -29,6 +29,7 @@ from reachy_mini import ReachyMini
 from reachy_mini_bridge.api import ReachyMiniApi
 from reachy_mini_bridge.audio import TTSEngineSynthesizer
 from reachy_mini_bridge.errors import GravityCompensationUnsupportedError
+from reachy_mini_bridge.motion import BLEND_S
 from reachy_mini_bridge.testing import require_env, requires_caps
 
 # A public ElevenLabs voice used throughout tts-engine's own docs; override with
@@ -101,23 +102,30 @@ def test_motor_state_reads_and_dispatches_over_the_live_path(
 
     async def scenario() -> tuple[str, dict[str, str]]:
         original = await api.get_motors_state()
-        results: dict[str, str] = {}
-        results["enabled"] = await _motors_state_after_set(api, "enabled")
-        await asyncio.to_thread(
-            robot.goto_target,
-            head=SLEEP_HEAD_POSE,
-            antennas=SLEEP_ANTENNAS_JOINT_POSITIONS,
-            duration=2.0,
-        )
-        results["disabled"] = await _motors_state_after_set(api, "disabled")
-        await api.set_motors_state("enabled")
-        await asyncio.to_thread(
-            robot.goto_target,
-            head=INIT_HEAD_POSE,
-            antennas=INIT_ANTENNAS_JOINT_POSITIONS,
-            duration=1.0,
-        )
-        await api.set_motors_state(original)  # restore
+        # The motion loop would otherwise blend back to neutral the moment each
+        # goto_target ends (specs/motion.md): a caller driving the head directly needs
+        # presence off for its own moves to hold.
+        await api.set_presence(False)
+        try:
+            results: dict[str, str] = {}
+            results["enabled"] = await _motors_state_after_set(api, "enabled")
+            await asyncio.to_thread(
+                robot.goto_target,
+                head=SLEEP_HEAD_POSE,
+                antennas=SLEEP_ANTENNAS_JOINT_POSITIONS,
+                duration=2.0,
+            )
+            results["disabled"] = await _motors_state_after_set(api, "disabled")
+            await api.set_motors_state("enabled")
+            await asyncio.to_thread(
+                robot.goto_target,
+                head=INIT_HEAD_POSE,
+                antennas=INIT_ANTENNAS_JOINT_POSITIONS,
+                duration=1.0,
+            )
+            await api.set_motors_state(original)  # restore
+        finally:
+            await api.set_presence(True)
         return original, results
 
     original, results = asyncio.run(scenario())
@@ -257,6 +265,42 @@ async def _peak_deviation_during_loud_say(
     return peak
 
 
+def test_breathing_moves_the_head_and_breathing_off_holds_it(
+    live_api: tuple[ReachyMiniApi, frozenset[str]],
+) -> None:
+    """specs/motion.md: with presence and breathing on, the idle move visibly breathes
+    (a slow z-axis sine); `set_breathing(False)` holds the head still afterwards."""
+    requires_caps(live_api, "motion")
+    api, _caps = live_api
+    robot: Any = api.robot
+
+    async def sample_z(seconds: float) -> float:
+        zs: list[float] = []
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            pose = await asyncio.to_thread(robot.get_current_head_pose)
+            zs.append(float(pose[2, 3]))
+            await asyncio.sleep(0.1)
+        return max(zs) - min(zs)
+
+    async def scenario() -> tuple[float, float]:
+        await api.set_motors_state("enabled")
+        await asyncio.sleep(1.0)
+        breathing_range = await sample_z(6.0)
+        await api.set_breathing(False)
+        await asyncio.sleep(BLEND_S + 0.5)
+        still_range = await sample_z(3.0)
+        await api.set_breathing(True)
+        return breathing_range, still_range
+
+    breathing_range, still_range = asyncio.run(scenario())
+    print(
+        f"\n[e2e] breathing z range {breathing_range:.4f} m, still {still_range:.4f} m"
+    )
+    assert breathing_range >= 0.002
+    assert still_range < 0.001
+
+
 def test_wobbling_is_on_by_default_and_sways_the_head(
     live_api: tuple[ReachyMiniApi, frozenset[str]],
 ) -> None:
@@ -274,15 +318,20 @@ def test_wobbling_is_on_by_default_and_sways_the_head(
     robot: Any = api.robot
 
     async def scenario() -> tuple[float, float]:
-        start = await _still_head_pose(api)
-        peak = await _peak_deviation_during_loud_say(api, start)
-        deadline = time.monotonic() + 3.0
-        while True:
-            pose = await asyncio.to_thread(robot.get_current_head_pose)
-            settled = _head_deviation_deg(start, pose)
-            if settled < 3.0 or time.monotonic() > deadline:
-                return peak, settled
-            await asyncio.sleep(0.05)
+        await api.set_breathing(False)  # isolate the wobble from breathing's own sway
+        await asyncio.sleep(BLEND_S + 0.5)
+        try:
+            start = await _still_head_pose(api)
+            peak = await _peak_deviation_during_loud_say(api, start)
+            deadline = time.monotonic() + 3.0
+            while True:
+                pose = await asyncio.to_thread(robot.get_current_head_pose)
+                settled = _head_deviation_deg(start, pose)
+                if settled < 3.0 or time.monotonic() > deadline:
+                    return peak, settled
+                await asyncio.sleep(0.05)
+        finally:
+            await api.set_breathing(True)
 
     peak, settled = asyncio.run(scenario())
     print(f"\n[e2e] wobble on: peak {peak:.2f} deg, settled {settled:.2f} deg")
@@ -303,12 +352,17 @@ def test_wobbling_off_keeps_the_head_still_while_audio_plays(
     api, _caps = live_api
 
     async def scenario() -> float:
-        start = await _still_head_pose(api)
-        await api.set_wobbling(False)
+        await api.set_breathing(False)  # isolate stillness from breathing's own sway
+        await asyncio.sleep(BLEND_S + 0.5)
         try:
-            return await _peak_deviation_during_loud_say(api, start)
+            start = await _still_head_pose(api)
+            await api.set_wobbling(False)
+            try:
+                return await _peak_deviation_during_loud_say(api, start)
+            finally:
+                await api.set_wobbling(True)
         finally:
-            await api.set_wobbling(True)
+            await api.set_breathing(True)
 
     peak = asyncio.run(scenario())
     print(f"\n[e2e] wobble off: peak {peak:.2f} deg")
@@ -431,15 +485,27 @@ def test_play_emotion_plays_a_real_move(
     api, _caps = live_api
     _require_emotions_library()
 
-    async def scenario() -> str:
+    async def scenario() -> tuple[str, float, float]:
+        from reachy_mini_bridge.motion import NEUTRAL_ANTENNAS
+
         names = await api.list_emotions()
         assert names, "emotions library loaded but empty"
         await api.set_motors_state("enabled")
         await api.play_emotion(names[0])  # completes only if the move actually played
-        return names[0]
+        await asyncio.sleep(1.5)  # the idle move eases the head back to neutral
+        robot: Any = api.robot
+        pose = await asyncio.to_thread(robot.get_current_head_pose)
+        _joints, antennas = await asyncio.to_thread(robot.get_current_joint_positions)
+        deviation = np.abs(np.asarray(antennas) - NEUTRAL_ANTENNAS)
+        return names[0], float(np.linalg.norm(pose[:3, 3])), float(deviation.max())
 
-    played = asyncio.run(scenario())
-    print(f"\n[e2e] played emotion: {played!r}")
+    played, translation, antenna_deviation = asyncio.run(scenario())
+    print(
+        f"\n[e2e] played emotion: {played!r}, back to neutral: "
+        f"translation {translation:.4f} m, antenna deviation {antenna_deviation:.3f} rad"
+    )
+    assert translation < 0.008
+    assert antenna_deviation < 0.1
 
 
 def test_cancelled_emotion_stops_motion_and_sound(
@@ -458,24 +524,35 @@ def test_cancelled_emotion_stops_motion_and_sound(
     async def scenario() -> tuple[float, float, object]:
         await api.set_motors_state("enabled")
         await api.set_wobbling(True)
-        task = asyncio.create_task(api.play_emotion("dance2"))
-        await asyncio.sleep(3.0)  # long enough to see the dance and hear its sound
-        t0 = time.monotonic()
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        latency = time.monotonic() - t0
-        await asyncio.sleep(1.0)  # the head reaches its last target
-        samples: list[npt.NDArray[np.float64]] = []
-        t1 = time.monotonic()
-        while time.monotonic() - t1 < 2.0:
-            head, antennas = await asyncio.to_thread(robot.get_current_joint_positions)
-            samples.append(np.array(list(head) + list(antennas), dtype=np.float64))
-            await asyncio.sleep(0.05)
-        stacked = np.stack(samples)
-        travel = float((stacked.max(axis=0) - stacked.min(axis=0)).max())
-        playbin = getattr(robot.media.audio, "_playbin", "not-local")
-        return latency, travel, playbin
+        # The hold keeps the joints still after the return blend; breathing would
+        # otherwise still be moving them when we sample (specs/motion.md).
+        await api.set_breathing(False)
+        try:
+            task = asyncio.create_task(api.play_emotion("dance2"))
+            await asyncio.sleep(3.0)  # long enough to see the dance and hear its sound
+            t0 = time.monotonic()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            latency = time.monotonic() - t0
+            # The head reaches its last target: the cancel drops the primary at once,
+            # but the idle move then blends in from wherever it caught the head
+            # (BLEND_S), so settling takes a bit longer than before the motion loop.
+            await asyncio.sleep(BLEND_S + 1.0)
+            samples: list[npt.NDArray[np.float64]] = []
+            t1 = time.monotonic()
+            while time.monotonic() - t1 < 2.0:
+                head, antennas = await asyncio.to_thread(
+                    robot.get_current_joint_positions
+                )
+                samples.append(np.array(list(head) + list(antennas), dtype=np.float64))
+                await asyncio.sleep(0.05)
+            stacked = np.stack(samples)
+            travel = float((stacked.max(axis=0) - stacked.min(axis=0)).max())
+            playbin = getattr(robot.media.audio, "_playbin", "not-local")
+            return latency, travel, playbin
+        finally:
+            await api.set_breathing(True)
 
     latency, travel, playbin = asyncio.run(scenario())
     print(

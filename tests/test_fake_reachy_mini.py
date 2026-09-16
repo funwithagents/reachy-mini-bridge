@@ -7,11 +7,8 @@ on. No daemon, no hardware, no ``reachy_mini``.
 
 from __future__ import annotations
 
-import asyncio
-import time
-from types import SimpleNamespace
-
 import numpy as np
+import pytest
 
 from reachy_mini_bridge.fake_reachy_mini import FakeReachyMini
 
@@ -39,15 +36,12 @@ def test_motor_state_transitions() -> None:
 def test_motion_commands_are_recorded() -> None:
     robot = FakeReachyMini()
     robot.start_head_tracking(weight=0.5)
-    asyncio.run(robot.async_play_move("happy", initial_goto_duration=1.0))
 
     names = [name for name, _ in robot.commands]
-    assert names == ["start_head_tracking", "async_play_move"]
+    assert names == ["start_head_tracking"]
 
     tracking_args = robot.commands[0][1]
     assert tracking_args["weight"] == 0.5
-    assert robot.commands[1][1]["move"] == "happy"
-    assert robot.commands[1][1]["initial_goto_duration"] == 1.0
 
 
 def test_wobbling_toggles_are_recorded() -> None:
@@ -88,14 +82,32 @@ def test_capture_format_agrees_with_getters() -> None:
     assert media.get_output_channels() == media.get_input_channels()
 
 
-def test_play_move_sleeps_the_moves_duration() -> None:
-    # The fake keeps a move's timing so a cancel has something in flight to interrupt.
+def test_set_target_records_and_updates_the_present_pose() -> None:
     robot = FakeReachyMini()
+    head = np.eye(4)
+    head[2, 3] = 0.01
+    robot.set_target(head=head, antennas=[0.1, -0.1], body_yaw=0.2)
 
-    t0 = time.monotonic()
-    asyncio.run(robot.async_play_move(SimpleNamespace(duration=0.1)))
-    assert time.monotonic() - t0 >= 0.08
+    assert len(robot.targets) == 1
+    assert robot.get_current_head_pose()[2, 3] == pytest.approx(0.01)
+    joints, antennas = robot.get_current_joint_positions()
+    assert joints == [0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    assert antennas == pytest.approx([0.1, -0.1])
+    assert robot.commands == []
 
-    t0 = time.monotonic()
-    asyncio.run(robot.async_play_move("bare-name"))
-    assert time.monotonic() - t0 < 0.05
+
+def test_set_target_partial_keeps_the_other_components() -> None:
+    robot = FakeReachyMini()
+    robot.set_target(antennas=[0.3, -0.3])
+
+    assert np.array_equal(robot.get_current_head_pose(), np.eye(4))
+
+
+def test_set_target_rejects_bad_input() -> None:
+    robot = FakeReachyMini()
+    with pytest.raises(ValueError, match="At least one"):
+        robot.set_target()
+    with pytest.raises(ValueError, match="4x4"):
+        robot.set_target(head=np.eye(3))
+    with pytest.raises(ValueError, match="two elements"):
+        robot.set_target(antennas=[0.1, 0.2, 0.3])

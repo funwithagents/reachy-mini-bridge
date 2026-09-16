@@ -25,5 +25,9 @@
   "audio": {
     "xvf3800": null
   },
-  "wobbling": true
+  "wobbling": true,
+  "motion": {
+    "presence": true,
+    "breathing": true
+  }
 }

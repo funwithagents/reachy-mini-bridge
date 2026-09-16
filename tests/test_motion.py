@@ -1,0 +1,380 @@
+"""Functional tests for the motion loop (specs/motion.md).
+
+Plain-function tests for the moves and the blend helper; ``MotionSession`` tests drive
+it on a bare ``FakeReachyMini`` at real time (the loop runs the same way on both
+backends), so timings stay tight but real.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import concurrent.futures
+import itertools
+import time
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+import numpy as np
+import pytest
+from reachy_mini.motion.move import Move
+
+from reachy_mini_bridge.errors import BridgeError
+from reachy_mini_bridge.fake_reachy_mini import FakeReachyMini
+from reachy_mini_bridge.motion import (
+    ANTENNA_HZ,
+    ANTENNA_SWAY_RAD,
+    BLEND_S,
+    BREATH_HZ,
+    BREATH_Z_M,
+    NEUTRAL,
+    NEUTRAL_ANTENNAS,
+    NEUTRAL_BODY_YAW,
+    NEUTRAL_HEAD,
+    BreathingMove,
+    HoldMove,
+    MotionSession,
+    blend_into,
+)
+
+if TYPE_CHECKING:
+    import numpy.typing as npt
+
+
+def test_hold_is_neutral_at_any_time() -> None:
+    move = HoldMove()
+    assert move.duration == float("inf")
+    for t in (0.0, 1.5, 100.0):
+        head, antennas, body_yaw = move.evaluate(t)
+        assert head is not None and antennas is not None
+        assert np.array_equal(head, NEUTRAL[0])
+        assert np.array_equal(antennas, NEUTRAL[1])
+        assert body_yaw == NEUTRAL[2]
+
+
+def test_breathing_starts_at_neutral_and_breathes_in_z() -> None:
+    move = BreathingMove()
+    head0, antennas0, yaw0 = move.evaluate(0.0)
+    assert head0 is not None and antennas0 is not None
+    assert np.allclose(head0, NEUTRAL[0])
+    assert np.allclose(antennas0, NEUTRAL[1])
+    assert yaw0 == 0.0
+
+    t = 1 / (4 * BREATH_HZ)
+    head, _antennas, yaw = move.evaluate(t)
+    assert head is not None
+    assert head[2, 3] == pytest.approx(BREATH_Z_M, abs=1e-6)
+    diff = np.asarray(head) - np.eye(4)
+    diff[2, 3] = 0.0
+    assert np.allclose(diff, 0.0)
+    assert yaw == 0.0
+
+
+def test_breathing_antennas_sway_in_counter_phase() -> None:
+    move = BreathingMove()
+    t = 1 / (4 * ANTENNA_HZ)
+    _head, antennas, _yaw = move.evaluate(t)
+    assert antennas is not None
+    expected = NEUTRAL_ANTENNAS + np.array([ANTENNA_SWAY_RAD, -ANTENNA_SWAY_RAD])
+    assert antennas == pytest.approx(expected, abs=1e-6)
+
+
+def test_blend_into_goes_from_source_to_the_moves_start() -> None:
+    head = np.eye(4)
+    head[2, 3] = 0.02
+    antennas = np.array([0.5, -0.5])
+    source = (head, antennas, 0.3)
+
+    b = blend_into(source, HoldMove())
+    assert b.duration == BLEND_S
+
+    start_head, start_antennas, start_yaw = b.evaluate(0.0)
+    assert start_head is not None and start_antennas is not None
+    assert np.allclose(start_head, head)
+    assert np.allclose(start_antennas, antennas)
+    assert start_yaw == pytest.approx(0.3)
+
+    end_head, end_antennas, end_yaw = b.evaluate(BLEND_S)
+    assert end_head is not None and end_antennas is not None
+    assert np.allclose(end_head, NEUTRAL[0])
+    assert np.allclose(end_antennas, NEUTRAL[1])
+    assert end_yaw == pytest.approx(0.0)
+
+    mid_head, _mid_antennas, _mid_yaw = b.evaluate(BLEND_S / 2)
+    assert mid_head is not None
+    assert NEUTRAL[0][2, 3] < mid_head[2, 3] < head[2, 3]
+
+
+# --- MotionSession -------------------------------------------------------------------
+
+
+class _TestPrimary(Move):
+    """A finite move with a distinctive z displacement, for driving the loop directly."""
+
+    def __init__(
+        self,
+        duration: float,
+        z: float,
+        *,
+        sound_path: Path | None = None,
+        fail_after: float | None = None,
+    ) -> None:
+        self._duration = duration
+        self._z = z
+        self._sound_path = sound_path
+        self._fail_after = fail_after
+
+    @property
+    def duration(self) -> float:
+        return self._duration
+
+    @property
+    def sound_path(self) -> Path | None:
+        return self._sound_path
+
+    def evaluate(
+        self, t: float
+    ) -> tuple[
+        npt.NDArray[np.float64] | None, npt.NDArray[np.float64] | None, float | None
+    ]:
+        if self._fail_after is not None and t > self._fail_after:
+            raise RuntimeError("boom")
+        head = NEUTRAL_HEAD.copy()
+        head[2, 3] = self._z
+        return head, NEUTRAL_ANTENNAS.copy(), NEUTRAL_BODY_YAW
+
+
+def _head_zs(robot: FakeReachyMini) -> list[float]:
+    return [float(h[2, 3]) for h, _, _ in robot.targets if h is not None]
+
+
+def test_paused_session_sends_nothing() -> None:
+    async def run() -> FakeReachyMini:
+        robot = FakeReachyMini()
+        async with MotionSession(robot, presence=True, breathing=True):
+            await asyncio.sleep(0.2)
+        return robot
+
+    robot = asyncio.run(run())
+    assert robot.targets == []
+
+
+def test_resume_blends_from_the_present_pose_into_breathing() -> None:
+    async def run() -> list[float]:
+        robot = FakeReachyMini()
+        head = np.eye(4)
+        head[2, 3] = 0.02
+        robot.set_target(head=head)  # simulate another writer, before the loop starts
+        robot.targets.clear()  # isolate the loop's own stream
+        async with MotionSession(robot, presence=True, breathing=True) as session:
+            session.resume()
+            await asyncio.sleep(BLEND_S + 0.2)
+            # captured before exit, whose own easing blend would otherwise be counted
+            return _head_zs(robot)
+
+    zs = asyncio.run(run())
+    assert zs, "expected the loop to have sent targets"
+    assert zs[0] == pytest.approx(0.02, abs=0.003)
+    assert abs(zs[-1]) < BREATH_Z_M + 0.002
+    assert max(abs(b - a) for a, b in itertools.pairwise(zs)) < 0.002
+    rate = len(zs) / (BLEND_S + 0.2)
+    assert 40 <= rate <= 75
+
+
+def test_breathing_off_holds_neutral() -> None:
+    async def run() -> list[float]:
+        robot = FakeReachyMini()
+        async with MotionSession(robot, presence=True, breathing=False) as session:
+            session.resume()
+            await asyncio.sleep(BLEND_S + 0.2)
+            return _head_zs(robot)
+
+    zs = asyncio.run(run())
+    assert zs
+    assert all(z == pytest.approx(0.0, abs=1e-6) for z in zs[-5:])
+
+
+def test_presence_off_goes_quiet_when_idle() -> None:
+    async def run() -> tuple[int, int, int]:
+        robot = FakeReachyMini()
+        async with MotionSession(robot, presence=False, breathing=True) as session:
+            session.resume()
+            await asyncio.sleep(0.3)
+            idle_count = len(robot.targets)
+            future = session.submit(_TestPrimary(0.15, 0.01), None)
+            await asyncio.wrap_future(future)
+            after_count = len(robot.targets)
+            await asyncio.sleep(0.2)
+            final_count = len(robot.targets)
+        return idle_count, after_count, final_count
+
+    idle_count, after_count, final_count = asyncio.run(run())
+    assert idle_count == 0
+    assert after_count > 0
+    assert final_count == after_count
+
+
+def test_primary_plays_after_a_blend_then_idle_resumes() -> None:
+    async def run() -> tuple[float, list[float], list[float]]:
+        robot = FakeReachyMini()
+        async with MotionSession(robot, presence=True, breathing=True) as session:
+            session.resume()
+            t0 = time.monotonic()
+            future = session.submit(_TestPrimary(0.3, 0.03), None)
+            await asyncio.wrap_future(future)
+            elapsed = time.monotonic() - t0
+            mid_zs = _head_zs(robot)
+            await asyncio.sleep(BLEND_S + 0.15)
+            final_zs = _head_zs(robot)
+        return elapsed, mid_zs, final_zs
+
+    elapsed, mid_zs, final_zs = asyncio.run(run())
+    assert 0.7 <= elapsed < 1.2
+    assert max(mid_zs) >= 0.025
+    assert all(abs(z) < 0.001 for z in final_zs[-5:])
+
+
+def test_sound_starts_with_the_trajectory_not_the_blend() -> None:
+    async def run() -> float:
+        robot = FakeReachyMini()
+        async with MotionSession(robot, presence=True, breathing=True) as session:
+            session.resume()
+            t0 = time.monotonic()
+            future = session.submit(_TestPrimary(0.2, 0.02), Path("x.ogg"))
+            while not any(name == "media.play_sound" for name, _ in robot.commands):
+                await asyncio.sleep(0.01)
+            sound_elapsed = time.monotonic() - t0
+            await asyncio.wrap_future(future)
+        return sound_elapsed
+
+    sound_elapsed = asyncio.run(run())
+    assert sound_elapsed >= BLEND_S * 0.8
+
+
+def test_primaries_are_fifo_and_exclusive() -> None:
+    async def run() -> tuple[int, int]:
+        robot = FakeReachyMini()
+        async with MotionSession(robot, presence=True, breathing=True) as session:
+            session.resume()
+            f1 = session.submit(_TestPrimary(0.15, 0.02), Path("one.ogg"))
+            f2 = session.submit(_TestPrimary(0.15, 0.03), Path("two.ogg"))
+            await asyncio.wrap_future(f1)
+            commands_at_f1_done = len(robot.commands)
+            await asyncio.wrap_future(f2)
+            two_index = next(
+                i
+                for i, (name, args) in enumerate(robot.commands)
+                if name == "media.play_sound" and args["sound_file"] == "two.ogg"
+            )
+        return commands_at_f1_done, two_index
+
+    commands_at_f1_done, two_index = asyncio.run(run())
+    assert two_index >= commands_at_f1_done
+
+
+def test_cancelled_future_drops_the_primary_within_a_tick() -> None:
+    async def run() -> tuple[list[float], int, int]:
+        robot = FakeReachyMini()
+        async with MotionSession(robot, presence=True, breathing=True) as session:
+            session.resume()
+            future = session.submit(_TestPrimary(2.0, 0.05), None)
+            await asyncio.sleep(BLEND_S + 0.15)
+            future.cancel()
+            await asyncio.sleep(0.08)
+            before = len(robot.targets)
+            await asyncio.sleep(0.08)
+            after = len(robot.targets)
+            last_zs = _head_zs(robot)[-3:]
+        return last_zs, before, after
+
+    last_zs, before, after = asyncio.run(run())
+    assert all(abs(z - 0.05) > 0.001 for z in last_zs)
+    assert after > before
+
+
+def test_toggle_during_a_primary_is_deferred() -> None:
+    async def run() -> tuple[list[float], list[float]]:
+        robot = FakeReachyMini()
+        async with MotionSession(robot, presence=True, breathing=True) as session:
+            session.resume()
+            future = session.submit(_TestPrimary(0.35, 0.02), None)
+            await asyncio.sleep(0.15)
+            session.set_breathing(False)
+            await asyncio.wrap_future(future)  # still completes at its own duration
+            during_zs = _head_zs(robot)
+            await asyncio.sleep(BLEND_S + 0.15)
+            after_zs = _head_zs(robot)[-10:]
+        return during_zs, after_zs
+
+    during_zs, after_zs = asyncio.run(run())
+    assert max(during_zs) >= 0.015  # the emotion played fully
+    assert all(abs(z) < 1e-4 for z in after_zs)  # settled at hold, not breathing
+
+
+def test_pause_fails_in_flight_primaries() -> None:
+    async def run() -> tuple[concurrent.futures.Future[None], int, int]:
+        robot = FakeReachyMini()
+        async with MotionSession(robot, presence=True, breathing=True) as session:
+            session.resume()
+            future = session.submit(_TestPrimary(2.0, 0.02), None)
+            await asyncio.sleep(0.2)
+            session.pause()
+            await asyncio.sleep(0.15)
+            before = len(robot.targets)
+            await asyncio.sleep(0.15)
+            after = len(robot.targets)
+        return future, before, after
+
+    future, before, after = asyncio.run(run())
+    exc = future.exception(timeout=1)
+    assert isinstance(exc, BridgeError)
+    assert after == before
+
+
+def test_close_eases_to_neutral_when_commanding() -> None:
+    async def run() -> FakeReachyMini:
+        robot = FakeReachyMini()
+        async with MotionSession(robot, presence=True, breathing=True) as session:
+            session.resume()
+            await asyncio.sleep(0.6)
+        return robot
+
+    robot = asyncio.run(run())
+    head, antennas, _yaw = robot.last_target
+    assert abs(head[2, 3]) < 0.001
+    assert antennas == pytest.approx(NEUTRAL_ANTENNAS, abs=1e-3)
+    zs = _head_zs(robot)
+    assert max(abs(b - a) for a, b in itertools.pairwise(zs)) < 0.003
+
+
+def test_close_is_immediate_when_quiet() -> None:
+    async def run() -> tuple[float, int]:
+        robot = FakeReachyMini()
+        t0 = time.monotonic()
+        async with MotionSession(robot, presence=False, breathing=True):
+            pass
+        return time.monotonic() - t0, len(robot.targets)
+
+    elapsed, count = asyncio.run(run())
+    assert elapsed < 0.2
+    assert count == 0
+
+
+def test_a_failing_tick_fails_the_primary_and_keeps_the_loop_alive() -> None:
+    async def run() -> tuple[BaseException | None, int, int]:
+        robot = FakeReachyMini()
+        async with MotionSession(robot, presence=True, breathing=True) as session:
+            session.resume()
+            future = session.submit(_TestPrimary(1.0, 0.02, fail_after=0.1), None)
+            exc: BaseException | None = None
+            try:
+                await asyncio.wait_for(asyncio.wrap_future(future), timeout=2)
+            except Exception as e:  # noqa: BLE001 - captured for the assertion below
+                exc = e
+            before = len(robot.targets)
+            await asyncio.sleep(0.2)
+            after = len(robot.targets)
+        return exc, before, after
+
+    exc, before, after = asyncio.run(run())
+    assert isinstance(exc, RuntimeError)
+    assert after > before
