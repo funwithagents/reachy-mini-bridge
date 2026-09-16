@@ -25,6 +25,8 @@ from .errors import ConfigError
 __all__ = ["AudioSettings", "DaemonConfig", "ReachyMiniConfig"]
 
 BACKENDS = ("real", "sim", "fake")
+# The backends with a daemon the bridge can spawn: MuJoCo, or a USB-attached robot.
+DAEMON_BACKENDS = ("sim", "real")
 SPAWN_MODES = ("never", "auto", "always")
 
 # Upstream kwargs the bridge owns; each maps to the config field that replaces it.
@@ -82,12 +84,15 @@ def _is_number(value: Any) -> bool:
 
 @dataclass
 class DaemonConfig:
-    """How the bridge brings up the daemon the robot client talks to (specs/daemon.md)."""
+    """How the bridge brings up the daemon the robot client talks to (specs/daemon.md).
+
+    ``headless`` and ``scene`` are MuJoCo knobs: they play no part for a ``real`` daemon.
+    """
 
     spawn: str = "never"
     headless: bool = True
     scene: str | None = None
-    preload_datasets: bool = False
+    preload_datasets: bool = True
     startup_timeout: float = 45.0
 
     @classmethod
@@ -109,7 +114,7 @@ class DaemonConfig:
         scene = block.get("scene")
         if scene is not None and (not isinstance(scene, str) or not scene):
             raise ConfigError("'daemon.scene' must be a non-empty string or null")
-        preload = block.get("preload_datasets", False)
+        preload = block.get("preload_datasets", True)
         if not isinstance(preload, bool):
             raise ConfigError("'daemon.preload_datasets' must be a boolean")
         timeout = block.get("startup_timeout", 45.0)
@@ -211,10 +216,10 @@ class ReachyMiniConfig:
 
         daemon = DaemonConfig.from_dict(top.get("daemon", {}))
         if daemon.spawn != "never":
-            if backend != "sim":
+            if backend not in DAEMON_BACKENDS:
                 raise ConfigError(
-                    f"'daemon.spawn' = {daemon.spawn!r} requires backend 'sim' "
-                    f"(got {backend!r}): a real robot runs its own daemon, and 'fake' has none"
+                    f"'daemon.spawn' = {daemon.spawn!r} requires backend 'sim' or 'real' "
+                    f"(got {backend!r}): 'fake' has no daemon"
                 )
             host = robot.get("host")
             if host is not None and host not in LOOPBACK_HOSTS:

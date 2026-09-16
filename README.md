@@ -2,13 +2,13 @@
 
 A Python library that sits between the [Reachy Mini](https://github.com/pollen-robotics/reachy_mini) robot and whatever drives it — a script, a service, or an LLM agent. It wraps the upstream `reachy_mini` SDK behind one async, intent-level API (`ReachyMiniApi`) whose verbs speak in human terms — *enable the motors, play "happy", follow my face, say this, give me the mic, give me a camera frame* — and runs the same code unchanged against the real robot, the MuJoCo simulator, or an offline fake.
 
-> **Status: layers 0–1 built.** The connection seam, `ReachyMiniApi`, the audio/media session, the declarative config, and the bridge-owned sim daemon lifecycle are implemented and tested on the `real` / `sim` / `fake` backends. The agent-tools layer (`ReachyMiniTools`, exposing the same verbs as functions an LLM runtime can call) is designed but not built yet. See [specs/_index.md](specs/_index.md) for per-spec status.
+> **Status: layers 0–1 built.** The connection seam, `ReachyMiniApi`, the audio/media session, the declarative config, and the bridge-owned daemon lifecycle (sim, or a USB-attached robot) are implemented and tested on the `real` / `sim` / `fake` backends. The agent-tools layer (`ReachyMiniTools`, exposing the same verbs as functions an LLM runtime can call) is designed but not built yet. See [specs/_index.md](specs/_index.md) for per-spec status.
 
 ## What's in the repo
 
 | Path | What it is |
 |---|---|
-| [src/reachy_mini_bridge/](src/reachy_mini_bridge/) | The library: `api.py` (the verbs), `config.py`, `audio.py` (speech out, mic in), `daemon.py` (sim daemon lifecycle), `robot.py` + `fake_reachy_mini.py` (the backend seam), `testing/` (a pytest harness for your own e2e tests), `tools.py` (placeholder) |
+| [src/reachy_mini_bridge/](src/reachy_mini_bridge/) | The library: `api.py` (the verbs), `config.py`, `audio.py` (speech out, mic in), `daemon.py` (daemon lifecycle), `robot.py` + `fake_reachy_mini.py` (the backend seam), `testing/` (a pytest harness for your own e2e tests), `tools.py` (placeholder) |
 | [config.example.json](config.example.json) | Every config field with placeholder values |
 | [specs/](specs/) | Design docs, one per concept, each with a status — the source of truth for how things are meant to work |
 | [plans/](plans/) | Implementation plans that turned those specs into code |
@@ -101,7 +101,7 @@ Routing both directions through the bridge is what keeps the robot's hardware ec
 
 | Backend | What it drives | Needs |
 |---|---|---|
-| `real` *(default)* | The physical robot via its daemon | The robot reachable at `host:port` |
+| `real` *(default)* | The physical robot via its daemon | The robot reachable at `host:port`; for a robot plugged in over USB, the bridge can spawn its daemon for you |
 | `sim` | The upstream MuJoCo mockup | The `sim` extra; a daemon you run, or one the bridge spawns for you |
 | `fake` | A first-party in-process stand-in that records every command and returns synthetic audio and frames | Nothing — offline and deterministic; powers the unit tests |
 
@@ -121,7 +121,7 @@ Routing both directions through the bridge is what keeps the robot's hardware ec
 ```
 
 - `robot` — keyword arguments forwarded verbatim to upstream `ReachyMini(...)`; ignored on `fake`, so one file switches backends by changing `backend` alone.
-- `daemon` — `sim` only. `"spawn": "auto"` reuses a daemon already listening at `host:port` or spawns a headless MuJoCo daemon and stops it on exit; `"always"` insists on spawning; `"never"` (default) only connects. `"headless": false` opens the viewer.
+- `daemon` — `sim`, or `real` for a robot plugged into this machine over USB (loopback `host` only). `"spawn": "auto"` reuses a daemon already listening at `host:port` or spawns one — a headless MuJoCo daemon for `sim`, the robot's hardware daemon for `real` (it wakes the robot, and puts it to sleep on exit) — and stops it on exit; `"always"` insists on spawning; `"never"` (default) only connects, which is what a wireless robot needs. `"headless": false` opens the MuJoCo viewer; `headless` and `scene` play no part on `real`.
 - `tts` — the tts-engine module block that builds the default voice for `say`.
 - `audio` — the XVF3800 mic-array profile applied on connect.
 - `wobbling` — sways the head with every sound the robot plays, from entry until exit (default `true`); `false` keeps the head still, and `set_wobbling` changes it at runtime.

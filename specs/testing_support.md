@@ -97,4 +97,4 @@ A consumer-facing guide (`docs/testing-with-the-bridge.md`, linked from the [REA
 
 ## Open questions
 
-1. **Consumer daemon knobs.** Beyond the env vars above, some consumer may want the harness to use a MuJoCo scene or a preloaded-datasets daemon. The knobs exist on `DaemonConfig` ([config.md](config.md)); whether the harness exposes them (env vars, or a `DaemonConfig` a consumer's conftest hands in) is deferred until one actually needs it — the borrow-or-spawn-sim path with the current env vars covers the known cases. (A genuine deferral, not a load-bearing unknown.)
+1. **Consumer daemon knobs.** Beyond the env vars above, some consumer may want the harness to use a MuJoCo scene or a daemon that skips dataset preloading. The knobs exist on `DaemonConfig` ([config.md](config.md)); whether the harness exposes them (env vars, or a `DaemonConfig` a consumer's conftest hands in) is deferred until one actually needs it — the borrow-or-spawn-sim path with the current env vars covers the known cases. (A genuine deferral, not a load-bearing unknown.)

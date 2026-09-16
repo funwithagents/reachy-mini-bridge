@@ -78,14 +78,14 @@ The keyword arguments for upstream's `reachy_mini.ReachyMini(...)` constructor (
 
 ### `daemon` block → `DaemonConfig`
 
-How the bridge brings up the daemon the robot client talks to. Behavior is specified in [daemon.md](daemon.md); this block is its configuration.
+How the bridge brings up the daemon the robot client talks to — the MuJoCo daemon for `sim`, the hardware daemon of a robot attached to this machine over USB for `real`. Behavior is specified in [daemon.md](daemon.md); this block is its configuration.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `spawn` | `"never"` \| `"auto"` \| `"always"` | `"never"` | `never`: connect only, to a daemon someone else runs. `auto`: reuse a daemon already ready at `robot.host:port`, else spawn one and own its teardown. `always`: spawn and own one; the port already in use is an error. |
-| `headless` | bool | `true` | `true` launches the headless MuJoCo daemon (motion + audio, no camera on macOS); `false` launches the viewer under `mjpython` (adds the camera's GL context; needs an unlocked GUI session). |
-| `scene` | string \| null | `null` | MuJoCo scene name, passed as `--scene` when set. |
-| `preload_datasets` | bool | `false` | `false` passes `--no-preload-datasets` (faster startup; the emotions library then loads on first use). |
+| `headless` | bool | `true` | `sim` only. `true` launches the headless MuJoCo daemon (motion + audio, no camera on macOS); `false` launches the viewer under `mjpython` (adds the camera's GL context; needs an unlocked GUI session). |
+| `scene` | string \| null | `null` | `sim` only. MuJoCo scene name, passed as `--scene` when set. |
+| `preload_datasets` | bool | `true` | `true` passes `--preload-datasets`: the daemon downloads the recorded-move datasets (emotions, dances) in the background after it starts, so the first `play_emotion` does not wait on a download; readiness is not delayed. `false` passes `--no-preload-datasets` (the datasets then load on first use). |
 | `startup_timeout` | number | `45.0` | Seconds to wait for a spawned or booting daemon to become ready. |
 
 ```python
@@ -94,11 +94,13 @@ class DaemonConfig:
     spawn: str = "never"
     headless: bool = True
     scene: str | None = None
-    preload_datasets: bool = False
+    preload_datasets: bool = True
     startup_timeout: float = 45.0
 ```
 
-`spawn` other than `"never"` is valid only with `backend == "sim"`: a real robot runs its own daemon, and `fake` has none. Any other combination is a `ConfigError`.
+`spawn` other than `"never"` is valid with `backend` `"sim"` or `"real"`; with `fake`, which has no daemon, it is a `ConfigError`. For `real` the bridge spawns the daemon of a robot plugged into this machine (a Lite over USB); a wireless robot runs its own daemon on the robot, so a config for one leaves `spawn` at `"never"` and points `robot.host` at it.
+
+The fields that apply depend on the backend: `spawn`, `preload_datasets` and `startup_timeout` apply to both; `headless` and `scene` are MuJoCo knobs that play no part on `real`. They are accepted there, so one file switches `sim` ↔ `real` by changing `backend` alone.
 
 ### `tts` block — a tts-engine `engine` block, verbatim
 
@@ -138,7 +140,7 @@ All enforced by `ReachyMiniConfig.from_dict` (delegating to `DaemonConfig.from_d
 - Invalid JSON raises `ConfigError` (with the file path from `from_json_file`).
 - The top-level value and the `robot`, `daemon`, `tts`, and `audio` blocks must be JSON objects (`tts` may be `null`); `backend` and `wobbling` are the two top-level scalars. Shape failures raise `ConfigError`, never a raw `AttributeError` / `TypeError`.
 - Unknown top-level keys, and unknown keys inside `daemon` / `audio`, raise `ConfigError` naming the key (the blocks are ours, so a typo is caught). Unknown keys inside `robot` raise `ConfigError` per the upstream-signature check above; `tts.module` is left to tts-engine.
-- `backend` ∈ {`real`, `sim`, `fake`}; `daemon.spawn` ∈ {`never`, `auto`, `always`}; `daemon.spawn != "never"` requires `backend == "sim"`.
+- `backend` ∈ {`real`, `sim`, `fake`}; `daemon.spawn` ∈ {`never`, `auto`, `always`}; `daemon.spawn != "never"` requires `backend` `sim` or `real`.
 - `daemon.headless` / `daemon.preload_datasets` are booleans; `daemon.scene` a non-empty string or `null`; `daemon.startup_timeout` a positive number other than `bool`.
 - `robot` must not contain `use_sim` or `spawn_daemon`; with `daemon.spawn != "never"`, `robot.host` (if given) must be a loopback address.
 - `tts`, when not `null`, is an object with a `module` object whose `type` is a non-empty string.
@@ -149,7 +151,7 @@ All enforced by `ReachyMiniConfig.from_dict` (delegating to `DaemonConfig.from_d
 
 - **[api.md](api.md):** `ReachyMiniApi` is constructed from a `ReachyMiniConfig` (or a backend-string shorthand for one), mirrors the `from_*` trio, and applies `wobbling` on entry.
 - **[robot.md](robot.md):** the `robot` block is what `build_robot(backend, **robot)` forwards.
-- **[daemon.md](daemon.md):** the `daemon` block configures the bridge-owned daemon lifecycle.
+- **[daemon.md](daemon.md):** the `daemon` block configures the bridge-owned daemon lifecycle; `backend` selects its launch recipe.
 - **[audio.md](audio.md):** the `tts` block builds the default `TTSEngineSynthesizer`; `audio.xvf3800` is the session's `audio_config`; the top-level `wobbling` arms the head wobbler on the speaker path.
 - **[testing_support.md](testing_support.md):** the `live_api` fixture builds its api from a `ReachyMiniConfig` whose `robot` block carries the harness's connection options.
 

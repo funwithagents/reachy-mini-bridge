@@ -229,7 +229,10 @@ class ReachyMiniApi:
             if cfg.manages_daemon:
                 opts = cfg.effective_robot_options()
                 daemon_cm = _daemon.managed_daemon(
-                    cfg.daemon, host=opts["host"], port=opts["port"]
+                    cfg.daemon,
+                    host=opts["host"],
+                    port=opts["port"],
+                    backend=cfg.backend,
                 )
                 await asyncio.to_thread(daemon_cm.__enter__)
                 stack.push_async_callback(

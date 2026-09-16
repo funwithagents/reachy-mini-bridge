@@ -11,7 +11,7 @@
     "spawn": "auto",
     "headless": true,
     "scene": null,
-    "preload_datasets": false,
+    "preload_datasets": true,
     "startup_timeout": 45.0
   },
   "tts": {

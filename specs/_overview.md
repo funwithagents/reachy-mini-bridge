@@ -37,7 +37,7 @@ flowchart TD
 
 The layers above are backend-agnostic — they are typed against `AnyReachyMini`, the `ReachyMini | FakeReachyMini` union alias (see [robot.md](robot.md)):
 
-- **`real`** *(default)* — the upstream `reachy_mini.ReachyMini` used directly (no wrapper), talking to the daemon and hardware.
+- **`real`** *(default)* — the upstream `reachy_mini.ReachyMini` used directly (no wrapper), talking to the daemon and hardware. For a robot plugged into this machine over USB, the bridge brings its hardware daemon up itself when asked (`daemon.spawn`), the same way as for `sim`.
 - **`sim`** — the same `ReachyMini` constructed with `use_sim=True`, driving the upstream MuJoCo mockup. Needs the `sim` extra (`reachy_mini[mujoco]`). The bridge brings the MuJoCo daemon up itself when asked (`daemon.spawn` in [config.md](config.md), lifecycle in [daemon.md](daemon.md)) — own-it-or-borrow-it, headless by default, torn down on exit.
 - **`fake`** — a first-party `FakeReachyMini` with no daemon, no hardware, no `reachy_mini` import: a duck-typed stand-in that records commands and returns synthetic perception. Powers the deterministic `tests/` tier and offline dev/demos.
 
@@ -58,6 +58,6 @@ The layers above are backend-agnostic — they are typed against `AnyReachyMini`
 ## Roadmap (next steps)
 
 1. **Done:** `robot` (+ `FakeReachyMini`), then the coupled `api` + `audio` layer — the v1 verbs over a media session, with fast `tests/` and a capability-gated `tests-e2e/` tier.
-2. **Done:** the config + daemon lifecycle ([config.md](config.md), [daemon.md](daemon.md)): the api is constructed from a `ReachyMiniConfig` (dict / JSON / file) and the bridge spawns or borrows the sim daemon itself.
+2. **Done:** the config + daemon lifecycle ([config.md](config.md), [daemon.md](daemon.md)): the api is constructed from a `ReachyMiniConfig` (dict / JSON / file) and the bridge spawns or borrows the sim daemon — or a USB-attached robot's daemon — itself.
 3. **Next:** build the `tools` layer — the v1 api verbs exposed as plain typed, docstring'd functions for an agent/LLM runtime (settle `tools.md` `Draft` → `Stable`, then its implementation plan).
 4. **Deferred (post-v1):** manual movement/gaze verbs and rich perception (see `api.md`), plus the hardware-confirmation items in `audio.md` (exact channel count on the physical XVF3800, the tuned audio profile).

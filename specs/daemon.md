@@ -12,9 +12,9 @@ tests:
 
 ## Purpose
 
-The bridge owns bringing up — and tearing down — a local `reachy-mini-daemon`: a MuJoCo one for the `sim` backend, and a hardware one for a robot plugged into this machine over USB (Reachy Mini Lite), so that a `ReachyMiniApi` whose config asks for it ([config.md](config.md) `daemon.spawn`) produces a working simulated robot in one call, and so that the shipped testing harness ([testing_support.md](testing_support.md)) — which brings up either kind — and any consumer's own tooling reuse one implementation of the launch recipes in [../docs/running-the-sim-daemon.md](../docs/running-the-sim-daemon.md).
+The bridge owns bringing up — and tearing down — a local `reachy-mini-daemon`: a MuJoCo one for the `sim` backend, and a hardware one for a robot plugged into this machine over USB (Reachy Mini Lite), so that a `ReachyMiniApi` whose config asks for it ([config.md](config.md) `daemon.spawn`) produces a working simulated or USB-attached robot in one call, and so that the shipped testing harness ([testing_support.md](testing_support.md)) — which brings up either kind — and any consumer's own tooling reuse one implementation of the launch recipes in [../docs/running-the-sim-daemon.md](../docs/running-the-sim-daemon.md).
 
-Upstream's `ReachyMini` is a *client*: it needs a separately running daemon (hardware, or the MuJoCo simulation) and connects to it in its constructor (see [../docs/reachy-mini-api.md](../docs/reachy-mini-api.md)). This module is the piece between "a config that says `sim`" and "a daemon that is ready to accept that client": it launches the right variant, waits for actual readiness, keeps the child's environment sane, and stops exactly what it started.
+Upstream's `ReachyMini` is a *client*: it needs a separately running daemon (hardware, or the MuJoCo simulation) and connects to it in its constructor (see [../docs/reachy-mini-api.md](../docs/reachy-mini-api.md)). This module is the piece between "a config that says `sim` (or `real`, for a robot on this machine)" and "a daemon that is ready to accept that client": it launches the right variant, waits for actual readiness, keeps the child's environment sane, and stops exactly what it started.
 
 ## Core concepts / Decided
 
@@ -66,20 +66,20 @@ def managed_daemon(
 
 `is_daemon_ready(host, port)` connects a plain network `reachy_mini` client with `media_backend="no_media"` (cheap; never negotiates media) and reports `client.get_status().backend_status is not None`. This is stronger than an open port or an accepted WebSocket: the daemon answers `/ws/sdk` with `403 "Daemon not ready"` until it has woken, and accepts the socket even when its MuJoCo backend failed to start (no GL context, for instance) — only a non-`None` backend status means a client can drive the robot. Any exception during the probe reads as "not ready".
 
-After spawning, `managed_daemon` polls `is_daemon_ready` once per second until `startup_timeout`. If the child exits first, it raises `DaemonError` with the exit code and the launch command; on timeout it stops the child and raises `DaemonError` (the message includes the viewer hint below when `headless` is `false`).
+After spawning, `managed_daemon` polls `is_daemon_ready` once per second until `startup_timeout`. If the child exits first, it raises `DaemonError` with the exit code and the launch command; on timeout it stops the child and raises `DaemonError` (the message includes the viewer hint below for a `sim` daemon with `headless` `false`).
 
 ### The launch command
 
 `launch_command(config, backend=...)` builds the argv. For `sim`, from the recipes in [../docs/running-the-sim-daemon.md](../docs/running-the-sim-daemon.md):
 
-- **headless** (`config.headless`, the default): `reachy-mini-daemon --sim --headless [--no-preload-datasets] [--scene <scene>]` — real MuJoCo physics, no viewer, runs anywhere (CI included); on macOS the sim camera returns `None` here (no GL context).
-- **viewer** (`headless: false`): `mjpython -m reachy_mini.daemon.app.main --sim [--no-preload-datasets] [--scene <scene>]` — opens the MuJoCo viewer, which supplies the camera's GL context and lets a person watch the sim. It needs an unlocked, interactive GUI session; a locked screen or a non-GUI process tree makes it hang or crash, and the `DaemonError` on that path says so.
+- **headless** (`config.headless`, the default): `reachy-mini-daemon --sim --headless --[no-]preload-datasets [--scene <scene>]` — real MuJoCo physics, no viewer, runs anywhere (CI included); on macOS the sim camera returns `None` here (no GL context).
+- **viewer** (`headless: false`): `mjpython -m reachy_mini.daemon.app.main --sim --[no-]preload-datasets [--scene <scene>]` — opens the MuJoCo viewer, which supplies the camera's GL context and lets a person watch the sim. It needs an unlocked, interactive GUI session; a locked screen or a non-GUI process tree makes it hang or crash, and the `DaemonError` on that path says so.
 
 For `real` — a robot attached to this machine (USB):
 
-- **hardware**: `reachy-mini-daemon [--kinematics-engine Placo] [--no-preload-datasets]` — no `--sim`; the daemon finds the robot's serial port itself, wakes the robot on start and puts it to sleep on stop. `--kinematics-engine Placo` is passed when the `placo` package is importable (`reachy-mini[placo_kinematics]`): the daemon's default engine rejects gravity compensation, and rejecting it drops the client's connection ([api.md](api.md) "Motors"). `headless` and `scene` are sim knobs and play no part.
+- **hardware**: `reachy-mini-daemon [--kinematics-engine Placo] --[no-]preload-datasets` — no `--sim`; the daemon finds the robot's serial port itself, wakes the robot on start and puts it to sleep on stop. `--kinematics-engine Placo` is passed when the `placo` package is importable (`reachy-mini[placo_kinematics]`): the daemon's default engine rejects gravity compensation, and rejecting it drops the client's connection ([api.md](api.md) "Motors"). `headless` and `scene` are sim knobs and play no part.
 
-`--no-preload-datasets` is passed when `config.preload_datasets` is `false`; `--scene` (sim) when `config.scene` is set. Media stays **on** (no `--no-media`) so audio — and, under the viewer, the camera — are available; a consumer that wants a motion-only daemon runs its own.
+`--preload-datasets` is passed when `config.preload_datasets` is `true` (the default) and `--no-preload-datasets` when it is `false` — always one of the two, because the daemon's own default is not to preload; the preload runs in the background and does not delay readiness. `--scene` (sim) when `config.scene` is set. Media stays **on** (no `--no-media`) so audio — and, under the viewer, the camera — are available; a consumer that wants a motion-only daemon runs its own.
 
 The launcher (`reachy-mini-daemon`, or `mjpython` for the viewer) is resolved on `PATH`; a missing launcher is a `DaemonError` — naming the `sim` extra (`reachy-mini-bridge[sim]`) for `sim`, and `reachy-mini` (the base dependency that ships the launcher) for `real`. The `DaemonError`s on the startup path name the backend (`sim daemon` / `real daemon`).
 
@@ -95,7 +95,7 @@ On exit, an **owned** daemon is terminated (`SIGTERM`), given 10 seconds to exit
 
 ### One implementation, two users
 
-`ReachyMiniApi.__aenter__` enters `managed_daemon` before building the robot when `daemon.spawn != "never"` ([api.md](api.md) "Lifecycle"). The shipped testing harness's private `testing/_daemon.py` is a thin wrapper over the same functions — `is_daemon_ready` for the borrow decision, `managed_daemon(spawn="auto", backend=...)` to spawn a `sim` daemon or, on a loopback address, a `real` one — translating `DaemonError` into `pytest.skip` so the live tier still skips, never fails, when the environment cannot provide a daemon ([testing_support.md](testing_support.md)).
+`ReachyMiniApi.__aenter__` enters `managed_daemon` before building the robot when `daemon.spawn != "never"`, passing the config's `backend` (`sim` or `real`) to select the recipe ([api.md](api.md) "Lifecycle"). The shipped testing harness's private `testing/_daemon.py` is a thin wrapper over the same functions — `is_daemon_ready` for the borrow decision, `managed_daemon(spawn="auto", backend=...)` to spawn a `sim` daemon or, on a loopback address, a `real` one — translating `DaemonError` into `pytest.skip` so the live tier still skips, never fails, when the environment cannot provide a daemon ([testing_support.md](testing_support.md)).
 
 ### Testable without a daemon
 
@@ -103,7 +103,7 @@ The process-spawning and readiness-probing steps are injectable seams (module-pr
 
 ## Relationship to the other specs
 
-- **[config.md](config.md):** `DaemonConfig` (the `daemon` block) is this module's input; the loopback-host rule and the `sim`-only rule are enforced there.
+- **[config.md](config.md):** `DaemonConfig` (the `daemon` block) is this module's input; the loopback-host rule and the `sim`/`real`-only rule are enforced there.
 - **[api.md](api.md):** the api's lifecycle enters `managed_daemon` first, then builds and enters the robot, then opens the media session.
 - **[robot.md](robot.md):** the readiness probe is a plain `build_robot` network client; the connection options a managed daemon needs (`network`, `local` media) are filled into the `robot` block by config.
 - **[testing_support.md](testing_support.md):** `testing/_daemon.py` wraps this module.
@@ -111,4 +111,3 @@ The process-spawning and readiness-probing steps are injectable seams (module-pr
 ## Open questions
 
 1. **Daemon output.** Whether to forward the child's stdout/stderr into the bridge's logger (at `DEBUG`) instead of discarding it, for diagnosing failed launches in-process, is deferred until the discard-plus-`DaemonError` path proves insufficient in practice.
-2. **A `real` daemon from `ReachyMiniApi`.** The launch recipe and lifecycle for a USB robot exist (above) and the testing harness uses them; a `ReachyMiniApi` config still spawns only for `sim` ([config.md](config.md)). Opening `daemon.spawn` to `backend: "real"` is deferred until an application needs the api, rather than the test harness, to start the robot's daemon.

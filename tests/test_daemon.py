@@ -78,22 +78,24 @@ def harness(monkeypatch: pytest.MonkeyPatch) -> _Harness:
 
 def test_launch_command_headless_and_viewer(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(daemon.shutil, "which", lambda name: f"/bin/{name}")
+    # Preloading is the default and always explicit: the daemon's own default is off.
     assert daemon.launch_command(DaemonConfig()) == [
         "/bin/reachy-mini-daemon",
         "--sim",
         "--headless",
-        "--no-preload-datasets",
+        "--preload-datasets",
     ]
-    assert daemon.launch_command(DaemonConfig(preload_datasets=True)) == [
+    assert daemon.launch_command(DaemonConfig(preload_datasets=False)) == [
         "/bin/reachy-mini-daemon",
         "--sim",
         "--headless",
+        "--no-preload-datasets",
     ]
     assert daemon.launch_command(DaemonConfig(scene="minimal")) == [
         "/bin/reachy-mini-daemon",
         "--sim",
         "--headless",
-        "--no-preload-datasets",
+        "--preload-datasets",
         "--scene",
         "minimal",
     ]
@@ -102,7 +104,7 @@ def test_launch_command_headless_and_viewer(monkeypatch: pytest.MonkeyPatch) -> 
         "-m",
         "reachy_mini.daemon.app.main",
         "--sim",
-        "--no-preload-datasets",
+        "--preload-datasets",
         "--scene",
         "minimal",
     ]
@@ -122,10 +124,10 @@ def test_launch_command_real_robot(monkeypatch: pytest.MonkeyPatch) -> None:
     # No --sim; the sim-only knobs (headless, scene) play no part.
     assert daemon.launch_command(
         DaemonConfig(headless=False, scene="minimal"), backend="real"
-    ) == ["/bin/reachy-mini-daemon", "--no-preload-datasets"]
+    ) == ["/bin/reachy-mini-daemon", "--preload-datasets"]
     assert daemon.launch_command(
-        DaemonConfig(preload_datasets=True), backend="real"
-    ) == ["/bin/reachy-mini-daemon"]
+        DaemonConfig(preload_datasets=False), backend="real"
+    ) == ["/bin/reachy-mini-daemon", "--no-preload-datasets"]
 
 
 def test_launch_command_real_uses_placo_when_installed(
@@ -137,7 +139,7 @@ def test_launch_command_real_uses_placo_when_installed(
         "/bin/reachy-mini-daemon",
         "--kinematics-engine",
         "Placo",
-        "--no-preload-datasets",
+        "--preload-datasets",
     ]
 
 
@@ -211,7 +213,7 @@ def test_auto_spawns_the_real_recipe_for_a_real_backend(harness: _Harness) -> No
     with daemon.managed_daemon(_AUTO, backend="real") as handle:
         assert handle.owned is True
     (cmd, env), *_ = harness.spawned
-    assert cmd == ["/bin/reachy-mini-daemon", "--no-preload-datasets"]
+    assert cmd == ["/bin/reachy-mini-daemon", "--preload-datasets"]
     assert not any(k in env for k in daemon._GST_BUNDLE_ENV)
     assert harness.proc.calls == ["terminate", "wait"]
 

@@ -26,7 +26,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Protocol
 
-from .config import DaemonConfig
+from .config import DAEMON_BACKENDS, DaemonConfig
 from .errors import DaemonError
 from .robot import build_robot
 
@@ -37,8 +37,6 @@ __all__ = [
     "managed_daemon",
     "scrubbed_env",
 ]
-
-DAEMON_BACKENDS = ("sim", "real")
 
 _POLL_INTERVAL_S = 1.0
 _TERMINATE_GRACE_S = 10.0
@@ -105,10 +103,10 @@ def launch_command(config: DaemonConfig, *, backend: str = "sim") -> list[str]:
     """The argv for a ``backend`` daemon per ``config``.
 
     ``sim`` (docs/running-the-sim-daemon.md) — headless: ``reachy-mini-daemon --sim
-    --headless [--no-preload-datasets] [--scene S]``; viewer: ``mjpython -m
+    --headless --[no-]preload-datasets [--scene S]``; viewer: ``mjpython -m
     reachy_mini.daemon.app.main --sim [...]`` (supplies the camera's GL context; needs a
     GUI session). ``real`` — a USB-attached robot: ``reachy-mini-daemon [--kinematics-engine
-    Placo] [--no-preload-datasets]``, Placo whenever it is importable (gravity compensation
+    Placo] --[no-]preload-datasets``, Placo whenever it is importable (gravity compensation
     needs it). Media stays on. Raises ``DaemonError`` when the launcher is not on ``PATH``.
     """
     _check_backend(backend)
@@ -122,8 +120,7 @@ def launch_command(config: DaemonConfig, *, backend: str = "sim") -> list[str]:
         cmd = [exe]
         if _placo_available():
             cmd += ["--kinematics-engine", "Placo"]
-        if not config.preload_datasets:
-            cmd.append("--no-preload-datasets")
+        cmd.append(_preload_flag(config))
         return cmd
     if config.headless:
         exe = shutil.which("reachy-mini-daemon")
@@ -141,11 +138,15 @@ def launch_command(config: DaemonConfig, *, backend: str = "sim") -> list[str]:
                 "extra (reachy-mini-bridge[sim])"
             )
         cmd = [exe, "-m", "reachy_mini.daemon.app.main", "--sim"]
-    if not config.preload_datasets:
-        cmd.append("--no-preload-datasets")
+    cmd.append(_preload_flag(config))
     if config.scene is not None:
         cmd += ["--scene", config.scene]
     return cmd
+
+
+def _preload_flag(config: DaemonConfig) -> str:
+    # Always explicit: the daemon's own default is not to preload.
+    return "--preload-datasets" if config.preload_datasets else "--no-preload-datasets"
 
 
 # --- probes and process seams (patched by tests) -----------------------------------

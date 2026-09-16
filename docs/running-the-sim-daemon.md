@@ -8,15 +8,16 @@ The bridge implements these recipes in `reachy_mini_bridge.daemon` (spec:
 [../specs/daemon.md](../specs/daemon.md)): a `ReachyMiniConfig` with `"backend": "sim"`
 and `"daemon": {"spawn": "auto"}` makes `ReachyMiniApi` spawn the headless daemon below
 (or the viewer with `"headless": false`), wait for readiness, and stop it on exit — and the
-e2e harness uses the same code. The commands here are what it runs, for when you want to
-start a daemon by hand.
+e2e harness uses the same code. `"backend": "real"` with the same `daemon` block does the
+same for a robot plugged into this machine over USB (see "Real robot" below). The commands
+here are what it runs, for when you want to start a daemon by hand.
 
 ### Headless sim — CI (motion + audio, no camera)
 
 Real MuJoCo physics, no viewer, no display — runs anywhere:
 
 ```
-reachy-mini-daemon --sim --headless --no-preload-datasets
+reachy-mini-daemon --sim --headless --preload-datasets
 ```
 
 - Serves `http://127.0.0.1:8000` in ~1s. Add `--no-media` for a pure **motion** daemon (no camera/audio) — the lightest option for motion-only work; the e2e harness spawns media-on so it can probe audio.
@@ -28,7 +29,7 @@ reachy-mini-daemon --sim --headless --no-preload-datasets
 Drop `--headless` to open the MuJoCo viewer. The viewer supplies a **GL context** (so `get_frame()` works) and lets you watch the sim as a robot stand-in. It needs an **interactive GUI session**; on **macOS** it must run under `mjpython`:
 
 ```
-mjpython -m reachy_mini.daemon.app.main --sim --scene minimal --no-preload-datasets
+mjpython -m reachy_mini.daemon.app.main --sim --scene minimal --preload-datasets
 ```
 
 From a real Terminal (your GUI session) this opens the window. From a **background/agent/CI** process tree it **segfaults (exit 139)** at window creation — the viewer only opens inside a GUI (Aqua) session.
@@ -39,12 +40,20 @@ To launch it from a non-GUI shell while you're logged in graphically:
 
 ```
 launchctl asuser $(id -u) \
-  <venv>/bin/mjpython -m reachy_mini.daemon.app.main --sim --scene minimal --no-preload-datasets
+  <venv>/bin/mjpython -m reachy_mini.daemon.app.main --sim --scene minimal --preload-datasets
 ```
 
 ### Real robot
 
-Nothing to start — the robot runs its own daemon. Point the client at it (`connection_mode="network"`, the robot's host); everything is available, including **hardware** AEC, camera, and DoA.
+A wireless robot runs its own daemon — nothing to start. Point the client at it (`connection_mode="network"`, the robot's host); everything is available, including **hardware** AEC, camera, and DoA.
+
+A robot plugged into this machine over USB (Reachy Mini Lite) needs the daemon running here:
+
+```
+reachy-mini-daemon --kinematics-engine Placo --preload-datasets
+```
+
+It finds the robot's serial port itself, wakes the robot on start and puts it to sleep on stop (about 8 s). Pass `--kinematics-engine Placo` only with `reachy-mini[placo_kinematics]` installed — gravity compensation needs it. A `ReachyMiniConfig` with `"backend": "real"` and `"daemon": {"spawn": "auto"}` runs this for you.
 
 ## Connecting the client
 

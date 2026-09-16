@@ -359,8 +359,8 @@ def test_play_emotion_plays_a_real_move(
 ) -> None:
     """Actually play an emotion: enumerate the library, then move the robot.
 
-    The sim daemon launches `--no-preload-datasets`, so the client-side emotions library
-    may not be in the local HuggingFace cache. This opt-in live test **downloads it on a
+    The daemon preloads the datasets in the background, so on a fresh machine the
+    client-side emotions library may not be in the local HuggingFace cache yet. This opt-in live test **downloads it on a
     cache miss** (a one-time cost) so it genuinely exercises the move, skipping only when
     the dataset truly can't be fetched (offline). On the headfull-viewer sim you should
     see the robot perform the move.

@@ -44,7 +44,7 @@ def test_from_json_file_round_trips_the_repo_example() -> None:
         spawn="auto",
         headless=True,
         scene=None,
-        preload_datasets=False,
+        preload_datasets=True,
         startup_timeout=45.0,
     )
     assert cfg.tts is not None
@@ -131,19 +131,45 @@ def test_reserved_robot_keys_rejected() -> None:
         ReachyMiniConfig.from_dict({"backend": "sim", "robot": {"spawn_daemon": True}})
 
 
-def test_spawn_requires_sim_backend() -> None:
-    for backend in ("real", "fake"):
-        with pytest.raises(ConfigError, match="sim"):
-            ReachyMiniConfig.from_dict(
-                {"backend": backend, "daemon": {"spawn": "auto"}}
-            )
-    cfg = ReachyMiniConfig.from_dict({"backend": "sim", "daemon": {"spawn": "always"}})
-    assert cfg.daemon.spawn == "always"
+def test_spawn_requires_a_backend_with_a_daemon() -> None:
+    with pytest.raises(ConfigError, match="'fake' has no daemon"):
+        ReachyMiniConfig.from_dict({"backend": "fake", "daemon": {"spawn": "auto"}})
+    for backend in ("sim", "real"):
+        cfg = ReachyMiniConfig.from_dict(
+            {"backend": backend, "daemon": {"spawn": "always"}}
+        )
+        assert cfg.daemon.spawn == "always"
+        assert cfg.manages_daemon
     with pytest.raises(ConfigError, match="daemon.spawn"):
         ReachyMiniConfig.from_dict({"backend": "sim", "daemon": {"spawn": "maybe"}})
 
 
+def test_a_sim_config_switches_to_a_spawned_real_daemon_by_backend_alone() -> None:
+    sim = {
+        "backend": "sim",
+        "daemon": {
+            "spawn": "auto",
+            "headless": False,
+            "scene": "minimal",
+            "preload_datasets": True,
+            "startup_timeout": 60,
+        },
+    }
+    real = ReachyMiniConfig.from_dict({**sim, "backend": "real"})
+    assert real.backend == "real"
+    assert real.daemon == ReachyMiniConfig.from_dict(sim).daemon
+
+
 def test_spawn_requires_loopback_host() -> None:
+    # A wireless robot runs its own daemon: the bridge never spawns one elsewhere.
+    with pytest.raises(ConfigError, match="loopback"):
+        ReachyMiniConfig.from_dict(
+            {
+                "backend": "real",
+                "daemon": {"spawn": "auto"},
+                "robot": {"host": "192.168.1.42"},
+            }
+        )
     base = {"backend": "sim", "daemon": {"spawn": "auto"}}
     with pytest.raises(ConfigError, match="loopback"):
         ReachyMiniConfig.from_dict({**base, "robot": {"host": "10.0.0.5"}})
@@ -180,6 +206,8 @@ def test_effective_robot_options_fill_in_for_a_managed_daemon() -> None:
         "media_backend": "no_media",
         "timeout": 1.0,
     }
+    real = ReachyMiniConfig.from_dict({"backend": "real", "daemon": {"spawn": "auto"}})
+    assert real.effective_robot_options() == managed.effective_robot_options()
     plain = ReachyMiniConfig.from_dict({"backend": "sim", "robot": {"timeout": 1.0}})
     assert not plain.manages_daemon
     assert plain.effective_robot_options() == {"timeout": 1.0}

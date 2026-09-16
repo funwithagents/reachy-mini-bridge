@@ -139,6 +139,7 @@ daemon you start yourself needs `--kinematics-engine Placo`. Without it,
 macOS viewer notes.
 
 **Outside pytest,** the same lifecycle is available to your application: a
-`ReachyMiniConfig` with `"backend": "sim"` and `"daemon": {"spawn": "auto"}` makes
-`async with ReachyMiniApi(config)` spawn (or borrow) the daemon itself — see
+`ReachyMiniConfig` with `"backend": "sim"` (or `"real"`, for a robot plugged in over USB)
+and `"daemon": {"spawn": "auto"}` makes `async with ReachyMiniApi(config)` spawn (or
+borrow) the daemon itself — see
 [specs/config.md](../specs/config.md) and [specs/daemon.md](../specs/daemon.md).

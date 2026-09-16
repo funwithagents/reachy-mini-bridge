@@ -245,8 +245,10 @@ class _Recorder:
         self.fake = FakeReachyMini()
 
     @contextmanager
-    def managed_daemon(self, config: object, *, host: str, port: int) -> Iterator[None]:
-        self.events.append(f"daemon-enter {host}:{port}")
+    def managed_daemon(
+        self, config: object, *, host: str, port: int, backend: str
+    ) -> Iterator[None]:
+        self.events.append(f"daemon-enter {backend} {host}:{port}")
         try:
             yield None
         finally:
@@ -279,13 +281,35 @@ def test_managed_daemon_enters_before_the_robot_and_exits_after(
     asyncio.run(run())
     names = [n for n, _ in rec.fake.commands]
     assert rec.events == [
-        "daemon-enter 127.0.0.1:8000",
+        "daemon-enter sim 127.0.0.1:8000",
         "build sim ['connection_mode', 'host', 'media_backend', 'port']",
         "body",
         "daemon-exit",
     ]
     assert names[0] == "media.start_recording"  # the robot is entered, then media opens
     assert names.index("media.stop_playing") < names.index("__exit__")
+
+
+def test_a_real_config_spawns_the_real_daemon_before_the_robot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rec = _Recorder()
+    _install(monkeypatch, rec)
+    config = ReachyMiniConfig.from_dict(
+        {"backend": "real", "daemon": {"spawn": "always"}, "robot": {"port": 9100}}
+    )
+
+    async def run() -> None:
+        async with ReachyMiniApi(config):
+            rec.events.append("body")
+
+    asyncio.run(run())
+    assert rec.events == [
+        "daemon-enter real 127.0.0.1:9100",
+        "build real ['connection_mode', 'host', 'media_backend', 'port']",
+        "body",
+        "daemon-exit",
+    ]
 
 
 def test_robot_build_failure_exits_the_daemon(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -304,7 +328,7 @@ def test_robot_build_failure_exits_the_daemon(monkeypatch: pytest.MonkeyPatch) -
 
     with pytest.raises(ConnectionError):
         asyncio.run(run())
-    assert rec.events == ["daemon-enter 127.0.0.1:8000", "daemon-exit"]
+    assert rec.events == ["daemon-enter sim 127.0.0.1:8000", "daemon-exit"]
     with pytest.raises(BridgeError):
         _ = api.robot
 
