@@ -53,7 +53,14 @@ The fake lives in its own file because it's a substantial chunk of stand-in code
 
 ### `FakeReachyMini` — a first-party stand-in
 
-An in-package class (in `fake_reachy_mini.py`) that implements the slice of `ReachyMini` the bridge uses and imports no `reachy_mini` itself. It records the commands it receives (so tests assert on them) and returns synthetic perception / audio (a generated frame, zeroed IMU, synthetic mic samples). It is the backbone of the deterministic `tests/` tier (see [testing.md](testing.md)) and runs the full api/audio stack offline for development and demos — no daemon, hardware, or network. (The `robot.py` module imports `reachy_mini` at module load for the union alias and `build_robot`; the fake itself needs no live daemon to run.)
+An in-package class (in `fake_reachy_mini.py`) that implements the slice of `ReachyMini` the bridge uses and imports no `reachy_mini` itself. It records the commands it receives (so tests assert on them) and returns synthetic perception / audio (a generated frame, synthetic mic samples). It is the backbone of the deterministic `tests/` tier (see [testing.md](testing.md)) and runs the full api/audio stack offline for development and demos — no daemon, hardware, or network. (The `robot.py` module imports `reachy_mini` at module load for the union alias and `build_robot`; the fake itself needs no live daemon to run.)
+
+Its fidelity is set by what the api/audio tests exercise:
+
+- **Media format matches the real robot:** float32 `(160, 2)` capture chunks (zeros) at 16 kHz, 2 input and 2 output channels — the values the sim and a Reachy Mini Lite report ([audio.md](audio.md) "Background") — so the mono downmix and raw passthrough both run in `tests/`.
+- **Camera:** a deterministic 64×48 BGR `uint8` horizontal gradient, always ready (never `None`, unlike the daemon), so tests assert real structure.
+- **Motion:** moves, head tracking, wobbling and motor toggles are recorded as commands; nothing is simulated kinematically. The motor setters update the mode its daemon-client stand-in reports.
+- **Emotions:** the api substitutes a small stubbed library on the `fake` backend, with no Hugging Face access.
 
 ### Construction from a backend string
 
@@ -78,11 +85,15 @@ The members the v1 [api.md](api.md) / [audio.md](audio.md) surface calls — the
 - **Media** (see [audio.md](audio.md)): `media.start_recording` / `stop_recording`, `media.get_audio_sample`, `media.get_input_audio_samplerate` / `get_input_channels`, `media.start_playing` / `stop_playing`, `media.push_audio_sample`, `media.get_output_audio_samplerate` / `get_output_channels`, `media.play_sound`, `media.audio.apply_audio_config`, `media.audio.clear_player`, and `media.get_frame` (camera, for `get_camera_frame` — returns a BGR frame or `None`; see [api.md](api.md)).
 - **Lifecycle:** context-manager enter/exit.
 
-Signatures mirror the installed `reachy_mini` (1.10). pyright checks call compatibility through the union but not parameter defaults, so a parity test in `tests/test_robot.py` compares each consumed member's parameter names and defaults (via `inspect.signature`) against its upstream counterpart. the media members' dtype and rates are confirmed on the sim, with the physical channel count still pending hardware (see open questions).
+Signatures mirror the installed `reachy_mini` (1.10). pyright checks call compatibility through the union but not parameter defaults, so a parity test in `tests/test_robot.py` compares each consumed member's parameter names and defaults (via `inspect.signature`) against its upstream counterpart. The media members' dtype, rates, and channel count (float32, 16 kHz, 2 channels) are confirmed on the sim and on a real Reachy Mini Lite (see [audio.md](audio.md) "Background").
 
 ### The upstream-typed returns
 
 A few members return upstream types — the daemon `client` and its `client.get_status() -> DaemonStatus`, and the nested `media` / `media.audio` objects. `FakeReachyMini` exposes plain stand-ins with the same attribute paths the Api reads (a `client` with `get_status()` → a status whose `.backend_status.motor_control_mode` is a plain `str` and whose `simulation_enabled` / `mockup_sim_enabled` mirror the client's; a `media` with an `.audio`), which keeps the fake free of `reachy_mini` imports. Under the union, pyright verifies each accessed attribute exists on both the real type and the fake stand-in. Two boundary details the Api handles: real `motor_control_mode` is a `str`-`Enum` (the fake's a plain `str`), and real `backend_status` is `Optional` (guard for `None` before reading the mode).
+
+### Errors
+
+The seam raises upstream `reachy_mini`'s own connection errors unwrapped. The bridge's error hierarchy (`BridgeError` and its subclasses in `errors.py`) belongs to the layers above — see [api.md](api.md) "Errors".
 
 ### Extending the seam
 
@@ -90,6 +101,4 @@ A few members return upstream types — the daemon `client` and its `client.get_
 
 ## Open questions
 
-1. **Physical channel count.** The member *list* is fixed by the v1 api/audio surface (above) and the parameter/return signatures mirror the installed `reachy_mini` 1.10. What remains is the **channel count the media capture members report on real hardware** (the fake assumes 2 / stereo) — the same fact [audio.md](audio.md) open question 1 tracks; dtype and rates are confirmed on the sim.
-2. **Fake fidelity.** How faithful `FakeReachyMini`'s synthetic perception/audio needs to be (a static placeholder frame, or data that exercises face-tracking and the say/mic loop) is set by the implementation plan, driven by what the api/audio tests need.
-3. ~~**Error taxonomy.**~~ **Resolved:** the bridge ships a small hierarchy in `errors.py` — `BridgeError(RuntimeError)` as the base, with `MotorsNotEnabledError` for the motors-disabled state error (see [api.md](api.md) resolved open question 1). `ValueError` stays reserved for out-of-range input validation. Connection-error types remain upstream `reachy_mini`'s until a concrete need to wrap them appears.
+None currently.

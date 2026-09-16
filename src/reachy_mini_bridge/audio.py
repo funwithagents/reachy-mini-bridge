@@ -140,7 +140,7 @@ class MediaSession:
     ) -> None:
         self._robot = robot
         # The XVF3800 tuning profile applied on start. Left None by default (firmware
-        # defaults) until the concrete profile settles — specs/audio.md open question 3.
+        # defaults) until the concrete profile settles — specs/audio.md open question 2.
         self._audio_config = audio_config
         # The stops to run at close; the session is open exactly while this is set.
         self._exit_stack: AsyncExitStack | None = None

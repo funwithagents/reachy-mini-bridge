@@ -60,4 +60,4 @@ The layers above are backend-agnostic — they are typed against `AnyReachyMini`
 1. **Done:** `robot` (+ `FakeReachyMini`), then the coupled `api` + `audio` layer — the v1 verbs over a media session, with fast `tests/` and a capability-gated `tests-e2e/` tier.
 2. **Done:** the config + daemon lifecycle ([config.md](config.md), [daemon.md](daemon.md)): the api is constructed from a `ReachyMiniConfig` (dict / JSON / file) and the bridge spawns or borrows the sim daemon — or a USB-attached robot's daemon — itself.
 3. **Next:** build the `tools` layer — the v1 api verbs exposed as plain typed, docstring'd functions for an agent/LLM runtime (settle `tools.md` `Draft` → `Stable`, then its implementation plan).
-4. **Deferred (post-v1):** manual movement/gaze verbs and rich perception (see `api.md`), plus the hardware-confirmation items in `audio.md` (exact channel count on the physical XVF3800, the tuned audio profile).
+4. **Deferred (post-v1):** manual movement/gaze verbs and rich perception (see `api.md`), plus the hardware-tuning items in `audio.md` (the default XVF3800 profile, the full-duplex default).

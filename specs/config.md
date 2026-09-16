@@ -158,4 +158,4 @@ All enforced by `ReachyMiniConfig.from_dict` (delegating to `DaemonConfig.from_d
 ## Open questions
 
 1. **Environment-variable interpolation in config files.** Whether string values in the file may reference environment variables (e.g. a `${REACHY_MINI_HOST}` for `robot.host`) is deferred until a deployment needs it; tts-engine's modules already resolve their own `*_env` keys.
-2. **Named XVF3800 profiles.** Whether `audio.xvf3800` also accepts a profile *name* (e.g. `"conversation"`) resolving to a bridge-shipped tuned profile is deferred with [audio.md](audio.md) open question 3 — it needs hardware to tune against.
+2. **Named XVF3800 profiles.** Whether `audio.xvf3800` also accepts a profile *name* (e.g. `"conversation"`) resolving to a bridge-shipped tuned profile is deferred with [audio.md](audio.md) open question 2 — it needs hardware to tune against.

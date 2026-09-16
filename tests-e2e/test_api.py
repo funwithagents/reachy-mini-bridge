@@ -52,15 +52,87 @@ class _ToneSynth:
             yield np.full(1600, self._amplitude, dtype=np.float32)
 
 
+async def _motors_state_after_set(api: ReachyMiniApi, state: str) -> str:
+    """Set a motor state, then read it back once the daemon status reflects it.
+
+    The daemon's status lags a switch by a fraction of a second, so the read polls for up
+    to a second; a target that ignores the state (the sim) reads back its old one.
+    """
+    await api.set_motors_state(state)
+    deadline = time.monotonic() + 1.0
+    while (mode := await api.get_motors_state()) != state:
+        if time.monotonic() > deadline:
+            break
+        await asyncio.sleep(0.1)
+    return mode
+
+
+def test_motor_state_reads_and_dispatches_over_the_live_path(
+    live_api: tuple[ReachyMiniApi, frozenset[str]],
+) -> None:
+    """`get_motors_state` reads a valid mode and each `set_motors_state` reaches the daemon.
+
+    The e2e value here is that the read (a real daemon status round-trip) and each set
+    dispatch work over the network — not that a given target *honors* a state. Hardware
+    honors `disabled`/`enabled`, but the sim daemon ignores every motor-state change:
+    `disabled` keeps reporting `enabled` (headless and headfull viewer). That is why this
+    asserts validity, not equality; the fast tier pins the exact dispatch→state mapping
+    deterministically on the fake. Gravity compensation has its own capability-gated test
+    below: sending it to a daemon that can't hold it drops the connection.
+
+    First in the module on purpose, and gentle on hardware: the head is lowered to the
+    SDK's sleep pose before torque goes off (so a robot that honors `disabled` rests
+    rather than drops), then raised back to the initial (awake) pose once torque is on
+    again, so every later test starts upright.
+    """
+    from reachy_mini.reachy_mini import (
+        INIT_ANTENNAS_JOINT_POSITIONS,
+        INIT_HEAD_POSE,
+        SLEEP_ANTENNAS_JOINT_POSITIONS,
+        SLEEP_HEAD_POSE,
+    )
+
+    requires_caps(live_api, "motion")
+    api, _caps = live_api
+    # goto_target is upstream-only (not on the fake); this tier is live-only.
+    robot: Any = api.robot
+    valid = {"enabled", "disabled", "gravity_compensation"}
+
+    async def scenario() -> tuple[str, dict[str, str]]:
+        original = await api.get_motors_state()
+        results: dict[str, str] = {}
+        results["enabled"] = await _motors_state_after_set(api, "enabled")
+        await asyncio.to_thread(
+            robot.goto_target,
+            head=SLEEP_HEAD_POSE,
+            antennas=SLEEP_ANTENNAS_JOINT_POSITIONS,
+            duration=2.0,
+        )
+        results["disabled"] = await _motors_state_after_set(api, "disabled")
+        await api.set_motors_state("enabled")
+        await asyncio.to_thread(
+            robot.goto_target,
+            head=INIT_HEAD_POSE,
+            antennas=INIT_ANTENNAS_JOINT_POSITIONS,
+            duration=1.0,
+        )
+        await api.set_motors_state(original)  # restore
+        return original, results
+
+    original, results = asyncio.run(scenario())
+    print(f"\n[e2e] motor states: original={original!r}, read back={results!r}")
+    assert original in valid
+    assert all(mode in valid for mode in results.values())
+
+
 def test_real_audio_format_matches_the_fake_assumptions(
     live_api: tuple[ReachyMiniApi, frozenset[str]],
 ) -> None:
     """The live daemon reports the float32 / channel / 16 kHz facts the fake hardcodes.
 
     This is the check the fast tier structurally cannot make: it confirms the numbers
-    the `fake` backend bakes in are what a real daemon actually reports. Partially closes
-    specs/audio.md open question 1 (rates + dtype; the physical channel count still
-    needs real hardware).
+    the `fake` backend bakes in are what a real daemon actually reports (specs/audio.md
+    "Background": 2 channels, float32, 16 kHz on sim and hardware).
     """
     requires_caps(live_api, "audio")
     api, _caps = live_api
@@ -191,8 +263,9 @@ def test_wobbling_is_on_by_default_and_sways_the_head(
 
     The fixture's api uses the default config, so wobbling is on without any toggle —
     the same for this tone as for real TTS. With wobbling still on, the head comes back
-    to its starting orientation once the audio ends (the motors' own dynamics: about a
-    second on the sim, hence the polled deadline).
+    near its starting orientation once the audio ends (the motors' own dynamics: about a
+    second on the sim, hence the polled deadline). "Near" is 3 deg: the check is that the
+    sway ends, and hardware can settle a degree or two off after it.
     """
     requires_caps(live_api, "audio", "motion")
     api, _caps = live_api
@@ -206,14 +279,14 @@ def test_wobbling_is_on_by_default_and_sways_the_head(
         while True:
             pose = await asyncio.to_thread(robot.get_current_head_pose)
             settled = _head_deviation_deg(start, pose)
-            if settled < 1.0 or time.monotonic() > deadline:
+            if settled < 3.0 or time.monotonic() > deadline:
                 return peak, settled
             await asyncio.sleep(0.05)
 
     peak, settled = asyncio.run(scenario())
     print(f"\n[e2e] wobble on: peak {peak:.2f} deg, settled {settled:.2f} deg")
     assert peak > 1.0, f"head did not sway (peak deviation {peak:.2f} deg)"
-    assert settled < 1.0, f"head did not return to rest (deviation {settled:.2f} deg)"
+    assert settled < 3.0, f"head did not return to rest (deviation {settled:.2f} deg)"
 
 
 def test_wobbling_off_keeps_the_head_still_while_audio_plays(
@@ -268,38 +341,6 @@ def test_say_with_real_tts_speaks_through_the_robot(
     # The real ElevenLabs module emits 44.1 kHz, so the say sink resamples to 16 kHz.
     assert synth.sample_rate == 44100
     asyncio.run(api.say("Hello, I am Reachy Mini.", synth))
-
-
-def test_motor_state_reads_and_dispatches_over_the_live_path(
-    live_api: tuple[ReachyMiniApi, frozenset[str]],
-) -> None:
-    """`get_motors_state` reads a valid mode and each `set_motors_state` reaches the daemon.
-
-    The e2e value here is that the read (a real daemon status round-trip) and each set
-    dispatch work over the network — not that a given target *honors* a state. Notably
-    the sim daemon ignores every motor-state change: `disabled` keeps reporting `enabled`
-    (confirmed on both the headless and the headfull-viewer sim). That is why this asserts
-    validity, not equality; the fast tier pins the exact dispatch→state mapping
-    deterministically on the fake. Gravity compensation has its own capability-gated test
-    below: sending it to a daemon that can't hold it drops the connection.
-    """
-    requires_caps(live_api, "motion")
-    api, _caps = live_api
-    valid = {"enabled", "disabled", "gravity_compensation"}
-
-    async def scenario() -> tuple[str, dict[str, str]]:
-        original = await api.get_motors_state()
-        results: dict[str, str] = {}
-        for state in ("enabled", "disabled"):
-            await api.set_motors_state(state)
-            results[state] = await api.get_motors_state()
-        await api.set_motors_state(original)  # restore
-        return original, results
-
-    original, results = asyncio.run(scenario())
-    print(f"\n[e2e] motor states: original={original!r}, read back={results!r}")
-    assert original in valid
-    assert all(mode in valid for mode in results.values())
 
 
 def test_gravity_compensation_dispatches_over_the_live_path(

@@ -19,10 +19,9 @@ import numpy.typing as npt
 
 __all__ = ["FakeReachyMini"]
 
-# The XVF3800 voice pipeline: 16 kHz, and float32 stereo capture in the current
-# GStreamer backend (see specs/audio.md). The fake reports these via the getters so
-# downstream conversion code reads them rather than hardcoding; adjust here if a
-# pinned SDK / hardware reports otherwise.
+# The XVF3800 voice pipeline: 16 kHz float32 stereo capture in 10 ms blocks, as the
+# sim and a real Reachy Mini Lite report (see specs/audio.md). The fake reports these
+# via the getters so downstream conversion code reads them rather than hardcoding.
 _SAMPLE_RATE = 16000
 _CHANNELS = 2
 _CHUNK_FRAMES = 160  # 10 ms at 16 kHz
