@@ -26,6 +26,7 @@ def test_defaults() -> None:
     assert cfg.daemon.spawn == "never"
     assert cfg.tts is None
     assert cfg.audio.xvf3800 is None
+    assert cfg.wobbling is True
     assert ReachyMiniConfig.from_dict({}) == cfg
 
 
@@ -50,6 +51,7 @@ def test_from_json_file_round_trips_the_repo_example() -> None:
     assert cfg.tts["module"]["type"] == "elevenlabs"
     assert cfg.tts["module"]["api_key_env"] == "ELEVENLABS_API_KEY"
     assert cfg.audio == AudioSettings(xvf3800=None)
+    assert cfg.wobbling is True
 
 
 def test_from_json_and_from_json_file_delegate_to_from_dict(tmp_path: Path) -> None:
@@ -71,6 +73,18 @@ def test_from_json_and_from_json_file_delegate_to_from_dict(tmp_path: Path) -> N
         ReachyMiniConfig.from_json_file(bad)
     with pytest.raises(ConfigError, match="Invalid JSON"):
         ReachyMiniConfig.from_json("{nope")
+
+
+def test_wobbling_defaults_on_and_round_trips() -> None:
+    assert ReachyMiniConfig.from_dict({}).wobbling is True
+    assert ReachyMiniConfig.from_dict({"wobbling": False}).wobbling is False
+    assert ReachyMiniConfig.from_json('{"wobbling": false}').wobbling is False
+
+
+@pytest.mark.parametrize("value", ["yes", 1, None])
+def test_wobbling_must_be_a_boolean(value: object) -> None:
+    with pytest.raises(ConfigError, match="wobbling"):
+        ReachyMiniConfig.from_dict({"wobbling": value})
 
 
 def test_config_error_is_a_value_error() -> None:

@@ -191,13 +191,15 @@ class ReachyMiniConfig:
     # a tts-engine ``engine`` block, verbatim
     tts: dict[str, Any] | None = None
     audio: AudioSettings = field(default_factory=AudioSettings)
+    # audio-reactive head sway, enabled on entry
+    wobbling: bool = True
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ReachyMiniConfig:
         """Build (and validate) a config from a parsed dict — the one validation path."""
         top = _require_object(data, "config")
         _reject_unknown_keys(
-            top, "config", {"backend", "robot", "daemon", "tts", "audio"}
+            top, "config", {"backend", "robot", "daemon", "tts", "audio", "wobbling"}
         )
 
         backend = top.get("backend", "real")
@@ -234,7 +236,19 @@ class ReachyMiniConfig:
             tts = dict(tts_block)
 
         audio = AudioSettings.from_dict(top.get("audio", {}))
-        return cls(backend=backend, robot=robot, daemon=daemon, tts=tts, audio=audio)
+
+        wobbling = top.get("wobbling", True)
+        if not isinstance(wobbling, bool):
+            raise ConfigError("'wobbling' must be a boolean")
+
+        return cls(
+            backend=backend,
+            robot=robot,
+            daemon=daemon,
+            tts=tts,
+            audio=audio,
+            wobbling=wobbling,
+        )
 
     @classmethod
     def from_json(cls, text: str) -> ReachyMiniConfig:

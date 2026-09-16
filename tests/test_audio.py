@@ -8,6 +8,7 @@ matching the fast tier's no-plugin convention (see tests/test_robot.py).
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncIterator
 
 import numpy as np
@@ -16,6 +17,7 @@ import pytest
 
 from reachy_mini_bridge.audio import (
     MediaSession,
+    _PlaybackTracker,
     downmix_to_mono,
     float32_to_int16,
     int16_to_float32,
@@ -38,6 +40,40 @@ class _ToneSynth:
     async def stream(self, text: str) -> AsyncIterator[npt.NDArray[np.float32]]:
         for _ in range(self._chunks):
             yield np.full(self._block, 0.25, dtype=np.float32)
+
+
+class _SilentSynth:
+    """A SpeechSynthesizer whose utterance produces no audio at all."""
+
+    sample_rate = 16000
+
+    async def stream(self, text: str) -> AsyncIterator[npt.NDArray[np.float32]]:
+        return
+        yield  # an async generator that yields nothing
+
+
+class _StallingSynth:
+    """Yields one chunk, then waits forever (synthesis still in flight when cancelled)."""
+
+    sample_rate = 16000
+
+    async def stream(self, text: str) -> AsyncIterator[npt.NDArray[np.float32]]:
+        yield np.full(800, 0.25, dtype=np.float32)
+        await asyncio.Event().wait()
+
+
+class _FailingSynth:
+    """Yields one chunk, then the synthesizer fails mid-stream."""
+
+    sample_rate = 16000
+
+    async def stream(self, text: str) -> AsyncIterator[npt.NDArray[np.float32]]:
+        yield np.full(800, 0.25, dtype=np.float32)
+        raise RuntimeError("boom")
+
+
+def _command_names(robot: FakeReachyMini) -> list[str]:
+    return [name for name, _ in robot.commands]
 
 
 def _pushed_frames(robot: FakeReachyMini) -> list[int]:
@@ -132,6 +168,127 @@ def test_say_fans_mono_out_to_speaker_channels() -> None:
     # Both channels carry the same mono signal (a copy, not silence in one).
     assert np.allclose(captured[0][:, 0], captured[0][:, 1])
     assert np.all(captured[0] > 0)
+
+
+# --- say completion and early-exit flush ---------------------------------------------
+
+
+class _Clock:
+    def __init__(self, t: float) -> None:
+        self.t = t
+
+    def __call__(self) -> float:
+        return self.t
+
+
+def test_playback_tracker_accumulates_contiguous_pushes() -> None:
+    clock = _Clock(100.0)
+    tracker = _PlaybackTracker(16000, now=clock)
+    tracker.push(8000)
+    tracker.push(8000)
+    # Two contiguous half-second pushes, plus the fixed tail margin.
+    assert tracker.remaining() == pytest.approx(1.0 + 0.1)
+    clock.t = 100.6
+    assert tracker.remaining() == pytest.approx(0.4 + 0.1)
+    clock.t = 200.0
+    assert tracker.remaining() == 0.0
+
+
+def test_playback_tracker_reanchors_after_the_queue_drains() -> None:
+    clock = _Clock(0.0)
+    tracker = _PlaybackTracker(16000, now=clock)
+    tracker.push(1600)  # 0.1 s, long finished by t = 5
+    clock.t = 5.0
+    tracker.push(1600)  # starts from now, not from the stale end
+    assert tracker.remaining() == pytest.approx(0.1 + 0.1)
+
+
+def test_playback_tracker_is_zero_when_nothing_was_pushed() -> None:
+    tracker = _PlaybackTracker(16000, now=_Clock(3.0))
+    tracker.push(0)
+    assert tracker.remaining() == 0.0
+
+
+def test_say_returns_only_after_the_utterance_has_played() -> None:
+    robot = FakeReachyMini()
+
+    async def run() -> float:
+        async with MediaSession(robot) as session:
+            start = time.monotonic()
+            await session.say("hi", _ToneSynth(16000, chunks=4, block=800))  # 0.2 s
+            return time.monotonic() - start
+
+    assert asyncio.run(run()) >= 0.2
+    assert "audio.clear_player" not in _command_names(robot)
+
+
+def test_say_with_no_audio_returns_at_once() -> None:
+    robot = FakeReachyMini()
+
+    async def run() -> float:
+        async with MediaSession(robot) as session:
+            start = time.monotonic()
+            await session.say("hi", _SilentSynth())
+            return time.monotonic() - start
+
+    assert asyncio.run(run()) < 0.05
+    names = _command_names(robot)
+    assert "media.push_audio_sample" not in names
+    assert "audio.clear_player" not in names
+
+
+def _clear_after_first_push(robot: FakeReachyMini) -> bool:
+    names = _command_names(robot)
+    return "audio.clear_player" in names and names.index(
+        "media.push_audio_sample"
+    ) < names.index("audio.clear_player")
+
+
+def test_cancelled_say_flushes_the_speaker() -> None:
+    robot = FakeReachyMini()
+
+    async def run() -> None:
+        async with MediaSession(robot) as session:
+            task = asyncio.create_task(session.say("hi", _StallingSynth()))
+            while not _pushed_frames(robot):
+                await asyncio.sleep(0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    asyncio.run(run())
+    assert _clear_after_first_push(robot)
+
+
+def test_cancel_during_the_completion_wait_flushes_the_speaker() -> None:
+    robot = FakeReachyMini()
+
+    async def run() -> None:
+        async with MediaSession(robot) as session:
+            synth = _ToneSynth(16000, chunks=4, block=800)  # 0.2 s
+            task = asyncio.create_task(session.say("hi", synth))
+            while len(_pushed_frames(robot)) < 4:  # synthesis done; say is now waiting
+                await asyncio.sleep(0)
+            await asyncio.sleep(0.01)
+            assert not task.done()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    asyncio.run(run())
+    assert _clear_after_first_push(robot)
+
+
+def test_synthesizer_failure_flushes_the_speaker_and_propagates() -> None:
+    robot = FakeReachyMini()
+
+    async def run() -> None:
+        async with MediaSession(robot) as session:
+            with pytest.raises(RuntimeError, match="boom"):
+                await session.say("hi", _FailingSynth())
+
+    asyncio.run(run())
+    assert _clear_after_first_push(robot)
 
 
 def test_media_session_opens_and_tears_down_pipeline() -> None:

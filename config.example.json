@@ -24,5 +24,6 @@
   },
   "audio": {
     "xvf3800": null
-  }
+  },
+  "wobbling": true
 }

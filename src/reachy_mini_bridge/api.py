@@ -116,6 +116,8 @@ class ReachyMiniApi:
         self._media: MediaSession | None = None
         self._exit_stack: AsyncExitStack | None = None
         self._recorded_moves: Any = None  # lazy, cached once per connection
+        # The bridge's record of the wobbling mode (upstream has no getter).
+        self._wobbling = False
 
     # --- config-based constructors (mirroring ReachyMiniConfig's trio) ---
 
@@ -212,9 +214,16 @@ class ReachyMiniApi:
             media = MediaSession(robot, audio_config=cfg.audio.xvf3800)
             await stack.enter_async_context(media)
             self._media = media
+            # Registered before the enable, so a failing enable still unwinds cleanly
+            # (the mode is still off, so the callback is a no-op). It holds the robot
+            # itself: __aexit__ clears `self._robot` before the stack closes.
+            stack.push_async_callback(self._disable_wobbling_if_on, robot)
+            if cfg.wobbling:
+                await self.set_wobbling(True)
         except BaseException:
             self._robot = None
             self._media = None
+            self._wobbling = False
             await stack.aclose()
             raise
         self._exit_stack = stack.pop_all()
@@ -227,8 +236,17 @@ class ReachyMiniApi:
         self._robot = None
         self._media = None
         self._recorded_moves = None
-        if stack is not None:
-            await stack.aclose()
+        try:
+            if stack is not None:
+                await stack.aclose()
+        finally:
+            self._wobbling = False
+
+    async def _disable_wobbling_if_on(self, robot: AnyReachyMini) -> None:
+        # The daemon-side switch is shared across clients: never leave it armed.
+        if self._wobbling:
+            await asyncio.to_thread(robot.disable_wobbling)
+            self._wobbling = False
 
     # --- motors / torque ---
 
@@ -354,6 +372,31 @@ class ReachyMiniApi:
     async def play_sound(self, sound_file: str) -> None:
         """Play a sound file / built-in sound through the robot speaker."""
         await asyncio.to_thread(self.robot.media.play_sound, sound_file)
+
+    # --- audio-reactive motion (head wobbling) ---
+
+    async def set_wobbling(self, enabled: bool) -> None:
+        """Turn upstream's audio-reactive head wobbling on or off.
+
+        While on, every sound the robot plays (``say``, ``play_sound``, an emotion's
+        sound) sways the head in time with its loudness, on top of whatever else the
+        head is doing. A mode, not a move: it holds until changed and needs no motors.
+        Wobbling left on is switched off again when the session exits.
+        """
+        robot = self.robot
+        await asyncio.to_thread(
+            robot.enable_wobbling if enabled else robot.disable_wobbling
+        )
+        self._wobbling = enabled
+
+    @property
+    def wobbling(self) -> bool:
+        """Whether the bridge has wobbling on — its own record (upstream has no getter).
+
+        On by default once entered (the config's ``wobbling`` flag); ``False`` outside a
+        session.
+        """
+        return self._wobbling
 
     # --- audio in (microphone) ---
 

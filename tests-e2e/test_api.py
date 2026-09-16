@@ -35,13 +35,20 @@ _DEFAULT_TTS_VOICE_ID = "JBFqnCBsd6RMkjVDRZzb"
 
 
 class _ToneSynth:
-    """Credential-free SpeechSynthesizer: a short 16 kHz mono tone (no TTS backend)."""
+    """Credential-free SpeechSynthesizer: a 16 kHz mono tone (no TTS backend).
+
+    `seconds` of audio at `amplitude`, in 100 ms blocks.
+    """
 
     sample_rate = 16000
 
+    def __init__(self, seconds: float = 1.0, amplitude: float = 0.1) -> None:
+        self._blocks = round(seconds * 10)
+        self._amplitude = amplitude
+
     async def stream(self, text: str) -> AsyncIterator[npt.NDArray[np.float32]]:
-        for _ in range(5):
-            yield np.full(1600, 0.1, dtype=np.float32)  # 100 ms blocks
+        for _ in range(self._blocks):
+            yield np.full(1600, self._amplitude, dtype=np.float32)
 
 
 def test_real_audio_format_matches_the_fake_assumptions(
@@ -114,6 +121,123 @@ def test_say_pipeline_runs_to_the_speaker(
     requires_caps(live_api, "audio")
     api, _caps = live_api
     asyncio.run(api.say("ignored", _ToneSynth()))
+
+
+def test_say_completes_after_the_utterance_has_played(
+    live_api: tuple[ReachyMiniApi, frozenset[str]],
+) -> None:
+    """`say` spans the playback, not the (near-instant) queueing of the audio.
+
+    The tone synthesizes in microseconds and the daemon's `appsrc` queues it without
+    pacing, so only the bridge's completion wait can make a 1 s utterance take 1 s.
+    """
+    requires_caps(live_api, "audio")
+    api, _caps = live_api
+
+    start = time.monotonic()
+    asyncio.run(api.say("ignored", _ToneSynth(seconds=1.0)))
+    assert time.monotonic() - start >= 1.0
+
+
+def _head_deviation_deg(
+    start: npt.NDArray[np.float64], pose: npt.NDArray[np.float64]
+) -> float:
+    """Rotation angle (degrees) between two 4x4 head poses."""
+    from reachy_mini.utils.interpolation import delta_angle_between_mat_rot
+
+    return float(np.degrees(delta_angle_between_mat_rot(start[:3, :3], pose[:3, :3])))
+
+
+async def _still_head_pose(api: ReachyMiniApi) -> npt.NDArray[np.float64]:
+    """The head pose once the head has stopped moving (a previous sway may be decaying)."""
+    robot: Any = api.robot
+    pose = await asyncio.to_thread(robot.get_current_head_pose)
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        await asyncio.sleep(0.2)
+        previous, pose = pose, await asyncio.to_thread(robot.get_current_head_pose)
+        if _head_deviation_deg(previous, pose) < 0.05:
+            break
+    return pose
+
+
+async def _peak_deviation_during_loud_say(
+    api: ReachyMiniApi, start: npt.NDArray[np.float64]
+) -> float:
+    """Play a loud 1.5 s tone through `say`, sampling the head; return the peak deviation.
+
+    The tone (amplitude 0.25, about -12 dBFS) is well above the wobbler's -35 dBFS
+    voice-on threshold. On the sim the motors are always enabled, so any composed sway
+    shows in the reported head pose.
+    """
+    robot: Any = api.robot
+    say = asyncio.create_task(
+        api.say("ignored", _ToneSynth(seconds=1.5, amplitude=0.25))
+    )
+    peak = 0.0
+    while not say.done():
+        pose = await asyncio.to_thread(robot.get_current_head_pose)
+        peak = max(peak, _head_deviation_deg(start, pose))
+        await asyncio.sleep(0.05)
+    await say
+    return peak
+
+
+def test_wobbling_is_on_by_default_and_sways_the_head(
+    live_api: tuple[ReachyMiniApi, frozenset[str]],
+) -> None:
+    """Out of the box, speech sways the head, which then returns to rest on its own.
+
+    The fixture's api uses the default config, so wobbling is on without any toggle —
+    the same for this tone as for real TTS. With wobbling still on, the head comes back
+    to its starting orientation once the audio ends (the motors' own dynamics: about a
+    second on the sim, hence the polled deadline).
+    """
+    requires_caps(live_api, "audio", "motion")
+    api, _caps = live_api
+    assert api.wobbling is True
+    robot: Any = api.robot
+
+    async def scenario() -> tuple[float, float]:
+        start = await _still_head_pose(api)
+        peak = await _peak_deviation_during_loud_say(api, start)
+        deadline = time.monotonic() + 3.0
+        while True:
+            pose = await asyncio.to_thread(robot.get_current_head_pose)
+            settled = _head_deviation_deg(start, pose)
+            if settled < 1.0 or time.monotonic() > deadline:
+                return peak, settled
+            await asyncio.sleep(0.05)
+
+    peak, settled = asyncio.run(scenario())
+    print(f"\n[e2e] wobble on: peak {peak:.2f} deg, settled {settled:.2f} deg")
+    assert peak > 1.0, f"head did not sway (peak deviation {peak:.2f} deg)"
+    assert settled < 1.0, f"head did not return to rest (deviation {settled:.2f} deg)"
+
+
+def test_wobbling_off_keeps_the_head_still_while_audio_plays(
+    live_api: tuple[ReachyMiniApi, frozenset[str]],
+) -> None:
+    """With wobbling off, the same loud tone leaves the head where it was.
+
+    The sway this tone drives peaks around 11 deg on the sim; with the mode off the head
+    must stay within 0.5 deg. Wobbling is restored afterwards, since the module-scoped
+    fixture is shared and on by default.
+    """
+    requires_caps(live_api, "audio", "motion")
+    api, _caps = live_api
+
+    async def scenario() -> float:
+        start = await _still_head_pose(api)
+        await api.set_wobbling(False)
+        try:
+            return await _peak_deviation_during_loud_say(api, start)
+        finally:
+            await api.set_wobbling(True)
+
+    peak = asyncio.run(scenario())
+    print(f"\n[e2e] wobble off: peak {peak:.2f} deg")
+    assert peak < 0.5, f"head moved with wobbling off (peak deviation {peak:.2f} deg)"
 
 
 def test_say_with_real_tts_speaks_through_the_robot(

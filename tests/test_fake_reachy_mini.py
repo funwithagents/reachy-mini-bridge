@@ -49,6 +49,17 @@ def test_motion_commands_are_recorded() -> None:
     assert robot.commands[2][1]["move"] == "happy"
 
 
+def test_wobbling_toggles_are_recorded() -> None:
+    robot = FakeReachyMini()
+    robot.enable_wobbling()
+    robot.disable_wobbling()
+
+    assert [name for name, _ in robot.commands] == [
+        "enable_wobbling",
+        "disable_wobbling",
+    ]
+
+
 def test_media_commands_are_recorded() -> None:
     robot = FakeReachyMini()
     robot.media.start_recording()

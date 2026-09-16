@@ -77,12 +77,13 @@ All verbs are `async`; units are human (degrees, seconds, named emotions). The u
 | Expression | `list_emotions()`, `play_emotion(name)` — the upstream recorded-moves library |
 | Gaze | `start_head_tracking(weight=1.0)`, `stop_head_tracking()` — the daemon keeps a detected face centered |
 | Speech out | `say(text, synth=None)`, `play_sound(file)` |
+| Motion while talking | `set_wobbling(enabled)`, `wobbling` — upstream's audio-reactive head sway; on by default, set by the config's `wobbling` flag |
 | Mic in | `audio_input(mono=True)` async iterator of int16 PCM bytes, plus `mic_sample_rate` / `mic_channels` |
 | Camera | `get_camera_frame()` — raw BGR `ndarray`, `None` when no frame is available |
 
 Verbs that move the robot require motors `enabled` and raise `MotorsNotEnabledError` otherwise. Errors live in `reachy_mini_bridge.errors` (`BridgeError` base, `MotorsNotEnabledError`, `DaemonError`, `ConfigError`).
 
-**Talking.** `say` streams text-to-speech to the robot speaker through a `SpeechSynthesizer` — a small protocol (`sample_rate` + `stream(text)` yielding float32 mono chunks) defined in `reachy_mini_bridge.audio`. Bring your own, or configure the default `tts-engine` adapter through the config's `tts` block. Without either, `say` raises `BridgeError`; a `tts` block that fails to build (a missing API key, say) leaves the robot usable and exposes the cause on `api.synthesizer_error`.
+**Talking.** `say` streams text-to-speech to the robot speaker through a `SpeechSynthesizer` — a small protocol (`sample_rate` + `stream(text)` yielding float32 mono chunks) defined in `reachy_mini_bridge.audio`. Bring your own, or configure the default `tts-engine` adapter through the config's `tts` block. Without either, `say` raises `BridgeError`; a `tts` block that fails to build (a missing API key, say) leaves the robot usable and exposes the cause on `api.synthesizer_error`. `say` returns once the utterance has finished playing; cancel the task to stop it (queued audio is flushed).
 
 **Listening.** The bridge does no speech recognition. It exposes the robot's echo-cancelled microphone as a stream and you feed it to the ASR of your choice:
 
@@ -114,7 +115,8 @@ Routing both directions through the bridge is what keeps the robot's hardware ec
   "robot": { "host": "127.0.0.1", "port": 8000 },
   "daemon": { "spawn": "auto", "headless": true },
   "tts": { "module": { "type": "elevenlabs", "api_key_env": "ELEVENLABS_API_KEY", "voice_id": "..." } },
-  "audio": { "xvf3800": null }
+  "audio": { "xvf3800": null },
+  "wobbling": true
 }
 ```
 
@@ -122,6 +124,7 @@ Routing both directions through the bridge is what keeps the robot's hardware ec
 - `daemon` — `sim` only. `"spawn": "auto"` reuses a daemon already listening at `host:port` or spawns a headless MuJoCo daemon and stops it on exit; `"always"` insists on spawning; `"never"` (default) only connects. `"headless": false` opens the viewer.
 - `tts` — the tts-engine module block that builds the default voice for `say`.
 - `audio` — the XVF3800 mic-array profile applied on connect.
+- `wobbling` — sways the head with every sound the robot plays, from entry until exit (default `true`); `false` keeps the head still, and `set_wobbling` changes it at runtime.
 
 Details and validation rules: [specs/config.md](specs/config.md), [specs/daemon.md](specs/daemon.md), [docs/running-the-sim-daemon.md](docs/running-the-sim-daemon.md).
 

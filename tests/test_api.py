@@ -516,6 +516,132 @@ def test_audio_input_streams_mic_bytes_and_exposes_format() -> None:
     assert len(chunk) > 0 and len(chunk) % 2 == 0  # whole int16 samples
 
 
+# --- audio-reactive motion (head wobbling) ----------------------------------------
+
+
+def test_set_wobbling_dispatches_and_tracks_state() -> None:
+    async def run() -> None:
+        async with ReachyMiniApi("fake") as api:
+            assert api.wobbling is True  # on by default
+            await api.set_wobbling(False)
+            assert api.wobbling is False
+            assert _command_names(api)[-1] == "disable_wobbling"
+            await api.set_wobbling(True)
+            assert api.wobbling is True
+            assert _command_names(api)[-1] == "enable_wobbling"
+
+    asyncio.run(run())
+
+
+def test_set_wobbling_needs_no_motors() -> None:
+    config = ReachyMiniConfig(backend="fake", wobbling=False)
+
+    async def run() -> None:
+        async with ReachyMiniApi(config) as api:  # the fake boots with motors disabled
+            await api.set_wobbling(True)
+            assert api.wobbling is True
+            with pytest.raises(MotorsNotEnabledError):
+                await api.play_emotion("happy")
+
+    asyncio.run(run())
+
+
+def test_wobbling_is_on_by_default_at_entry_and_off_at_exit() -> None:
+    api = ReachyMiniApi("fake")
+
+    async def run() -> FakeReachyMini:
+        async with api:
+            assert api.wobbling is True
+            return _fake(api)
+
+    robot = asyncio.run(run())
+    names = [name for name, _ in robot.commands]
+    assert (
+        names.index("media.start_playing")
+        < names.index("enable_wobbling")
+        < names.index("disable_wobbling")
+        < names.index("media.stop_recording")
+        < names.index("__exit__")
+    )
+    assert api.wobbling is False
+
+
+def test_wobbling_off_in_the_config_is_never_touched() -> None:
+    config = ReachyMiniConfig(backend="fake", wobbling=False)
+
+    async def run() -> FakeReachyMini:
+        async with ReachyMiniApi(config, synthesizer=_ToneSynth()) as api:
+            await api.say("hello")
+            return _fake(api)
+
+    names = [name for name, _ in asyncio.run(run()).commands]
+    assert "enable_wobbling" not in names
+    assert "disable_wobbling" not in names
+
+
+def test_wobbling_enabled_at_runtime_is_disabled_at_exit() -> None:
+    api = ReachyMiniApi(ReachyMiniConfig(backend="fake", wobbling=False))
+
+    async def run() -> FakeReachyMini:
+        async with api:
+            await api.set_wobbling(True)
+            return _fake(api)
+
+    names = [name for name, _ in asyncio.run(run()).commands]
+    assert names.index("disable_wobbling") < names.index("__exit__")
+    assert api.wobbling is False
+
+
+def test_wobbling_turned_off_at_runtime_is_not_disabled_again_at_exit() -> None:
+    async def run() -> FakeReachyMini:
+        async with ReachyMiniApi("fake") as api:  # on by default
+            await api.set_wobbling(False)
+            return _fake(api)
+
+    names = [name for name, _ in asyncio.run(run()).commands]
+    assert names.count("disable_wobbling") == 1
+
+
+def test_failing_wobbling_enable_unwinds_the_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def boom(self: FakeReachyMini) -> None:
+        raise RuntimeError("no wobbler")
+
+    monkeypatch.setattr(FakeReachyMini, "enable_wobbling", boom)
+    api = ReachyMiniApi("fake")  # wobbling on by default
+    robots: list[FakeReachyMini] = []
+    original_enter = FakeReachyMini.__enter__
+
+    def spy_enter(self: FakeReachyMini) -> FakeReachyMini:
+        robots.append(self)
+        return original_enter(self)
+
+    monkeypatch.setattr(FakeReachyMini, "__enter__", spy_enter)
+
+    async def run() -> None:
+        async with api:
+            pass
+
+    with pytest.raises(RuntimeError, match="no wobbler"):
+        asyncio.run(run())
+    names = [name for name, _ in robots[0].commands]
+    assert "disable_wobbling" not in names  # the mode never came on
+    assert "media.stop_playing" in names and names[-1] == "__exit__"
+    assert api.wobbling is False
+    with pytest.raises(BridgeError):
+        _ = api.robot
+
+
+def test_wobbling_property_is_false_outside_a_session() -> None:
+    assert ReachyMiniApi("fake").wobbling is False
+
+
+def test_set_wobbling_requires_entry() -> None:
+    with pytest.raises(BridgeError):
+        asyncio.run(ReachyMiniApi("fake").set_wobbling(True))
+
+
 # --- perception (camera) -----------------------------------------------------------
 
 

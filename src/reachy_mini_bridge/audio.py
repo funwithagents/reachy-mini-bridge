@@ -22,6 +22,7 @@ hardcoded, so the code is correct across the real / sim / fake backends.
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import TYPE_CHECKING, Any, Protocol, Self, cast, runtime_checkable
 
 import numpy as np
@@ -29,7 +30,7 @@ import numpy.typing as npt
 import samplerate
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Callable
 
     from .robot import AnyReachyMini
 
@@ -45,6 +46,11 @@ __all__ = [
 # libsamplerate converter: highest-quality sinc conversion (no boundary clicks on a
 # continuous stream). See specs/audio.md "The robot sink".
 _CONVERTER = "sinc_best"
+
+# Margin added to the estimated playback end before `say` returns: the sink's ring
+# buffer (50 ms on the GStreamer backend) plus device latency. See specs/audio.md
+# "`say` completes when the utterance has been heard".
+_PLAYBACK_TAIL_S = 0.1
 
 
 # --- conversion helpers (pure; shared by the say sink and the mic tap) -------------
@@ -180,33 +186,86 @@ class MediaSession:
     # --- speaker out ---
 
     async def say(self, text: str, synth: SpeechSynthesizer) -> None:
-        """Synthesize ``text`` and stream it to the robot speaker.
+        """Synthesize ``text``, stream it to the robot speaker, and wait until it is heard.
 
         Resamples ``synth.sample_rate`` to the speaker rate (skipped when they already
-        match) and fans the mono stream out to the speaker's channel count.
+        match) and fans the mono stream out to the speaker's channel count. Pushing only
+        queues audio, so ``say`` then sleeps until the estimated playback end (plus a
+        small tail margin) — it returns once the utterance has finished playing.
+
+        On any early exit (the task is cancelled, or the synthesizer raises) the queued
+        speaker audio is flushed with :meth:`clear_player` before the exception
+        propagates: ``say`` either plays the whole utterance or leaves the speaker silent.
         """
         media = self._robot.media
         out_rate = media.get_output_audio_samplerate()
         out_channels = media.get_output_channels()
         resampler = _StreamResampler(synth.sample_rate, out_rate)
-        async for chunk in synth.stream(text):
-            mono = resampler.process(np.asarray(chunk, dtype=np.float32).reshape(-1))
-            self._push(mono, out_channels)
-        self._push(resampler.flush(), out_channels)
+        tracker = _PlaybackTracker(out_rate)
+        try:
+            async for chunk in synth.stream(text):
+                mono = resampler.process(
+                    np.asarray(chunk, dtype=np.float32).reshape(-1)
+                )
+                tracker.push(self._push(mono, out_channels))
+            tracker.push(self._push(resampler.flush(), out_channels))
+            remaining = tracker.remaining()
+            if remaining > 0:
+                await asyncio.sleep(remaining)
+        except BaseException:
+            self.clear_player()
+            raise
 
-    def _push(self, mono: npt.NDArray[np.float32], out_channels: int) -> None:
+    def _push(self, mono: npt.NDArray[np.float32], out_channels: int) -> int:
+        """Push one mono chunk (fanned out to ``out_channels``); return its frame count."""
         if mono.size == 0:
-            return
+            return 0
         if out_channels > 1:
             out = np.repeat(mono[:, np.newaxis], out_channels, axis=1)
         else:
             out = mono
         self._robot.media.push_audio_sample(np.ascontiguousarray(out, dtype=np.float32))
+        return int(mono.size)
 
     def clear_player(self) -> None:
-        """Flush already-queued speaker audio (barge-in) — see specs/audio.md."""
+        """Flush already-queued speaker audio (barge-in) and reset the head wobbler.
+
+        See specs/audio.md.
+        """
         audio: Any = self._robot.media.audio  # see note in __aenter__ on media.audio
         audio.clear_player()
+
+
+class _PlaybackTracker:
+    """Wall-clock estimate of when the audio queued on the speaker finishes playing.
+
+    ``media.push_audio_sample`` queues without blocking or pacing, so the sink keeps its
+    own end-of-playback estimate: each non-empty push extends the end from
+    ``max(end, now)`` by ``frames / sample_rate`` seconds. Contiguous pushes accumulate;
+    a push arriving after the queue has drained starts from *now*. Reads no SDK state,
+    so it holds identically on every backend. ``now`` is injectable for tests.
+    """
+
+    def __init__(
+        self, sample_rate: int, *, now: Callable[[], float] = time.monotonic
+    ) -> None:
+        self._sample_rate = sample_rate
+        self._now = now
+        self._end = 0.0
+        self._pushed = False
+
+    def push(self, frames: int) -> None:
+        """Account for ``frames`` frames just queued (a no-op for ``frames <= 0``)."""
+        if frames <= 0:
+            return
+        self._end = max(self._end, self._now()) + frames / self._sample_rate
+        self._pushed = True
+
+    def remaining(self) -> float:
+        """Seconds until the queued audio has been heard (``0.0`` if nothing was pushed)."""
+        if not self._pushed:
+            return 0.0
+        return max(0.0, self._end + _PLAYBACK_TAIL_S - self._now())
 
 
 class _StreamResampler:

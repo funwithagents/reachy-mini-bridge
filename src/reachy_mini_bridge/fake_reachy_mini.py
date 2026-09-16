@@ -213,6 +213,13 @@ class FakeReachyMini:
     def stop_head_tracking(self) -> None:
         self.commands.append(("stop_head_tracking", {}))
 
+    # --- audio-reactive head wobbling (a mode; moves nothing on the fake) ---
+    def enable_wobbling(self) -> None:
+        self.commands.append(("enable_wobbling", {}))
+
+    def disable_wobbling(self) -> None:
+        self.commands.append(("disable_wobbling", {}))
+
     # --- motors (setters update the mode reported by client.get_status()) ---
     def enable_motors(self, ids: list[str] | None = None) -> None:
         self.client.motor_control_mode = "enabled"
