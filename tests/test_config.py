@@ -31,7 +31,6 @@ def test_defaults() -> None:
     assert cfg.daemon.spawn == "never"
     assert cfg.tts is None
     assert cfg.audio.xvf3800 is None
-    assert cfg.wobbling is True
     assert cfg.motion == MotionSettings()
     assert ReachyMiniConfig.from_dict({}) == cfg
 
@@ -57,7 +56,6 @@ def test_from_json_file_round_trips_the_repo_example() -> None:
     assert cfg.tts["module"]["type"] == "elevenlabs"
     assert cfg.tts["module"]["api_key_env"] == "ELEVENLABS_API_KEY"
     assert cfg.audio == AudioSettings(xvf3800=None)
-    assert cfg.wobbling is True
     assert cfg.motion == MotionSettings()
 
 
@@ -80,18 +78,6 @@ def test_from_json_and_from_json_file_delegate_to_from_dict(tmp_path: Path) -> N
         ReachyMiniConfig.from_json_file(bad)
     with pytest.raises(ConfigError, match="Invalid JSON"):
         ReachyMiniConfig.from_json("{nope")
-
-
-def test_wobbling_defaults_on_and_round_trips() -> None:
-    assert ReachyMiniConfig.from_dict({}).wobbling is True
-    assert ReachyMiniConfig.from_dict({"wobbling": False}).wobbling is False
-    assert ReachyMiniConfig.from_json('{"wobbling": false}').wobbling is False
-
-
-@pytest.mark.parametrize("value", ["yes", 1, None])
-def test_wobbling_must_be_a_boolean(value: object) -> None:
-    with pytest.raises(ConfigError, match="wobbling"):
-        ReachyMiniConfig.from_dict({"wobbling": value})
 
 
 def test_config_error_is_a_value_error() -> None:
@@ -273,15 +259,30 @@ def test_daemon_field_types(daemon: dict[str, object]) -> None:
 
 def test_motion_defaults_are_on() -> None:
     assert ReachyMiniConfig.from_dict({}).motion == MotionSettings()
+    assert MotionSettings().wobbling is True
+    assert MotionSettings().tracking is True
 
 
 def test_motion_block_sets_the_switches() -> None:
     cfg = ReachyMiniConfig.from_dict(
-        {"motion": {"presence": False, "breathing": False}}
+        {
+            "motion": {
+                "presence": False,
+                "breathing": False,
+                "wobbling": False,
+                "tracking": False,
+            }
+        }
     )
-    assert cfg.motion == MotionSettings(presence=False, breathing=False)
+    assert cfg.motion == MotionSettings(
+        presence=False, breathing=False, wobbling=False, tracking=False
+    )
     cfg = ReachyMiniConfig.from_dict({"motion": {"breathing": False}})
     assert cfg.motion == MotionSettings(presence=True, breathing=False)
+    cfg = ReachyMiniConfig.from_json('{"motion": {"wobbling": false}}')
+    assert cfg.motion == MotionSettings(wobbling=False)
+    cfg = ReachyMiniConfig.from_dict({"motion": {"tracking": False}})
+    assert cfg.motion == MotionSettings(tracking=False)
 
 
 @pytest.mark.parametrize(
@@ -289,6 +290,8 @@ def test_motion_block_sets_the_switches() -> None:
     [
         {"presence": "yes"},
         {"breathing": 1},
+        {"wobbling": "yes"},
+        {"tracking": 1},
     ],
 )
 def test_motion_rejects_non_booleans(motion: dict[str, object]) -> None:

@@ -585,8 +585,10 @@ def test_movement_verbs_run_once_motors_enabled() -> None:
 
 
 def test_start_head_tracking_forwards_weight() -> None:
+    config = ReachyMiniConfig(backend="fake", motion=MotionSettings(tracking=False))
+
     async def run() -> float:
-        async with ReachyMiniApi("fake") as api:
+        async with ReachyMiniApi(config) as api:
             await api.set_motors_state("enabled")
             await api.start_head_tracking(weight=0.25)
             args = next(a for n, a in _fake(api).commands if n == "start_head_tracking")
@@ -720,8 +722,12 @@ def test_completed_play_emotion_does_not_stop_the_sound() -> None:
 
 
 def test_play_emotion_pauses_tracking_and_restores_it() -> None:
+    config = ReachyMiniConfig(backend="fake", motion=MotionSettings(tracking=False))
+
     async def run() -> list[float]:
-        async with ReachyMiniApi("fake") as api:
+        async with ReachyMiniApi(
+            config
+        ) as api:  # tracking off by config, set explicitly
             await api.set_motors_state("enabled")
             await api.start_head_tracking(0.7)
             await api.play_emotion("sad")
@@ -735,8 +741,10 @@ def test_play_emotion_pauses_tracking_and_restores_it() -> None:
 
 
 def test_play_emotion_leaves_tracking_alone_when_off() -> None:
+    config = ReachyMiniConfig(backend="fake", motion=MotionSettings(tracking=False))
+
     async def run() -> list[str]:
-        async with ReachyMiniApi("fake") as api:
+        async with ReachyMiniApi(config) as api:
             await api.set_motors_state("enabled")
             await api.play_emotion("sad")
             return _command_names(api)
@@ -931,7 +939,7 @@ def test_set_wobbling_dispatches_and_tracks_state() -> None:
 
 
 def test_set_wobbling_needs_no_motors() -> None:
-    config = ReachyMiniConfig(backend="fake", wobbling=False)
+    config = ReachyMiniConfig(backend="fake", motion=MotionSettings(wobbling=False))
 
     async def run() -> None:
         async with ReachyMiniApi(config) as api:  # the fake boots with motors disabled
@@ -964,7 +972,7 @@ def test_wobbling_is_on_by_default_at_entry_and_off_at_exit() -> None:
 
 
 def test_wobbling_off_in_the_config_is_never_touched() -> None:
-    config = ReachyMiniConfig(backend="fake", wobbling=False)
+    config = ReachyMiniConfig(backend="fake", motion=MotionSettings(wobbling=False))
 
     async def run() -> FakeReachyMini:
         async with ReachyMiniApi(config, synthesizer=_ToneSynth()) as api:
@@ -977,7 +985,9 @@ def test_wobbling_off_in_the_config_is_never_touched() -> None:
 
 
 def test_wobbling_enabled_at_runtime_is_disabled_at_exit() -> None:
-    api = ReachyMiniApi(ReachyMiniConfig(backend="fake", wobbling=False))
+    api = ReachyMiniApi(
+        ReachyMiniConfig(backend="fake", motion=MotionSettings(wobbling=False))
+    )
 
     async def run() -> FakeReachyMini:
         async with api:
@@ -1037,6 +1047,91 @@ def test_wobbling_property_is_false_outside_a_session() -> None:
 def test_set_wobbling_requires_entry() -> None:
     with pytest.raises(BridgeError):
         asyncio.run(ReachyMiniApi("fake").set_wobbling(True))
+
+
+# --- attention / gaze: tracking on by default (specs/api.md, specs/config.md) -------
+
+
+def test_tracking_property_reads_the_config() -> None:
+    assert ReachyMiniApi("fake").tracking is True  # on by default
+    config = ReachyMiniConfig(backend="fake", motion=MotionSettings(tracking=False))
+    assert ReachyMiniApi(config).tracking is False
+
+
+def test_tracking_is_armed_once_motors_are_enabled_at_full_weight() -> None:
+    async def run() -> tuple[list[str], float]:
+        async with ReachyMiniApi("fake") as api:  # tracking on by default
+            await api.set_motors_state("enabled")
+            weight = next(
+                a for n, a in _fake(api).commands if n == "start_head_tracking"
+            )["weight"]
+            return _command_names(api), weight
+
+    names, weight = asyncio.run(run())
+    assert "start_head_tracking" in names
+    assert weight == 1.0
+
+
+def test_tracking_starts_at_entry_when_motors_already_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    robot = FakeReachyMini()
+    robot.client.motor_control_mode = "enabled"  # a daemon that woke up on its own
+    monkeypatch.setattr(api_module, "build_robot", lambda backend, **kw: robot)
+
+    async def run() -> list[str]:
+        async with ReachyMiniApi("fake") as api:
+            assert api.tracking is True
+            return _command_names(api)
+
+    assert "start_head_tracking" in asyncio.run(run())
+
+
+def test_stop_head_tracking_suppresses_the_config_default() -> None:
+    async def run() -> list[str]:
+        async with ReachyMiniApi("fake") as api:  # motors start disabled on the fake
+            await api.stop_head_tracking()
+            assert api.tracking is False
+            await api.set_motors_state("enabled")
+            return _command_names(api)
+
+    assert "start_head_tracking" not in asyncio.run(run())
+
+
+def test_tracking_off_in_the_config_is_never_touched() -> None:
+    config = ReachyMiniConfig(backend="fake", motion=MotionSettings(tracking=False))
+
+    async def run() -> list[str]:
+        async with ReachyMiniApi(config) as api:
+            await api.set_motors_state("enabled")
+            return _command_names(api)
+
+    names = asyncio.run(run())
+    assert "start_head_tracking" not in names
+    assert "stop_head_tracking" not in names
+
+
+def test_tracking_left_on_is_stopped_at_exit() -> None:
+    api = ReachyMiniApi("fake")
+
+    async def run() -> FakeReachyMini:
+        async with api:
+            await api.set_motors_state("enabled")
+            return _fake(api)
+
+    robot = asyncio.run(run())  # asyncio.run blocks until __aexit__ has completed too
+    names = [name for name, _ in robot.commands]
+    assert (
+        names.index("start_head_tracking")
+        < names.index("stop_head_tracking")
+        < names.index("__exit__")
+    )
+    assert api.tracking is True  # reset to the config's value after exit
+
+
+def test_start_head_tracking_requires_entry() -> None:
+    with pytest.raises(BridgeError):
+        asyncio.run(ReachyMiniApi("fake").start_head_tracking())
 
 
 # --- presence & breathing (motion loop) ---------------------------------------------

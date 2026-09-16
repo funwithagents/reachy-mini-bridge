@@ -28,12 +28,11 @@ The shape and the constructor trio mirror [`tts-engine`'s configuration](../../t
   "daemon": { "spawn": "auto", "headless": true },
   "tts":    { "module": { "type": "elevenlabs", "api_key_env": "ELEVENLABS_API_KEY", "voice_id": "..." } },
   "audio":  { "xvf3800": null },
-  "wobbling": true,
-  "motion": { "presence": true, "breathing": true }
+  "motion": { "presence": true, "breathing": true, "wobbling": true, "tracking": true }
 }
 ```
 
-Every block is optional: `ReachyMiniConfig()` is a valid config — the `real` backend, upstream's connection defaults, no daemon management, no default synthesizer, firmware audio defaults, head wobbling on, presence and breathing on. `config.example.json` in the repo root documents every field with placeholder values and is kept in sync with this spec (the `motion` block lands there with its implementation plan).
+Every block is optional: `ReachyMiniConfig()` is a valid config — the `real` backend, upstream's connection defaults, no daemon management, no default synthesizer, firmware audio defaults, and every `motion` switch on. `config.example.json` in the repo root documents every field with placeholder values and is kept in sync with this spec.
 
 ```python
 @dataclass
@@ -46,9 +45,8 @@ class ReachyMiniConfig:
     # a tts-engine `engine` block, verbatim
     tts: dict[str, Any] | None = None
     audio: AudioSettings = field(default_factory=AudioSettings)
-    # audio-reactive head sway, enabled on entry
-    wobbling: bool = True
-    # the motion loop's switches: presence (idle behaviour on) and breathing
+    # everything that shapes the robot's behaviour at rest: the loop's own switches
+    # (presence, breathing) and the daemon-side modes the api arms (wobbling, tracking)
     motion: MotionSettings = field(default_factory=MotionSettings)
 ```
 
@@ -128,27 +126,27 @@ class AudioSettings:
 
 The value is carried verbatim to `MediaSession(robot, audio_config=...)`, whose upstream target is `apply_audio_config(config: Sequence[tuple[str, Sequence[AudioControlValue]]])` — a JSON list of two-item lists satisfies that `Sequence` shape directly. The config layer checks the shape: a list whose items are two-item lists with a string first item.
 
-### `wobbling`
-
-A top-level boolean, default `true`: a robot that talks sways its head while it talks. `ReachyMiniApi` enables upstream's audio-reactive head wobbling on entry — the head sways with every sound the robot plays — and switches it off again on exit whenever it is still on ([api.md](api.md) "Audio-reactive motion (head wobbling)"; mechanism in [audio.md](audio.md) "Head wobbling"). It is a top-level key, not part of `audio`, because it configures a behavior of the api's session as a whole (a robot-object toggle the api applies and undoes), not the media pipeline. `false` keeps the head still while audio plays (a caller driving the head precisely, or a quiet demo); `set_wobbling(enabled)` changes it at runtime.
-
 ### `motion` block → `MotionSettings`
 
-The initial values of the motion loop's two switches ([motion.md](motion.md) "Two switches"), applied when the session starts; `set_presence(enabled)` / `set_breathing(enabled)` change them at runtime.
+The initial values of everything that shapes the robot's behaviour at rest: the loop's own idle switches (`presence`, `breathing`, [motion.md](motion.md) "Two switches") and the two daemon-side modes the api arms around them (`wobbling`, `tracking`). Applied when the session starts; each has a runtime verb — `set_presence(enabled)` / `set_breathing(enabled)` / `set_wobbling(enabled)` / `start_head_tracking(...)` / `stop_head_tracking()` — that changes it while entered ([api.md](api.md)).
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `presence` | bool | `true` | The background behaviour: while on, the loop fills every idle moment with the idle move so the robot never goes dead between verbs. `false` makes the bridge command the head only while a verb runs — for a caller driving the head through the raw robot. Emotions play either way. |
 | `breathing` | bool | `true` | Which idle move presence plays: `true` breathes (a slow z-axis sine with counter-phase antenna sway), `false` holds a still neutral. Ignored while `presence` is off. |
+| `wobbling` | bool | `true` | A robot that talks sways its head while it talks: `ReachyMiniApi` enables upstream's audio-reactive head wobbling on entry and switches it off again on exit whenever it is still on ([api.md](api.md) "Audio-reactive motion (head wobbling)"; mechanism in [audio.md](audio.md) "Head wobbling"). `false` keeps the head still while audio plays (a caller driving the head precisely, or a quiet demo). |
+| `tracking` | bool | `true` | Whether the robot autonomously keeps a detected face centered ([api.md](api.md) "Attention / gaze (autonomous)"). Since tracking moves the robot, the default is realized whenever motors read `enabled` — at session entry if they already are, otherwise on the next `set_motors_state("enabled")` — and, like wobbling, is stopped again on exit if still on. `false` leaves tracking off until `start_head_tracking(...)` is called explicitly. |
 
 ```python
 @dataclass
 class MotionSettings:
     presence: bool = True
     breathing: bool = True
+    wobbling: bool = True
+    tracking: bool = True
 ```
 
-It is a block, not two top-level keys, because the two switches configure one thing — the motion loop — and more of its knobs (a listening cue, a tick rate if it ever becomes configurable) would land beside them. `wobbling` stays top-level: it is a daemon-side mode the api merely arms, not a setting of the bridge's own loop.
+It is one block, not several top-level keys, because all four switches configure the same thing from a caller's perspective — what the robot looks like when nothing else is commanding it — even though two live in the bridge's own loop (`presence`, `breathing`) and two are daemon-side modes the api merely arms (`wobbling`, `tracking`); more knobs in either category (a listening cue, a tracking weight) would land beside them.
 
 ### `ConfigError`
 
@@ -159,22 +157,22 @@ It is a block, not two top-level keys, because the two switches configure one th
 All enforced by `ReachyMiniConfig.from_dict` (delegating to `DaemonConfig.from_dict` / `AudioSettings.from_dict`), so every constructor path validates identically:
 
 - Invalid JSON raises `ConfigError` (with the file path from `from_json_file`).
-- The top-level value and the `robot`, `daemon`, `tts`, `audio`, and `motion` blocks must be JSON objects (`tts` may be `null`); `backend` and `wobbling` are the two top-level scalars. Shape failures raise `ConfigError`, never a raw `AttributeError` / `TypeError`.
+- The top-level value and the `robot`, `daemon`, `tts`, `audio`, and `motion` blocks must be JSON objects (`tts` may be `null`); `backend` is the one top-level scalar. Shape failures raise `ConfigError`, never a raw `AttributeError` / `TypeError`.
 - Unknown top-level keys, and unknown keys inside `daemon` / `audio` / `motion`, raise `ConfigError` naming the key (the blocks are ours, so a typo is caught). Unknown keys inside `robot` raise `ConfigError` per the upstream-signature check above; `tts.module` is left to tts-engine.
 - `backend` ∈ {`real`, `sim`, `fake`}; `daemon.spawn` ∈ {`never`, `auto`, `always`}; `daemon.spawn != "never"` requires `backend` `sim` or `real`.
 - `daemon.headless` / `daemon.preload_datasets` are booleans; `daemon.scene` a non-empty string or `null`; `daemon.startup_timeout` a positive number other than `bool`.
 - `robot` must not contain `use_sim` or `spawn_daemon`; with `daemon.spawn != "never"`, `robot.host` (if given) must be a loopback address.
 - `tts`, when not `null`, is an object with a `module` object whose `type` is a non-empty string.
 - `audio.xvf3800`, when not `null`, is a list of two-item lists with a string first item.
-- `wobbling` is a boolean; `motion.presence` and `motion.breathing` are booleans.
+- `motion.presence`, `motion.breathing`, `motion.wobbling` and `motion.tracking` are all booleans.
 
 ## Relationship to the other specs
 
-- **[api.md](api.md):** `ReachyMiniApi` is constructed from a `ReachyMiniConfig` (or a backend-string shorthand for one), mirrors the `from_*` trio, applies `wobbling` on entry, and starts the motion loop with the `motion` switches.
-- **[motion.md](motion.md):** the `motion` block is the initial state of the loop's presence and breathing switches.
+- **[api.md](api.md):** `ReachyMiniApi` is constructed from a `ReachyMiniConfig` (or a backend-string shorthand for one), mirrors the `from_*` trio, applies `motion.wobbling` on entry, arms `motion.tracking` once motors allow it, and starts the motion loop with the `motion.presence` / `motion.breathing` switches.
+- **[motion.md](motion.md):** the `motion` block is the initial state of the loop's presence and breathing switches (and, for `wobbling` / `tracking`, of the daemon-side modes the api arms around it).
 - **[robot.md](robot.md):** the `robot` block is what `build_robot(backend, **robot)` forwards.
 - **[daemon.md](daemon.md):** the `daemon` block configures the bridge-owned daemon lifecycle; `backend` selects its launch recipe.
-- **[audio.md](audio.md):** the `tts` block builds the default `TTSEngineSynthesizer`; `audio.xvf3800` is the session's `audio_config`; the top-level `wobbling` arms the head wobbler on the speaker path.
+- **[audio.md](audio.md):** the `tts` block builds the default `TTSEngineSynthesizer`; `audio.xvf3800` is the session's `audio_config`; `motion.wobbling` arms the head wobbler on the speaker path.
 - **[testing_support.md](testing_support.md):** the `live_api` fixture builds its api from a `ReachyMiniConfig` whose `robot` block carries the harness's connection options.
 
 ## Open questions

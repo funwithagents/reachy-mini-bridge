@@ -192,8 +192,14 @@ class ReachyMiniApi:
         self._presence = self._config.motion.presence
         self._breathing = self._config.motion.breathing
         # The api's own record of the tracking weight last requested (as for wobbling),
-        # so play_emotion can dip it to 0 for a move and restore it afterwards.
+        # so play_emotion can dip it to 0 for a move and restore it afterwards. None
+        # means tracking is not currently active (paused for lack of motors, or off).
         self._tracking_weight: float | None = None
+        # Whether tracking should be on whenever motors allow it (the config default,
+        # or the caller's last start_head_tracking/stop_head_tracking) — mirrors
+        # _presence/_breathing; distinct from _tracking_weight because tracking, unlike
+        # presence/breathing, needs motors enabled to actually engage.
+        self._tracking_wanted = self._config.motion.tracking
 
     # --- config-based constructors (mirroring ReachyMiniConfig's trio) ---
 
@@ -314,7 +320,8 @@ class ReachyMiniApi:
             # (the mode is still off, so the callback is a no-op). It holds the robot
             # itself: __aexit__ clears `self._robot` before the stack closes.
             stack.push_async_callback(self._disable_wobbling_if_on, robot)
-            if cfg.wobbling:
+            stack.push_async_callback(self._stop_tracking_if_on, robot)
+            if cfg.motion.wobbling:
                 await self.set_wobbling(True)
             # Entered after wobbling, exits first (specs/motion.md "Lifecycle"): the
             # stack unwinds in reverse, so the loop eases to neutral before wobbling
@@ -326,6 +333,8 @@ class ReachyMiniApi:
             self._motion = motion
             if await self.get_motors_state() == "enabled":
                 motion.resume()
+                if self._tracking_wanted:
+                    await self._start_tracking_now()
         except BaseException:
             self._robot = None
             self._media = None
@@ -350,6 +359,7 @@ class ReachyMiniApi:
         finally:
             self._wobbling = False
             self._tracking_weight = None
+            self._tracking_wanted = self._config.motion.tracking
             self._presence = self._config.motion.presence
             self._breathing = self._config.motion.breathing
 
@@ -358,6 +368,20 @@ class ReachyMiniApi:
         if self._wobbling:
             await asyncio.to_thread(robot.disable_wobbling)
             self._wobbling = False
+
+    async def _stop_tracking_if_on(self, robot: AnyReachyMini) -> None:
+        # The daemon-side switch is shared across clients: never leave it armed.
+        if self._tracking_weight is not None:
+            await asyncio.to_thread(robot.stop_head_tracking)
+            self._tracking_weight = None
+
+    async def _start_tracking_now(self, weight: float = 1.0) -> None:
+        """Start tracking without re-checking motor state: the caller (__aenter__ or
+        set_motors_state) has just confirmed motors are enabled, and a second read
+        risks the daemon's ~0.2s status lag reporting the pre-change state."""
+        await asyncio.to_thread(self.robot.start_head_tracking, weight)
+        self._tracking_weight = weight
+        self._tracking_wanted = True
 
     # --- motors / torque ---
 
@@ -392,7 +416,9 @@ class ReachyMiniApi:
 
         Also drives the motion loop (specs/motion.md "Motors"): ``enabled`` resumes it
         — re-anchored on the present pose, so the head eases into the idle move rather
-        than snapping — the two resting states pause it.
+        than snapping — and arms face tracking too if it's wanted but not yet active
+        (the config default, or a ``start_head_tracking`` call made before motors were
+        enabled); the two resting states pause the loop only.
         """
         robot = self.robot
         if state == "enabled":
@@ -408,6 +434,8 @@ class ReachyMiniApi:
             )
         if state == "enabled":
             self._require_motion().resume()
+            if self._tracking_wanted and self._tracking_weight is None:
+                await self._start_tracking_now()
         else:
             self._require_motion().pause()
 
@@ -550,13 +578,21 @@ class ReachyMiniApi:
         to ``0`` for a move and restore it afterwards.
         """
         await self._require_motors_enabled("start_head_tracking")
-        await asyncio.to_thread(self.robot.start_head_tracking, weight)
-        self._tracking_weight = weight
+        await self._start_tracking_now(weight)
 
     async def stop_head_tracking(self) -> None:
         """Stop the autonomous face tracker."""
         await asyncio.to_thread(self.robot.stop_head_tracking)
         self._tracking_weight = None
+        self._tracking_wanted = False
+
+    @property
+    def tracking(self) -> bool:
+        """Whether the bridge wants tracking on — its own record (upstream has no
+        getter), mirroring :attr:`wobbling`. On by default (the config's
+        ``motion.tracking`` flag); outside a session reads the config's value.
+        """
+        return self._tracking_wanted
 
     # --- audio out ---
 

@@ -92,9 +92,9 @@ All verbs are `async`; units are human (degrees, seconds, named emotions). The u
 |---|---|
 | Motors | `get_motors_state()`, `set_motors_state("enabled" \| "disabled" \| "gravity_compensation")` |
 | Expression | `list_emotions()`, `play_emotion(name)` — the upstream recorded-moves library |
-| Gaze | `start_head_tracking(weight=1.0)`, `stop_head_tracking()` — the daemon keeps a detected face centered |
+| Gaze | `start_head_tracking(weight=1.0)`, `stop_head_tracking()`, `tracking` — the daemon keeps a detected face centered; on by default (the config's `motion.tracking` flag), armed once motors are `enabled` |
 | Speech out | `say(text, synth=None)`, `play_sound(file)` |
-| Motion while talking | `set_wobbling(enabled)`, `wobbling` — upstream's audio-reactive head sway; on by default, set by the config's `wobbling` flag |
+| Motion while talking | `set_wobbling(enabled)`, `wobbling` — upstream's audio-reactive head sway; on by default, set by the config's `motion.wobbling` flag |
 | Staying alive | `set_presence(enabled)` / `presence`, `set_breathing(enabled)` / `breathing` — the idle behaviour between verbs; both on by default, set by the config's `motion` block |
 | Mic in | `audio_input(mono=True)` async iterator of int16 PCM bytes, plus `mic_sample_rate` / `mic_channels` |
 | Camera | `get_camera_frame()` — raw BGR `ndarray`, `None` when no frame is available |
@@ -134,8 +134,7 @@ Routing both directions through the bridge is what keeps the robot's hardware ec
   "daemon": { "spawn": "auto", "headless": true },
   "tts": { "module": { "type": "elevenlabs", "api_key_env": "ELEVENLABS_API_KEY", "voice_id": "..." } },
   "audio": { "xvf3800": null },
-  "wobbling": true,
-  "motion": { "presence": true, "breathing": true }
+  "motion": { "presence": true, "breathing": true, "wobbling": true, "tracking": true }
 }
 ```
 
@@ -143,8 +142,7 @@ Routing both directions through the bridge is what keeps the robot's hardware ec
 - `daemon` — `sim`, or `real` for a robot plugged into this machine over USB (loopback `host` only). `"spawn": "auto"` reuses a daemon already listening at `host:port` or spawns one — a headless MuJoCo daemon for `sim`, the robot's hardware daemon for `real` (it wakes the robot, and puts it to sleep on exit) — and stops it on exit; `"always"` insists on spawning; `"never"` (default) only connects, which is what a wireless robot needs. `"headless": false` opens the MuJoCo viewer; `headless` and `scene` play no part on `real`.
 - `tts` — the tts-engine module block that builds the default voice for `say`.
 - `audio` — the XVF3800 mic-array profile applied on connect.
-- `wobbling` — sways the head with every sound the robot plays, from entry until exit (default `true`); `false` keeps the head still, and `set_wobbling` changes it at runtime.
-- `motion` — `presence` (stay alive between verbs) and `breathing` (breathe vs. hold neutral when idle), both `true` by default; `set_presence` / `set_breathing` change them at runtime.
+- `motion` — everything that shapes the robot's behaviour at rest, all `true` by default: `presence` (stay alive between verbs) and `breathing` (breathe vs. hold neutral when idle), changed at runtime with `set_presence` / `set_breathing`; `wobbling` (sway the head with every sound the robot plays), changed with `set_wobbling`; `tracking` (autonomously keep a detected face centered, once motors are enabled), changed with `start_head_tracking` / `stop_head_tracking`.
 
 Details and validation rules: [specs/config.md](specs/config.md), [specs/daemon.md](specs/daemon.md), [docs/running-the-sim-daemon.md](docs/running-the-sim-daemon.md).
 

@@ -186,24 +186,41 @@ class AudioSettings:
 
 @dataclass
 class MotionSettings:
-    """The motion loop's switches, applied when the session starts (specs/motion.md)."""
+    """Everything that shapes the robot's behaviour at rest, applied when the session
+    starts (specs/motion.md, specs/api.md): the loop's own idle switches (``presence``,
+    ``breathing``) and the daemon-side modes the api arms around them (``wobbling``,
+    ``tracking``)."""
 
     # The background behaviour: idle moments are filled with the idle move.
     presence: bool = True
     # Which idle move presence plays: breathing, or a still neutral hold.
     breathing: bool = True
+    # Audio-reactive head sway, enabled on entry.
+    wobbling: bool = True
+    # Autonomous face tracking, armed once motors read enabled.
+    tracking: bool = True
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> MotionSettings:
         block = _require_object(data, "motion")
-        _reject_unknown_keys(block, "motion", {"presence", "breathing"})
+        _reject_unknown_keys(
+            block, "motion", {"presence", "breathing", "wobbling", "tracking"}
+        )
         presence = block.get("presence", True)
         breathing = block.get("breathing", True)
+        wobbling = block.get("wobbling", True)
+        tracking = block.get("tracking", True)
         if not isinstance(presence, bool):
             raise ConfigError("'motion.presence' must be a boolean")
         if not isinstance(breathing, bool):
             raise ConfigError("'motion.breathing' must be a boolean")
-        return cls(presence=presence, breathing=breathing)
+        if not isinstance(wobbling, bool):
+            raise ConfigError("'motion.wobbling' must be a boolean")
+        if not isinstance(tracking, bool):
+            raise ConfigError("'motion.tracking' must be a boolean")
+        return cls(
+            presence=presence, breathing=breathing, wobbling=wobbling, tracking=tracking
+        )
 
     @classmethod
     def from_json(cls, text: str) -> MotionSettings:
@@ -229,9 +246,7 @@ class ReachyMiniConfig:
     # a tts-engine ``engine`` block, verbatim
     tts: dict[str, Any] | None = None
     audio: AudioSettings = field(default_factory=AudioSettings)
-    # audio-reactive head sway, enabled on entry
-    wobbling: bool = True
-    # the motion loop's switches: presence (idle behaviour on) and breathing
+    # everything that shapes the robot's behaviour at rest (specs/config.md "motion block")
     motion: MotionSettings = field(default_factory=MotionSettings)
 
     @classmethod
@@ -241,7 +256,7 @@ class ReachyMiniConfig:
         _reject_unknown_keys(
             top,
             "config",
-            {"backend", "robot", "daemon", "tts", "audio", "wobbling", "motion"},
+            {"backend", "robot", "daemon", "tts", "audio", "motion"},
         )
 
         backend = top.get("backend", "real")
@@ -279,10 +294,6 @@ class ReachyMiniConfig:
 
         audio = AudioSettings.from_dict(top.get("audio", {}))
 
-        wobbling = top.get("wobbling", True)
-        if not isinstance(wobbling, bool):
-            raise ConfigError("'wobbling' must be a boolean")
-
         motion = MotionSettings.from_dict(top.get("motion", {}))
 
         return cls(
@@ -291,7 +302,6 @@ class ReachyMiniConfig:
             daemon=daemon,
             tts=tts,
             audio=audio,
-            wobbling=wobbling,
             motion=motion,
         )
 
