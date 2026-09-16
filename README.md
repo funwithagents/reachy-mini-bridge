@@ -48,7 +48,7 @@ from reachy_mini_bridge import ReachyMiniApi
 async def main() -> None:
     async with ReachyMiniApi("fake") as api:
         await api.set_motors_state("enabled")
-        print(await api.list_emotions())     # ['happy', 'sad', 'curious'] on the fake
+        print(await api.list_emotions())  # ['happy', 'sad', 'curious'] on the fake
         await api.play_emotion("happy")
         await api.start_head_tracking()
         frame = await api.get_camera_frame()  # numpy BGR HxWx3, or None
@@ -81,18 +81,18 @@ All verbs are `async`; units are human (degrees, seconds, named emotions). The u
 | Mic in | `audio_input(mono=True)` async iterator of int16 PCM bytes, plus `mic_sample_rate` / `mic_channels` |
 | Camera | `get_camera_frame()` — raw BGR `ndarray`, `None` when no frame is available |
 
-Verbs that move the robot require motors `enabled` and raise `MotorsNotEnabledError` otherwise. Errors live in `reachy_mini_bridge.errors` (`BridgeError` base, `MotorsNotEnabledError`, `DaemonError`, `ConfigError`).
+Verbs that move the robot require motors `enabled` and raise `MotorsNotEnabledError` otherwise. The errors a caller catches — `BridgeError` (the base), `MotorsNotEnabledError`, `GravityCompensationUnsupportedError`, `ConfigError` — import from `reachy_mini_bridge`, next to `ReachyMiniApi`, `ReachyMiniConfig`, `SpeechSynthesizer` and `TTSEngineSynthesizer`; `DaemonError` lives in `reachy_mini_bridge.errors`.
 
-**Talking.** `say` streams text-to-speech to the robot speaker through a `SpeechSynthesizer` — a small protocol (`sample_rate` + `stream(text)` yielding float32 mono chunks) defined in `reachy_mini_bridge.audio`. Bring your own, or configure the default `tts-engine` adapter through the config's `tts` block. Without either, `say` raises `BridgeError`; a `tts` block that fails to build (a missing API key, say) leaves the robot usable and exposes the cause on `api.synthesizer_error`. `say` returns once the utterance has finished playing; cancel the task to stop it (queued audio is flushed).
+**Talking.** `say` streams text-to-speech to the robot speaker through a `SpeechSynthesizer` — a small protocol (`sample_rate` + `stream(text)` yielding float32 mono chunks) importable from `reachy_mini_bridge`. Bring your own, or configure the default `tts-engine` adapter through the config's `tts` block. Without either, `say` raises `BridgeError`; a `tts` block that fails to build (a missing API key, say) leaves the robot usable and exposes the cause on `api.synthesizer_error`. `say` returns once the utterance has finished playing; cancel the task to stop it (queued audio is flushed).
 
 **Listening.** The bridge does no speech recognition. It exposes the robot's echo-cancelled microphone as a stream and you feed it to the ASR of your choice:
 
 ```python
 async with ReachyMiniApi("fake") as api:
-    print(api.mic_sample_rate)               # configure your ASR to this
-    async for chunk in api.audio_input():    # int16 LE mono PCM bytes
+    print(api.mic_sample_rate)  # configure your ASR to this
+    async for chunk in api.audio_input():  # int16 LE mono PCM bytes
         feed_my_asr(chunk)
-        break                                # stop iterating to stop the tap
+        break  # stop iterating to stop the tap
 ```
 
 Routing both directions through the bridge is what keeps the robot's hardware echo cancellation working while it speaks and listens at once.
@@ -138,6 +138,7 @@ pytest_plugins = ["reachy_mini_bridge.testing.fixtures"]
 
 # test_robot.py
 from reachy_mini_bridge.testing import requires_caps
+
 
 def test_it_speaks(live_api):
     requires_caps(live_api, "audio")

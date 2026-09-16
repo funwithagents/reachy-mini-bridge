@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 
 import numpy as np
 import numpy.typing as npt
@@ -22,6 +22,7 @@ from reachy_mini_bridge.audio import (
     float32_to_int16,
     int16_to_float32,
 )
+from reachy_mini_bridge.errors import BridgeError
 from reachy_mini_bridge.fake_reachy_mini import FakeReachyMini
 
 
@@ -320,6 +321,107 @@ def test_media_session_applies_audio_config_when_given() -> None:
     assert applied[0]["config"] is profile
 
 
+def _raise(message: str) -> Callable[..., None]:
+    def fail(*args: object, **kwargs: object) -> None:
+        raise RuntimeError(message)
+
+    return fail
+
+
+def test_failed_open_unwinds_what_started(monkeypatch: pytest.MonkeyPatch) -> None:
+    robot = FakeReachyMini()
+    monkeypatch.setattr(robot.media, "start_playing", _raise("no speaker"))
+
+    async def run() -> None:
+        async with MediaSession(robot):
+            pass
+
+    with pytest.raises(RuntimeError, match="no speaker"):
+        asyncio.run(run())
+    # Recording had started, so it is stopped; playback never started, so it is not.
+    assert _command_names(robot) == ["media.start_recording", "media.stop_recording"]
+
+
+def test_failed_audio_config_unwinds_both_directions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    robot = FakeReachyMini()
+    monkeypatch.setattr(robot.media.audio, "apply_audio_config", _raise("bad profile"))
+
+    async def run() -> None:
+        async with MediaSession(robot, audio_config={"agc": 1}):
+            pass
+
+    with pytest.raises(RuntimeError, match="bad profile"):
+        asyncio.run(run())
+    # Unwound in reverse: playback stops before recording.
+    assert _command_names(robot) == [
+        "media.start_recording",
+        "media.start_playing",
+        "media.stop_playing",
+        "media.stop_recording",
+    ]
+
+
+def test_exit_stops_playback_even_if_stopping_recording_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    robot = FakeReachyMini()
+    monkeypatch.setattr(robot.media, "stop_recording", _raise("stuck mic"))
+    session = MediaSession(robot)
+
+    async def run() -> None:
+        async with session:
+            pass
+
+    with pytest.raises(RuntimeError, match="stuck mic"):
+        asyncio.run(run())
+    assert "media.stop_playing" in _command_names(robot)
+    # The session reads as closed even though a stop raised.
+    with pytest.raises(BridgeError):
+        session.audio_input()
+
+
+def test_say_requires_an_open_session() -> None:
+    robot = FakeReachyMini()
+    session = MediaSession(robot)
+    synth = _ToneSynth(16000, chunks=1, block=160)
+
+    async def run() -> None:
+        with pytest.raises(BridgeError, match="say"):
+            await session.say("hi", synth)
+        async with session:
+            pass
+        with pytest.raises(BridgeError, match="say"):
+            await session.say("hi", synth)
+
+    asyncio.run(run())
+    assert "media.push_audio_sample" not in _command_names(robot)
+
+
+def test_audio_input_requires_an_open_session() -> None:
+    session = MediaSession(FakeReachyMini())
+    # Raised at call time, before any iteration.
+    with pytest.raises(BridgeError, match="audio_input"):
+        session.audio_input()
+
+
+def test_double_open_raises() -> None:
+    robot = FakeReachyMini()
+    session = MediaSession(robot)
+
+    async def run() -> None:
+        async with session:
+            with pytest.raises(BridgeError):
+                async with session:
+                    pass
+
+    asyncio.run(run())
+    names = _command_names(robot)
+    assert names.count("media.start_recording") == 1
+    assert names[-2:] == ["media.stop_playing", "media.stop_recording"]
+
+
 # --- mic tap -----------------------------------------------------------------------
 
 
@@ -399,3 +501,59 @@ def test_say_missing_synthesizer_is_a_type_the_caller_can_supply() -> None:
                 await session.say("hi", object())  # type: ignore[arg-type]
 
     asyncio.run(run())
+
+
+def test_mic_tap_ends_when_the_session_closes() -> None:
+    robot = FakeReachyMini()
+
+    async def run() -> int:
+        chunks = 0
+
+        async def drain(stream: AsyncIterator[bytes]) -> None:
+            nonlocal chunks
+            async for _ in stream:
+                chunks += 1
+
+        session = MediaSession(robot)
+        async with session:
+            task = asyncio.create_task(drain(session.audio_input()))
+            await asyncio.sleep(0.05)
+        await asyncio.wait_for(task, 1.0)  # finishes on its own; no timeout
+        return chunks
+
+    assert asyncio.run(run()) > 0
+
+
+def test_mic_tap_waits_out_missing_samples(monkeypatch: pytest.MonkeyPatch) -> None:
+    robot = FakeReachyMini()
+    frame = np.full((4, 2), [1.0, 0.0], dtype=np.float32)
+    samples: list[npt.NDArray[np.float32] | None] = [None, None, None, frame]
+    monkeypatch.setattr(robot.media, "get_audio_sample", lambda: samples.pop(0))
+
+    async def run() -> bytes:
+        async with MediaSession(robot) as session:
+            return (await _take(session.audio_input(), 1))[0]
+
+    chunk = asyncio.run(run())
+    assert chunk == float32_to_int16(np.full(4, 0.5, dtype=np.float32)).tobytes()
+
+
+def test_mic_tap_does_not_busy_poll(monkeypatch: pytest.MonkeyPatch) -> None:
+    robot = FakeReachyMini()
+    calls = 0
+
+    def empty() -> None:
+        nonlocal calls
+        calls += 1
+
+    monkeypatch.setattr(robot.media, "get_audio_sample", empty)
+
+    async def run() -> None:
+        async with MediaSession(robot) as session:
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(_take(session.audio_input(), 1), 0.2)
+
+    asyncio.run(run())
+    # ~20 reads at a 10 ms poll; an unthrottled loop makes thousands. Upper bound only,
+    # so a slow machine cannot make it flaky.
+    assert calls < 50

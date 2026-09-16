@@ -15,7 +15,22 @@ See specs/_overview.md for the architecture and specs/_index.md for each concept
 """
 
 from .api import ReachyMiniApi
+from .audio import SpeechSynthesizer, TTSEngineSynthesizer
 from .config import ReachyMiniConfig
-from .errors import ConfigError
+from .errors import (
+    BridgeError,
+    ConfigError,
+    GravityCompensationUnsupportedError,
+    MotorsNotEnabledError,
+)
 
-__all__ = ["ConfigError", "ReachyMiniApi", "ReachyMiniConfig"]
+__all__ = [
+    "BridgeError",
+    "ConfigError",
+    "GravityCompensationUnsupportedError",
+    "MotorsNotEnabledError",
+    "ReachyMiniApi",
+    "ReachyMiniConfig",
+    "SpeechSynthesizer",
+    "TTSEngineSynthesizer",
+]

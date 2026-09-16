@@ -88,7 +88,7 @@ class _FakeAudioControl:
         config: object,
         *,
         verify: bool = True,
-        write_settle_seconds: float = 0.5,
+        write_settle_seconds: float = 0.1,
     ) -> bool:
         self._commands.append(
             (
@@ -186,26 +186,6 @@ class FakeReachyMini:
         self.media = _FakeMedia(self.commands)
 
     # --- motion / expression ---
-    def goto_target(
-        self,
-        head: npt.NDArray[np.float64] | None = None,
-        antennas: npt.NDArray[np.float64] | list[float] | None = None,
-        duration: float = 0.5,
-        method: Any = None,
-        body_yaw: float | None = 0.0,
-    ) -> None:
-        self.commands.append(
-            (
-                "goto_target",
-                {
-                    "head": head,
-                    "antennas": antennas,
-                    "duration": duration,
-                    "body_yaw": body_yaw,
-                },
-            )
-        )
-
     async def async_play_move(
         self,
         move: object,

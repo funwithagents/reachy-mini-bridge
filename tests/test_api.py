@@ -109,13 +109,36 @@ def test_double_enter_raises() -> None:
     asyncio.run(run())
 
 
-def test_front_door_exports() -> None:
+def test_package_front_door_drives_the_fake() -> None:
     import reachy_mini_bridge as rmb
 
-    assert {"ReachyMiniApi", "ReachyMiniConfig", "ConfigError"} <= set(rmb.__all__)
-    for name in rmb.__all__:
-        assert getattr(rmb, name) is not None
-    assert not hasattr(rmb, "hello")
+    assert set(rmb.__all__) == {
+        "BridgeError",
+        "ConfigError",
+        "GravityCompensationUnsupportedError",
+        "MotorsNotEnabledError",
+        "ReachyMiniApi",
+        "ReachyMiniConfig",
+        "SpeechSynthesizer",
+        "TTSEngineSynthesizer",
+    }
+    assert all(hasattr(rmb, name) for name in rmb.__all__)
+    assert isinstance(_ToneSynth(), rmb.SpeechSynthesizer)
+
+    # The front-door names are the ones a caller catches.
+    async def run() -> None:
+        async with rmb.ReachyMiniApi("fake") as api:
+            with pytest.raises(rmb.BridgeError):
+                await api.say("hi")  # no synthesizer
+            with pytest.raises(rmb.MotorsNotEnabledError):
+                await api.play_emotion("happy")  # the fake boots disabled
+            _fake(api).client.kinematics_engine = "AnalyticalKinematics"
+            with pytest.raises(rmb.GravityCompensationUnsupportedError):
+                await api.set_motors_state("gravity_compensation")
+
+    asyncio.run(run())
+    with pytest.raises(rmb.ConfigError):
+        rmb.ReachyMiniConfig.from_json("{not json")
 
 
 # --- default synthesizer from the config's `tts` block ------------------------------
@@ -335,6 +358,23 @@ def test_exit_tears_down_everything_even_if_media_teardown_fails(
     assert rec.events[-1] == "daemon-exit"
     with pytest.raises(BridgeError):
         _ = api.robot
+
+
+def test_audio_verbs_require_an_open_api() -> None:
+    api = ReachyMiniApi("fake")
+
+    async def run() -> None:
+        with pytest.raises(BridgeError):
+            await api.say("hi", _ToneSynth())
+        async with api:
+            pass
+        with pytest.raises(BridgeError):
+            await api.say("hi", _ToneSynth())
+
+    asyncio.run(run())
+    # Raised at call time, not at the first `async for`.
+    with pytest.raises(BridgeError):
+        api.audio_input()
 
 
 # --- motors ------------------------------------------------------------------------

@@ -37,16 +37,15 @@ def test_motor_state_transitions() -> None:
 def test_motion_commands_are_recorded() -> None:
     robot = FakeReachyMini()
     robot.start_head_tracking(weight=0.5)
-    robot.goto_target(duration=1.5)
     asyncio.run(robot.async_play_move("happy", initial_goto_duration=1.0))
 
     names = [name for name, _ in robot.commands]
-    assert names == ["start_head_tracking", "goto_target", "async_play_move"]
+    assert names == ["start_head_tracking", "async_play_move"]
 
     tracking_args = robot.commands[0][1]
     assert tracking_args["weight"] == 0.5
-    assert robot.commands[1][1]["duration"] == 1.5
-    assert robot.commands[2][1]["move"] == "happy"
+    assert robot.commands[1][1]["move"] == "happy"
+    assert robot.commands[1][1]["initial_goto_duration"] == 1.0
 
 
 def test_wobbling_toggles_are_recorded() -> None:

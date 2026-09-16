@@ -23,11 +23,14 @@ from __future__ import annotations
 
 import asyncio
 import time
+from contextlib import AsyncExitStack
 from typing import TYPE_CHECKING, Any, Protocol, Self, cast, runtime_checkable
 
 import numpy as np
 import numpy.typing as npt
 import samplerate
+
+from .errors import BridgeError
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
@@ -51,6 +54,10 @@ _CONVERTER = "sinc_best"
 # buffer (50 ms on the GStreamer backend) plus device latency. See specs/audio.md
 # "`say` completes when the utterance has been heard".
 _PLAYBACK_TAIL_S = 0.1
+
+# How long the mic tap waits before re-reading when the daemon has no sample ready
+# (one 10 ms capture chunk). See specs/audio.md "Mic in".
+_MIC_POLL_INTERVAL_S = 0.01
 
 
 # --- conversion helpers (pure; shared by the say sink and the mic tap) -------------
@@ -122,6 +129,8 @@ class MediaSession:
 
     Opened once (``start_recording`` + ``start_playing``, optional XVF3800 config) and
     torn down once. Owning both directions is what makes echo cancellation work.
+    Teardown stops exactly what started, even when opening or closing fails partway;
+    ``say`` and ``audio_input`` raise :class:`BridgeError` outside an open session.
     Reads all rates/channels from the SDK getters so the same code is correct on the
     real, sim, and fake backends.
     """
@@ -133,26 +142,44 @@ class MediaSession:
         # The XVF3800 tuning profile applied on start. Left None by default (firmware
         # defaults) until the concrete profile settles — specs/audio.md open question 3.
         self._audio_config = audio_config
-        self._open = False
+        # The stops to run at close; the session is open exactly while this is set.
+        self._exit_stack: AsyncExitStack | None = None
 
     async def __aenter__(self) -> Self:
+        if self._exit_stack is not None:
+            raise BridgeError("MediaSession is already open")
         media = self._robot.media
-        await asyncio.to_thread(media.start_recording)
-        await asyncio.to_thread(media.start_playing)
-        if self._audio_config is not None:
-            # media.audio's type/optionality diverges between the real MediaManager and
-            # the fake; the audio-control surface is exercised loosely (the union still
-            # checks every other media call above/below).
-            audio: Any = media.audio
-            await asyncio.to_thread(audio.apply_audio_config, self._audio_config)
-        self._open = True
+        stack = AsyncExitStack()
+        try:
+            await asyncio.to_thread(media.start_recording)
+            stack.push_async_callback(asyncio.to_thread, media.stop_recording)
+            await asyncio.to_thread(media.start_playing)
+            stack.push_async_callback(asyncio.to_thread, media.stop_playing)
+            if self._audio_config is not None:
+                # media.audio's type/optionality diverges between the real MediaManager
+                # and the fake; the audio-control surface is exercised loosely (the
+                # union still checks every other media call above/below).
+                audio: Any = media.audio
+                await asyncio.to_thread(audio.apply_audio_config, self._audio_config)
+        except BaseException:
+            await stack.aclose()
+            raise
+        self._exit_stack = stack.pop_all()
         return self
 
     async def __aexit__(self, *exc: object) -> None:
-        media = self._robot.media
-        await asyncio.to_thread(media.stop_recording)
-        await asyncio.to_thread(media.stop_playing)
-        self._open = False
+        stack = self._exit_stack
+        # Read as closed even if a stop raises; the stack still runs every stop.
+        self._exit_stack = None
+        if stack is not None:
+            await stack.aclose()
+
+    def _require_open(self, verb: str) -> None:
+        if self._exit_stack is None:
+            raise BridgeError(
+                f"{verb} requires an open media session "
+                "(inside `async with ReachyMiniApi(...)`)"
+            )
 
     # --- mic in ---
 
@@ -166,18 +193,26 @@ class MediaSession:
         """Channel count of the raw capture — read from the daemon (stereo backend: 2)."""
         return self._robot.media.get_input_channels()
 
-    async def audio_input(self, *, mono: bool = True) -> AsyncIterator[bytes]:
+    def audio_input(self, *, mono: bool = True) -> AsyncIterator[bytes]:
         """Yield echo-cancelled mic PCM as ``bytes`` (int16 LE).
 
         ``mono=True`` (default) downmixes to one channel — the ASR drop-in. ``mono=False``
         yields the raw interleaved capture at :attr:`mic_channels` channels. A tap over
-        the already-running capture: iterate to consume, ``break`` to stop.
+        the already-running capture: iterate to consume, ``break`` to stop. Raises
+        :class:`BridgeError` right here when the session is not open; the stream ends
+        on its own when the session closes.
         """
+        self._require_open("audio_input")
+        return self._tap(mono)
+
+    async def _tap(self, mono: bool) -> AsyncIterator[bytes]:
         media = self._robot.media
         channels = media.get_input_channels()
-        while True:
+        while self._exit_stack is not None:
             sample = await asyncio.to_thread(media.get_audio_sample)
             if sample is None:
+                # Nothing buffered yet: wait a chunk rather than spin on the daemon.
+                await asyncio.sleep(_MIC_POLL_INTERVAL_S)
                 continue
             arr = np.asarray(sample, dtype=np.float32)
             frame = downmix_to_mono(arr, channels) if mono else arr
@@ -196,7 +231,9 @@ class MediaSession:
         On any early exit (the task is cancelled, or the synthesizer raises) the queued
         speaker audio is flushed with :meth:`clear_player` before the exception
         propagates: ``say`` either plays the whole utterance or leaves the speaker silent.
+        Raises :class:`BridgeError` when the session is not open.
         """
+        self._require_open("say")
         media = self._robot.media
         out_rate = media.get_output_audio_samplerate()
         out_channels = media.get_output_channels()
