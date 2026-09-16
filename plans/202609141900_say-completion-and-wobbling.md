@@ -17,8 +17,8 @@ Implements `specs/audio.md` ("`say` completes when the utterance has been heard,
 
 Independent of both and kept separate (each is a verifiable unit with its own `Done`), with two merge points:
 
-- [202609151410_media-session-lifecycle-hardening.md](202609151410_media-session-lifecycle-hardening.md) also edits `MediaSession.say` (it adds a `_require_open("say")` guard at the top and moves the session onto an `AsyncExitStack`). **Planned order: this plan first** (it is the user-visible fix the interaction app is blocked on), the lifecycle plan second — it then adds its guard as the first line of `say`, above the tracker/try block. The lifecycle plan's `test_say_requires_an_open_session` and this plan's tests do not overlap.
-- [202609151400_package-front-door-and-fake-fidelity.md](202609151400_package-front-door-and-fake-fidelity.md) adds a fake↔upstream signature-parity table. Whichever lands second adds `enable_wobbling` and `disable_wobbling` to the `FakeReachyMini` vs `reachy_mini.ReachyMini` rows.
+- [202609161520_media-session-lifecycle-hardening.md](202609161520_media-session-lifecycle-hardening.md) also edits `MediaSession.say` (it adds a `_require_open("say")` guard at the top and moves the session onto an `AsyncExitStack`). **Planned order: this plan first** (it is the user-visible fix the interaction app is blocked on), the lifecycle plan second — it then adds its guard as the first line of `say`, above the tracker/try block. The lifecycle plan's `test_say_requires_an_open_session` and this plan's tests do not overlap.
+- [202609161510_package-front-door-and-fake-fidelity.md](202609161510_package-front-door-and-fake-fidelity.md) adds a fake↔upstream signature-parity table. Whichever lands second adds `enable_wobbling` and `disable_wobbling` to the `FakeReachyMini` vs `reachy_mini.ReachyMini` rows.
 
 `api.md`, `audio.md` and `robot.md` return to `Implemented` only once every plan holding them at `Updated` is `Done`.
 

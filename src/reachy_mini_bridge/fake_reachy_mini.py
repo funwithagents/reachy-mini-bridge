@@ -40,10 +40,18 @@ class _FakeBackendStatus:
 
 
 class _FakeStatus:
-    """Stand-in for the upstream ``DaemonStatus`` (only the path the api reads)."""
+    """Stand-in for the upstream ``DaemonStatus`` (only the fields the api reads)."""
 
-    def __init__(self, motor_control_mode: str) -> None:
+    def __init__(
+        self,
+        motor_control_mode: str,
+        *,
+        simulation_enabled: bool,
+        mockup_sim_enabled: bool,
+    ) -> None:
         self.backend_status = _FakeBackendStatus(motor_control_mode)
+        self.simulation_enabled = simulation_enabled
+        self.mockup_sim_enabled = mockup_sim_enabled
 
 
 class _FakeDaemonClient:
@@ -55,9 +63,18 @@ class _FakeDaemonClient:
 
     def __init__(self) -> None:
         self.motor_control_mode = "disabled"
+        # The daemon's kinematics engine (upstream serves it over HTTP, not the SDK):
+        # Placo, so gravity compensation is accepted; tests flip it to exercise refusal.
+        self.kinematics_engine = "Placo"
+        self.simulation_enabled = False
+        self.mockup_sim_enabled = False
 
     def get_status(self) -> _FakeStatus:
-        return _FakeStatus(self.motor_control_mode)
+        return _FakeStatus(
+            self.motor_control_mode,
+            simulation_enabled=self.simulation_enabled,
+            mockup_sim_enabled=self.mockup_sim_enabled,
+        )
 
 
 class _FakeAudioControl:

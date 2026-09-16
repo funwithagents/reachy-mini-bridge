@@ -1,19 +1,21 @@
 """Daemon lifecycle: bring up / tear down a local ``reachy-mini-daemon`` (specs/daemon.md).
 
 Upstream's ``ReachyMini`` is a client that connects to a separately running daemon in
-its constructor. ``managed_daemon`` sits between "a config that says ``sim``" and "a
-daemon ready to accept that client": own it or borrow it, wait for *readiness* (the
-backend is up, not merely the port), launch headless by default, scrub the GStreamer
+its constructor. ``managed_daemon`` sits between "a config that says ``sim``" (or a
+USB-attached ``real`` robot) and "a daemon ready to accept that client": own it or borrow
+it, wait for *readiness* (the backend is up, not merely the port), launch headless by
+default, scrub the GStreamer
 environment the child inherits, and stop exactly what was started. Shared by
 ``ReachyMiniApi`` and the testing harness (``reachy_mini_bridge.testing``).
 
 The process-spawning and readiness-probing steps are module-private callables
-(``_spawn``, ``_ready``, ``_sleep``, ``_port_open``) resolved at call time, so the
-deterministic tests script them without a daemon.
+(``_spawn``, ``_ready``, ``_sleep``, ``_port_open``, ``_placo_available``) resolved at
+call time, so the deterministic tests script them without a daemon.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import shutil
 import socket
@@ -35,6 +37,8 @@ __all__ = [
     "managed_daemon",
     "scrubbed_env",
 ]
+
+DAEMON_BACKENDS = ("sim", "real")
 
 _POLL_INTERVAL_S = 1.0
 _TERMINATE_GRACE_S = 10.0
@@ -97,14 +101,30 @@ def scrubbed_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
     return env
 
 
-def launch_command(config: DaemonConfig) -> list[str]:
-    """The argv for a sim daemon per ``config`` (docs/running-the-sim-daemon.md).
+def launch_command(config: DaemonConfig, *, backend: str = "sim") -> list[str]:
+    """The argv for a ``backend`` daemon per ``config``.
 
-    Headless: ``reachy-mini-daemon --sim --headless [--no-preload-datasets] [--scene S]``.
-    Viewer: ``mjpython -m reachy_mini.daemon.app.main --sim [...]`` (supplies the camera's
-    GL context; needs a GUI session). Media stays on. Raises ``DaemonError`` when the
-    launcher is not on ``PATH`` (the ``sim`` extra provides it).
+    ``sim`` (docs/running-the-sim-daemon.md) — headless: ``reachy-mini-daemon --sim
+    --headless [--no-preload-datasets] [--scene S]``; viewer: ``mjpython -m
+    reachy_mini.daemon.app.main --sim [...]`` (supplies the camera's GL context; needs a
+    GUI session). ``real`` — a USB-attached robot: ``reachy-mini-daemon [--kinematics-engine
+    Placo] [--no-preload-datasets]``, Placo whenever it is importable (gravity compensation
+    needs it). Media stays on. Raises ``DaemonError`` when the launcher is not on ``PATH``.
     """
+    _check_backend(backend)
+    if backend == "real":
+        exe = shutil.which("reachy-mini-daemon")
+        if exe is None:
+            raise DaemonError(
+                "no 'reachy-mini-daemon' launcher on PATH — it ships with reachy-mini, "
+                "the bridge's base dependency"
+            )
+        cmd = [exe]
+        if _placo_available():
+            cmd += ["--kinematics-engine", "Placo"]
+        if not config.preload_datasets:
+            cmd.append("--no-preload-datasets")
+        return cmd
     if config.headless:
         exe = shutil.which("reachy-mini-daemon")
         if exe is None:
@@ -164,6 +184,17 @@ def _port_open(host: str, port: int, timeout: float = 1.0) -> bool:
         sock.close()
 
 
+def _check_backend(backend: str) -> None:
+    if backend not in DAEMON_BACKENDS:
+        raise ValueError(
+            f"daemon backend must be one of {DAEMON_BACKENDS}, got {backend!r}"
+        )
+
+
+def _placo_available() -> bool:
+    return importlib.util.find_spec("placo") is not None
+
+
 def _spawn(cmd: list[str], env: dict[str, str]) -> _Process:
     return subprocess.Popen(
         cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env
@@ -183,9 +214,15 @@ def _sleep(seconds: float) -> None:
 
 @contextmanager
 def managed_daemon(
-    config: DaemonConfig, *, host: str = "127.0.0.1", port: int = 8000
+    config: DaemonConfig,
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    backend: str = "sim",
 ) -> Iterator[DaemonHandle]:
     """Yield a ready daemon at ``host:port`` per ``config.spawn`` (``auto`` | ``always``).
+
+    ``backend`` picks the launch recipe: ``sim`` (MuJoCo) or ``real`` (a USB-attached robot).
 
     ``auto``: borrow a daemon already ready (or still booting) at the address, else
     spawn one and own it. ``always``: spawn and own; the port already open is an error.
@@ -196,19 +233,20 @@ def managed_daemon(
         raise ValueError(
             f"managed_daemon needs spawn 'auto' or 'always', got {config.spawn!r}"
         )
+    _check_backend(backend)
     if _port_open(host, port):
         if config.spawn == "always":
             raise DaemonError(
                 f"port {port} on {host} is already in use, and daemon.spawn is 'always'"
             )
-        _wait_until_ready(host, port, config, proc=None, cmd=None)
+        _wait_until_ready(host, port, config, backend, proc=None, cmd=None)
         yield DaemonHandle(host=host, port=port, owned=False, pid=None)
         return
 
-    cmd = launch_command(config)
+    cmd = launch_command(config, backend=backend)
     proc = _spawn(cmd, scrubbed_env())
     try:
-        _wait_until_ready(host, port, config, proc=proc, cmd=cmd)
+        _wait_until_ready(host, port, config, backend, proc=proc, cmd=cmd)
         yield DaemonHandle(host=host, port=port, owned=True, pid=proc.pid)
     finally:
         _stop(proc)
@@ -218,23 +256,24 @@ def _wait_until_ready(
     host: str,
     port: int,
     config: DaemonConfig,
+    backend: str,
     *,
     proc: _Process | None,
     cmd: list[str] | None,
 ) -> None:
-    hint = "" if config.headless else _VIEWER_HINT
+    hint = _VIEWER_HINT if backend == "sim" and not config.headless else ""
     deadline = time.monotonic() + config.startup_timeout
     while True:
         if proc is not None and (code := proc.poll()) is not None:
             raise DaemonError(
-                f"sim daemon exited during startup (exit {code}); command: "
+                f"{backend} daemon exited during startup (exit {code}); command: "
                 f"{' '.join(cmd or [])}{hint}"
             )
         if _ready(host, port):
             return
         if time.monotonic() >= deadline:
             what = (
-                "spawned sim daemon did not become ready"
+                f"spawned {backend} daemon did not become ready"
                 if proc is not None
                 else f"port {port} on {host} is open but no ready Reachy Mini daemon answers"
             )

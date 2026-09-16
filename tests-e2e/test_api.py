@@ -27,6 +27,7 @@ import pytest
 
 from reachy_mini_bridge.api import ReachyMiniApi
 from reachy_mini_bridge.audio import TTSEngineSynthesizer
+from reachy_mini_bridge.errors import GravityCompensationUnsupportedError
 from reachy_mini_bridge.testing import require_env, requires_caps
 
 # A public ElevenLabs voice used throughout tts-engine's own docs; override with
@@ -272,15 +273,15 @@ def test_say_with_real_tts_speaks_through_the_robot(
 def test_motor_state_reads_and_dispatches_over_the_live_path(
     live_api: tuple[ReachyMiniApi, frozenset[str]],
 ) -> None:
-    """`get_motors_state` reads a valid mode and every `set_motors_state` reaches the daemon.
+    """`get_motors_state` reads a valid mode and each `set_motors_state` reaches the daemon.
 
     The e2e value here is that the read (a real daemon status round-trip) and each set
     dispatch work over the network — not that a given target *honors* a state. Notably
-    the sim daemon ignores every motor-state change: `disabled` and `gravity_compensation`
-    both keep reporting `enabled` (confirmed on both the headless and the headfull-viewer
-    sim). That is why this asserts validity, not equality; the fast tier pins the exact
-    dispatch→state mapping deterministically on the fake, and honoring is expected only
-    on real hardware.
+    the sim daemon ignores every motor-state change: `disabled` keeps reporting `enabled`
+    (confirmed on both the headless and the headfull-viewer sim). That is why this asserts
+    validity, not equality; the fast tier pins the exact dispatch→state mapping
+    deterministically on the fake. Gravity compensation has its own capability-gated test
+    below: sending it to a daemon that can't hold it drops the connection.
     """
     requires_caps(live_api, "motion")
     api, _caps = live_api
@@ -289,15 +290,68 @@ def test_motor_state_reads_and_dispatches_over_the_live_path(
     async def scenario() -> tuple[str, dict[str, str]]:
         original = await api.get_motors_state()
         results: dict[str, str] = {}
-        for state in ("enabled", "gravity_compensation", "disabled"):
+        for state in ("enabled", "disabled"):
             await api.set_motors_state(state)
             results[state] = await api.get_motors_state()
         await api.set_motors_state(original)  # restore
         return original, results
 
     original, results = asyncio.run(scenario())
+    print(f"\n[e2e] motor states: original={original!r}, read back={results!r}")
     assert original in valid
     assert all(mode in valid for mode in results.values())
+
+
+def test_gravity_compensation_dispatches_over_the_live_path(
+    live_api: tuple[ReachyMiniApi, frozenset[str]],
+) -> None:
+    """`set_motors_state("gravity_compensation")` reaches a daemon that supports it.
+
+    Gated on `gravity_compensation`: hardware whose daemon runs the Placo kinematics engine
+    (`reachy-mini[placo_kinematics]`). On the default engine the daemon rejects the mode and
+    closes the client connection, which would fail every later test in the module.
+    """
+    requires_caps(live_api, "motion", "gravity_compensation")
+    api, _caps = live_api
+
+    async def scenario() -> tuple[str, str]:
+        original = await api.get_motors_state()
+        await api.set_motors_state("gravity_compensation")
+        mode = await api.get_motors_state()
+        await api.set_motors_state(original)  # restore
+        return original, mode
+
+    original, mode = asyncio.run(scenario())
+    print(f"\n[e2e] gravity compensation: original={original!r}, read back={mode!r}")
+    assert mode in {"enabled", "disabled", "gravity_compensation"}
+
+
+def test_gravity_compensation_is_refused_off_placo_and_the_connection_survives(
+    live_api: tuple[ReachyMiniApi, frozenset[str]],
+) -> None:
+    """On a robot daemon without Placo, the api refuses the mode instead of sending it.
+
+    Sent, the daemon would reject it by closing this client's connection. The guard raises
+    `GravityCompensationUnsupportedError` first, so the motor state still reads back
+    afterwards over the same connection. Skips where there is nothing to refuse: a daemon
+    that supports the mode, or a simulation (which ignores motor modes).
+    """
+    requires_caps(live_api, "motion")
+    api, caps = live_api
+    if "gravity_compensation" in caps:
+        pytest.skip("the daemon supports gravity compensation; nothing to refuse")
+    status = api.robot.client.get_status()
+    if status.simulation_enabled or status.mockup_sim_enabled:
+        pytest.skip("a simulation ignores motor modes; the api sends them unchecked")
+
+    async def scenario() -> tuple[str, str]:
+        before = await api.get_motors_state()
+        with pytest.raises(GravityCompensationUnsupportedError):
+            await api.set_motors_state("gravity_compensation")
+        return before, await api.get_motors_state()
+
+    before, after = asyncio.run(scenario())
+    assert after == before
 
 
 def test_play_emotion_plays_a_real_move(

@@ -97,10 +97,18 @@ daemon at setup:
 | `motion` | the backend reports a status | ✅ | ✅ | ✅ |
 | `audio` | recording yields a mic sample | ✅ | ✅ | ✅ |
 | `camera` | a camera frame comes back (needs a GL context) | ⚠️ not on headless macOS | ✅ | ✅ |
+| `gravity_compensation` | hardware daemon on the Placo kinematics engine | ❌ | ❌ | ✅ with `reachy-mini[placo_kinematics]` |
 | `doa` | mic-array direction of arrival | ❌ | ❌ | ✅ (reserved) |
 
 Capabilities are **probed, not assumed** from the backend type — environment quirks decide
 what actually works.
+
+**Audio devices.** Every target picks the audio card named "Reachy Mini Audio" when one is
+plugged in, so the `sim` target plays through (and records from) a USB-connected robot
+too; without one it uses the machine's default speaker and mic. Don't stop and restart the
+media pipeline in a test (`api.robot.media.stop_recording()` then `start_recording()`): on
+macOS the restarted pipeline reopens on the system defaults, so the rest of the module's
+audio silently leaves the robot.
 
 ## Configuration (environment variables)
 
@@ -109,14 +117,24 @@ The `live_api` fixture reads the same knobs the bridge's own tier uses:
 | Variable | Default | Meaning |
 |---|---|---|
 | `REACHY_MINI_E2E_TARGET` | `sim` | `sim` or `real` |
-| `REACHY_MINI_HOST` | `127.0.0.1` | daemon host (borrow one already running, or your robot) |
+| `REACHY_MINI_HOST` | `127.0.0.1` | daemon host (borrow one already running, or your robot; loopback lets the harness start a USB robot's daemon) |
 | `REACHY_MINI_PORT` | `8000` | daemon port |
 | `REACHY_MINI_E2E_SIM_VIEWER` | unset | `1` to launch the headfull MuJoCo viewer (local; needs a GUI/GL context) |
 
 **Own it or borrow it:** the fixture reuses a daemon already reachable at the address
-(never tears it down); otherwise, for `sim` only, it spawns a MuJoCo daemon and owns its
-teardown — it never spawns for `real`. When it can't bring one up (missing sim extra, busy
-port, robot unreachable), the test **skips** rather than failing. See
+(never tears it down); otherwise it spawns one and owns its teardown — a MuJoCo daemon for
+`sim`, and for `real` on a loopback address (a robot plugged into this machine over USB)
+the hardware daemon, `reachy-mini-daemon`, which finds the robot's serial port itself, wakes
+the robot, and puts it to sleep when the fixture stops it. A wireless robot runs its own
+daemon: point `REACHY_MINI_HOST` at it. When it can't bring one up (missing sim extra, busy
+port, no robot answering), the test **skips** rather than failing.
+
+**Gravity compensation** needs the daemon's Placo kinematics engine. Install
+`reachy-mini[placo_kinematics]` and a harness-spawned `real` daemon uses it automatically; a
+daemon you start yourself needs `--kinematics-engine Placo`. Without it,
+`api.set_motors_state("gravity_compensation")` raises `GravityCompensationUnsupportedError`
+(sending the mode would make the robot daemon close the connection), so gate such tests on
+`requires_caps(live_api, "gravity_compensation")`. See
 [running-the-sim-daemon.md](running-the-sim-daemon.md) for the launch recipes and the
 macOS viewer notes.
 

@@ -3,11 +3,11 @@
 
 Resolves the *target* from the environment (`REACHY_MINI_E2E_TARGET` = `sim` default |
 `real`) and the daemon address (`REACHY_MINI_HOST` / `REACHY_MINI_PORT`), then hands the
-daemon work to the library's [daemon.py](../daemon.py) (specs/daemon.md): `real` borrows
-a ready daemon or skips; `sim` runs `managed_daemon(spawn="auto")` — reuse one already
-ready at the address (never torn down), else spawn a MuJoCo daemon and own its teardown —
-translating a `DaemonError` into a `pytest.skip` so the live tier skips, never fails,
-when the environment can't provide one.
+daemon work to the library's [daemon.py](../daemon.py) (specs/daemon.md): reuse a daemon
+already ready at the address (never torn down), else spawn one and own its teardown — a
+MuJoCo daemon for `sim`, the hardware daemon for `real` on a loopback address (a USB robot
+on this machine; a remote `real` address skips) — translating a `DaemonError` into a
+`pytest.skip` so the live tier skips, never fails, when the environment can't provide one.
 
 Kept out of `fixtures.py` so the plugin module reads as the fixture surface. The names
 used by `fixtures.py` (`target`, `backend`, `address`, `managed_daemon`) are
@@ -22,7 +22,7 @@ from collections.abc import Iterator
 import pytest
 
 from reachy_mini_bridge import daemon
-from reachy_mini_bridge.config import DaemonConfig
+from reachy_mini_bridge.config import LOOPBACK_HOSTS, DaemonConfig
 from reachy_mini_bridge.errors import DaemonError
 
 _DEFAULT_HOST = "127.0.0.1"
@@ -72,11 +72,13 @@ def _sim_viewer() -> bool:
 def managed_daemon(target_: str) -> Iterator[tuple[str, int]]:
     """Yield a live daemon at (host, port) for `target_`.
 
-    Borrows a daemon already ready at the address (never tears it down). Otherwise
-    `real` skips (we never spawn a robot), and `sim` spawns a MuJoCo daemon through
-    `reachy_mini_bridge.daemon.managed_daemon` and owns its teardown. Skips cleanly
-    (never fails) when the sim extra / launcher is missing, the port is busy with
-    something else, or the daemon can't become ready in time.
+    Borrows a daemon already ready at the address (never tears it down). Otherwise it
+    spawns one through `reachy_mini_bridge.daemon.managed_daemon` and owns its teardown:
+    a MuJoCo daemon for `sim`, the hardware daemon for `real` — only on a loopback address
+    (a USB robot on this machine; the harness never starts a daemon elsewhere, so a remote
+    `real` address skips). Skips cleanly (never fails) when the launcher / sim extra is
+    missing, the port is busy with something else, no robot answers, or the daemon can't
+    become ready in time.
     """
     host, port = address()
 
@@ -86,13 +88,18 @@ def managed_daemon(target_: str) -> Iterator[tuple[str, int]]:
         return
 
     if target_ == "real":
-        pytest.skip(f"no reachable real Reachy Mini daemon at {host}:{port}")
-
-    # sim target: spawn and own it.
-    pytest.importorskip("mujoco", reason="sim extra (mujoco) not installed")
-    config = DaemonConfig(spawn="auto", headless=not _sim_viewer())
+        if host not in LOOPBACK_HOSTS:
+            pytest.skip(f"no reachable real Reachy Mini daemon at {host}:{port}")
+        config = DaemonConfig(spawn="auto")
+        backend_ = "real"
+    else:
+        pytest.importorskip("mujoco", reason="sim extra (mujoco) not installed")
+        config = DaemonConfig(spawn="auto", headless=not _sim_viewer())
+        backend_ = "sim"
     try:
-        with daemon.managed_daemon(config, host=host, port=port) as handle:
+        with daemon.managed_daemon(
+            config, host=host, port=port, backend=backend_
+        ) as handle:
             yield handle.host, handle.port
     except DaemonError as e:
         pytest.skip(str(e))

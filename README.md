@@ -145,7 +145,7 @@ def test_it_speaks(live_api):
     ...
 ```
 
-The `live_api` fixture borrows a running daemon or spawns a sim one, probes what actually works (`motion`, `audio`, `camera`), and skips rather than fails when it can't. Full guide: [docs/testing-with-the-bridge.md](docs/testing-with-the-bridge.md).
+The `live_api` fixture borrows a running daemon or spawns one (sim, or a USB-connected robot's), probes what actually works (`motion`, `audio`, `camera`, `gravity_compensation`), and skips rather than fails when it can't. Full guide: [docs/testing-with-the-bridge.md](docs/testing-with-the-bridge.md).
 
 ## Development
 

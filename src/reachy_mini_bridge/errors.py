@@ -10,7 +10,13 @@ invalid input data.
 
 from __future__ import annotations
 
-__all__ = ["BridgeError", "ConfigError", "DaemonError", "MotorsNotEnabledError"]
+__all__ = [
+    "BridgeError",
+    "ConfigError",
+    "DaemonError",
+    "GravityCompensationUnsupportedError",
+    "MotorsNotEnabledError",
+]
 
 
 class BridgeError(RuntimeError):
@@ -24,6 +30,16 @@ class MotorsNotEnabledError(BridgeError):
     reading the live motor state, rather than silently enabling torque or sending a
     command that does nothing. The caller enables motors via
     ``set_motors_state("enabled")`` first (see specs/api.md "Motors").
+    """
+
+
+class GravityCompensationUnsupportedError(BridgeError):
+    """``set_motors_state("gravity_compensation")`` on a daemon that cannot hold the mode.
+
+    Raised before anything is sent, when the robot daemon's kinematics engine is not
+    Placo (or cannot be read): upstream sends the mode fire-and-forget, and such a daemon
+    rejects it by closing the client connection. The motor state and the connection are
+    left as they were (see specs/api.md "Motors").
     """
 
 

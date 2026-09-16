@@ -28,7 +28,7 @@ A consumer's two tiers map onto the bridge's three backends exactly as the bridg
 |---|---|---|---|
 | Unit / integration | `fake` | none | none — offline, deterministic |
 | Live / e2e | `sim` | `sim` (`reachy-mini[mujoco]`) | MuJoCo, harness-managed |
-| Live / e2e | `real` | none (base only) | robot at host/port |
+| Live / e2e | `real` | none (base only) | robot at host/port — harness-managed for a USB robot on this machine |
 
 - **Unit tests use `fake`.** The public `ReachyMiniApi("fake")` ([api.md](api.md)) already needs no daemon, no network, and no extra — a consumer constructs it directly and asserts through the `api.robot` escape hatch on recorded commands / synthetic perception. Importing the package pulls in `reachy_mini` (the base dependency), which needs its native libs installed, **not** a live daemon.
 - **E2E tests use `sim` or `real`** through the shipped `live_api` fixture below.
@@ -61,8 +61,8 @@ Four modules, with the daemon machinery kept private behind the plugin:
 
 The package exposes exactly the three names the bridge's own live tier uses — `live_api` through the `reachy_mini_bridge.testing.fixtures` plugin module, and the two skip gates re-exported from `reachy_mini_bridge.testing`:
 
-- **`live_api`** — a **module-scoped** pytest fixture yielding `(api, capabilities)`: a connected `ReachyMiniApi` over the resolved target and the `frozenset` of capabilities probed against that live daemon. It brings the daemon up under own-it-or-borrow-it (reuse one already reachable, else spawn a `sim` one and own its teardown; never spawn for `real`), builds the api from a `ReachyMiniConfig` ([config.md](config.md)) whose `robot` block carries the harness's connection options (`connection_mode="network"`, the resolved host/port, `media_backend="local"`) and whose `daemon.spawn` is `"never"` — the fixture, not the api, owns the daemon so one daemon serves a whole test module — with media on, probes, and tears down what it spawned.
-- **`requires_caps(live, *caps)`** — the skip gate: given the `live_api` value, `pytest.skip(...)` unless every named capability (`motion` / `audio` / `camera` / …) was probed on the current target. A test written once runs wherever its needs are met.
+- **`live_api`** — a **module-scoped** pytest fixture yielding `(api, capabilities)`: a connected `ReachyMiniApi` over the resolved target and the `frozenset` of capabilities probed against that live daemon. It brings the daemon up under own-it-or-borrow-it (reuse one already reachable, else spawn one and own its teardown — a MuJoCo daemon for `sim`, the hardware daemon for `real` when the address is loopback, i.e. a USB robot on this machine; a non-loopback `real` address is borrow-or-skip), builds the api from a `ReachyMiniConfig` ([config.md](config.md)) whose `robot` block carries the harness's connection options (`connection_mode="network"`, the resolved host/port, `media_backend="local"`) and whose `daemon.spawn` is `"never"` — the fixture, not the api, owns the daemon so one daemon serves a whole test module — with media on, probes, and tears down what it spawned.
+- **`requires_caps(live, *caps)`** — the skip gate: given the `live_api` value, `pytest.skip(...)` unless every named capability (`motion` / `audio` / `camera` / `gravity_compensation` / …, table in [testing.md](testing.md)) was probed on the current target. A test written once runs wherever its needs are met.
 - **`require_env(name)`** — return an env var or skip when it's absent, so a live test skips (never fails) without its credentials.
 
 A consumer's e2e test then reads:
@@ -82,12 +82,14 @@ def test_my_greeting_speaks(live_api):
 Target and connection are chosen by the same env vars the bridge's tier uses, so the knobs are one documented set:
 
 - `REACHY_MINI_E2E_TARGET` — `sim` (default) | `real`.
-- `REACHY_MINI_HOST` / `REACHY_MINI_PORT` — the daemon address (borrow a daemon already there; for `real`, the robot).
+- `REACHY_MINI_HOST` / `REACHY_MINI_PORT` — the daemon address (borrow a daemon already there; for `real`, the robot's daemon — spawned by the harness when the address is loopback and nothing is ready).
 - `REACHY_MINI_E2E_SIM_VIEWER` — headfull MuJoCo viewer instead of headless (local, needs a GUI/GL context; see [../docs/running-the-sim-daemon.md](../docs/running-the-sim-daemon.md)).
 
 ### The gotchas move into the shipped code
 
-The two hard-won details a consumer would otherwise have to rediscover are the whole reason to ship this rather than document it: the **GStreamer-bundle env scrub** before spawning a daemon from a process that has imported `reachy_mini` (else a doubled plugin path segfaults the child), and **probing** capabilities against the live daemon rather than inferring them from the backend type. The scrub and the spawn live in the library's `daemon.py` ([daemon.md](daemon.md)), the probe behind `live_api`; a consumer inherits both for free.
+The hard-won details a consumer would otherwise have to rediscover are the whole reason to ship this rather than document it: the **GStreamer-bundle env scrub** before spawning a daemon from a process that has imported `reachy_mini` (else a doubled plugin path segfaults the child), **probing** capabilities against the live daemon rather than inferring them from the backend type, and **probing without restarting the audio pipeline**. The scrub and the spawn live in the library's `daemon.py` ([daemon.md](daemon.md)), the probes behind `live_api`; a consumer inherits all three for free.
+
+The probes run after the api has opened its media session, so the pipeline is already recording and playing. The audio probe only waits for a mic sample from it; it never calls `start_recording()` / `stop_recording()`. Upstream's GStreamer audio binds the robot's speaker and mic by device name once, when it builds that single shared pipeline, and on macOS a stop-then-start reopens both on the system defaults — the Mac's own speaker and microphone — for the rest of the test module ([../docs/reachy-mini-api.md](../docs/reachy-mini-api.md)). A consumer's own tests should likewise leave the session's pipeline running.
 
 ### A documented guide accompanies the code
 

@@ -31,7 +31,7 @@ Where things live. This is a coarse, module-level map — for the full file inve
 | `src/reachy_mini_bridge/audio.py` | Audio & media session — `say` via a pluggable `SpeechSynthesizer` to the robot speaker + echo-cancelled mic stream for the caller's ASR + conversion helpers | [specs/audio.md](specs/audio.md) |
 | `src/reachy_mini_bridge/config.py` | `ReachyMiniConfig` (+ `DaemonConfig`, `AudioSettings`) — the declarative api config with `from_dict` / `from_json` / `from_json_file` | [specs/config.md](specs/config.md) |
 | `src/reachy_mini_bridge/daemon.py` | Bridge-owned `reachy-mini-daemon` lifecycle — `managed_daemon` (own-it-or-borrow-it), `is_daemon_ready`, `launch_command`, `scrubbed_env` | [specs/daemon.md](specs/daemon.md) |
-| `src/reachy_mini_bridge/errors.py` | Bridge exception hierarchy — `BridgeError` base + `MotorsNotEnabledError`, `DaemonError`; `ConfigError(ValueError)` | [specs/api.md](specs/api.md), [specs/config.md](specs/config.md), [specs/daemon.md](specs/daemon.md) |
+| `src/reachy_mini_bridge/errors.py` | Bridge exception hierarchy — `BridgeError` base + `MotorsNotEnabledError`, `GravityCompensationUnsupportedError`, `DaemonError`; `ConfigError(ValueError)` | [specs/api.md](specs/api.md), [specs/config.md](specs/config.md), [specs/daemon.md](specs/daemon.md) |
 | `src/reachy_mini_bridge/tools.py` | `ReachyMiniTools` agent/LLM tools (placeholder; Draft) | [specs/tools.md](specs/tools.md) |
 | `src/reachy_mini_bridge/testing/` | Shipped testing harness (package) — `live_api` fixture, `requires_caps`, `require_env` for consumers' e2e tests (`fixtures.py` plugin, private `_daemon.py` wrapping `daemon.py`, `support.py`) | [specs/testing_support.md](specs/testing_support.md) |
 
@@ -77,6 +77,23 @@ The mapping is **many-to-many**: a file can be governed by several specs, so the
 ### Live/e2e tests
 
 Some tests call real external services over the network. They live in `tests-e2e/`, a directory separate from `tests/`, so the default `uv run pytest` never runs them — no network access or credentials are needed for the normal dev loop. Run them explicitly, and only when you actually want to verify against a live service. Tests that lack their required credentials should **skip**, not fail, so the tier is safe to run with only the keys you happen to have.
+
+### Running the live e2e tests
+
+The `live_api` fixture brings up the daemon itself — **don't start one by hand**. It borrows a daemon already ready at the address (and leaves it running), otherwise spawns one and stops it at the end of the test module:
+
+| Target | Command | What the harness does |
+|---|---|---|
+| sim, headless (default) | `uv run pytest tests-e2e -rs` | spawns `reachy-mini-daemon --sim --headless` (the `sim` extra, in the dev group) |
+| sim, viewer | `REACHY_MINI_E2E_SIM_VIEWER=1 uv run pytest tests-e2e -rs` | spawns the MuJoCo viewer via `mjpython` — needs an unlocked GUI session |
+| real robot on USB (Lite) | `REACHY_MINI_E2E_TARGET=real uv run pytest tests-e2e -rs` | spawns `reachy-mini-daemon` (serial port auto-detected); the robot wakes up, moves and plays sound, and goes to sleep when the daemon stops |
+| real robot on the network (wireless) | `REACHY_MINI_E2E_TARGET=real REACHY_MINI_HOST=<robot ip> uv run pytest tests-e2e -rs` | borrows the robot's own daemon, or skips — it never spawns on a remote host |
+
+- **Read the skips.** `-rs` prints why each test skipped. A skip means a capability was probed absent (`motion`, `audio`, `camera`, `gravity_compensation`) or a credential is missing — it is not a pass; report it as such.
+- **Capabilities are probed**, not inferred from the target: the headless sim has no camera; `gravity_compensation` needs hardware on the Placo kinematics engine (`reachy-mini[placo_kinematics]` installed — a harness-spawned real daemon then uses it automatically).
+- **Credentials:** `ELEVENLABS_API_KEY` enables the real-TTS test.
+- **macOS permissions:** the process running the tests needs camera and microphone access; without it the camera probe finds no frame and the camera test skips.
+- `REACHY_MINI_PORT` (default `8000`) moves the address. Details: [specs/testing.md](specs/testing.md) ("E2E targets & capabilities"), [docs/testing-with-the-bridge.md](docs/testing-with-the-bridge.md), [specs/daemon.md](specs/daemon.md) (launch recipes).
 
 ## Implementation plans
 

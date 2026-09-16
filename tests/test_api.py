@@ -12,6 +12,7 @@ import json
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import numpy.typing as npt
@@ -20,7 +21,12 @@ import pytest
 from reachy_mini_bridge import api as api_module
 from reachy_mini_bridge.api import ReachyMiniApi
 from reachy_mini_bridge.config import DaemonConfig, ReachyMiniConfig
-from reachy_mini_bridge.errors import BridgeError, ConfigError, MotorsNotEnabledError
+from reachy_mini_bridge.errors import (
+    BridgeError,
+    ConfigError,
+    GravityCompensationUnsupportedError,
+    MotorsNotEnabledError,
+)
 from reachy_mini_bridge.fake_reachy_mini import FakeReachyMini
 
 
@@ -375,6 +381,69 @@ def test_set_motors_state_rejects_unknown_state() -> None:
                 await api.set_motors_state("asleep")
 
     asyncio.run(run())
+
+
+def test_gravity_compensation_is_refused_off_placo_without_sending() -> None:
+    async def run() -> None:
+        async with ReachyMiniApi("fake") as api:
+            await api.set_motors_state("enabled")
+            _fake(api).client.kinematics_engine = "AnalyticalKinematics"
+            with pytest.raises(GravityCompensationUnsupportedError) as excinfo:
+                await api.set_motors_state("gravity_compensation")
+            message = str(excinfo.value)
+            assert "AnalyticalKinematics" in message
+            assert "--kinematics-engine Placo" in message
+            assert "enable_gravity_compensation" not in _command_names(api)
+            assert await api.get_motors_state() == "enabled"  # untouched
+
+    asyncio.run(run())
+
+
+def test_gravity_compensation_is_refused_when_the_engine_cannot_be_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unreachable(robot: object) -> str:
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(api_module, "_daemon_kinematics_engine", unreachable)
+
+    async def run() -> None:
+        async with ReachyMiniApi("fake") as api:
+            with pytest.raises(GravityCompensationUnsupportedError) as excinfo:
+                await api.set_motors_state("gravity_compensation")
+            assert isinstance(excinfo.value.__cause__, OSError)
+            assert "enable_gravity_compensation" not in _command_names(api)
+
+    asyncio.run(run())
+
+
+def test_gravity_compensation_is_sent_unchecked_to_a_simulation() -> None:
+    async def run() -> list[str]:
+        async with ReachyMiniApi("fake") as api:
+            client = _fake(api).client
+            client.kinematics_engine = "AnalyticalKinematics"
+            for flag in ("simulation_enabled", "mockup_sim_enabled"):
+                client.simulation_enabled = flag == "simulation_enabled"
+                client.mockup_sim_enabled = flag == "mockup_sim_enabled"
+                await api.set_motors_state("gravity_compensation")
+            return _command_names(api)
+
+    assert asyncio.run(run()).count("enable_gravity_compensation") == 2
+
+
+def test_daemon_kinematics_engine_reads_the_daemon_http_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fetched: list[str] = []
+
+    def fetch(url: str) -> object:
+        fetched.append(url)
+        return {"info": {"engine": "Placo", "collision check": False}}
+
+    monkeypatch.setattr(api_module, "_fetch_json", fetch)
+    robot = SimpleNamespace(client=SimpleNamespace(host="192.168.1.5", port=8000))
+    assert api_module._daemon_kinematics_engine(robot) == "Placo"  # pyright: ignore[reportArgumentType]
+    assert fetched == ["http://192.168.1.5:8000/api/kinematics/info"]
 
 
 # --- motor precondition on movement verbs ------------------------------------------

@@ -19,7 +19,9 @@ and rich perception are deferred to post-v1 (see specs/api.md).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import urllib.request
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
@@ -27,7 +29,12 @@ from typing import TYPE_CHECKING, Any, Self
 from . import daemon as _daemon
 from .audio import MediaSession, TTSEngineSynthesizer
 from .config import ReachyMiniConfig
-from .errors import BridgeError, ConfigError, MotorsNotEnabledError
+from .errors import (
+    BridgeError,
+    ConfigError,
+    GravityCompensationUnsupportedError,
+    MotorsNotEnabledError,
+)
 from .fake_reachy_mini import FakeReachyMini
 from .robot import build_robot
 
@@ -46,6 +53,31 @@ _logger = logging.getLogger(__name__)
 
 # Motor torque states, as the caller-facing single verb takes/returns them.
 _MOTOR_STATES = ("enabled", "disabled", "gravity_compensation")
+
+# The only kinematics engine on which the robot daemon accepts gravity compensation.
+_GRAVITY_COMPENSATION_ENGINE = "Placo"
+_DAEMON_HTTP_TIMEOUT_S = 2.0
+
+
+def _fetch_json(url: str) -> Any:
+    """GET ``url`` from the daemon's HTTP API and decode its JSON body (patched by tests)."""
+    with urllib.request.urlopen(url, timeout=_DAEMON_HTTP_TIMEOUT_S) as response:
+        return json.load(response)
+
+
+def _daemon_kinematics_engine(robot: AnyReachyMini) -> str:
+    """The kinematics engine the robot's daemon runs (e.g. ``"Placo"``). Blocking.
+
+    Upstream exposes no SDK getter; the daemon serves it at ``/api/kinematics/info``. The
+    fake reports it on its daemon client stand-in. Raises on an unreachable daemon or an
+    unexpected payload. Shared with the testing harness's capability probe.
+    """
+    if isinstance(robot, FakeReachyMini):
+        return robot.client.kinematics_engine
+    client = robot.client
+    info = _fetch_json(f"http://{client.host}:{client.port}/api/kinematics/info")
+    return str(info["info"]["engine"])
+
 
 # Stub emotion names for the fake/offline path (no HuggingFace access) — enough to
 # exercise list_emotions / play_emotion in tests without the real dataset.
@@ -273,7 +305,11 @@ class ReachyMiniApi:
         ``gravity_compensation`` (a gentle rest — the head holds position).
 
         Decoupled from the connection: the state, once set, holds until changed. Raises
-        ``ValueError`` for an unknown state.
+        ``ValueError`` for an unknown state. ``gravity_compensation`` needs a robot daemon
+        on the Placo kinematics engine; on any other engine it raises
+        :class:`GravityCompensationUnsupportedError` without sending anything, because
+        such a daemon would reject the mode by dropping the connection. A simulation
+        ignores motor modes, so there the mode is sent unchecked.
         """
         robot = self.robot
         if state == "enabled":
@@ -281,10 +317,32 @@ class ReachyMiniApi:
         elif state == "disabled":
             await asyncio.to_thread(robot.disable_motors)
         elif state == "gravity_compensation":
+            await self._require_gravity_compensation_support()
             await asyncio.to_thread(robot.enable_gravity_compensation)
         else:
             raise ValueError(
                 f"unknown motor state {state!r}; expected one of {_MOTOR_STATES}"
+            )
+
+    async def _require_gravity_compensation_support(self) -> None:
+        robot = self.robot
+        status = await asyncio.to_thread(robot.client.get_status)
+        if status.simulation_enabled or status.mockup_sim_enabled:
+            return  # the sim daemon ignores motor modes; nothing to protect
+        try:
+            engine = await asyncio.to_thread(_daemon_kinematics_engine, robot)
+        except Exception as e:
+            raise GravityCompensationUnsupportedError(
+                "could not read the daemon's kinematics engine, so gravity compensation "
+                "was not sent (a daemon not on Placo would drop this connection)"
+            ) from e
+        if engine != _GRAVITY_COMPENSATION_ENGINE:
+            raise GravityCompensationUnsupportedError(
+                f"gravity compensation needs the daemon's {_GRAVITY_COMPENSATION_ENGINE} "
+                f"kinematics engine, but it runs {engine!r}; install "
+                "reachy-mini[placo_kinematics] and start the daemon with "
+                "--kinematics-engine Placo. Nothing was sent: the daemon would reject the "
+                "mode by dropping this connection"
             )
 
     async def _require_motors_enabled(self, verb: str) -> None:

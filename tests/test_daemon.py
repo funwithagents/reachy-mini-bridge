@@ -1,7 +1,7 @@
 """Functional tests for the daemon lifecycle (specs/daemon.md) — no daemon, no mujoco.
 
 `managed_daemon` resolves its process and probe seams (`_spawn`, `_ready`, `_sleep`,
-`_port_open`) at call time, so these tests script them: a `_FakeProc` stands in for the
+`_port_open`, `_placo_available`) at call time, so these tests script them: a `_FakeProc` stands in for the
 child process and a scripted readiness sequence drives the own-or-borrow decisions, the
 readiness loop, the error paths, and the teardown.
 """
@@ -61,6 +61,7 @@ class _Harness:
         monkeypatch.setattr(
             daemon.shutil, "which", lambda name: f"/bin/{name}"
         )  # launchers present
+        monkeypatch.setattr(daemon, "_placo_available", lambda: False)
 
     def _spawn(self, cmd: list[str], env: dict[str, str]) -> _FakeProc:
         self.spawned.append((cmd, env))
@@ -115,6 +116,45 @@ def test_launch_command_requires_the_launcher(monkeypatch: pytest.MonkeyPatch) -
         daemon.launch_command(DaemonConfig(headless=False))
 
 
+def test_launch_command_real_robot(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(daemon.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(daemon, "_placo_available", lambda: False)
+    # No --sim; the sim-only knobs (headless, scene) play no part.
+    assert daemon.launch_command(
+        DaemonConfig(headless=False, scene="minimal"), backend="real"
+    ) == ["/bin/reachy-mini-daemon", "--no-preload-datasets"]
+    assert daemon.launch_command(
+        DaemonConfig(preload_datasets=True), backend="real"
+    ) == ["/bin/reachy-mini-daemon"]
+
+
+def test_launch_command_real_uses_placo_when_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(daemon.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(daemon, "_placo_available", lambda: True)
+    assert daemon.launch_command(DaemonConfig(), backend="real") == [
+        "/bin/reachy-mini-daemon",
+        "--kinematics-engine",
+        "Placo",
+        "--no-preload-datasets",
+    ]
+
+
+def test_launch_command_real_requires_the_launcher(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(daemon.shutil, "which", lambda name: None)
+    with pytest.raises(DaemonError, match="reachy-mini-daemon") as excinfo:
+        daemon.launch_command(DaemonConfig(), backend="real")
+    assert "[sim]" not in str(excinfo.value)  # the launcher ships with the base dep
+
+
+def test_launch_command_rejects_an_unknown_backend() -> None:
+    with pytest.raises(ValueError, match="fake"):
+        daemon.launch_command(DaemonConfig(), backend="fake")
+
+
 def test_scrubbed_env_drops_the_gstreamer_bundle_vars() -> None:
     base = {name: "x:x" for name in daemon._GST_BUNDLE_ENV}
     base["PATH"] = "/usr/bin"
@@ -164,6 +204,44 @@ def test_auto_spawns_when_the_port_is_free(harness: _Harness) -> None:
     assert cmd[0].endswith("reachy-mini-daemon") and "--scene" in cmd
     assert not any(k in env for k in daemon._GST_BUNDLE_ENV)
     assert harness.proc.calls == ["terminate", "wait"]
+
+
+def test_auto_spawns_the_real_recipe_for_a_real_backend(harness: _Harness) -> None:
+    harness.ready = iter([False, True])
+    with daemon.managed_daemon(_AUTO, backend="real") as handle:
+        assert handle.owned is True
+    (cmd, env), *_ = harness.spawned
+    assert cmd == ["/bin/reachy-mini-daemon", "--no-preload-datasets"]
+    assert not any(k in env for k in daemon._GST_BUNDLE_ENV)
+    assert harness.proc.calls == ["terminate", "wait"]
+
+
+def test_real_startup_errors_name_the_real_daemon(harness: _Harness) -> None:
+    harness.proc = _FakeProc(polls=[1])
+    with (
+        pytest.raises(
+            DaemonError, match=r"^real daemon exited during startup \(exit 1\)"
+        ),
+        daemon.managed_daemon(
+            DaemonConfig(spawn="auto", headless=False), backend="real"
+        ),
+    ):
+        pass
+    clock = iter([0.0, 5.0])
+    harness.proc = _FakeProc()
+    with (
+        pytest.MonkeyPatch.context() as mp,
+        pytest.raises(
+            DaemonError, match="spawned real daemon did not become ready"
+        ) as excinfo,
+    ):
+        mp.setattr(daemon.time, "monotonic", lambda: next(clock))
+        with daemon.managed_daemon(
+            DaemonConfig(spawn="auto", headless=False, startup_timeout=1.0),
+            backend="real",
+        ):
+            pass
+    assert "GUI session" not in str(excinfo.value)  # the viewer hint is sim-only
 
 
 def test_always_spawns_on_a_free_port_and_errors_on_a_busy_one(

@@ -29,7 +29,7 @@ from typing import Any
 
 import pytest
 
-from reachy_mini_bridge.api import ReachyMiniApi
+from reachy_mini_bridge.api import ReachyMiniApi, _daemon_kinematics_engine
 from reachy_mini_bridge.config import ReachyMiniConfig
 from reachy_mini_bridge.robot import AnyReachyMini
 from reachy_mini_bridge.testing import _daemon
@@ -42,15 +42,13 @@ _CAMERA_PROBE_TIMEOUT = 5.0
 
 
 def _probe_audio(media: Any) -> bool:
-    """True if recording yields a real mic sample within the timeout.
+    """True if the open media session yields a real mic sample within the timeout.
 
-    Restores the connect-time state (not recording) afterwards, so a later audio test
-    starts from a clean slate and manages its own recording.
+    Runs after the api's ``MediaSession`` has started recording and playback, and never
+    starts or stops the pipeline itself: upstream records and plays through one shared
+    pipeline whose device binding does not survive a restart on macOS — a stop/start
+    reopens both on the system default speaker and mic (docs/reachy-mini-api.md).
     """
-    try:
-        media.start_recording()
-    except Exception:  # noqa: BLE001
-        return False
     try:
         deadline = time.monotonic() + _AUDIO_PROBE_TIMEOUT
         while time.monotonic() < deadline:
@@ -59,11 +57,8 @@ def _probe_audio(media: Any) -> bool:
                 return True
             time.sleep(0.1)
         return False
-    finally:
-        try:
-            media.stop_recording()
-        except Exception:  # noqa: BLE001, S110  (best-effort restore)
-            pass
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _probe_camera(media: Any) -> bool:
@@ -80,12 +75,29 @@ def _probe_camera(media: Any) -> bool:
         return False
 
 
+def _probe_gravity_compensation(robot: AnyReachyMini) -> bool:
+    """True if the daemon holds gravity compensation: hardware on the Placo engine.
+
+    The sim ignores the mode (nothing to test), and any other engine makes the api refuse
+    it — so the probe never sends the command. It reads the daemon status (not a
+    simulation) and the engine through the api's own read.
+    """
+    try:
+        status = robot.client.get_status()
+        if status.simulation_enabled or status.mockup_sim_enabled:
+            return False
+        return _daemon_kinematics_engine(robot) == "Placo"
+    except Exception:  # noqa: BLE001  (unreadable ⇒ capability absent)
+        return False
+
+
 def _probe_capabilities(robot: AnyReachyMini) -> frozenset[str]:
     """Probe what the live daemon can actually do — never inferred from backend type.
 
-    Environment quirks decide: audio needs `start_recording()` first, the sim camera
-    needs a GL context, etc. `doa` (mic-array direction of arrival) is robot-only and
-    reserved — left unprobed, so `requires_caps("doa")` skips on sim.
+    Environment quirks decide: audio needs a recording session (the api's), the sim camera
+    needs a GL context, gravity compensation needs hardware on the Placo kinematics engine,
+    etc. `doa` (mic-array direction of arrival) is robot-only and reserved — left
+    unprobed, so `requires_caps("doa")` skips on sim.
     """
     caps: set[str] = set()
     try:
@@ -100,6 +112,8 @@ def _probe_capabilities(robot: AnyReachyMini) -> frozenset[str]:
         caps.add("audio")
     if _probe_camera(media):
         caps.add("camera")
+    if _probe_gravity_compensation(robot):
+        caps.add("gravity_compensation")
     return frozenset(caps)
 
 
@@ -123,9 +137,8 @@ def live_api(
     ``api.robot``. The api's async lifecycle is driven on a throwaway loop; tests run
     their own coroutines via ``asyncio.run`` (nothing in the api binds to a loop).
 
-    The capability probe's audio check stops recording in its cleanup, but the api's
-    MediaSession opened it on ``__aenter__`` — so recording is restored before yielding,
-    or the mic tap would see no samples (the conflict flagged in the plan).
+    Probing happens after ``__aenter__``, on the media pipeline the api's MediaSession
+    already started, which the probes leave running (see ``_probe_audio``).
     """
     host, port = _live_daemon
     # Build the api on the target's own backend (`sim`/`real`) with the daemon left to
@@ -146,8 +159,6 @@ def live_api(
     asyncio.run(api.__aenter__())
     try:
         caps = _probe_capabilities(api.robot)
-        if "audio" in caps:
-            api.robot.media.start_recording()  # restore what the session needs
         yield api, caps
     finally:
         asyncio.run(api.__aexit__(None, None, None))

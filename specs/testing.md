@@ -46,13 +46,13 @@ Selected by `REACHY_MINI_E2E_TARGET`:
   - **headless** (default, for CI): `--sim --headless` — no window, runs anywhere.
   - **headfull** (`REACHY_MINI_E2E_SIM_VIEWER=1`, local): the MuJoCo viewer, to watch the sim as a robot stand-in. On macOS the viewer must run under `mjpython` from a GUI session (see the doc).
   Both modes are the same daemon with the same capabilities, except the camera (below).
-- **`real`** — connects to a robot's daemon at `REACHY_MINI_HOST` / `REACHY_MINI_PORT`.
+- **`real`** — connects to a robot's daemon at `REACHY_MINI_HOST` / `REACHY_MINI_PORT`. When that address is loopback and no daemon is ready — a robot plugged into this machine over USB (Lite) — the harness spawns the hardware daemon (`reachy-mini-daemon`, serial port auto-detected; Placo kinematics when `placo` is installed, see [daemon.md](daemon.md)). A wireless robot runs its own daemon: borrow it or skip.
 
 Any target **reuses a daemon already reachable** at the address (a viewer sim you started by hand, or the robot), instead of spawning its own.
 
 ### Daemon lifecycle — own it or borrow it
 
-The harness stops only daemons **it spawned** (the `sim` target, either launch mode) and connects to but **never tears down** ones it didn't (`real`, or an already-running daemon it reused). The spawned `sim` daemon is **module-scoped**: one per test file, started once and stopped at the end — never per test.
+The harness stops only daemons **it spawned** (the `sim` target in either launch mode, or the `real` target's local hardware daemon — which puts the robot to sleep on stop) and connects to but **never tears down** ones it didn't (a wireless robot's, or an already-running daemon it reused). A spawned daemon is **module-scoped**: one per test file, started once and stopped at the end — never per test.
 
 ### Capabilities are probed, not assumed
 
@@ -67,11 +67,12 @@ def test_say_is_audible(live_api):
 | Capability | probe | sim headless | sim headfull | real robot |
 |---|---|---|---|---|
 | `motion` | backend reports a status | ✅ | ✅ | ✅ |
-| `audio` | `start_recording()` then a sample arrives | ✅ software AEC, host device | ✅ | ✅ hardware AEC |
+| `audio` | a mic sample arrives on the open media session (never restarted, see [testing_support.md](testing_support.md)) | ✅ software AEC, host device | ✅ | ✅ hardware AEC |
 | `camera` | `get_frame()` returns a frame | ⚠️ needs a GL context (not headless plain-python on macOS) | ✅ | ✅ |
+| `gravity_compensation` | not a simulation, and `GET /api/kinematics/info` reports `engine == "Placo"` | ❌ | ❌ | ✅ with Placo (`reachy-mini[placo_kinematics]`) |
 | `doa` · hardware-AEC quality · beamforming | — | ❌ | ❌ | ✅ |
 
-The sim covers **motion and audio** (audio via the host's audio device with *software* AEC — only the XVF3800's hardware AEC/beamforming/DoA are robot-only); the sim **camera** needs a GL context, so it works headfull (or with a headless GL backend) but not headless plain-python on macOS.
+The sim covers **motion and audio** (audio via the host's audio device with *software* AEC — the device named "Reachy Mini Audio" when a robot is plugged in over USB, else the machine's default speaker and mic, for the sim daemon's own sounds and the client's alike — only the XVF3800's hardware AEC/beamforming/DoA are robot-only); the sim **camera** needs a GL context, so it works headfull (or with a headless GL backend) but not headless plain-python on macOS.
 
 ### The harness
 

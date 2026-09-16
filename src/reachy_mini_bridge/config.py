@@ -32,7 +32,7 @@ _RESERVED_ROBOT_KEYS = {
     "use_sim": "'backend' (the bridge derives use_sim from it)",
     "spawn_daemon": "'daemon.spawn' (the bridge manages the daemon itself)",
 }
-_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 # What a bridge-managed (spawned or borrowed local) daemon needs the client to use,
 # unless the caller set it: an externally started daemon serves neither the IPC
@@ -217,7 +217,7 @@ class ReachyMiniConfig:
                     f"(got {backend!r}): a real robot runs its own daemon, and 'fake' has none"
                 )
             host = robot.get("host")
-            if host is not None and host not in _LOOPBACK_HOSTS:
+            if host is not None and host not in LOOPBACK_HOSTS:
                 raise ConfigError(
                     "'robot.host' must be a loopback address when 'daemon.spawn' is "
                     f"{daemon.spawn!r} (the bridge only manages local daemons), got {host!r}"
