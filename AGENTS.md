@@ -73,6 +73,7 @@ The mapping is **many-to-many**: a file can be governed by several specs, so the
 - Write functional tests: exercise what a feature/function actually does (inputs → outputs, state changes, side effects), not just that it runs or matches its signature.
 - Avoid trivial/tautological tests — e.g. asserting a constant, asserting an object is not `None`, asserting a mock was called. If a test would pass for a broken implementation, it's not worth writing.
 - Prefer driving the public API the way a real caller would over asserting on internals.
+- Every async verb whose effect spans time (`say`, `play_emotion`, the mic stream, session bring-up) is fully cancellable — [specs/api.md](specs/api.md) "Cancellation" defines what that means. When you add or change one, add a test on the `fake` that cancels it mid-flight and asserts the effect stopped and the session still works; the fake keeps real timing for these verbs precisely so there is a mid-flight to cancel in.
 
 ### Live/e2e tests
 

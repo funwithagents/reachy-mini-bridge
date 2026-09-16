@@ -56,6 +56,8 @@ _CONSUMED_SLICE: list[tuple[str, type, str]] = [
             "enable_gravity_compensation",
         )
     ),
+    # `stop_sound` stays out: upstream `MediaManager` has no such member yet; the fake
+    # models the proposed one (docs/upstream-play-move-cancellation.md).
     *(
         ("media", MediaManager, name)
         for name in (
@@ -98,3 +100,12 @@ def test_fake_signatures_match_upstream(path: str, upstream: type, name: str) ->
         ]
 
     assert params(getattr(owner, name)) == params(getattr(upstream, name))
+
+
+def test_local_audio_backend_keeps_the_playbin_the_bridge_stops() -> None:
+    """The bridge's one reach into SDK internals (specs/audio.md "Stopping a sound
+    file"): `GStreamerAudio` must keep the play_sound playbin as `_playbin`."""
+    from reachy_mini.media.audio_gstreamer import GStreamerAudio
+
+    assert "self._playbin = playbin" in inspect.getsource(GStreamerAudio.play_sound)
+    assert "self._playbin" in inspect.getsource(GStreamerAudio.stop_playing)

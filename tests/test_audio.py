@@ -8,16 +8,22 @@ matching the fast tier's no-plugin convention (see tests/test_robot.py).
 from __future__ import annotations
 
 import asyncio
+import logging
+import threading
 import time
 from collections.abc import AsyncIterator, Callable
+from types import SimpleNamespace
+from typing import Any, cast
 
 import numpy as np
 import numpy.typing as npt
 import pytest
 
+from reachy_mini_bridge import audio as audio_module
 from reachy_mini_bridge.audio import (
     MediaSession,
     _PlaybackTracker,
+    cancel_safe_step,
     downmix_to_mono,
     float32_to_int16,
     int16_to_float32,
@@ -489,6 +495,74 @@ def test_clear_player_flushes_speaker() -> None:
     assert any(name == "audio.clear_player" for name, _ in robot.commands)
 
 
+# --- stopping a sound file (specs/audio.md "Stopping a sound file") ---
+
+
+def test_stop_sound_on_the_fake_records_the_stop_then_resets_the_wobbler() -> None:
+    robot = FakeReachyMini()
+    MediaSession(robot).stop_sound()
+    assert _command_names(robot) == ["media.stop_sound", "audio.clear_player"]
+
+
+class _StubPlaybin:
+    def __init__(self) -> None:
+        self.states: list[object] = []
+
+    def set_state(self, state: object) -> None:
+        self.states.append(state)
+
+
+def _robot_with_audio(audio: object) -> Any:
+    return cast("Any", SimpleNamespace(media=SimpleNamespace(audio=audio)))
+
+
+def test_stop_sound_stops_the_local_playbin_and_clears_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import gi  # pyright: ignore[reportMissingImports]
+    from reachy_mini.media.audio_gstreamer import GStreamerAudio
+
+    gi.require_version("Gst", "1.0")
+    from gi.repository import Gst  # pyright: ignore[reportMissingImports]
+
+    # The stand-in skips the SDK constructor; silence its __del__ on the missing state.
+    monkeypatch.setattr(GStreamerAudio, "__del__", lambda self: None)
+    audio = GStreamerAudio.__new__(GStreamerAudio)
+    playbin = _StubPlaybin()
+    audio._playbin = cast("Any", playbin)
+
+    audio_module._stop_sound_file(_robot_with_audio(audio))
+    assert playbin.states == [Gst.State.NULL]
+    assert audio._playbin is None
+
+    # Nothing playing: a no-op.
+    audio_module._stop_sound_file(_robot_with_audio(audio))
+    assert playbin.states == [Gst.State.NULL]
+
+
+def test_stop_sound_on_the_webrtc_backend_posts_to_the_daemon(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from reachy_mini.media.webrtc_client_gstreamer import GstWebRTCClient
+
+    monkeypatch.setattr(GstWebRTCClient, "__del__", lambda self: None)
+    audio = GstWebRTCClient.__new__(GstWebRTCClient)
+    audio.daemon_url = "http://127.0.0.1:8000"
+    posted: list[str] = []
+    monkeypatch.setattr(audio_module, "_post", posted.append)
+
+    audio_module._stop_sound_file(_robot_with_audio(audio))
+    assert posted == ["http://127.0.0.1:8000/api/media/stop_sound"]
+
+
+def test_stop_sound_on_an_unknown_backend_warns_and_returns(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.WARNING, logger="reachy_mini_bridge.audio"):
+        audio_module._stop_sound_file(_robot_with_audio(object()))
+    assert "unsupported audio backend" in caplog.text
+
+
 def test_say_missing_synthesizer_is_a_type_the_caller_can_supply() -> None:
     # The session's say always takes an explicit synth; the "no synth configured"
     # error lives at the api layer (see tests/test_api.py). Here just prove a plain
@@ -557,3 +631,68 @@ def test_mic_tap_does_not_busy_poll(monkeypatch: pytest.MonkeyPatch) -> None:
     # ~20 reads at a 10 ms poll; an unthrottled loop makes thousands. Upper bound only,
     # so a slow machine cannot make it flaky.
     assert calls < 50
+
+
+# --- cancel-safe bring-up steps (specs/api.md "Lifecycle") ---
+
+
+def test_cancel_during_media_open_unwinds_the_started_capture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    robot = FakeReachyMini()
+    original = robot.media.start_recording
+    started, release = threading.Event(), threading.Event()
+
+    def slow() -> None:
+        started.set()
+        release.wait()
+        original()
+
+    monkeypatch.setattr(robot.media, "start_recording", slow)
+    session = MediaSession(robot)
+
+    async def run() -> None:
+        task = asyncio.create_task(session.__aenter__())
+        while not started.is_set():
+            await asyncio.sleep(0.01)
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+    assert _command_names(robot) == ["media.start_recording", "media.stop_recording"]
+    with pytest.raises(BridgeError):
+        asyncio.run(session.say("x", _ToneSynth(16000)))
+
+
+def test_cancel_safe_step_returns_the_result_when_not_cancelled() -> None:
+    calls: list[str] = []
+
+    async def run() -> int:
+        return await cancel_safe_step(lambda: 42, lambda _: calls.append("undo"))
+
+    assert asyncio.run(run()) == 42
+    assert calls == []
+
+
+def test_cancel_safe_step_propagates_a_failing_step_as_the_cancel() -> None:
+    started, release = threading.Event(), threading.Event()
+    undone: list[object] = []
+
+    def step() -> int:
+        started.set()
+        release.wait()
+        raise RuntimeError("step failed")
+
+    async def run() -> None:
+        task = asyncio.create_task(cancel_safe_step(step, undone.append))
+        while not started.is_set():
+            await asyncio.sleep(0.01)
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+    assert undone == []

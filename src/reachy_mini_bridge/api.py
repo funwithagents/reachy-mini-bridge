@@ -23,11 +23,12 @@ import json
 import logging
 import urllib.request
 from contextlib import AsyncExitStack
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 
 from . import daemon as _daemon
-from .audio import MediaSession, TTSEngineSynthesizer
+from .audio import MediaSession, TTSEngineSynthesizer, cancel_safe_step
 from .config import ReachyMiniConfig
 from .errors import (
     BridgeError,
@@ -82,23 +83,34 @@ def _daemon_kinematics_engine(robot: AnyReachyMini) -> str:
 # Stub emotion names for the fake/offline path (no HuggingFace access) — enough to
 # exercise list_emotions / play_emotion in tests without the real dataset.
 _FAKE_EMOTIONS = ("happy", "sad", "curious")
+_FAKE_MOVE_DURATION_S = 0.3
+
+
+@dataclass(frozen=True)
+class _FakeRecordedMove:
+    """Offline stand-in for an upstream ``RecordedMove``: the two attributes the bridge
+    and the fake read. ``sad`` has no sound so both `play_emotion` paths are testable."""
+
+    name: str
+    duration: float = _FAKE_MOVE_DURATION_S
+    sound_path: Path | None = None
 
 
 class _FakeRecordedMoves:
     """Offline stand-in for the upstream ``RecordedMoves`` on the ``fake`` backend.
 
-    ``get`` returns the name itself as the "move" (the fake robot just records whatever
-    it is handed), and raises ``ValueError`` for an unknown name — mirroring the real
+    ``get`` raises ``ValueError`` for an unknown name — mirroring the real
     ``RecordedMoves.get`` contract so callers see the same failure either way.
     """
 
     def list_moves(self) -> list[str]:
         return list(_FAKE_EMOTIONS)
 
-    def get(self, move_name: str) -> str:
+    def get(self, move_name: str) -> _FakeRecordedMove:
         if move_name not in _FAKE_EMOTIONS:
             raise ValueError(f"Move {move_name} not found in emotions library")
-        return move_name
+        sound = None if move_name == "sad" else Path(f"{move_name}.ogg")
+        return _FakeRecordedMove(move_name, sound_path=sound)
 
 
 class ReachyMiniApi:
@@ -147,7 +159,8 @@ class ReachyMiniApi:
         self._robot: AnyReachyMini | None = None
         self._media: MediaSession | None = None
         self._exit_stack: AsyncExitStack | None = None
-        self._recorded_moves: Any = None  # lazy, cached once per connection
+        # The emotions library: loaded lazily, once per connection (see _get_recorded_moves).
+        self._recorded_moves_future: asyncio.Future[Any] | None = None
         # The bridge's record of the wobbling mode (upstream has no getter).
         self._wobbling = False
 
@@ -234,14 +247,24 @@ class ReachyMiniApi:
                     port=opts["port"],
                     backend=cfg.backend,
                 )
-                await asyncio.to_thread(daemon_cm.__enter__)
+                await cancel_safe_step(
+                    daemon_cm.__enter__,
+                    lambda _: daemon_cm.__exit__(None, None, None),
+                )
                 stack.push_async_callback(
                     asyncio.to_thread, daemon_cm.__exit__, None, None, None
                 )
-            robot = await asyncio.to_thread(
-                build_robot, cfg.backend, **cfg.effective_robot_options()
+
+            # Build and enter are one step: upstream's `ReachyMini` connects in its
+            # constructor, so a built-but-dropped robot is already a leaked connection.
+            def connect() -> AnyReachyMini:
+                built = build_robot(cfg.backend, **cfg.effective_robot_options())
+                built.__enter__()
+                return built
+
+            robot = await cancel_safe_step(
+                connect, lambda r: r.__exit__(None, None, None)
             )
-            await asyncio.to_thread(robot.__enter__)
             stack.push_async_callback(
                 asyncio.to_thread, lambda: robot.__exit__(None, None, None)
             )
@@ -270,7 +293,7 @@ class ReachyMiniApi:
         self._exit_stack = None
         self._robot = None
         self._media = None
-        self._recorded_moves = None
+        self._recorded_moves_future = None
         try:
             if stack is not None:
                 await stack.aclose()
@@ -366,6 +389,11 @@ class ReachyMiniApi:
     async def play_emotion(self, name: str) -> None:
         """Play a named recorded move from the emotions library.
 
+        Completes when the move has played (its trajectory and the sound started
+        alongside it). Cancelling the task stops the emotion — motion and sound — and
+        leaves the head where the cancel caught it, with the session still open; the
+        same stop runs when the move fails. See specs/api.md "Cancellation".
+
         Moves the robot, so it requires motors ``enabled`` (raises
         :class:`MotorsNotEnabledError` otherwise). Raises ``ValueError`` for an unknown
         emotion name.
@@ -373,12 +401,32 @@ class ReachyMiniApi:
         await self._require_motors_enabled("play_emotion")
         moves = await self._get_recorded_moves()
         move = moves.get(name)  # ValueError on unknown name
-        await self.robot.async_play_move(move)
+        media = self._require_media()
+        has_sound = getattr(move, "sound_path", None) is not None
+        try:
+            await self.robot.async_play_move(move)
+        except BaseException:
+            # Upstream's loop stops on cancel (or on its own error) but leaves the
+            # move's sound playing — docs/upstream-play-move-cancellation.md. Stop it
+            # before propagating; the media session stays open.
+            if has_sound:
+                media.stop_sound()
+            raise
 
     async def _get_recorded_moves(self) -> Any:
-        if self._recorded_moves is None:
-            self._recorded_moves = await asyncio.to_thread(self._load_recorded_moves)
-        return self._recorded_moves
+        # One load per connection, shielded: a cancelled first caller does not
+        # discard the load, and the next caller awaits the same in-flight future.
+        future = self._recorded_moves_future
+        if future is None:
+            future = asyncio.ensure_future(asyncio.to_thread(self._load_recorded_moves))
+            self._recorded_moves_future = future
+        try:
+            return await asyncio.shield(future)
+        except Exception:
+            # A failed load is not cached: the next call retries.
+            if self._recorded_moves_future is future:
+                self._recorded_moves_future = None
+            raise
 
     def _load_recorded_moves(self) -> Any:
         # Blocking disk/network IO; built lazily, once, off the event loop. The fake

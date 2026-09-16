@@ -33,6 +33,10 @@ flowchart TD
 | 1 — interaction API | `api.py` · `ReachyMiniApi` | Intent-level verbs in **human units** (degrees, seconds, named emotions): `play_emotion`, `say`, `get_camera_frame`, … Orchestrates the low-level calls. | [api.md](api.md) |
 | 0 — connection seam | `robot.py` · `AnyReachyMini` alias + `build_robot`; `fake_reachy_mini.py` · `FakeReachyMini` | `real`/`sim` use `reachy_mini.ReachyMini` directly, `fake` is our in-package stand-in; `AnyReachyMini` is just a `ReachyMini \| FakeReachyMini` union alias (no Protocol, no adapter) that lets pyright keep the fake honest. The robot object *is* the escape hatch to the full native API. | [robot.md](robot.md) |
 
+## Design principles
+
+- **Async-native, fully cancellable.** The api is `async` because audio forces it ([audio.md](audio.md)), and cancelling the awaiting task is the one way to interrupt any verb. Three guarantees, defined precisely in [api.md](api.md) "Cancellation": the cancel returns promptly; the verb's effect stops with it (audio flushed, a sound file stopped, a trajectory no longer commanded, the wobbler reset); and the robot and the session stay usable for the next verb. No rewind — the head stays where the cancel caught it. Every verb that spans time has a test on the `fake` that cancels it mid-flight, which is why the fake keeps real timing for those verbs.
+
 ## Three backends, one seam
 
 The layers above are backend-agnostic — they are typed against `AnyReachyMini`, the `ReachyMini | FakeReachyMini` union alias (see [robot.md](robot.md)):

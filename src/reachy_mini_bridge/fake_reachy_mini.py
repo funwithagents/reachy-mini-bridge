@@ -12,6 +12,7 @@ live in [robot.py](robot.py).
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Self
 
 import numpy as np
@@ -156,6 +157,15 @@ class _FakeMedia:
     def play_sound(self, sound_file: str) -> None:
         self._commands.append(("media.play_sound", {"sound_file": sound_file}))
 
+    def stop_sound(self) -> None:
+        """Stop the sound file `play_sound` started.
+
+        Fake-only member: it models the `MediaManager.stop_sound()` proposed upstream
+        (docs/upstream-play-move-cancellation.md); the bridge stops the real backend's
+        playbin itself meanwhile (specs/audio.md "Stopping a sound file").
+        """
+        self._commands.append(("media.stop_sound", {}))
+
     # --- camera ---
     def get_frame(self) -> npt.NDArray[np.uint8]:
         """Return one synthetic camera frame: BGR, ``(H, W, 3)`` uint8.
@@ -202,6 +212,9 @@ class FakeReachyMini:
                 },
             )
         )
+        # The fake keeps the move's timing (specs/robot.md) so a cancel has something
+        # in flight to interrupt. A move without a duration (a bare name) takes 0 s.
+        await asyncio.sleep(float(getattr(move, "duration", 0.0)))
 
     def start_head_tracking(self, weight: float = 1.0) -> None:
         self.commands.append(("start_head_tracking", {"weight": weight}))

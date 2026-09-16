@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
+import time
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, Self
 
 import numpy as np
 import numpy.typing as npt
@@ -574,14 +577,14 @@ def test_list_emotions_returns_the_offline_library() -> None:
 
 
 def test_play_emotion_resolves_name_and_plays_it() -> None:
-    async def run() -> object:
+    async def run() -> Any:
         async with ReachyMiniApi("fake") as api:
             await api.set_motors_state("enabled")
             await api.play_emotion("curious")
             args = next(a for n, a in _fake(api).commands if n == "async_play_move")
             return args["move"]
 
-    assert asyncio.run(run()) == "curious"
+    assert asyncio.run(run()).name == "curious"
 
 
 def test_play_emotion_unknown_name_raises() -> None:
@@ -595,6 +598,140 @@ def test_play_emotion_unknown_name_raises() -> None:
 
 
 # --- audio ------------------------------------------------------------------------
+
+
+def test_play_emotion_on_the_fake_takes_the_moves_duration() -> None:
+    async def run() -> float:
+        async with ReachyMiniApi("fake") as api:
+            await api.set_motors_state("enabled")
+            t0 = time.monotonic()
+            await api.play_emotion("curious")
+            return time.monotonic() - t0
+
+    assert asyncio.run(run()) >= 0.25
+
+
+async def _cancel_emotion_mid_flight(name: str) -> tuple[float, list[str]]:
+    async with ReachyMiniApi("fake", synthesizer=_ToneSynth()) as api:
+        await api.set_motors_state("enabled")
+        task = asyncio.create_task(api.play_emotion(name))
+        while "async_play_move" not in _command_names(api):
+            await asyncio.sleep(0)
+        t0 = time.monotonic()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        elapsed = time.monotonic() - t0
+        await api.say("still here")  # the session is usable right after
+        return elapsed, _command_names(api)
+
+
+def test_cancelled_play_emotion_stops_the_sound_and_keeps_the_session() -> None:
+    elapsed, names = asyncio.run(_cancel_emotion_mid_flight("happy"))
+
+    assert elapsed < 0.05
+    i = names.index("async_play_move")
+    assert names[i + 1 : i + 3] == ["media.stop_sound", "audio.clear_player"]
+    assert "media.push_audio_sample" in names[i + 3 :]
+
+
+def test_cancelled_soundless_emotion_does_not_stop_a_sound() -> None:
+    _elapsed, names = asyncio.run(_cancel_emotion_mid_flight("sad"))
+
+    assert "media.stop_sound" not in names
+    assert "media.push_audio_sample" in names[names.index("async_play_move") :]
+
+
+def test_play_emotion_failure_stops_the_sound_and_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def boom(self: FakeReachyMini, move: object, **kwargs: object) -> None:
+        self.commands.append(("async_play_move", {"move": move}))
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(FakeReachyMini, "async_play_move", boom)
+
+    async def run() -> list[str]:
+        async with ReachyMiniApi("fake") as api:
+            await api.set_motors_state("enabled")
+            with pytest.raises(RuntimeError, match="boom"):
+                await api.play_emotion("happy")
+            return _command_names(api)
+
+    names = asyncio.run(run())
+    assert "media.stop_sound" in names[names.index("async_play_move") :]
+
+
+def test_completed_play_emotion_does_not_stop_the_sound() -> None:
+    # A completed move's sound plays to its natural end.
+    async def run() -> list[str]:
+        async with ReachyMiniApi("fake") as api:
+            await api.set_motors_state("enabled")
+            await api.play_emotion("happy")
+            return _command_names(api)
+
+    assert "media.stop_sound" not in asyncio.run(run())
+
+
+def test_cancelled_library_load_is_reused_by_the_next_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loads = 0
+    started, release = threading.Event(), threading.Event()
+
+    def slow_load(self: ReachyMiniApi) -> Any:
+        nonlocal loads
+        loads += 1
+        started.set()
+        release.wait()
+        return api_module._FakeRecordedMoves()
+
+    monkeypatch.setattr(ReachyMiniApi, "_load_recorded_moves", slow_load)
+
+    async def run() -> list[str]:
+        async with ReachyMiniApi("fake") as api:
+            task = asyncio.create_task(api.list_emotions())
+            while not started.is_set():
+                await asyncio.sleep(0.01)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            release.set()
+            return await api.list_emotions()
+
+    assert asyncio.run(run()) == ["happy", "sad", "curious"]
+    assert loads == 1
+
+
+def test_cancel_during_bring_up_exits_the_robot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started, release = threading.Event(), threading.Event()
+
+    class _SlowEnter(FakeReachyMini):
+        def __enter__(self) -> Self:
+            started.set()
+            release.wait()
+            return super().__enter__()
+
+    robot = _SlowEnter()
+    monkeypatch.setattr(api_module, "build_robot", lambda backend, **kw: robot)
+    api = ReachyMiniApi("fake")
+
+    async def run() -> None:
+        task = asyncio.create_task(api.__aenter__())
+        while not started.is_set():
+            await asyncio.sleep(0.01)
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+    assert robot.commands[-1][0] == "__exit__"
+    assert "media.start_recording" not in [n for n, _ in robot.commands]
+    with pytest.raises(BridgeError):
+        _ = api.robot
 
 
 def test_say_routes_through_the_media_pipeline() -> None:

@@ -24,6 +24,7 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 import pytest
+from reachy_mini import ReachyMini
 
 from reachy_mini_bridge.api import ReachyMiniApi
 from reachy_mini_bridge.audio import TTSEngineSynthesizer
@@ -395,20 +396,11 @@ def test_gravity_compensation_is_refused_off_placo_and_the_connection_survives(
     assert after == before
 
 
-def test_play_emotion_plays_a_real_move(
-    live_api: tuple[ReachyMiniApi, frozenset[str]],
-) -> None:
-    """Actually play an emotion: enumerate the library, then move the robot.
+def _require_emotions_library() -> None:
+    """Make sure the client-side emotions library is in the local HuggingFace cache.
 
-    The daemon preloads the datasets in the background, so on a fresh machine the
-    client-side emotions library may not be in the local HuggingFace cache yet. This opt-in live test **downloads it on a
-    cache miss** (a one-time cost) so it genuinely exercises the move, skipping only when
-    the dataset truly can't be fetched (offline). On the headfull-viewer sim you should
-    see the robot perform the move.
+    Cache hit, else download (a one-time cost), else skip (offline).
     """
-    requires_caps(live_api, "motion")
-    api, _caps = live_api
-
     from huggingface_hub import snapshot_download
     from huggingface_hub.errors import LocalEntryNotFoundError
     from reachy_mini.motion.recorded_move import DEFAULT_EMOTIONS_DATASET
@@ -423,6 +415,22 @@ def test_play_emotion_plays_a_real_move(
         except Exception as exc:  # noqa: BLE001  (offline / fetch failure)
             pytest.skip(f"emotions dataset not cached and download failed: {exc}")
 
+
+def test_play_emotion_plays_a_real_move(
+    live_api: tuple[ReachyMiniApi, frozenset[str]],
+) -> None:
+    """Actually play an emotion: enumerate the library, then move the robot.
+
+    The daemon preloads the datasets in the background, so on a fresh machine the
+    client-side emotions library may not be in the local HuggingFace cache yet. This opt-in live test **downloads it on a
+    cache miss** (a one-time cost) so it genuinely exercises the move, skipping only when
+    the dataset truly can't be fetched (offline). On the headfull-viewer sim you should
+    see the robot perform the move.
+    """
+    requires_caps(live_api, "motion")
+    api, _caps = live_api
+    _require_emotions_library()
+
     async def scenario() -> str:
         names = await api.list_emotions()
         assert names, "emotions library loaded but empty"
@@ -432,6 +440,51 @@ def test_play_emotion_plays_a_real_move(
 
     played = asyncio.run(scenario())
     print(f"\n[e2e] played emotion: {played!r}")
+
+
+def test_cancelled_emotion_stops_motion_and_sound(
+    live_api: tuple[ReachyMiniApi, frozenset[str]],
+) -> None:
+    """specs/api.md "Cancellation": cancelling `play_emotion` 3 s into `dance2` returns
+    at once, the joints are still afterwards (no sound left driving the wobbler), and
+    the local backend's playbin is cleared. Measured before the fix: the sound played
+    its remaining 15 s and the head kept swaying 0.1–0.2 rad per half second."""
+    requires_caps(live_api, "motion")
+    api, _caps = live_api
+    _require_emotions_library()
+    robot = api.robot
+    assert isinstance(robot, ReachyMini)
+
+    async def scenario() -> tuple[float, float, object]:
+        await api.set_motors_state("enabled")
+        await api.set_wobbling(True)
+        task = asyncio.create_task(api.play_emotion("dance2"))
+        await asyncio.sleep(3.0)  # long enough to see the dance and hear its sound
+        t0 = time.monotonic()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        latency = time.monotonic() - t0
+        await asyncio.sleep(1.0)  # the head reaches its last target
+        samples: list[npt.NDArray[np.float64]] = []
+        t1 = time.monotonic()
+        while time.monotonic() - t1 < 2.0:
+            head, antennas = await asyncio.to_thread(robot.get_current_joint_positions)
+            samples.append(np.array(list(head) + list(antennas), dtype=np.float64))
+            await asyncio.sleep(0.05)
+        stacked = np.stack(samples)
+        travel = float((stacked.max(axis=0) - stacked.min(axis=0)).max())
+        playbin = getattr(robot.media.audio, "_playbin", "not-local")
+        return latency, travel, playbin
+
+    latency, travel, playbin = asyncio.run(scenario())
+    print(
+        f"\n[e2e] cancel latency {latency * 1000:.0f} ms, joint travel after {travel:.4f} rad"
+    )
+    assert latency < 0.1
+    assert travel < 0.02, f"joints still moving after the cancel: {travel:.4f} rad"
+    if playbin != "not-local":
+        assert playbin is None
 
 
 def test_camera_frame_delivers_a_frame(

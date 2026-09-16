@@ -8,6 +8,8 @@ on. No daemon, no hardware, no ``reachy_mini``.
 from __future__ import annotations
 
 import asyncio
+import time
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -84,3 +86,16 @@ def test_capture_format_agrees_with_getters() -> None:
     assert sample.shape[1] == media.get_input_channels()
     assert media.get_input_audio_samplerate() == 16000
     assert media.get_output_channels() == media.get_input_channels()
+
+
+def test_play_move_sleeps_the_moves_duration() -> None:
+    # The fake keeps a move's timing so a cancel has something in flight to interrupt.
+    robot = FakeReachyMini()
+
+    t0 = time.monotonic()
+    asyncio.run(robot.async_play_move(SimpleNamespace(duration=0.1)))
+    assert time.monotonic() - t0 >= 0.08
+
+    t0 = time.monotonic()
+    asyncio.run(robot.async_play_move("bare-name"))
+    assert time.monotonic() - t0 < 0.05

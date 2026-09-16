@@ -22,7 +22,9 @@ hardcoded, so the code is correct across the real / sim / fake backends.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
+import urllib.request
 from contextlib import AsyncExitStack
 from typing import TYPE_CHECKING, Any, Protocol, Self, cast, runtime_checkable
 
@@ -31,6 +33,7 @@ import numpy.typing as npt
 import samplerate
 
 from .errors import BridgeError
+from .fake_reachy_mini import FakeReachyMini
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
@@ -41,10 +44,13 @@ __all__ = [
     "MediaSession",
     "SpeechSynthesizer",
     "TTSEngineSynthesizer",
+    "cancel_safe_step",
     "downmix_to_mono",
     "float32_to_int16",
     "int16_to_float32",
 ]
+
+_logger = logging.getLogger(__name__)
 
 # libsamplerate converter: highest-quality sinc conversion (no boundary clicks on a
 # continuous stream). See specs/audio.md "The robot sink".
@@ -58,6 +64,9 @@ _PLAYBACK_TAIL_S = 0.1
 # How long the mic tap waits before re-reading when the daemon has no sample ready
 # (one 10 ms capture chunk). See specs/audio.md "Mic in".
 _MIC_POLL_INTERVAL_S = 0.01
+
+# Timeout for the one daemon HTTP call the media layer makes (`stop_sound` on webrtc).
+_DAEMON_HTTP_TIMEOUT_S = 2.0
 
 
 # --- conversion helpers (pure; shared by the say sink and the mic tap) -------------
@@ -151,9 +160,11 @@ class MediaSession:
         media = self._robot.media
         stack = AsyncExitStack()
         try:
-            await asyncio.to_thread(media.start_recording)
+            await cancel_safe_step(
+                media.start_recording, lambda _: media.stop_recording()
+            )
             stack.push_async_callback(asyncio.to_thread, media.stop_recording)
-            await asyncio.to_thread(media.start_playing)
+            await cancel_safe_step(media.start_playing, lambda _: media.stop_playing())
             stack.push_async_callback(asyncio.to_thread, media.stop_playing)
             if self._audio_config is not None:
                 # media.audio's type/optionality diverges between the real MediaManager
@@ -271,6 +282,86 @@ class MediaSession:
         """
         audio: Any = self._robot.media.audio  # see note in __aenter__ on media.audio
         audio.clear_player()
+
+    def stop_sound(self) -> None:
+        """Stop the sound file the SDK is playing, without touching the shared pipeline.
+
+        An emotion's sidecar sound or a `play_sound` call. Then resets the head wobbler
+        through :meth:`clear_player` (the stopped player never reaches the EOS that
+        would reset it). A no-op when no sound plays. Works at any time, like
+        :meth:`clear_player`. See specs/audio.md "Stopping a sound file".
+        """
+        _stop_sound_file(self._robot)
+        self.clear_player()
+
+
+def _stop_sound_file(robot: AnyReachyMini) -> None:
+    """Backend dispatch behind :meth:`MediaSession.stop_sound` (see specs/audio.md)."""
+    if isinstance(robot, FakeReachyMini):
+        robot.media.stop_sound()
+        return
+    audio: Any = robot.media.audio
+    if audio is None:
+        return
+    # Lazy imports: only a real/sim robot reaches this branch.
+    from reachy_mini.media.audio_gstreamer import GStreamerAudio
+    from reachy_mini.media.webrtc_client_gstreamer import GstWebRTCClient
+
+    if isinstance(audio, GStreamerAudio):
+        # The bridge's one reach into SDK internals: the exact body of the daemon-side
+        # MediaServer.stop_sound(), pinned by tests/test_robot.py. Replace with
+        # media.stop_sound() once upstream ships it.
+        playbin = audio._playbin
+        if playbin is not None:
+            # gi ships inside the gstreamer wheel's own site-packages, which pyright
+            # does not index.
+            import gi  # pyright: ignore[reportMissingImports]
+
+            gi.require_version("Gst", "1.0")
+            from gi.repository import Gst  # pyright: ignore[reportMissingImports]
+
+            playbin.set_state(Gst.State.NULL)
+            audio._playbin = None
+    elif isinstance(audio, GstWebRTCClient):
+        if audio.daemon_url:
+            _post(f"{audio.daemon_url}/api/media/stop_sound")
+    else:
+        _logger.warning(
+            "stop_sound: unsupported audio backend %s; the sound plays on",
+            type(audio).__name__,
+        )
+
+
+def _post(url: str) -> None:
+    """POST to the daemon's HTTP API with an empty body (patched by tests)."""
+    request = urllib.request.Request(url, method="POST")
+    with urllib.request.urlopen(request, timeout=_DAEMON_HTTP_TIMEOUT_S):
+        pass
+
+
+async def cancel_safe_step[T](enter: Callable[[], T], undo: Callable[[T], object]) -> T:
+    """Run the blocking ``enter`` off the loop; on a cancel, finish it, undo it, re-raise.
+
+    ``asyncio.to_thread`` cannot interrupt its thread. If the awaiting task is
+    cancelled while ``enter`` runs, this waits for ``enter`` to finish, runs ``undo`` on
+    its result (also off the loop), and then re-raises the ``CancelledError`` — so a
+    daemon spawn, a robot connect, or a media ``start_*`` is never leaked by an
+    ``asyncio.timeout`` around the api's ``async with``. If ``enter`` itself fails
+    during that wait there is nothing to undo and the cancel still propagates. A
+    second cancel during the wait abandons the step (accepted, documented in
+    specs/api.md "Lifecycle").
+    """
+    step = asyncio.ensure_future(asyncio.to_thread(enter))
+    try:
+        return await asyncio.shield(step)
+    except asyncio.CancelledError as cancel:
+        try:
+            result = await step
+        except BaseException as exc:  # the step failed: nothing to undo
+            _logger.warning("bring-up step failed while being cancelled: %r", exc)
+            raise cancel from exc
+        await asyncio.to_thread(undo, result)
+        raise
 
 
 class _PlaybackTracker:
