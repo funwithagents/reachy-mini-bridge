@@ -3,6 +3,8 @@ name = "reachy-mini-bridge"
 version = "0.1.0"
 description = "A bridge to the Reachy Mini robot's API plus management/APIs between them, with tools for integrating agents/LLMs."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     { name = "Thibault Hervier", email = "thibault@fr2g.io" }
 ]
@@ -26,6 +28,11 @@ dependencies = [
     # (websockets<16,>=12); declared because the bridge imports it directly.
     "websockets>=12",
 ]
+
+[project.urls]
+Homepage = "https://github.com/funwithagents/reachy-mini-bridge"
+Repository = "https://github.com/funwithagents/reachy-mini-bridge"
+Issues = "https://github.com/funwithagents/reachy-mini-bridge/issues"
 
 [project.optional-dependencies]
 # The `sim` backend drives the upstream MuJoCo mockup (see specs/robot.md).

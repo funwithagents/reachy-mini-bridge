@@ -2,8 +2,6 @@
 
 A Python library that sits between the [Reachy Mini](https://github.com/pollen-robotics/reachy_mini) robot and whatever drives it — a script, a service, or an LLM agent. It wraps the upstream `reachy_mini` SDK behind one async, intent-level API (`ReachyMiniApi`) whose verbs speak in human terms — *enable the motors, play "happy", follow my face, say this, give me the mic, give me a camera frame* — and runs the same code unchanged against the real robot, the MuJoCo simulator, or an offline fake.
 
-> **Status: layers 0–1 built.** The connection seam, `ReachyMiniApi`, the audio/media session, the declarative config, the bridge-owned daemon lifecycle (sim, or a USB-attached robot), and the motion loop (presence, breathing, emotions through one target writer) are implemented and tested on the `real` / `sim` / `fake` backends — the motion loop's on-robot checklist is the one thing still outstanding. The agent-tools layer (`ReachyMiniTools`, exposing the same verbs as functions an LLM runtime can call) is designed but not built yet. See [specs/_index.md](specs/_index.md) for per-spec status.
-
 ## What the bridge adds to the SDK
 
 The upstream `reachy_mini` SDK gives full, low-level access to the robot. The bridge keeps that access (`api.robot` is the native `ReachyMini`) and adds what a conversational app otherwise has to build, and get right, itself:
@@ -39,11 +37,12 @@ This is a spec-driven project: [AGENTS.md](AGENTS.md) is the operating manual (h
 
 ## Install
 
-Python 3.12+. The package is not on PyPI yet; add it from a checkout or a git URL:
+Python 3.12+. The package is not on PyPI yet; add it from its git URL, or from a local checkout:
 
 ```
-uv add reachy-mini-bridge @ ../reachy-mini-bridge          # or a git+https URL
-uv add "reachy-mini-bridge[sim,test] @ ../reachy-mini-bridge"
+uv add "reachy-mini-bridge @ git+https://github.com/funwithagents/reachy-mini-bridge"
+uv add "reachy-mini-bridge[sim,test] @ git+https://github.com/funwithagents/reachy-mini-bridge"
+uv add "reachy-mini-bridge[sim,test] @ ../reachy-mini-bridge"   # a checkout next door
 ```
 
 | Extra | Adds | You need it for |
@@ -150,26 +149,133 @@ A sim started by hand with upstream's `reachy-mini-daemon --sim` works for motio
 
 ## Configuration
 
-`ReachyMiniConfig` is one declarative object, buildable from a dict, a JSON string or a JSON file. Every block is optional; [config.example.json](config.example.json) shows them all:
+`ReachyMiniConfig` is one declarative object, buildable from a dict, a JSON string or a JSON file. **Every block is optional** — `ReachyMiniConfig()` is a valid config (the real robot, upstream's connection defaults, no daemon management, no voice, everything at rest switched on). [config.example.json](config.example.json) lists every field with placeholder values; the tables below give each one's default and effect.
 
 ```json
 {
   "backend": "sim",
-  "robot": { "host": "127.0.0.1", "port": 8000 },
-  "daemon": { "spawn": "auto", "headless": false },
-  "tts": { "module": { "type": "pocket", "voice": "george" } },
-  "audio": { "xvf3800": null },
-  "motion": { "presence": true, "breathing": true, "wobbling": true, "tracking": true }
+
+  "robot": {
+    "host": "127.0.0.1",
+    "port": 8000
+  },
+
+  "daemon": {
+    "spawn": "auto",
+    "headless": false,
+    "camera": {
+      "source": "webcam"
+    }
+  },
+
+  "tts": {
+    "module": {
+      "type": "pocket",
+      "voice": "george"
+    }
+  },
+
+  "motion": {
+    "presence": true,
+    "breathing": true,
+    "wobbling": true,
+    "tracking": true
+  }
 }
 ```
 
-- `robot` — keyword arguments forwarded verbatim to upstream `ReachyMini(...)`; ignored on `fake`, so one file switches backends by changing `backend` alone.
-- `daemon` — `sim`, or `real` for a robot plugged into this machine over USB (loopback `host` only). `"spawn": "auto"` reuses a daemon already listening at `host:port` or spawns one — the MuJoCo daemon for `sim`, the robot's hardware daemon for `real` (it wakes the robot, and puts it to sleep on exit) — and stops it on exit; `"always"` insists on spawning; `"never"` (default) only connects, which is what a wireless robot needs. For `sim`, `"headless": false` (the example config) opens the MuJoCo **viewer**, so you watch the robot move and the camera works; it needs an unlocked GUI session. `"headless": true` (the default) runs the sim without a window, which has no rendered camera. `"camera": {"source": "webcam"}` (the example config) makes the sim see through the computer's webcam instead — you in front of the screen are who the simulated robot follows, with or without the viewer ([specs/sim_daemon.md](specs/sim_daemon.md)). `headless`, `scene` and `camera` play no part on `real`.
-- `tts` — the tts-engine module block that builds the default voice for `say`; `module.type` picks the provider (`pocket` above, the local model, needs no key; `elevenlabs` takes `api_key_env` and a `voice_id`) and the matching `tts-*` extra must be installed.
-- `audio` — the XVF3800 mic-array profile applied on connect.
-- `motion` — everything that shapes the robot's behaviour at rest, all `true` by default: `presence` (stay alive between verbs) and `breathing` (breathe vs. hold neutral when idle), changed at runtime with `set_presence` / `set_breathing`; `wobbling` (sway the head with every sound the robot plays), changed with `set_wobbling`; `tracking` (autonomously keep a detected face centered, once motors are enabled), changed with `start_head_tracking` / `stop_head_tracking`.
+That is [config.example.json](config.example.json) in brief — the MuJoCo viewer, started for you, seeing through your webcam, with a local voice.
 
-Details and validation rules: [specs/config.md](specs/config.md), [specs/daemon.md](specs/daemon.md), [docs/running-the-sim-daemon.md](docs/running-the-sim-daemon.md).
+### `backend`
+
+`"real"` (default), `"sim"` or `"fake"` — see [Backends](#backends). Changing this one string is what moves a config between the robot, the simulator and the offline fake; every other block is accepted on every backend, even where it does nothing.
+
+### `robot` — how to reach the robot
+
+Keyword arguments forwarded verbatim to upstream's `ReachyMini(...)`, so their names and defaults are upstream's, not the bridge's. Unknown keys are rejected at config time (checked against the upstream signature) rather than failing at connect time. The ones you are likely to set:
+
+| Field | Default | What it does |
+|---|---|---|
+| `host` | `"reachy-mini.local"` | Where the daemon listens. A wireless robot's IP or hostname; `"127.0.0.1"` for a local daemon |
+| `port` | `8000` | The daemon's port |
+| `connection_mode` | `"auto"` | Transport to the daemon: `"auto"`, `"network"` or `"ipc"` |
+| `media_backend` | `"default"` | How audio/video are carried; `"local"` is what a local daemon serves |
+| `timeout` | `5.0` | Seconds to wait on the connection |
+| `robot_name` | `"reachy_mini"` | The robot's name on the daemon |
+| `automatic_body_yaw` | `true` | Upstream's automatic body-yaw following |
+| `log_level` | `"INFO"` | Upstream client log level |
+
+Two keys are **reserved**: `use_sim` (derived from `backend`) and `spawn_daemon` (use `daemon.spawn`) — either one is a config error pointing you at the right field. On `fake` the block is validated but unused. When the bridge manages the daemon (`daemon.spawn` other than `"never"`), it fills in what a local daemon needs for anything you left unset — `host` `127.0.0.1`, `port` `8000`, `connection_mode` `"network"`, `media_backend` `"local"` — and `host`, if you do set it, must be a loopback address.
+
+### `daemon` — whether the bridge starts one
+
+| Field | Default | What it does |
+|---|---|---|
+| `spawn` | `"never"` | `"never"`: only connect, to a daemon you run (what a wireless robot needs). `"auto"`: reuse one already listening at `host:port`, else start one and stop it on exit. `"always"`: insist on starting one — a port already in use is an error |
+| `headless` | `true` | *sim only.* `true` runs MuJoCo with no window (motion and audio, no rendered camera). `false` opens the **viewer** under `mjpython`, so you watch the robot and the `sim` camera works; needs an unlocked GUI session |
+| `scene` | `null` | *sim only.* An upstream scene name (`"empty"`, `"minimal"`), or the path of a scene `.xml` for the bridge's launcher — how the test scene's portrait gets loaded ([specs/sim_scene.md](specs/sim_scene.md)) |
+| `camera` | `{"source": "sim"}` | *sim only.* What the sim's camera shows — see the table below |
+| `preload_datasets` | `true` | Downloads the recorded-move datasets in the background at startup, so the first `play_emotion` doesn't wait on a download. Readiness isn't delayed either way |
+| `startup_timeout` | `45.0` | Seconds to wait for a spawned daemon to become ready |
+
+`spawn` other than `"never"` needs `backend` `"sim"` or `"real"` (`fake` has no daemon). On `real` it starts the hardware daemon of a robot plugged into **this machine** over USB — it wakes the robot, and puts it to sleep on exit. `headless`, `scene` and `camera` are MuJoCo knobs and play no part on `real`.
+
+**`daemon.camera`** — the sim's eyes ([specs/sim_daemon.md](specs/sim_daemon.md)):
+
+| Field | Default | What it does |
+|---|---|---|
+| `source` | `"sim"` | `"sim"` renders the scene from the robot's eye camera (viewer only). `"webcam"` relays your computer's camera instead, so the person in front of the screen is who the simulated robot sees and follows — headless or viewer |
+| `device` | `null` | *webcam only.* `null` is the default camera; an integer is a macOS device index, a string a Linux device path (`/dev/video0`) |
+| `hfov_deg` | `70.0` | *webcam only.* The camera's horizontal field of view in degrees, which the tracker's intrinsics derive from — match it to your camera for an accurate aim |
+
+### `tts` — the default voice for `say`
+
+A [tts-engine](https://github.com/funwithagents/tts-engine) `engine` block, carried through verbatim: `module.type` picks the provider, and the matching `tts-*` extra must be installed. The remaining keys are the provider's own.
+
+The local model (`tts-pocket`), no key and no network once its weights are cached:
+
+```json
+"tts": {
+  "module": {
+    "type": "pocket",
+    "voice": "george",
+    "device": "auto"
+  }
+}
+```
+
+Or the cloud provider (`tts-elevenlabs`), whose key is read from the named environment variable:
+
+```json
+"tts": {
+  "module": {
+    "type": "elevenlabs",
+    "api_key_env": "ELEVENLABS_API_KEY",
+    "voice_id": "..."
+  }
+}
+```
+
+Omit the block and `say` raises unless you pass your own `SpeechSynthesizer`. A block that fails to build — extra not installed, API key unset — leaves the robot fully usable without a voice and puts the cause on `api.synthesizer_error`.
+
+### `audio` — the microphone array
+
+| Field | Default | What it does |
+|---|---|---|
+| `xvf3800` | `null` | The XVF3800 audio-processor profile applied when the media session starts, as a list of `[name, [values…]]` pairs. `null` keeps the firmware defaults |
+
+### `motion` — what the robot does at rest
+
+All four default to `true`, and each has a runtime verb that changes it while the session is entered.
+
+| Field | Default | What it does | Runtime verb |
+|---|---|---|---|
+| `presence` | `true` | Fills every idle moment with the idle move, so the robot never looks dead between verbs. `false` commands the head only while a verb runs — for a caller driving the head itself. Emotions play either way | `set_presence` |
+| `breathing` | `true` | Which idle move presence plays: `true` breathes (slow breaths with rests, the head roaming, the antennas flicking), `false` holds a still neutral. Ignored while `presence` is off | `set_breathing` |
+| `wobbling` | `true` | Sways the head with every sound the robot plays. `false` keeps it still while audio plays | `set_wobbling` |
+| `tracking` | `true` | Autonomously keeps a detected face centered. Armed as soon as motors read `enabled`, and stopped again on exit. `false` leaves it off until you call `start_head_tracking()` | `start_head_tracking` / `stop_head_tracking` |
+
+Validation rules and the reasoning behind each block: [specs/config.md](specs/config.md), [specs/daemon.md](specs/daemon.md), [docs/running-the-sim-daemon.md](docs/running-the-sim-daemon.md).
 
 ## Testing your own project
 
@@ -207,3 +313,7 @@ REACHY_MINI_E2E_TARGET=real uv run pytest tests-e2e -rs      # a robot plugged i
 The live tier spawns a daemon or borrows one already running at `REACHY_MINI_HOST` / `REACHY_MINI_PORT`. Every sim it spawns runs through the bridge's launcher on the test scene, so with the viewer the tracking tests show the portrait and check that the head turns onto it and settles. `-rs` prints why each test skipped: a skip means a capability or credential was missing, not a pass. The full matrix of targets and capabilities is in [AGENTS.md](AGENTS.md) "Running the live e2e tests".
 
 Design changes start in [specs/](specs/) and are built through [plans/](plans/); [AGENTS.md](AGENTS.md) describes the workflow and status discipline. Reference notes on the upstream SDK are in [docs/reachy-mini-api.md](docs/reachy-mini-api.md).
+
+## License
+
+MIT — see [LICENSE](LICENSE).
