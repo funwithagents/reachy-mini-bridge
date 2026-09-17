@@ -12,6 +12,7 @@ live in [robot.py](robot.py).
 
 from __future__ import annotations
 
+import time
 from typing import Any, Self
 
 import numpy as np
@@ -51,6 +52,17 @@ class _FakeStatus:
         self.backend_status = _FakeBackendStatus(motor_control_mode)
         self.simulation_enabled = simulation_enabled
         self.mockup_sim_enabled = mockup_sim_enabled
+
+
+class _FakeFaceTarget:
+    """Stand-in for upstream's ``FaceTarget`` (the fields the api reads)."""
+
+    def __init__(self, detected: bool) -> None:
+        self.detected = detected
+        self.x: float | None = 0.0 if detected else None
+        self.y: float | None = 0.0 if detected else None
+        self.roll: float | None = None
+        self.ts: float | None = time.time() if detected else None
 
 
 class _FakeDaemonClient:
@@ -190,6 +202,9 @@ class FakeReachyMini:
 
     def __init__(self) -> None:
         self.commands: list[tuple[str, dict[str, Any]]] = []
+        # Whether the daemon-side tracker currently sees a face: tests flip it to
+        # simulate a person arriving or leaving (specs/robot.md, api.md "Attention").
+        self.face_detected = False
         self.client = _FakeDaemonClient()
         self.media = _FakeMedia(self.commands)
         # The motion loop's stream (specs/motion.md): recorded here, not on `commands`
@@ -260,6 +275,11 @@ class FakeReachyMini:
 
     def stop_head_tracking(self) -> None:
         self.commands.append(("stop_head_tracking", {}))
+
+    def get_tracked_face(
+        self, wait: bool = True, timeout: float = 5.0
+    ) -> _FakeFaceTarget:
+        return _FakeFaceTarget(self.face_detected)
 
     # --- audio-reactive head wobbling (a mode; moves nothing on the fake) ---
     def enable_wobbling(self) -> None:

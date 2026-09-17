@@ -476,6 +476,64 @@ def test_close_is_immediate_when_quiet() -> None:
     assert count == 0
 
 
+def _head_held_elsewhere(
+    robot: FakeReachyMini, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another writer (daemon-side tracking) holds the head 2 cm up: the pose readers
+    report it whatever the loop commands. (The fake's readers otherwise return the last
+    set_target, which the loop's next tick would overwrite.)"""
+    head = np.eye(4)
+    head[2, 3] = 0.02
+    monkeypatch.setattr(robot, "get_current_head_pose", lambda: head)
+
+
+def test_reanchor_resumes_idle_from_the_present_pose(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> list[float]:
+        robot = FakeReachyMini()
+        async with MotionSession(robot, presence=True, breathing=True) as session:
+            session.resume()
+            await asyncio.sleep(BLEND_S + 0.2)
+            _head_held_elsewhere(robot, monkeypatch)
+            before = len(robot.targets)
+            await asyncio.wrap_future(session.reanchor())
+            await asyncio.sleep(BLEND_S + 0.2)
+            return _head_zs(robot)[before:]
+
+    zs = asyncio.run(run())
+    # at most a tick or two of the old idle move before the command is taken, then the
+    # blend starts from the present pose…
+    start = next(i for i, z in enumerate(zs) if z > 0.015)
+    assert start <= 2
+    assert zs[start] == pytest.approx(0.02, abs=0.003)
+    assert abs(zs[-1]) < BREATH_Z_M + 0.002  # …back into the idle move
+    assert max(abs(b - a) for a, b in itertools.pairwise(zs[start:])) < 0.002
+
+
+def test_reanchor_is_a_noop_during_a_primary(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def run() -> tuple[bool, list[float]]:
+        robot = FakeReachyMini()
+        async with MotionSession(robot, presence=True, breathing=True) as session:
+            session.resume()
+            await asyncio.sleep(BLEND_S + 0.1)
+            future = session.submit(_TestPrimary(duration=0.6, z=0.01), None)
+            await asyncio.sleep(BLEND_S + 0.1)  # the primary's trajectory is playing
+            _head_held_elsewhere(robot, monkeypatch)
+            before = len(robot.targets)
+            done = session.reanchor()
+            await asyncio.sleep(0.1)
+            resolved = done.done()
+            zs = _head_zs(robot)[before:]
+            await asyncio.wrap_future(future)
+            return resolved, zs
+
+    resolved, zs = asyncio.run(run())
+    assert resolved
+    # the primary kept playing: no re-blend from the 0.02 present pose
+    assert zs and all(z < 0.015 for z in zs)
+
+
 def test_a_failing_tick_fails_the_primary_and_keeps_the_loop_alive() -> None:
     async def run() -> tuple[BaseException | None, int, int]:
         robot = FakeReachyMini()

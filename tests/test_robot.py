@@ -51,6 +51,7 @@ _CONSUMED_SLICE: list[tuple[str, type, str]] = [
             "get_current_joint_positions",
             "start_head_tracking",
             "stop_head_tracking",
+            "get_tracked_face",
             "enable_wobbling",
             "disable_wobbling",
             "enable_motors",

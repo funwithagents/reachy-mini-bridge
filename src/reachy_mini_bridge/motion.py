@@ -401,6 +401,27 @@ class MotionSession:
                     BridgeError("the motors left 'enabled': the motion loop paused")
                 )
 
+    def reanchor(self) -> concurrent.futures.Future[None]:
+        """Ask the loop to re-enter its idle move from the present pose read from the
+        robot (specs/motion.md "Re-anchor on request") — for the api, when a daemon-side
+        layer is about to hand the head back and the stream may be far from the head.
+        The future resolves when the command has been taken; a no-op (resolved at
+        once) with a primary playing, an exit blend, presence off, or the loop paused.
+        """
+        done: concurrent.futures.Future[None] = concurrent.futures.Future()
+        self._commands.put(lambda: self._on_reanchor(done))
+        return done
+
+    def _on_reanchor(self, done: concurrent.futures.Future[None]) -> None:
+        playing = self._playing
+        idle = playing is None or (playing.primary is None and not playing.exit_blend)
+        if idle and self._presence and self._commanding and not self._paused:
+            # The next tick re-selects the idle move and, since the loop is no longer
+            # "commanding", blends into it from the present pose (as after a pause).
+            self._playing = None
+            self._commanding = False
+        done.set_result(None)
+
     def resume(self) -> None:
         self._commands.put(self._on_resume)
 

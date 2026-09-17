@@ -1135,6 +1135,133 @@ def test_tracking_left_on_is_stopped_at_exit() -> None:
     assert api.tracking is True  # reset to the config's value after exit
 
 
+# --- attention (specs/api.md "Attention") -------------------------------------------
+
+
+def _tracking_weights(api: ReachyMiniApi) -> list[float]:
+    return [
+        args["weight"]
+        for name, args in _fake(api).commands
+        if name == "start_head_tracking"
+    ]
+
+
+@pytest.fixture
+def fast_attention(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(api_module, "ATTENTION_GRACE_S", 0.3)
+    monkeypatch.setattr(api_module, "ATTENTION_POLL_S", 0.05)
+
+
+def test_attention_starts_engaged_and_watches_when_nobody_is_there(
+    fast_attention: None,
+) -> None:
+    async def run() -> tuple[str | None, str | None, list[float]]:
+        async with ReachyMiniApi("fake") as api:  # tracking on by default
+            await api.set_motors_state("enabled")
+            at_start = api.attention
+            await asyncio.sleep(0.6)  # > grace + a poll
+            return at_start, api.attention, _tracking_weights(api)
+
+    at_start, later, weights = asyncio.run(run())
+    assert at_start == "engaged"
+    assert later == "watching"
+    # requested weight, then the hand-back: through 0, then the watch weight
+    assert weights == [1.0, 0.0, api_module.ATTENTION_WATCH_WEIGHT]
+
+
+def test_attention_reengages_when_a_face_appears(fast_attention: None) -> None:
+    async def run() -> tuple[str | None, list[float]]:
+        async with ReachyMiniApi("fake") as api:
+            await api.set_motors_state("enabled")
+            await asyncio.sleep(0.6)
+            assert api.attention == "watching"
+            _fake(api).face_detected = True
+            await asyncio.sleep(0.2)  # a few polls
+            return api.attention, _tracking_weights(api)
+
+    state, weights = asyncio.run(run())
+    assert state == "engaged"
+    assert weights == [1.0, 0.0, api_module.ATTENTION_WATCH_WEIGHT, 1.0]
+
+
+def test_attention_stays_engaged_while_a_face_is_seen(fast_attention: None) -> None:
+    async def run() -> tuple[str | None, list[float]]:
+        async with ReachyMiniApi("fake") as api:
+            await api.set_motors_state("enabled")
+            _fake(api).face_detected = True
+            await asyncio.sleep(0.6)
+            return api.attention, _tracking_weights(api)
+
+    state, weights = asyncio.run(run())
+    assert state == "engaged"
+    assert weights == [1.0]
+
+
+def test_emotion_restores_the_watch_weight_while_watching(
+    fast_attention: None,
+) -> None:
+    async def run() -> list[float]:
+        async with ReachyMiniApi("fake") as api:
+            await api.set_motors_state("enabled")
+            await asyncio.sleep(0.6)
+            assert api.attention == "watching"
+            await api.play_emotion("sad")
+            return _tracking_weights(api)
+
+    weights = asyncio.run(run())
+    watch = api_module.ATTENTION_WATCH_WEIGHT
+    assert weights == [1.0, 0.0, watch, 0.0, watch]
+
+
+def test_attention_makes_no_transition_during_an_emotion(
+    fast_attention: None,
+) -> None:
+    async def run() -> list[float]:
+        async with ReachyMiniApi("fake") as api:
+            await api.set_motors_state("enabled")
+            # Engaged; the grace period (0.3 s) elapses *during* the emotion (blend in
+            # plus the fake's 0.3 s move) — the transition must wait for the restore,
+            # so the dip and the restore bracket nothing else.
+            await asyncio.sleep(0.25)
+            await api.play_emotion("sad")
+            return _tracking_weights(api)
+
+    weights = asyncio.run(run())
+    assert weights[:3] == [1.0, 0.0, 1.0]
+
+
+def test_restarting_tracking_while_watching_reengages_for_a_full_grace_period(
+    fast_attention: None,
+) -> None:
+    async def run() -> tuple[str | None, list[float]]:
+        async with ReachyMiniApi("fake") as api:
+            await api.set_motors_state("enabled")
+            await asyncio.sleep(0.6)
+            assert api.attention == "watching"
+            await api.start_head_tracking(0.5)
+            await asyncio.sleep(0.15)  # several polls, well inside the 0.3 s grace
+            return api.attention, _tracking_weights(api)
+
+    state, weights = asyncio.run(run())
+    assert state == "engaged"
+    assert weights == [1.0, 0.0, api_module.ATTENTION_WATCH_WEIGHT, 0.5]
+
+
+def test_stop_head_tracking_stops_the_attention_loop(fast_attention: None) -> None:
+    async def run() -> tuple[str | None, int, int]:
+        async with ReachyMiniApi("fake") as api:
+            await api.set_motors_state("enabled")
+            await api.stop_head_tracking()
+            state = api.attention
+            before = len(_fake(api).commands)
+            await asyncio.sleep(0.6)
+            return state, before, len(_fake(api).commands)
+
+    state, before, after = asyncio.run(run())
+    assert state is None
+    assert after == before  # no tracking sends after the stop
+
+
 def test_start_head_tracking_requires_entry() -> None:
     with pytest.raises(BridgeError):
         asyncio.run(ReachyMiniApi("fake").start_head_tracking())
