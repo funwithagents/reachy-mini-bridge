@@ -92,7 +92,7 @@ If the package holds process-global or singleton state, both tiers carry an iden
 
 ## Live tier: skip without credentials
 
-A live test needs real credentials, and it must **skip — never fail** — when they're absent, so you exercise only the services you hold keys for and a contributor (or CI) with none is never broken. `reachy_mini_bridge.testing.require_env(NAME)` (shipped, see [testing_support.md](testing_support.md)) implements this: it returns the env var or calls `pytest.skip(...)` when it's unset. Credentials come from the environment, never committed.
+A live test needs real credentials, and it must **skip — never fail** — when they're absent, so you exercise only the services you hold keys for and a contributor (or CI) with none is never broken. `reachy_mini_bridge.testing.require_env(NAME)` (shipped, see [testing_support.md](testing_support.md)) implements this: it returns the env var or calls `pytest.skip(...)` when it's unset. Credentials come from the environment, never committed. The bridge's own real-TTS live test needs none: it runs on the local pocket-tts model (the dev group carries the `tts-pocket` extra, see [project.md](project.md)), so the default `uv run pytest tests-e2e` exercises `say` end to end; only the ElevenLabs cloud test is key-gated (`ELEVENLABS_API_KEY`).
 
 ## Tooling
 

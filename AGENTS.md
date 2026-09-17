@@ -95,7 +95,7 @@ The `live_api` fixture brings up the daemon itself — **don't start one by hand
 
 - **Read the skips.** `-rs` prints why each test skipped. A skip means a capability was probed absent (`motion`, `audio`, `camera`, `gravity_compensation`, `faces`) or a credential is missing — it is not a pass; report it as such.
 - **Capabilities are probed**, not inferred from the target: the headless sim has no camera; `gravity_compensation` needs hardware on the Placo kinematics engine (`reachy-mini[placo_kinematics]` installed — a harness-spawned real daemon then uses it automatically).
-- **Credentials:** `ELEVENLABS_API_KEY` enables the real-TTS test.
+- **Credentials:** none needed for the real-TTS test — it runs on the local pocket-tts model (first run downloads the weights into the Hugging Face cache); `ELEVENLABS_API_KEY` enables the ElevenLabs cloud test.
 - **macOS permissions:** the process running the tests needs camera and microphone access; without it the camera probe finds no frame and the camera test skips.
 - **Every sim the harness spawns runs the bridge's test scene** (upstream's empty scene plus a hidden portrait the tracking tests show), and **every sim runs through the bridge's launcher** ([specs/sim_daemon.md](specs/sim_daemon.md)), which corrects upstream's sim face tracking. A daemon started by hand with upstream's `reachy-mini-daemon --sim` lacks it: start `uv run python -m reachy_mini_bridge.sim_daemon` instead when you want one to borrow.
 - **Manual testing with a webcam** is not a pytest target: run a sim config with `"daemon": {"camera": {"source": "webcam"}}` (e.g. through the control panel) and step in front of the computer — the simulated robot sees and follows you.

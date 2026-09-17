@@ -197,15 +197,22 @@ def test_tts_block_builds_the_default_synthesizer(
     assert built == [block]
 
 
-def test_tts_block_without_the_extra_is_a_config_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def missing(_block: object) -> object:
-        raise ImportError("No module named 'tts_engine'")
+def test_tts_block_for_an_uninstalled_provider_degrades_to_no_voice() -> None:
+    """A real block for a provider whose extra is missing: tts-engine's ConfigError
+    is recorded, the api comes up, and `say` names the extra to install."""
+    from tts_engine.config import ConfigError as TTSEngineConfigError
 
-    monkeypatch.setattr(api_module, "TTSEngineSynthesizer", missing)
-    with pytest.raises(ConfigError, match=r"reachy-mini-bridge\[tts\]"):
-        ReachyMiniApi(ReachyMiniConfig(backend="fake", tts={"module": {"type": "x"}}))
+    api = ReachyMiniApi(
+        ReachyMiniConfig(backend="fake", tts={"module": {"type": "no-such-provider"}})
+    )
+    assert isinstance(api.synthesizer_error, TTSEngineConfigError)
+
+    async def run() -> None:
+        async with api:
+            with pytest.raises(BridgeError, match="no-such-provider"):
+                await api.say("hi")
+
+    asyncio.run(run())
 
 
 def test_tts_block_build_failure_degrades_to_no_voice(

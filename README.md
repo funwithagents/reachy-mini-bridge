@@ -48,9 +48,10 @@ uv add "reachy-mini-bridge[sim,test] @ ../reachy-mini-bridge"
 
 | Extra | Adds | You need it for |
 |---|---|---|
-| *(none)* | `reachy_mini`, `numpy`, `samplerate` | The `real` backend and the offline `fake` |
+| *(none)* | `reachy_mini`, `numpy`, `samplerate`, `tts-engine` | The `real` backend, the offline `fake`, and `say` with your own synthesizer. `tts-engine` is our small first-party engine with no provider; one of the `tts-*` extras adds one |
 | `sim` | `reachy_mini[mujoco]` | The `sim` backend (MuJoCo) |
-| `tts` | `tts-engine` | The default voice for `say`. Not needed if you pass your own synthesizer |
+| `tts-pocket` | `tts-engine[pocket]` | The default voice for `say` on the local pocket-tts model: no key, no network once the weights are cached, but torch (hundreds of MB) |
+| `tts-elevenlabs` | `tts-engine[elevenlabs]` | The default voice for `say` on ElevenLabs (`ELEVENLABS_API_KEY`); a few MB |
 | `test` | `pytest` | The shipped `reachy_mini_bridge.testing` harness for your e2e tests |
 
 Importing the package imports `reachy_mini`, which needs its native libraries installed but not a running daemon.
@@ -115,7 +116,7 @@ All verbs are `async`; units are human (degrees, seconds, named emotions). The u
 
 Verbs that move the robot require motors `enabled` and raise `MotorsNotEnabledError` otherwise. The errors a caller catches — `BridgeError` (the base), `MotorsNotEnabledError`, `GravityCompensationUnsupportedError`, `ConfigError` — import from `reachy_mini_bridge`, next to `ReachyMiniApi`, `ReachyMiniConfig`, `SpeechSynthesizer` and `TTSEngineSynthesizer`; `DaemonError` lives in `reachy_mini_bridge.errors`.
 
-**Talking.** `say` streams text-to-speech to the robot speaker through a `SpeechSynthesizer` — a small protocol (`sample_rate` + `stream(text)` yielding float32 mono chunks) importable from `reachy_mini_bridge`. Bring your own, or configure the default `tts-engine` adapter through the config's `tts` block. Without either, `say` raises `BridgeError`; a `tts` block that fails to build (a missing API key, say) leaves the robot usable and exposes the cause on `api.synthesizer_error`. `say` returns once the utterance has finished playing; cancel the task to stop it (queued audio is flushed). Cancelling the task is how you interrupt any verb: `play_emotion` stops the motion and the emotion's sound the same way, and the session stays usable for the next verb (see [specs/api.md](specs/api.md) "Cancellation").
+**Talking.** `say` streams text-to-speech to the robot speaker through a `SpeechSynthesizer` — a small protocol (`sample_rate` + `stream(text)` yielding float32 mono chunks) importable from `reachy_mini_bridge`. Bring your own, or configure the default `tts-engine` adapter through the config's `tts` block. Without either, `say` raises `BridgeError`; a `tts` block that fails to build (a provider whose extra isn't installed, a missing API key) leaves the robot usable and exposes the cause on `api.synthesizer_error`. `say` returns once the utterance has finished playing; cancel the task to stop it (queued audio is flushed). Cancelling the task is how you interrupt any verb: `play_emotion` stops the motion and the emotion's sound the same way, and the session stays usable for the next verb (see [specs/api.md](specs/api.md) "Cancellation").
 
 **Listening.** The bridge does no speech recognition. It exposes the robot's echo-cancelled microphone as a stream and you feed it to the ASR of your choice:
 
@@ -156,7 +157,7 @@ A sim started by hand with upstream's `reachy-mini-daemon --sim` works for motio
   "backend": "sim",
   "robot": { "host": "127.0.0.1", "port": 8000 },
   "daemon": { "spawn": "auto", "headless": false },
-  "tts": { "module": { "type": "elevenlabs", "api_key_env": "ELEVENLABS_API_KEY", "voice_id": "..." } },
+  "tts": { "module": { "type": "pocket", "voice": "george" } },
   "audio": { "xvf3800": null },
   "motion": { "presence": true, "breathing": true, "wobbling": true, "tracking": true }
 }
@@ -164,7 +165,7 @@ A sim started by hand with upstream's `reachy-mini-daemon --sim` works for motio
 
 - `robot` — keyword arguments forwarded verbatim to upstream `ReachyMini(...)`; ignored on `fake`, so one file switches backends by changing `backend` alone.
 - `daemon` — `sim`, or `real` for a robot plugged into this machine over USB (loopback `host` only). `"spawn": "auto"` reuses a daemon already listening at `host:port` or spawns one — the MuJoCo daemon for `sim`, the robot's hardware daemon for `real` (it wakes the robot, and puts it to sleep on exit) — and stops it on exit; `"always"` insists on spawning; `"never"` (default) only connects, which is what a wireless robot needs. For `sim`, `"headless": false` (the example config) opens the MuJoCo **viewer**, so you watch the robot move and the camera works; it needs an unlocked GUI session. `"headless": true` (the default) runs the sim without a window, which has no rendered camera. `"camera": {"source": "webcam"}` (the example config) makes the sim see through the computer's webcam instead — you in front of the screen are who the simulated robot follows, with or without the viewer ([specs/sim_daemon.md](specs/sim_daemon.md)). `headless`, `scene` and `camera` play no part on `real`.
-- `tts` — the tts-engine module block that builds the default voice for `say`.
+- `tts` — the tts-engine module block that builds the default voice for `say`; `module.type` picks the provider (`pocket` above, the local model, needs no key; `elevenlabs` takes `api_key_env` and a `voice_id`) and the matching `tts-*` extra must be installed.
 - `audio` — the XVF3800 mic-array profile applied on connect.
 - `motion` — everything that shapes the robot's behaviour at rest, all `true` by default: `presence` (stay alive between verbs) and `breathing` (breathe vs. hold neutral when idle), changed at runtime with `set_presence` / `set_breathing`; `wobbling` (sway the head with every sound the robot plays), changed with `set_wobbling`; `tracking` (autonomously keep a detected face centered, once motors are enabled), changed with `start_head_tracking` / `stop_head_tracking`.
 

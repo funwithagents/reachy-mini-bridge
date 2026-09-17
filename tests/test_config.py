@@ -57,8 +57,8 @@ def test_from_json_file_round_trips_the_repo_example() -> None:
         startup_timeout=45.0,
     )
     assert cfg.tts is not None
-    assert cfg.tts["module"]["type"] == "elevenlabs"
-    assert cfg.tts["module"]["api_key_env"] == "ELEVENLABS_API_KEY"
+    assert cfg.tts["module"]["type"] == "pocket"
+    assert cfg.tts["module"]["voice"] == "george"
     assert cfg.audio == AudioSettings(xvf3800=None)
     assert cfg.motion == MotionSettings()
 

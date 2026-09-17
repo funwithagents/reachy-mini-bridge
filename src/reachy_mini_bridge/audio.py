@@ -427,21 +427,24 @@ class _StreamResampler:
         return np.asarray(out, dtype=np.float32)
 
 
-# --- the default synthesizer adapter (optional `tts` extra) ------------------------
+# --- the default synthesizer adapter (tts-engine) -----------------------------------
 
 
 class TTSEngineSynthesizer:
     """Default :class:`SpeechSynthesizer`, adapting our first-party ``tts-engine``.
 
-    Lives behind the ``tts`` extra: ``tts_engine`` is imported lazily in the
-    constructor, so the bridge core never pulls it in for a caller who supplies their
-    own synthesizer. ``tts-engine`` is push-based (a sink is fed int16 chunks); this
-    adapter bridges that to the pull-based float32 iterator the contract requires via a
-    thread-safe queue, converting int16 -> float32 with :func:`int16_to_float32`.
+    ``tts-engine`` is a base dependency; the provider the block's ``module.type``
+    names comes from the matching extra (``reachy-mini-bridge[tts-elevenlabs]`` /
+    ``[tts-pocket]``), and tts-engine raises its own ``ConfigError`` naming the
+    missing one. The import stays local to the constructor so importing this module
+    stays cheap for a caller who supplies their own synthesizer. ``tts-engine`` is
+    push-based (a sink is fed int16 chunks); this adapter bridges that to the
+    pull-based float32 iterator the contract requires via a thread-safe queue,
+    converting int16 -> float32 with :func:`int16_to_float32`.
     """
 
     def __init__(self, config: object) -> None:
-        # Lazy import: only constructing the default adapter needs tts-engine.
+        # Local import: only constructing the default adapter needs tts-engine loaded.
         from tts_engine.config import TTSEngineConfig
         from tts_engine.engine import TTSEngine
 

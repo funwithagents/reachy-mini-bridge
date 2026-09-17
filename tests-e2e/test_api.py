@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import asyncio
 import math
-import os
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
 from typing import Any
@@ -34,10 +33,6 @@ from reachy_mini_bridge.errors import GravityCompensationUnsupportedError
 from reachy_mini_bridge.motion import BLEND_S, BREATH_REST_S, BREATH_S
 from reachy_mini_bridge.testing import require_env, requires_caps
 from reachy_mini_bridge.testing.sim_scene import DEFAULT_FACE_POS, SimSceneClient
-
-# A public ElevenLabs voice used throughout tts-engine's own docs; override with
-# REACHY_MINI_E2E_TTS_VOICE_ID for an account-specific voice.
-_DEFAULT_TTS_VOICE_ID = "JBFqnCBsd6RMkjVDRZzb"
 
 
 class _ToneSynth:
@@ -376,24 +371,43 @@ def test_wobbling_off_keeps_the_head_still_while_audio_plays(
 def test_say_with_real_tts_speaks_through_the_robot(
     live_api: tuple[ReachyMiniApi, frozenset[str]],
 ) -> None:
-    """Real TTS end-to-end: `TTSEngineSynthesizer` (ElevenLabs) → speaker.
+    """Real TTS end-to-end: `TTSEngineSynthesizer` on the local pocket model → speaker.
 
-    Exercises the full real path the tone test can't: tts-engine synthesis over the
-    network, the push→pull queue-bridge sink, int16→float32, and the 44.1 kHz→16 kHz
-    resample. Gated on `ELEVENLABS_API_KEY` (skips cleanly without a key) and `audio`.
+    Exercises the full real path the tone test can't: tts-engine synthesis (in-process,
+    the model loaded from the Hugging Face cache — no key, no network once cached), the
+    push→pull queue-bridge sink, int16→float32, and the 24 kHz→16 kHz resample. Gated
+    on `audio` only, so it runs on every dev sync (the dev group carries `tts-pocket`).
     On the headfull-viewer sim you should hear the phrase; assert it completes.
+    """
+    requires_caps(live_api, "audio")
+    api, _caps = live_api
+
+    synth = TTSEngineSynthesizer({"module": {"type": "pocket", "voice": "george"}})
+    # pocket-tts emits its model's native 24 kHz, so the say sink resamples to 16 kHz.
+    assert synth.sample_rate == 24000
+    asyncio.run(api.say("Hello, I am Reachy Mini.", synth))
+
+
+def test_say_with_elevenlabs_speaks_through_the_robot(
+    live_api: tuple[ReachyMiniApi, frozenset[str]],
+) -> None:
+    """The cloud provider end-to-end: `TTSEngineSynthesizer` (ElevenLabs) → speaker.
+
+    The path the pocket test doesn't cover: synthesis over the network and the
+    44.1 kHz→16 kHz resample. Gated on `ELEVENLABS_API_KEY` (skips cleanly without a
+    key) and `audio`.
     """
     require_env("ELEVENLABS_API_KEY")
     requires_caps(live_api, "audio")
     api, _caps = live_api
 
-    voice_id = os.environ.get("REACHY_MINI_E2E_TTS_VOICE_ID", _DEFAULT_TTS_VOICE_ID)
     synth = TTSEngineSynthesizer(
         {
             "module": {
                 "type": "elevenlabs",
                 "api_key_env": "ELEVENLABS_API_KEY",
-                "voice_id": voice_id,
+                # A public voice used throughout tts-engine's own docs.
+                "voice_id": "JBFqnCBsd6RMkjVDRZzb",
             }
         }
     )

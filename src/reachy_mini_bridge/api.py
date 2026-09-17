@@ -38,7 +38,6 @@ from .audio import MediaSession, TTSEngineSynthesizer, cancel_safe_step
 from .config import ReachyMiniConfig
 from .errors import (
     BridgeError,
-    ConfigError,
     GravityCompensationUnsupportedError,
     MotorsNotEnabledError,
 )
@@ -717,7 +716,7 @@ class ReachyMiniApi:
             raise BridgeError(
                 "say requires a SpeechSynthesizer: pass one, configure a default "
                 "synthesizer at construction, or set the config's `tts` block "
-                "(the tts extra's TTSEngineSynthesizer)"
+                "(the tts-engine adapter, TTSEngineSynthesizer)"
             )
         await self._require_media().say(text, chosen)
 
@@ -825,19 +824,16 @@ def _default_synthesizer(
 ) -> tuple[SpeechSynthesizer | None, Exception | None]:
     """The config's `tts` block as a ``TTSEngineSynthesizer``, and any build error.
 
-    ``(None, None)`` without a block. The missing `tts` extra (``ImportError``) still
-    raises ``ConfigError`` — a setup error nothing can fix at runtime. Any other
-    exception from building the adapter is caught and returned as the cause instead,
-    so a bad `tts` block degrades to no voice rather than failing construction.
+    ``(None, None)`` without a block. Any exception from building the adapter — a
+    tts-engine ``ConfigError`` for a provider whose extra is not installed (its message
+    names the ``tts-engine[<provider>]`` to install) or for a bad block, an unset
+    ``api_key_env``, a model that fails to load — is caught and returned as the cause,
+    so a `tts` block that cannot be built degrades to no voice rather than failing
+    construction.
     """
     if tts_block is None:
         return None, None
     try:
         return TTSEngineSynthesizer(tts_block), None
-    except ImportError as e:
-        raise ConfigError(
-            "the config's `tts` block needs the tts extra: install "
-            "reachy-mini-bridge[tts] (or pass your own synthesizer=)"
-        ) from e
     except Exception as e:  # noqa: BLE001 - recorded, not swallowed; see synthesizer_error
         return None, e
