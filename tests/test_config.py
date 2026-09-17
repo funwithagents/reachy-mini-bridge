@@ -17,6 +17,7 @@ from reachy_mini_bridge.config import (
     DaemonConfig,
     MotionSettings,
     ReachyMiniConfig,
+    SimCameraSettings,
 )
 from reachy_mini_bridge.errors import ConfigError
 
@@ -50,6 +51,7 @@ def test_from_json_file_round_trips_the_repo_example() -> None:
         spawn="auto",
         headless=False,
         scene=None,
+        camera=SimCameraSettings(source="sim", device=None, hfov_deg=70.0),
         preload_datasets=True,
         startup_timeout=45.0,
     )
@@ -256,6 +258,56 @@ def test_audio_xvf3800_shape() -> None:
 def test_daemon_field_types(daemon: dict[str, object]) -> None:
     with pytest.raises(ConfigError, match="daemon"):
         ReachyMiniConfig.from_dict({"backend": "sim", "daemon": daemon})
+
+
+def test_daemon_camera_defaults_to_the_rendered_eye_camera() -> None:
+    assert ReachyMiniConfig.from_dict({}).daemon.camera == SimCameraSettings()
+    assert SimCameraSettings() == SimCameraSettings(
+        source="sim", device=None, hfov_deg=70.0
+    )
+
+
+def test_daemon_camera_selects_a_webcam() -> None:
+    cfg = ReachyMiniConfig.from_dict(
+        {
+            "backend": "sim",
+            "daemon": {
+                "spawn": "auto",
+                "camera": {"source": "webcam", "device": 1, "hfov_deg": 62},
+            },
+        }
+    )
+    assert cfg.daemon.camera == SimCameraSettings(
+        source="webcam", device=1, hfov_deg=62.0
+    )
+    assert isinstance(cfg.daemon.camera.hfov_deg, float)
+    linux = SimCameraSettings.from_json('{"source": "webcam", "device": "/dev/video2"}')
+    assert linux == SimCameraSettings(source="webcam", device="/dev/video2")
+
+
+@pytest.mark.parametrize(
+    ("camera", "key"),
+    [
+        ({"source": "usb"}, "source"),
+        ({"device": ""}, "device"),
+        ({"device": -1}, "device"),
+        ({"device": True}, "device"),
+        ({"device": 1.5}, "device"),
+        ({"hfov_deg": 1}, "hfov_deg"),
+        ({"hfov_deg": 179}, "hfov_deg"),
+        ({"hfov_deg": "70"}, "hfov_deg"),
+        ({"hfov_deg": True}, "hfov_deg"),
+        ({"fov": 70}, "fov"),
+    ],
+)
+def test_daemon_camera_rejects_bad_values(camera: dict[str, object], key: str) -> None:
+    with pytest.raises(ConfigError, match=key):
+        ReachyMiniConfig.from_dict({"backend": "sim", "daemon": {"camera": camera}})
+
+
+def test_daemon_camera_must_be_an_object() -> None:
+    with pytest.raises(ConfigError, match=r"daemon\.camera"):
+        ReachyMiniConfig.from_dict({"daemon": {"camera": "webcam"}})
 
 
 def test_motion_defaults_are_on() -> None:

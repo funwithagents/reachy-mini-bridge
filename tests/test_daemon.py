@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from reachy_mini_bridge import daemon
-from reachy_mini_bridge.config import DaemonConfig
+from reachy_mini_bridge.config import DaemonConfig, SimCameraSettings
 from reachy_mini_bridge.errors import DaemonError
 
 _AUTO = DaemonConfig(spawn="auto")
@@ -81,45 +81,84 @@ def harness(monkeypatch: pytest.MonkeyPatch) -> _Harness:
 
 
 def test_launch_command_headless_and_viewer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every sim daemon runs the bridge's sim daemon launcher (specs/sim_daemon.md) —
+    this interpreter headless, mjpython for the viewer."""
     monkeypatch.setattr(daemon.shutil, "which", lambda name: f"/bin/{name}")
+    launcher = [sys.executable, "-m", "reachy_mini_bridge.sim_daemon"]
     # Preloading is the default and always explicit: the daemon's own default is off.
     assert daemon.launch_command(DaemonConfig()) == [
-        "/bin/reachy-mini-daemon",
-        "--sim",
+        *launcher,
         "--headless",
         "--preload-datasets",
     ]
     assert daemon.launch_command(DaemonConfig(preload_datasets=False)) == [
-        "/bin/reachy-mini-daemon",
-        "--sim",
+        *launcher,
         "--headless",
         "--no-preload-datasets",
     ]
     assert daemon.launch_command(DaemonConfig(scene="minimal")) == [
-        "/bin/reachy-mini-daemon",
-        "--sim",
-        "--headless",
-        "--preload-datasets",
+        *launcher,
         "--scene",
         "minimal",
+        "--headless",
+        "--preload-datasets",
     ]
     assert daemon.launch_command(DaemonConfig(headless=False, scene="minimal")) == [
         "/bin/mjpython",
         "-m",
-        "reachy_mini.daemon.app.main",
-        "--sim",
-        "--preload-datasets",
+        "reachy_mini_bridge.sim_daemon",
         "--scene",
         "minimal",
+        "--preload-datasets",
     ]
+
+
+def test_launch_command_passes_the_webcam_camera_source(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`daemon.camera` becomes the launcher's camera flags — none for the rendered eye
+    camera, on the plain and the scene-file recipes alike."""
+    monkeypatch.setattr(daemon.shutil, "which", lambda name: f"/bin/{name}")
+    webcam = SimCameraSettings(source="webcam")
+    assert daemon.launch_command(DaemonConfig(headless=False, camera=webcam)) == [
+        "/bin/mjpython",
+        "-m",
+        "reachy_mini_bridge.sim_daemon",
+        "--preload-datasets",
+        "--camera",
+        "webcam",
+        "--webcam-hfov",
+        "70",
+    ]
+    chosen = SimCameraSettings(source="webcam", device=1, hfov_deg=62.5)
+    assert daemon.launch_command(DaemonConfig(camera=chosen))[-7:] == [
+        "--preload-datasets",
+        "--camera",
+        "webcam",
+        "--webcam-device",
+        "1",
+        "--webcam-hfov",
+        "62.5",
+    ]
+    scene = str(tmp_path / "scene.xml")
+    assert daemon.launch_command(DaemonConfig(scene=scene, camera=webcam))[-5:] == [
+        "--preload-datasets",
+        "--camera",
+        "webcam",
+        "--webcam-hfov",
+        "70",
+    ]
+    # device and field of view play no part for the rendered camera
+    rendered = SimCameraSettings(source="sim", device=1, hfov_deg=62.5)
+    assert "--camera" not in daemon.launch_command(DaemonConfig(camera=rendered))
 
 
 def test_launch_command_runs_a_scene_file_through_the_bridge_launcher(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A `scene` ending in `.xml` is a scene *file* (specs/sim_scene.md): the bridge's
-    own launcher module runs upstream's daemon on it — under mjpython for the viewer,
-    this interpreter headless — with the path made absolute."""
+    """A `scene` ending in `.xml` is a scene *file* (specs/sim_scene.md): the test scene's
+    launcher module runs the sim daemon on it — under mjpython for the viewer, this
+    interpreter headless — with the path made absolute."""
     monkeypatch.setattr(daemon.shutil, "which", lambda name: f"/bin/{name}")
     monkeypatch.chdir(tmp_path)
     scene = tmp_path / "scene.xml"
@@ -142,9 +181,10 @@ def test_launch_command_runs_a_scene_file_through_the_bridge_launcher(
         str(scene),
         "--no-preload-datasets",
     ]
-    # a real daemon ignores the sim knobs, scene file included
+    # a real daemon ignores the sim knobs, scene file and camera included
     monkeypatch.setattr(daemon, "_placo_available", lambda: False)
-    assert daemon.launch_command(DaemonConfig(scene="scene.xml"), backend="real") == [
+    config = DaemonConfig(scene="scene.xml", camera=SimCameraSettings(source="webcam"))
+    assert daemon.launch_command(config, backend="real") == [
         "/bin/reachy-mini-daemon",
         "--preload-datasets",
     ]
@@ -164,9 +204,16 @@ def test_launch_command_scene_file_still_needs_the_sim_extra(
 
 
 def test_launch_command_requires_the_launcher(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The sim extra (which ships `reachy-mini-daemon` and MuJoCo) is required for every
+    sim recipe; the viewer also needs `mjpython`."""
     monkeypatch.setattr(daemon.shutil, "which", lambda name: None)
     with pytest.raises(DaemonError, match=r"reachy-mini-bridge\[sim\]"):
         daemon.launch_command(DaemonConfig())
+    with pytest.raises(DaemonError, match=r"reachy-mini-bridge\[sim\]"):
+        daemon.launch_command(DaemonConfig(headless=False))
+    monkeypatch.setattr(
+        daemon.shutil, "which", lambda name: "/bin/x" if name != "mjpython" else None
+    )
     with pytest.raises(DaemonError, match="mjpython"):
         daemon.launch_command(DaemonConfig(headless=False))
 
@@ -309,7 +356,7 @@ def test_auto_spawns_when_the_port_is_free(harness: _Harness) -> None:
         assert handle == daemon.DaemonHandle("127.0.0.1", 8000, owned=True, pid=4242)
         assert harness.proc.calls == []  # still running inside the block
     (cmd, env), *_ = harness.spawned
-    assert cmd[0].endswith("reachy-mini-daemon") and "--scene" in cmd
+    assert cmd[1:3] == ["-m", "reachy_mini_bridge.sim_daemon"] and "--scene" in cmd
     assert not any(k in env for k in daemon._GST_BUNDLE_ENV)
     assert harness.proc.calls == ["terminate", "wait"]
 
@@ -384,7 +431,7 @@ def test_spawn_exit_during_startup_raises_with_exit_code(harness: _Harness) -> N
     harness.proc = _FakeProc(polls=[None, 139])
     harness.ready = iter([False, False])
     with (
-        pytest.raises(DaemonError, match=r"exit 139.*reachy-mini-daemon"),
+        pytest.raises(DaemonError, match=r"exit 139.*reachy_mini_bridge.sim_daemon"),
         daemon.managed_daemon(_AUTO),
     ):
         pass

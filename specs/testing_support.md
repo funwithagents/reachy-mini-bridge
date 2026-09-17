@@ -85,7 +85,8 @@ Target and connection are chosen by the same env vars the bridge's tier uses, so
 - `REACHY_MINI_E2E_TARGET` — `sim` (default) | `real`.
 - `REACHY_MINI_HOST` / `REACHY_MINI_PORT` — the daemon address (borrow a daemon already there; for `real`, the robot's daemon — spawned by the harness when the address is loopback and nothing is ready).
 - `REACHY_MINI_E2E_SIM_VIEWER` — headfull MuJoCo viewer instead of headless (local, needs a GUI/GL context; see [../docs/running-the-sim-daemon.md](../docs/running-the-sim-daemon.md)).
-- `REACHY_MINI_E2E_SIM_SCENE` — the `sim` scene: unset (upstream's default), an upstream scene name (`minimal`), a path to an `.xml` scene file, or `test` — the harness writes the bridge's test scene ([sim_scene.md](sim_scene.md)) into a temporary directory for the daemon's lifetime and launches the daemon on it; its props start hidden, so the `faces` capability (a `face` body exists) is probed true regardless, and the `sim_scene` fixture shows/places/hides them.
+
+A spawned `sim` daemon always runs the bridge's **test scene** ([sim_scene.md](sim_scene.md)): the harness writes it into a temporary directory that lives as long as the daemon and passes its path as `DaemonConfig.scene`. Its props start hidden, so a test that never shows one runs on upstream's empty scene; the `faces` capability (a `face` body exists) is probed true on every harness-spawned sim, and the `sim_scene` fixture shows/places/hides the props. There is no scene knob: one sim target serves every test. A daemon already ready at the address is borrowed as before, whatever it runs.
 
 ### The gotchas move into the shipped code
 
@@ -99,4 +100,4 @@ A consumer-facing guide (`docs/testing-with-the-bridge.md`, linked from the [REA
 
 ## Open questions
 
-1. **Consumer daemon knobs.** The scene is now an env var (`REACHY_MINI_E2E_SIM_SCENE`, above). Dataset preloading and the startup timeout still exist only on `DaemonConfig` ([config.md](config.md)); whether the harness exposes them (env vars, or a `DaemonConfig` a consumer's conftest hands in) is deferred until one actually needs it. (A genuine deferral, not a load-bearing unknown.)
+1. **Consumer daemon knobs.** The scene, dataset preloading and the startup timeout exist only on `DaemonConfig` ([config.md](config.md)) — the harness always uses the test scene; whether it exposes them (env vars, or a `DaemonConfig` a consumer's conftest hands in) is deferred until one actually needs it. (A genuine deferral, not a load-bearing unknown.)

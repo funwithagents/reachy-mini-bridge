@@ -33,6 +33,7 @@ Where things live. This is a coarse, module-level map — for the full file inve
 | `src/reachy_mini_bridge/motion.py` | Motion loop — `MotionSession`, the one thread that owns `set_target`: plays emotions (with their sound) as exclusive primaries over the idle move (breathing / neutral hold / nothing), every transition a blend; the `presence` and `breathing` switches | [specs/motion.md](specs/motion.md) |
 | `src/reachy_mini_bridge/config.py` | `ReachyMiniConfig` (+ `DaemonConfig`, `AudioSettings`) — the declarative api config with `from_dict` / `from_json` / `from_json_file` | [specs/config.md](specs/config.md) |
 | `src/reachy_mini_bridge/daemon.py` | Bridge-owned `reachy-mini-daemon` lifecycle — `managed_daemon` (own-it-or-borrow-it), `is_daemon_ready`, `launch_command`, `scrubbed_env` | [specs/daemon.md](specs/daemon.md) |
+| `src/reachy_mini_bridge/sim_daemon.py` | The launcher every bridge-spawned MuJoCo daemon runs through (`python -m reachy_mini_bridge.sim_daemon`) — upstream's daemon with the face-tracking corrections (tracking stepped each tick, true tracker intrinsics, fixed-camera aim for a webcam) and the `sim` / `webcam` camera source (`WebcamRelay`); `SimDaemonExtension` hooks | [specs/sim_daemon.md](specs/sim_daemon.md) |
 | `src/reachy_mini_bridge/errors.py` | Bridge exception hierarchy — `BridgeError` base + `MotorsNotEnabledError`, `GravityCompensationUnsupportedError`, `DaemonError`; `ConfigError(ValueError)` | [specs/api.md](specs/api.md), [specs/config.md](specs/config.md), [specs/daemon.md](specs/daemon.md) |
 | `src/reachy_mini_bridge/tools.py` | `ReachyMiniTools` agent/LLM tools (placeholder; Draft) | [specs/tools.md](specs/tools.md) |
 | `src/reachy_mini_bridge/testing/` | Shipped testing harness (package) — `live_api` fixture, `requires_caps`, `require_env` for consumers' e2e tests (`fixtures.py` plugin, private `_daemon.py` wrapping `daemon.py`, `support.py`); `sim_scene.py` — the bridge's test scene: hidden-by-default scriptable props (a face today, `assets/face.png`) a test shows/moves/hides through a `python -m reachy_mini_bridge.testing.sim_scene` launcher (`SceneDirector` + `/api/sim-scene` router) and `SimSceneClient` | [specs/testing_support.md](specs/testing_support.md), [specs/sim_scene.md](specs/sim_scene.md) |
@@ -87,9 +88,8 @@ The `live_api` fixture brings up the daemon itself — **don't start one by hand
 
 | Target | Command | What the harness does |
 |---|---|---|
-| sim, headless (default) | `uv run pytest tests-e2e -rs` | spawns `reachy-mini-daemon --sim --headless` (the `sim` extra, in the dev group) |
-| sim, viewer | `REACHY_MINI_E2E_SIM_VIEWER=1 uv run pytest tests-e2e -rs` | spawns the MuJoCo viewer via `mjpython` — needs an unlocked GUI session |
-| sim, viewer, with a face | `REACHY_MINI_E2E_SIM_VIEWER=1 REACHY_MINI_E2E_SIM_SCENE=test uv run pytest tests-e2e -rs` | as above, on the bridge's test scene (a hidden-by-default portrait a test shows and moves) — enables the `faces` tests: tracking, the attention hand-back, breathing when alone ([specs/sim_scene.md](specs/sim_scene.md)) |
+| sim, headless (default) | `uv run pytest tests-e2e -rs` | spawns the bridge's sim daemon headless (`python -m reachy_mini_bridge.sim_daemon --headless`; the `sim` extra, in the dev group) |
+| sim, viewer | `REACHY_MINI_E2E_SIM_VIEWER=1 uv run pytest tests-e2e -rs` | spawns the sim daemon with the MuJoCo viewer via `mjpython` — needs an unlocked GUI session; adds the camera, so the attention / gaze tests run: a hidden-by-default portrait in the test scene is shown and moved, and the head must turn onto it and follow it, hand back to breathing when it leaves, and re-engage ([specs/sim_scene.md](specs/sim_scene.md)) |
 | real robot on USB (Lite) | `REACHY_MINI_E2E_TARGET=real uv run pytest tests-e2e -rs` | spawns `reachy-mini-daemon` (serial port auto-detected); the robot wakes up, moves and plays sound, and goes to sleep when the daemon stops |
 | real robot on the network (wireless) | `REACHY_MINI_E2E_TARGET=real REACHY_MINI_HOST=<robot ip> uv run pytest tests-e2e -rs` | borrows the robot's own daemon, or skips — it never spawns on a remote host |
 
@@ -97,6 +97,8 @@ The `live_api` fixture brings up the daemon itself — **don't start one by hand
 - **Capabilities are probed**, not inferred from the target: the headless sim has no camera; `gravity_compensation` needs hardware on the Placo kinematics engine (`reachy-mini[placo_kinematics]` installed — a harness-spawned real daemon then uses it automatically).
 - **Credentials:** `ELEVENLABS_API_KEY` enables the real-TTS test.
 - **macOS permissions:** the process running the tests needs camera and microphone access; without it the camera probe finds no frame and the camera test skips.
+- **Every sim the harness spawns runs the bridge's test scene** (upstream's empty scene plus a hidden portrait the tracking tests show), and **every sim runs through the bridge's launcher** ([specs/sim_daemon.md](specs/sim_daemon.md)), which corrects upstream's sim face tracking. A daemon started by hand with upstream's `reachy-mini-daemon --sim` lacks it: start `uv run python -m reachy_mini_bridge.sim_daemon` instead when you want one to borrow.
+- **Manual testing with a webcam** is not a pytest target: run a sim config with `"daemon": {"camera": {"source": "webcam"}}` (e.g. through the control panel) and step in front of the computer — the simulated robot sees and follows you.
 - `REACHY_MINI_PORT` (default `8000`) moves the address. Details: [specs/testing.md](specs/testing.md) ("E2E targets & capabilities"), [docs/testing-with-the-bridge.md](docs/testing-with-the-bridge.md), [specs/daemon.md](specs/daemon.md) (launch recipes).
 
 ## Implementation plans

@@ -95,9 +95,9 @@ def _probe_gravity_compensation(robot: AnyReachyMini) -> bool:
 
 def _probe_faces(host: str, port: int) -> bool:
     """True if the daemon serves the bridge's sim-scene endpoint with a `face` body:
-    it was launched on the bridge's test scene (`REACHY_MINI_E2E_SIM_SCENE=test`,
+    it was launched on the bridge's test scene (every harness-spawned sim is,
     specs/sim_scene.md), so tests can show, move and hide a face in front of the eye
-    camera. A daemon launched any other way — headless or not — lacks it."""
+    camera. A daemon launched any other way lacks it."""
     try:
         return "face" in SimSceneClient(host, port).bodies()
     except SimSceneError:

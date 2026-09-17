@@ -70,20 +70,21 @@ After spawning, `managed_daemon` polls `is_daemon_ready` once per second until `
 
 ### The launch command
 
-`launch_command(config, backend=...)` builds the argv. For `sim`, from the recipes in [../docs/running-the-sim-daemon.md](../docs/running-the-sim-daemon.md):
+`launch_command(config, backend=...)` builds the argv. Every `sim` daemon runs through the bridge's **sim daemon launcher** ([sim_daemon.md](sim_daemon.md)) — upstream's daemon with the corrections that make face tracking converge in the sim, and the choice of camera source — from the recipes in [../docs/running-the-sim-daemon.md](../docs/running-the-sim-daemon.md):
 
-- **headless** (`config.headless`, the default): `reachy-mini-daemon --sim --headless --[no-]preload-datasets [--scene <scene>]` — real MuJoCo physics, no viewer, runs anywhere (CI included); on macOS the sim camera returns `None` here (no GL context).
-- **viewer** (`headless: false`): `mjpython -m reachy_mini.daemon.app.main --sim --[no-]preload-datasets [--scene <scene>]` — opens the MuJoCo viewer, which supplies the camera's GL context and lets a person watch the sim. It needs an unlocked, interactive GUI session; a locked screen or a non-GUI process tree makes it hang or crash, and the `DaemonError` on that path says so.
+- **headless** (`config.headless`, the default): `<this interpreter> -m reachy_mini_bridge.sim_daemon --headless --[no-]preload-datasets [--scene <scene>] [camera flags]` — real MuJoCo physics, no viewer, runs anywhere (CI included); with the default `sim` camera there are no frames here (upstream renders the eye camera only under the viewer), with a `webcam` camera the host camera's frames flow headless too.
+- **viewer** (`headless: false`): `mjpython -m reachy_mini_bridge.sim_daemon --[no-]preload-datasets [--scene <scene>] [camera flags]` — opens the MuJoCo viewer, which supplies the render's GL context and lets a person watch the sim. It needs an unlocked, interactive GUI session; a locked screen or a non-GUI process tree makes it hang or crash, and the `DaemonError` on that path says so.
+- **camera flags** come from `config.camera` ([config.md](config.md)): nothing for the default `sim` source; `--camera webcam [--webcam-device <device>] --webcam-hfov <degrees>` for `webcam` (the device only when set).
 
 For `real` — a robot attached to this machine (USB):
 
 - **hardware**: `reachy-mini-daemon [--kinematics-engine Placo] --[no-]preload-datasets` — no `--sim`; the daemon finds the robot's serial port itself, wakes the robot on start and puts it to sleep on stop. `--kinematics-engine Placo` is passed when the `placo` package is importable (`reachy-mini[placo_kinematics]`): the daemon's default engine rejects gravity compensation, and rejecting it drops the client's connection ([api.md](api.md) "Motors"). `headless` and `scene` are sim knobs and play no part.
 
-- **scene file** (`config.scene` ending in `.xml`, either launch mode): `mjpython -m reachy_mini_bridge.testing.sim_scene --scene-path <abs> --[no-]preload-datasets` for the viewer, `<this interpreter> -m reachy_mini_bridge.testing.sim_scene --scene-path <abs> --headless --[no-]preload-datasets` headless — the bridge's own launcher (shipped in its testing package) runs upstream's daemon on a scene *file* the bridge wrote (hidden-by-default props — a portrait plane today — with a director and an HTTP endpoint to show/place/hide them: [sim_scene.md](sim_scene.md)). The path is made absolute at launch; the launcher checks the file exists. Any other `scene` value is an upstream scene *name*, passed as `--scene` as before.
+- **scene file** (`config.scene` ending in `.xml`, either launch mode): `mjpython -m reachy_mini_bridge.testing.sim_scene --scene-path <abs> --[no-]preload-datasets [camera flags]` for the viewer, `<this interpreter> -m reachy_mini_bridge.testing.sim_scene --scene-path <abs> --headless --[no-]preload-datasets [camera flags]` headless — the test scene's launcher (shipped in the testing package), which is the sim daemon launcher with the scene's extension installed: upstream's daemon on a scene *file* the bridge wrote (hidden-by-default props — a portrait plane today — with a director and an HTTP endpoint to show/place/hide them: [sim_scene.md](sim_scene.md)), with the same corrections and camera choice as every other sim. The path is made absolute at launch; the launcher checks the file exists. Any other `scene` value is an upstream scene *name*, passed as `--scene`.
 
 `--preload-datasets` is passed when `config.preload_datasets` is `true` (the default) and `--no-preload-datasets` when it is `false` — always one of the two, because the daemon's own default is not to preload; the preload runs in the background and does not delay readiness. `--scene` (sim) when `config.scene` is set. Media stays **on** (no `--no-media`) so audio — and, under the viewer, the camera — are available; a consumer that wants a motion-only daemon runs its own.
 
-The launcher (`reachy-mini-daemon`, or `mjpython` for the viewer — the scene-file recipe needs `reachy-mini-daemon` present too, as the sign the sim extra is installed) is resolved on `PATH`; a missing launcher is a `DaemonError` — naming the `sim` extra (`reachy-mini-bridge[sim]`) for `sim`, and `reachy-mini` (the base dependency that ships the launcher) for `real`. The `DaemonError`s on the startup path name the backend (`sim daemon` / `real daemon`).
+The launcher (`reachy-mini-daemon` for `real`, `mjpython` for the viewer; every `sim` recipe also needs `reachy-mini-daemon` present, as the sign the sim extra is installed) is resolved on `PATH`; a missing launcher is a `DaemonError` — naming the `sim` extra (`reachy-mini-bridge[sim]`) for `sim`, and `reachy-mini` (the base dependency that ships the launcher) for `real`. The `DaemonError`s on the startup path name the backend (`sim daemon` / `real daemon`).
 
 ### The child's environment is scrubbed
 
@@ -112,6 +113,7 @@ The process-spawning and readiness-probing steps are injectable seams (module-pr
 ## Relationship to the other specs
 
 - **[config.md](config.md):** `DaemonConfig` (the `daemon` block) is this module's input; the loopback-host rule and the `sim`/`real`-only rule are enforced there.
+- **[sim_daemon.md](sim_daemon.md):** every `sim` recipe runs the bridge's sim daemon launcher (or the test scene's, built on it).
 - **[api.md](api.md):** the api's lifecycle enters `managed_daemon` first, then builds and enters the robot, then opens the media session.
 - **[robot.md](robot.md):** the readiness probe is a plain `build_robot` network client; the connection options a managed daemon needs (`network`, `local` media) are filled into the `robot` block by config.
 - **[testing_support.md](testing_support.md):** `testing/_daemon.py` wraps this module.

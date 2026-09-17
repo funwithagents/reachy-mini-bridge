@@ -339,18 +339,35 @@ def test_client_reports_an_unreachable_daemon() -> None:
 # --- the launcher ---
 
 
+@pytest.fixture
+def upstream_daemon_globals(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The launcher patches upstream's daemon module globals (the backend class,
+    `create_app`, the tracker's intrinsics): undo them after the test."""
+    from reachy_mini.daemon import daemon as upstream_daemon
+    from reachy_mini.daemon.app import main as upstream_main
+    from reachy_mini.vision import face_tracking
+
+    from reachy_mini_bridge import sim_daemon
+
+    monkeypatch.setattr(upstream_daemon, "MujocoBackend", upstream_daemon.MujocoBackend)
+    monkeypatch.setattr(upstream_main, "create_app", upstream_main.create_app)
+    monkeypatch.setattr(
+        face_tracking, "intrinsics_for_size", face_tracking.intrinsics_for_size
+    )
+    monkeypatch.setattr(sim_daemon._TrackerCamera, "hfov_deg", None)
+
+
 def test_run_daemon_rewrites_argv_installs_the_director_and_mounts_the_router(
-    scene_path: Path, monkeypatch: pytest.MonkeyPatch
+    scene_path: Path, monkeypatch: pytest.MonkeyPatch, upstream_daemon_globals: None
 ) -> None:
-    """`run_daemon` hands upstream's `main()` a `--sim --scene <name>` argv (name
-    resolving to the file), forwards unknown flags, sets the control callback, and
-    wraps `create_app` so the sim-scene routes land on upstream's own app."""
+    """`run_daemon` runs the sim daemon launcher with `--scene <name>` (name resolving to
+    the file), forwards every other flag, and its extension installs the control callback
+    once the backend has a model and mounts the sim-scene routes on upstream's own app."""
     fastapi = pytest.importorskip("fastapi")
     from reachy_mini.daemon import daemon as upstream_daemon
     from reachy_mini.daemon.app import main as upstream_main
 
     original_backend = upstream_daemon.MujocoBackend
-    monkeypatch.setattr(upstream_daemon, "MujocoBackend", original_backend)
     installed: list[Any] = []
     monkeypatch.setattr(mujoco, "set_mjcb_control", installed.append)
     seen_argv: list[list[str]] = []
@@ -396,12 +413,14 @@ def test_run_daemon_rewrites_argv_installs_the_director_and_mounts_the_router(
     assert response.json() == {"attached": False, "bodies": {}}
 
 
-def test_directed_backend_installs_the_director_once_the_model_exists(
-    scene_path: Path, monkeypatch: pytest.MonkeyPatch, control_callback: None
+def test_scene_extension_installs_the_director_once_the_model_exists(
+    scene_path: Path, control_callback: None, upstream_daemon_globals: None
 ) -> None:
-    """The real reason for the subclass: with a control callback already installed,
-    upstream's backend cannot even load the scene."""
+    """The reason the install waits for the model: with a control callback already
+    installed, upstream's backend cannot even load the scene."""
     from reachy_mini.daemon.backend.mujoco.backend import MujocoBackend
+
+    from reachy_mini_bridge.sim_daemon import corrected_backend
 
     name = upstream_scene_name(scene_path)
     mujoco.set_mjcb_control(lambda m, d: None)
@@ -410,70 +429,27 @@ def test_directed_backend_installs_the_director_once_the_model_exists(
     mujoco.set_mjcb_control(None)
 
     director = SceneDirector()
-    backend = sim_scene.directed_backend(MujocoBackend, director)(
-        scene=name, headless=True, use_audio=False
-    )
+    backend = corrected_backend(
+        MujocoBackend, extensions=[sim_scene.scene_extension(director)]
+    )(scene=name, headless=True, use_audio=False)
     assert mujoco.get_mjcb_control() is not None
     mujoco.mj_step(backend.model, backend.data)
     assert director.attached and director.names() == ["face"]
 
 
-def test_directed_backend_steps_head_tracking_on_the_control_tick(
-    scene_path: Path, control_callback: None
+def test_run_daemon_viewer_keeps_upstream_headfull_and_passes_the_camera(
+    scene_path: Path, monkeypatch: pytest.MonkeyPatch, upstream_daemon_globals: None
 ) -> None:
-    """Upstream's MuJoCo loop never steps daemon-side head tracking (only the robot
-    loop does), so the subclass steps it where the robot loop would: right after the
-    kinematics model update of each control tick. Observable: with tracking armed, the
-    tracker's observation lands in `get_tracked_face()` after one such tick."""
-    from reachy_mini.daemon.backend.mujoco.backend import MujocoBackend
-
-    backend = sim_scene.directed_backend(MujocoBackend, SceneDirector())(
-        scene=upstream_scene_name(scene_path), headless=True, use_audio=False
-    )
-
-    class _Tracker:
-        """A face tracker stand-in with one queued observation (centre of the frame)."""
-
-        def __init__(self) -> None:
-            self.obs: Any = SimpleNamespace(
-                center=(0.0, 0.0),
-                roll=0.0,
-                width=320,
-                height=180,
-                camera_matrix=np.array([[320.0, 0, 160], [0, 320.0, 90], [0, 0, 1]]),
-                distortion=np.zeros(5),
-                timestamp=1.0,
-            )
-
-        def latest(self) -> Any:
-            obs, self.obs = self.obs, None
-            return obs
-
-    backend._tracking_enabled = True
-    backend._tracking_requested_weight = 1.0
-    backend._tracker = _Tracker()
-    assert not backend.get_tracked_face().detected
-    head, antennas = np.zeros(7), np.zeros(2)
-    backend.update_head_kinematics_model(head, antennas)
-    face = backend.get_tracked_face()
-    assert face.detected and face.x == 0.0 and face.y == 0.0
-    assert backend._tracking_target_pose is not None, "no aim latched from the face"
-
-
-def test_run_daemon_viewer_keeps_upstream_headfull(
-    scene_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from reachy_mini.daemon import daemon as upstream_daemon
     from reachy_mini.daemon.app import main as upstream_main
 
-    monkeypatch.setattr(upstream_daemon, "MujocoBackend", upstream_daemon.MujocoBackend)
     seen_argv: list[list[str]] = []
     monkeypatch.setattr(upstream_main, "main", lambda: seen_argv.append(list(sys.argv)))
     monkeypatch.setattr(upstream_main, "create_app", lambda *a, **kw: None)
     monkeypatch.setattr(sys, "argv", ["untouched"])
-    sim_scene.run_daemon(["--scene-path", str(scene_path)])
+    sim_scene.run_daemon(["--scene-path", str(scene_path), "--camera", "webcam"])
     assert "--headless" not in seen_argv[0]
     assert seen_argv[0][-1] == "--preload-datasets"
+    assert "--camera" not in seen_argv[0]  # the launcher's own flag, not upstream's
 
 
 def test_run_daemon_refuses_a_missing_scene(tmp_path: Path) -> None:

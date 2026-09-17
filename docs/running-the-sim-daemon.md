@@ -12,23 +12,36 @@ e2e harness uses the same code. `"backend": "real"` with the same `daemon` block
 same for a robot plugged into this machine over USB (see "Real robot" below). The commands
 here are what it runs, for when you want to start a daemon by hand.
 
+**Every sim the bridge starts runs through its own launcher**, `python -m
+reachy_mini_bridge.sim_daemon` ([../specs/sim_daemon.md](../specs/sim_daemon.md)):
+upstream's daemon plus the corrections that make face tracking work in the sim (upstream's
+MuJoCo loop never steps tracking, and its tracker's intrinsics put the head ~45° off the
+face — [upstream-sim-face-tracking.md](upstream-sim-face-tracking.md)), and a choice of
+camera source. It takes upstream's flags. Start the sim through it when you start one by
+hand for the bridge to borrow; upstream's `reachy-mini-daemon --sim` below works for motion
+and audio but not for face tracking.
+
 ### Headless sim — CI (motion + audio, no camera)
 
 Real MuJoCo physics, no viewer, no display — runs anywhere:
 
 ```
+uv run python -m reachy_mini_bridge.sim_daemon --headless --preload-datasets
+# upstream alone, without the tracking corrections:
 reachy-mini-daemon --sim --headless --preload-datasets
 ```
 
 - Serves `http://127.0.0.1:8000` in ~1s. Add `--no-media` for a pure **motion** daemon (no camera/audio) — the lightest option for motion-only work; the e2e harness spawns media-on so it can probe audio.
 - **Media on** (omit `--no-media`) brings up **audio**: the daemon falls back to the host's default mic/speaker and enables **software AEC** (`No hardware AEC; enabled software echo cancellation`). The macOS `libgstpython.dylib` GStreamer warning is harmless.
-- **Camera does not work here on macOS**: the virtual-camera offscreen render needs a GL context that headless plain-python lacks (`get_frame()` returns `None`). Use the viewer mode for camera.
+- **The rendered camera does not work here**: upstream starts the eye-camera render only under the viewer (`get_frame()` returns `None`). Use the viewer mode for it — or a webcam (below), which works headless too.
 
 ### Headfull / viewer sim — local (adds camera, watchable)
 
 Drop `--headless` to open the MuJoCo viewer. The viewer supplies a **GL context** (so `get_frame()` works) and lets you watch the sim as a robot stand-in. It needs an **interactive GUI session**; on **macOS** it must run under `mjpython`:
 
 ```
+mjpython -m reachy_mini_bridge.sim_daemon --scene minimal --preload-datasets
+# upstream alone, without the tracking corrections:
 mjpython -m reachy_mini.daemon.app.main --sim --scene minimal --preload-datasets
 ```
 
@@ -40,7 +53,7 @@ To launch it from a non-GUI shell while you're logged in graphically:
 
 ```
 launchctl asuser $(id -u) \
-  <venv>/bin/mjpython -m reachy_mini.daemon.app.main --sim --scene minimal --preload-datasets
+  <venv>/bin/mjpython -m reachy_mini_bridge.sim_daemon --scene minimal --preload-datasets
 ```
 
 ### A face in the sim (viewer + scene file)
@@ -57,7 +70,20 @@ write_test_scene("/tmp/scene")  # -> /tmp/scene/scene.xml (the face starts hidde
 mjpython -m reachy_mini_bridge.testing.sim_scene --scene-path /tmp/scene/scene.xml --preload-datasets
 ```
 
-The launcher also steps the daemon's head tracking on every control tick — upstream's MuJoCo loop never does (only the robot loop), so a stock `--sim` daemon detects faces but never turns toward them. Then, from any process: `SimSceneClient().show("face")` to bring it into view, `.place("face", (0.45, 0.15, 0.20), duration=1.5)` to move it, `.hide("face")` to take it away again — or `curl -X POST localhost:8000/api/sim-scene/bodies/face -H 'Content-Type: application/json' -d '{"visible": true}'`. A `ReachyMiniConfig` whose `daemon.scene` is that `.xml` path does the launch for you (`"headless": false` — the face needs the viewer's camera to be seen). The e2e harness does it from `REACHY_MINI_E2E_SIM_SCENE=test`.
+It is the sim daemon launcher with the scene added, so the head converges on the face. Then, from any process: `SimSceneClient().show("face")` to bring it into view, `.place("face", (0.45, 0.15, 0.20), duration=1.5)` to move it, `.hide("face")` to take it away again — or `curl -X POST localhost:8000/api/sim-scene/bodies/face -H 'Content-Type: application/json' -d '{"visible": true}'`. A `ReachyMiniConfig` whose `daemon.scene` is that `.xml` path does the launch for you (`"headless": false` — the face needs the viewer's camera to be seen). The e2e harness runs every sim it spawns on this scene.
+
+### You in front of the sim (a webcam as the camera)
+
+For manual tests of face-driven behaviour, the sim can see through the computer's webcam instead of its rendered eye camera ([../specs/sim_daemon.md](../specs/sim_daemon.md) "Camera sources"): the person in front of the screen is who the simulated robot detects and follows, with or without the viewer.
+
+```
+mjpython -m reachy_mini_bridge.sim_daemon --camera webcam [--webcam-device 1] [--webcam-hfov 70]
+uv run python -m reachy_mini_bridge.sim_daemon --headless --camera webcam
+```
+
+or, from a config, `"daemon": {"spawn": "auto", "headless": false, "camera": {"source": "webcam"}}` (the control panel takes such a config). The webcam is treated as a fixed camera at the robot's resting eye: step aside and the head turns by the angle the webcam sees you at, stand still and it holds. `--webcam-hfov` is the camera's horizontal field of view (70° default, typical of a laptop camera) — set it to your camera's for an accurate aim. `--webcam-device` is an index on macOS, a `/dev/videoN` path on Linux; omitted, the default camera.
+
+On macOS the app that launched the daemon (your terminal, or VS Code) needs **Camera** access in System Settings → Privacy & Security. Without it the daemon keeps running, logs `webcam relay (...): no frame ...` once with that hint, and retries every 5 s — granting the permission brings frames back without a restart. The test scene's portrait is invisible to a webcam; the automated face tests use the default rendered camera.
 
 ### Real robot
 

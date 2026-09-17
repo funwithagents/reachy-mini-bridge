@@ -103,15 +103,17 @@ def scrubbed_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
 def launch_command(config: DaemonConfig, *, backend: str = "sim") -> list[str]:
     """The argv for a ``backend`` daemon per ``config``.
 
-    ``sim`` (docs/running-the-sim-daemon.md) — headless: ``reachy-mini-daemon --sim
-    --headless --[no-]preload-datasets [--scene S]``; viewer: ``mjpython -m
-    reachy_mini.daemon.app.main --sim [...]`` (supplies the camera's GL context; needs a
-    GUI session). ``real`` — a USB-attached robot: ``reachy-mini-daemon [--kinematics-engine
-    Placo] --[no-]preload-datasets``, Placo whenever it is importable (gravity compensation
-    needs it). A ``config.scene`` ending in ``.xml`` is a scene *file*: the bridge's own
-    launcher (``reachy_mini_bridge.testing.sim_scene``, specs/sim_scene.md) runs upstream's daemon
-    on it, under ``mjpython`` for the viewer. Media stays on. Raises ``DaemonError`` when
-    the launcher is not on ``PATH``.
+    ``sim`` (docs/running-the-sim-daemon.md) — every recipe runs the bridge's sim daemon
+    launcher (specs/sim_daemon.md: upstream's daemon with its face-tracking corrections and
+    the ``config.camera`` source): headless ``<this interpreter> -m
+    reachy_mini_bridge.sim_daemon --headless --[no-]preload-datasets [--scene S] [camera
+    flags]``; viewer ``mjpython -m reachy_mini_bridge.sim_daemon [...]`` (the render's GL
+    context; needs a GUI session). A ``config.scene`` ending in ``.xml`` is a scene *file*,
+    run by the test scene's launcher (``reachy_mini_bridge.testing.sim_scene``,
+    specs/sim_scene.md) built on it. ``real`` — a USB-attached robot:
+    ``reachy-mini-daemon [--kinematics-engine Placo] --[no-]preload-datasets``, Placo
+    whenever it is importable (gravity compensation needs it). Media stays on. Raises
+    ``DaemonError`` when a launcher is not on ``PATH``.
     """
     _check_backend(backend)
     if backend == "real":
@@ -126,46 +128,6 @@ def launch_command(config: DaemonConfig, *, backend: str = "sim") -> list[str]:
             cmd += ["--kinematics-engine", "Placo"]
         cmd.append(_preload_flag(config))
         return cmd
-    if config.scene is not None and _scene_is_path(config.scene):
-        return _scene_launch_command(config)
-    if config.headless:
-        exe = shutil.which("reachy-mini-daemon")
-        if exe is None:
-            raise DaemonError(
-                "no 'reachy-mini-daemon' launcher on PATH — install the sim extra "
-                "(reachy-mini-bridge[sim])"
-            )
-        cmd = [exe, "--sim", "--headless"]
-    else:
-        exe = shutil.which("mjpython")
-        if exe is None:
-            raise DaemonError(
-                "no 'mjpython' launcher on PATH for the viewer daemon — install the sim "
-                "extra (reachy-mini-bridge[sim])"
-            )
-        cmd = [exe, "-m", "reachy_mini.daemon.app.main", "--sim"]
-    cmd.append(_preload_flag(config))
-    if config.scene is not None:
-        cmd += ["--scene", config.scene]
-    return cmd
-
-
-def _preload_flag(config: DaemonConfig) -> str:
-    # Always explicit: the daemon's own default is not to preload.
-    return "--preload-datasets" if config.preload_datasets else "--no-preload-datasets"
-
-
-def _scene_is_path(scene: str) -> bool:
-    """A ``DaemonConfig.scene`` ending in ``.xml`` is a scene *file* the bridge's own
-    launcher loads (specs/sim_scene.md); anything else is an upstream scene name."""
-    return scene.endswith(".xml")
-
-
-def _scene_launch_command(config: DaemonConfig) -> list[str]:
-    """The ``sim`` recipe for a scene file: ``python -m reachy_mini_bridge.testing.sim_scene
-    --scene-path <abs> [--headless] --[no-]preload-datasets`` — under ``mjpython`` for
-    the viewer, this interpreter headless. The sim extra is still required (it ships
-    ``reachy-mini-daemon`` and MuJoCo); the file itself is checked by the launcher."""
     if shutil.which("reachy-mini-daemon") is None:
         raise DaemonError(
             "no 'reachy-mini-daemon' launcher on PATH — install the sim extra "
@@ -180,13 +142,40 @@ def _scene_launch_command(config: DaemonConfig) -> list[str]:
                 "no 'mjpython' launcher on PATH for the viewer daemon — install the sim "
                 "extra (reachy-mini-bridge[sim])"
             )
-    assert config.scene is not None
-    cmd = [exe, "-m", "reachy_mini_bridge.testing.sim_scene", "--scene-path"]
-    cmd.append(os.path.abspath(config.scene))
+    if config.scene is not None and _scene_is_path(config.scene):
+        cmd = [exe, "-m", "reachy_mini_bridge.testing.sim_scene", "--scene-path"]
+        cmd.append(os.path.abspath(config.scene))
+    else:
+        cmd = [exe, "-m", "reachy_mini_bridge.sim_daemon"]
+        if config.scene is not None:
+            cmd += ["--scene", config.scene]
     if config.headless:
         cmd.append("--headless")
     cmd.append(_preload_flag(config))
+    cmd += _camera_flags(config)
     return cmd
+
+
+def _preload_flag(config: DaemonConfig) -> str:
+    # Always explicit: the daemon's own default is not to preload.
+    return "--preload-datasets" if config.preload_datasets else "--no-preload-datasets"
+
+
+def _camera_flags(config: DaemonConfig) -> list[str]:
+    """The sim daemon launcher's camera flags: none for the rendered eye camera."""
+    camera = config.camera
+    if camera.source != "webcam":
+        return []
+    flags = ["--camera", "webcam"]
+    if camera.device is not None:
+        flags += ["--webcam-device", str(camera.device)]
+    return [*flags, "--webcam-hfov", f"{camera.hfov_deg:g}"]
+
+
+def _scene_is_path(scene: str) -> bool:
+    """A ``DaemonConfig.scene`` ending in ``.xml`` is a scene *file* the bridge's own
+    launcher loads (specs/sim_scene.md); anything else is an upstream scene name."""
+    return scene.endswith(".xml")
 
 
 # --- probes and process seams (patched by tests) -----------------------------------

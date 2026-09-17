@@ -124,17 +124,6 @@ def test_address_reads_env_with_defaults(monkeypatch: pytest.MonkeyPatch):
     assert _daemon.address() == ("192.168.1.5", 9100)
 
 
-def test_sim_scene_reads_the_env(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.delenv("REACHY_MINI_E2E_SIM_SCENE", raising=False)
-    assert _daemon.sim_scene() is None
-    monkeypatch.setenv("REACHY_MINI_E2E_SIM_SCENE", "  ")
-    assert _daemon.sim_scene() is None
-    monkeypatch.setenv("REACHY_MINI_E2E_SIM_SCENE", "minimal")
-    assert _daemon.sim_scene() == "minimal"
-    monkeypatch.setenv("REACHY_MINI_E2E_SIM_SCENE", "test")
-    assert _daemon.sim_scene() == _daemon.TEST_SCENE
-
-
 # --- daemon bring-up per target (library lifecycle scripted, no daemon) ---
 
 
@@ -192,41 +181,28 @@ def test_real_target_skips_a_remote_address_without_spawning(
     assert spawns.calls == []
 
 
-def test_sim_target_passes_the_selected_scene(monkeypatch: pytest.MonkeyPatch):
-    pytest.importorskip("mujoco", reason="sim extra (mujoco) not installed")
-    monkeypatch.delenv("REACHY_MINI_HOST", raising=False)
-    monkeypatch.delenv("REACHY_MINI_E2E_SIM_VIEWER", raising=False)
-    spawns = _RecordedSpawns()
-    _patch_lifecycle(monkeypatch, ready=False, spawns=spawns)
-
-    monkeypatch.delenv("REACHY_MINI_E2E_SIM_SCENE", raising=False)
-    assert next(_daemon.managed_daemon("sim")) == ("127.0.0.1", 8000)
-    monkeypatch.setenv("REACHY_MINI_E2E_SIM_SCENE", "minimal")
-    next(_daemon.managed_daemon("sim"))
-    monkeypatch.setenv("REACHY_MINI_E2E_SIM_SCENE", "/somewhere/mine.xml")
-    next(_daemon.managed_daemon("sim"))
-    assert [c.scene for c in spawns.configs] == [None, "minimal", "/somewhere/mine.xml"]
-    assert all(c.headless and c.spawn == "auto" for c in spawns.configs)
-    assert spawns.calls == [("sim", "127.0.0.1", 8000)] * 3
-
-
-def test_sim_target_generates_the_test_scene_for_the_daemon_lifetime(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("viewer", [False, True])
+def test_a_spawned_sim_runs_the_test_scene_for_the_daemon_lifetime(
+    monkeypatch: pytest.MonkeyPatch, viewer: bool
 ):
-    """`test` writes the bridge's test scene into a temporary directory that outlives
-    the daemon (the file must exist while the daemon runs) and is removed afterwards."""
+    """Every sim the harness spawns, headless or viewer, runs the bridge's test scene,
+    written into a temporary directory that outlives the daemon (the file must exist
+    while the daemon runs) and is removed afterwards."""
     pytest.importorskip("mujoco", reason="sim extra (mujoco) not installed")
     monkeypatch.delenv("REACHY_MINI_HOST", raising=False)
-    monkeypatch.setenv("REACHY_MINI_E2E_SIM_VIEWER", "1")
-    monkeypatch.setenv("REACHY_MINI_E2E_SIM_SCENE", "test")
+    if viewer:
+        monkeypatch.setenv("REACHY_MINI_E2E_SIM_VIEWER", "1")
+    else:
+        monkeypatch.delenv("REACHY_MINI_E2E_SIM_VIEWER", raising=False)
     spawns = _RecordedSpawns()
     _patch_lifecycle(monkeypatch, ready=False, spawns=spawns)
 
     lifecycle = _daemon.managed_daemon("sim")
-    next(lifecycle)
+    assert next(lifecycle) == ("127.0.0.1", 8000)
     (config,) = spawns.configs
+    assert spawns.calls == [("sim", "127.0.0.1", 8000)]
+    assert config.spawn == "auto" and config.headless is not viewer
     assert config.scene is not None and config.scene.endswith("scene.xml")
-    assert not config.headless
     scene = Path(config.scene)
     assert scene.is_file()
     assert 'name="face"' in scene.read_text(encoding="utf-8")

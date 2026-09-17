@@ -21,17 +21,18 @@ Three pieces, one process boundary:
   camera), each starting at the visibility its dataclass says — the default face starts
   **invisible**.
 - **Launcher** (daemon side, ``python -m reachy_mini_bridge.testing.sim_scene``) —
-  ``run_daemon`` starts upstream's daemon on that file (``upstream_scene_name`` turns the
-  path into the ``--scene`` value upstream resolves to it), installs a ``SceneDirector``
-  as MuJoCo's control callback — through a backend subclass, once the model is built — so
-  the mocap bodies follow commanded poses from inside the physics loop, and mounts a
-  small REST router on the daemon's own FastAPI app (``/api/sim-scene/bodies``).
+  ``run_daemon`` starts the bridge's sim daemon (``reachy_mini_bridge.sim_daemon``, with
+  its face-tracking corrections) on that file (``upstream_scene_name`` turns the path into
+  the ``--scene`` value upstream resolves to it), with the scene's extension: a
+  ``SceneDirector`` installed as MuJoCo's control callback once the model is built, so the
+  mocap bodies follow commanded poses from inside the physics loop, and a small REST
+  router on the daemon's own FastAPI app (``/api/sim-scene/bodies``).
 - **Client** (bridge side) — ``SimSceneClient`` drives that router: list, place (with an
   optional move duration), hide, show.
 
 ``daemon.launch_command`` picks this launcher whenever ``DaemonConfig.scene`` is a path
-ending in ``.xml`` (specs/daemon.md); the testing harness generates the test scene from
-``REACHY_MINI_E2E_SIM_SCENE=test`` (specs/testing_support.md). Importing this module pulls
+ending in ``.xml`` (specs/daemon.md); the testing harness runs every sim it spawns on the
+test scene (specs/testing_support.md). Importing this module pulls
 in neither ``mujoco`` nor ``fastapi``: the daemon-side pieces import them when they run.
 """
 
@@ -43,7 +44,6 @@ import json
 import logging
 import math
 import os
-import sys
 import threading
 import time
 import urllib.error
@@ -56,6 +56,7 @@ from typing import Any
 from xml.sax.saxutils import quoteattr
 
 from ..errors import SimSceneError
+from ..sim_daemon import SimDaemonExtension, run_sim_daemon
 
 __all__ = [
     "DEFAULT_FACE_IMAGE",
@@ -64,8 +65,8 @@ __all__ = [
     "FacePlane",
     "SceneDirector",
     "SimSceneClient",
-    "directed_backend",
     "run_daemon",
+    "scene_extension",
     "upstream_scene_name",
     "write_test_scene",
 ]
@@ -487,110 +488,54 @@ def build_router(director: SceneDirector) -> Any:
 # --- the launcher (daemon side) ---------------------------------------------------------
 
 
-def _preload_flag(preload: bool) -> str:
-    return "--preload-datasets" if preload else "--no-preload-datasets"
+def scene_extension(director: SceneDirector) -> SimDaemonExtension:
+    """The test scene as a sim daemon extension: ``director`` installed as MuJoCo's control
+    callback once the backend has built its model, the sim-scene router mounted on the
+    daemon's app.
+
+    Installed after the model is built, never before: MuJoCo's compiler calls the control
+    callback on the half-built model while loading the scene, and the Python binding
+    fails wrapping that model before any callback code runs, so a callback present during
+    ``MjModel.from_xml_path`` makes every load fail with ``engine error: Python exception
+    raised``. Per backend instance, so a daemon restart re-installs it.
+    """
+
+    def install_director(_backend: Any) -> None:
+        mujoco: Any = importlib.import_module("mujoco")
+        mujoco.set_mjcb_control(director.step)
+
+    def mount_router(app: Any) -> None:
+        app.include_router(build_router(director), prefix=_ROUTE_PREFIX)
+
+    return SimDaemonExtension(on_backend=install_director, on_app=mount_router)
 
 
 def run_daemon(argv: Sequence[str] | None = None) -> None:
-    """Run upstream's MuJoCo daemon on a bridge scene file, with the director and its
-    router installed. ``python -m reachy_mini_bridge.testing.sim_scene --scene-path S
-    [--headless] [--no-preload-datasets] [upstream args...]``; under ``mjpython`` for the
-    viewer.
+    """Run the sim daemon on a bridge scene file, with the director and its router
+    installed. ``python -m reachy_mini_bridge.testing.sim_scene --scene-path S
+    [--headless] [--no-preload-datasets] [--camera ...] [upstream args...]``; under
+    ``mjpython`` for the viewer.
 
-    Upstream's ``main()`` parses ``sys.argv``; this rewrites it to ``--sim --scene <name>``
-    (plus the flags above and anything unrecognised, forwarded verbatim) and calls it.
-    ``create_app`` is wrapped, not replaced, so upstream's app is built exactly as usual
-    and the sim-scene router is added to it afterwards; the backend class the daemon
-    constructs is replaced by ``directed_backend``'s subclass, whose only addition is to
-    install the director once the model is built and step daemon-side head tracking.
+    ``--scene-path`` becomes the upstream scene name that resolves to the file; every
+    other flag goes to ``run_sim_daemon`` (specs/sim_daemon.md), which carries the
+    face-tracking corrections every bridge sim gets.
     """
     parser = argparse.ArgumentParser(
         prog="python -m reachy_mini_bridge.testing.sim_scene",
         description="Run the Reachy Mini MuJoCo daemon on the bridge's test scene "
-        "(specs/sim_scene.md), with the sim-scene endpoint mounted.",
+        "(specs/sim_scene.md), with the sim-scene endpoint mounted. Every other flag "
+        "is the sim daemon launcher's (python -m reachy_mini_bridge.sim_daemon --help).",
+        add_help=True,
     )
     parser.add_argument("--scene-path", required=True, help="an MJCF scene file (.xml)")
-    parser.add_argument("--headless", action="store_true", help="no viewer (no camera)")
-    parser.add_argument(
-        "--preload-datasets",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="pre-download the recorded-move datasets in the background",
-    )
-    args, passthrough = parser.parse_known_args(argv)
+    args, rest = parser.parse_known_args(argv)
     scene = upstream_scene_name(args.scene_path)
-
-    from reachy_mini.daemon import daemon as upstream_daemon
-    from reachy_mini.daemon.app import main as upstream_main
-
-    director = SceneDirector()
-    upstream_daemon.MujocoBackend = directed_backend(
-        upstream_daemon.MujocoBackend, director
-    )
-
-    original_create_app = upstream_main.create_app
-
-    def create_app(*a: Any, **kw: Any) -> Any:
-        app = original_create_app(*a, **kw)
-        app.include_router(build_router(director), prefix=_ROUTE_PREFIX)
-        return app
-
-    upstream_main.create_app = create_app
-    sys.argv = [
-        "reachy-mini-daemon",
-        "--sim",
-        "--scene",
-        scene,
-        *(["--headless"] if args.headless else []),
-        _preload_flag(args.preload_datasets),
-        *passthrough,
-    ]
     _logger.info("sim scene %s -> upstream scene name %r", args.scene_path, scene)
-    upstream_main.main()
-
-
-def directed_backend(backend_class: type, director: SceneDirector) -> type:
-    """A subclass of upstream's ``MujocoBackend`` with three additions.
-
-    It installs ``director`` as MuJoCo's control callback right after the model is built
-    — and only then: MuJoCo's compiler calls the callback on the half-built model while
-    loading the scene, and the Python binding fails wrapping that model before any
-    callback code runs, so a callback installed *before* ``MjModel.from_xml_path`` makes
-    every load fail with ``engine error: Python exception raised``. Installed per
-    instance, so a daemon restart (a new backend) re-installs it.
-
-    And it **steps daemon-side head tracking**: upstream's MuJoCo loop never calls
-    ``step_head_tracking()`` (only the real-robot loop does, SDK 1.10), so in the sim the
-    face detector's observations pile up unread — ``get_tracked_face()`` stays undetected
-    and the head never follows. The robot loop steps tracking right after
-    ``update_head_kinematics_model`` and before its IK check; the MuJoCo loop calls that
-    same method at the same point of its 50 Hz control tick, so the override steps
-    tracking there, in the robot's order.
-
-    Wiring this reveals (rather than introduces) a control-loop characteristic worth
-    knowing about: upstream's tracking gains (``_tracking_alpha`` and friends,
-    ``abstract.py``) were tuned against the real robot's detector/IK cadence, and the
-    sim's own async detector thread + 50 Hz tick can drive the same algorithm into a
-    lasting oscillation rather than a clean settle, even for a target close to dead
-    centre — see specs/sim_scene.md "Tracking convergence" and
-    ../../../docs/upstream-head-tracking-after-face-loss.md for the related upstream
-    report. Nothing here papers over it: face tracking in the sim shows the head
-    *reacting* to a face reliably, not *precisely centring* on it.
-    """
-
-    class DirectedMujocoBackend(backend_class):  # type: ignore[misc, valid-type]
-        def __init__(self, *args: Any, **kwargs: Any) -> None:
-            super().__init__(*args, **kwargs)
-            mujoco: Any = importlib.import_module("mujoco")
-            mujoco.set_mjcb_control(director.step)
-
-        def update_head_kinematics_model(self, *args: Any, **kwargs: Any) -> None:
-            super().update_head_kinematics_model(*args, **kwargs)
-            self.step_head_tracking()
-
-    DirectedMujocoBackend.__name__ = backend_class.__name__
-    DirectedMujocoBackend.__qualname__ = backend_class.__qualname__
-    return DirectedMujocoBackend
+    run_sim_daemon(
+        ["--scene", scene, *rest],
+        extensions=[scene_extension(SceneDirector())],
+        prog="python -m reachy_mini_bridge.testing.sim_scene",
+    )
 
 
 # --- the client (bridge side) -----------------------------------------------------------

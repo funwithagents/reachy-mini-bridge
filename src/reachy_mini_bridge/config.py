@@ -22,12 +22,21 @@ from typing import Any
 
 from .errors import ConfigError
 
-__all__ = ["AudioSettings", "DaemonConfig", "MotionSettings", "ReachyMiniConfig"]
+__all__ = [
+    "AudioSettings",
+    "DaemonConfig",
+    "MotionSettings",
+    "ReachyMiniConfig",
+    "SimCameraSettings",
+]
 
 BACKENDS = ("real", "sim", "fake")
 # The backends with a daemon the bridge can spawn: MuJoCo, or a USB-attached robot.
 DAEMON_BACKENDS = ("sim", "real")
 SPAWN_MODES = ("never", "auto", "always")
+# What the sim daemon's camera stream carries (specs/sim_daemon.md "Camera sources").
+CAMERA_SOURCES = ("sim", "webcam")
+DEFAULT_WEBCAM_HFOV_DEG = 70.0
 
 # Upstream kwargs the bridge owns; each maps to the config field that replaces it.
 _RESERVED_ROBOT_KEYS = {
@@ -83,15 +92,69 @@ def _is_number(value: Any) -> bool:
 
 
 @dataclass
+class SimCameraSettings:
+    """What the sim daemon's camera shows (specs/config.md ``daemon.camera``;
+    specs/sim_daemon.md "Camera sources"): ``source`` ``"sim"`` renders the robot's eye
+    camera, ``"webcam"`` relays a host camera. ``device`` and ``hfov_deg`` apply to a
+    webcam only."""
+
+    source: str = "sim"
+    # None: the default camera; an int: a macOS device index; a str: a Linux device path
+    device: str | int | None = None
+    # the webcam's horizontal field of view, from which the tracker's intrinsics derive
+    hfov_deg: float = DEFAULT_WEBCAM_HFOV_DEG
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> SimCameraSettings:
+        block = _require_object(data, "daemon.camera")
+        _reject_unknown_keys(block, "daemon.camera", {"source", "device", "hfov_deg"})
+        source = block.get("source", "sim")
+        if source not in CAMERA_SOURCES:
+            raise ConfigError(
+                f"'daemon.camera.source' must be one of {CAMERA_SOURCES}, got {source!r}"
+            )
+        device = block.get("device")
+        valid_device = (
+            device is None
+            or (isinstance(device, str) and device != "")
+            or (
+                isinstance(device, int) and not isinstance(device, bool) and device >= 0
+            )
+        )
+        if not valid_device:
+            raise ConfigError(
+                "'daemon.camera.device' must be null, a non-empty string or a "
+                f"non-negative integer, got {device!r}"
+            )
+        hfov = block.get("hfov_deg", DEFAULT_WEBCAM_HFOV_DEG)
+        if not _is_number(hfov) or not 1.0 < hfov < 179.0:
+            raise ConfigError(
+                "'daemon.camera.hfov_deg' must be a number strictly between 1 and 179, "
+                f"got {hfov!r}"
+            )
+        return cls(source=source, device=device, hfov_deg=float(hfov))
+
+    @classmethod
+    def from_json(cls, text: str) -> SimCameraSettings:
+        return cls.from_dict(_loads(text))
+
+    @classmethod
+    def from_json_file(cls, path: str | Path) -> SimCameraSettings:
+        return cls.from_dict(_load_file(path))
+
+
+@dataclass
 class DaemonConfig:
     """How the bridge brings up the daemon the robot client talks to (specs/daemon.md).
 
-    ``headless`` and ``scene`` are MuJoCo knobs: they play no part for a ``real`` daemon.
+    ``headless``, ``scene`` and ``camera`` are MuJoCo knobs: they play no part for a
+    ``real`` daemon.
     """
 
     spawn: str = "never"
     headless: bool = True
     scene: str | None = None
+    camera: SimCameraSettings = field(default_factory=SimCameraSettings)
     preload_datasets: bool = True
     startup_timeout: float = 45.0
 
@@ -101,7 +164,14 @@ class DaemonConfig:
         _reject_unknown_keys(
             block,
             "daemon",
-            {"spawn", "headless", "scene", "preload_datasets", "startup_timeout"},
+            {
+                "spawn",
+                "headless",
+                "scene",
+                "camera",
+                "preload_datasets",
+                "startup_timeout",
+            },
         )
         spawn = block.get("spawn", "never")
         if spawn not in SPAWN_MODES:
@@ -114,6 +184,7 @@ class DaemonConfig:
         scene = block.get("scene")
         if scene is not None and (not isinstance(scene, str) or not scene):
             raise ConfigError("'daemon.scene' must be a non-empty string or null")
+        camera = SimCameraSettings.from_dict(block.get("camera", {}))
         preload = block.get("preload_datasets", True)
         if not isinstance(preload, bool):
             raise ConfigError("'daemon.preload_datasets' must be a boolean")
@@ -124,6 +195,7 @@ class DaemonConfig:
             spawn=spawn,
             headless=headless,
             scene=scene,
+            camera=camera,
             preload_datasets=preload,
             startup_timeout=float(timeout),
         )

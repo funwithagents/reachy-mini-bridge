@@ -11,6 +11,11 @@
     "spawn": "auto",
     "headless": false,
     "scene": null,
+    "camera": {
+      "source": "webcam",
+      "device": null,
+      "hfov_deg": 70.0
+    },
     "preload_datasets": true,
     "startup_timeout": 45.0
   },
