@@ -17,7 +17,9 @@ face tracking work in the sim, and a choice of camera source:
 
 ``--camera webcam`` relays a host camera into the stream the MuJoCo daemon's media server
 reads (RTP raw video on UDP 5005) instead of the eye-camera render, so the tracker and
-every client see the person in front of the computer.
+every client see the person in front of the computer. The capture pipeline constrains
+nothing about the source — a camera offers the modes it has — and centre-crops whatever it
+negotiates into the stream's 1280x720; the tracker's field of view follows the crop.
 
 Importing this module pulls in neither ``mujoco`` nor GStreamer; the daemon-side pieces
 import them when they run.
@@ -47,8 +49,10 @@ __all__ = [
     "SimDaemonExtension",
     "WebcamRelay",
     "corrected_backend",
+    "cropped_hfov_deg",
     "install_tracker_intrinsics",
     "pinhole_intrinsics",
+    "relay_pipeline_candidates",
     "run_sim_daemon",
     "sim_hfov_deg",
     "webcam_source",
@@ -60,6 +64,9 @@ _logger = logging.getLogger(__name__)
 # renders into: upstream's render thread sends 1280x720 RGB as RTP raw video to this port,
 # and the media server's sim source reads it (GStreamerUDPCamera / _build_sim_source).
 EYE_CAMERA = "eye_camera"
+# The capture pipeline's source element, named so the relay can read back which of its own
+# modes the camera negotiated.
+_SOURCE_NAME = "camera"
 STREAM_SIZE = (1280, 720)
 STREAM_PORT = 5005
 _STREAM_FPS = 25
@@ -86,6 +93,24 @@ def sim_hfov_deg(fovy_deg: float, width: int, height: int) -> float:
     ``width`` x ``height`` with square pixels."""
     half = math.atan(math.tan(math.radians(fovy_deg) / 2.0) * width / height)
     return math.degrees(2.0 * half)
+
+
+def cropped_hfov_deg(
+    hfov_deg: float,
+    source_size: tuple[int, int],
+    frame_size: tuple[int, int] = STREAM_SIZE,
+) -> float:
+    """The horizontal field of view of the frame a camera of ``source_size`` fills once it
+    is centre-cropped to ``frame_size``'s aspect.
+
+    The crop keeps the fraction ``min(1, frame_aspect / source_aspect)`` of the source's
+    width: all of it for every camera at or narrower than the frame (16:9, 3:2, 4:3, the
+    3840x2592 sensors), so only a wider one sees its field of view narrowed.
+    """
+    source_width, source_height = source_size
+    frame_width, frame_height = frame_size
+    kept = min(1.0, (frame_width * source_height) / (frame_height * source_width))
+    return math.degrees(2.0 * math.atan(math.tan(math.radians(hfov_deg) / 2.0) * kept))
 
 
 class _TrackerCamera:
@@ -139,13 +164,49 @@ def webcam_source(device: str | int | None, system: str | None = None) -> str:
     raise ValueError(f"choosing a webcam device is not supported on {system}")
 
 
-def relay_pipeline_description(source: str) -> str:
-    """The relay: the camera at the sim stream's size, converted to what upstream's render
-    thread sends (RGB, RTP raw video, payload 96) and sent where the media server reads."""
+def relay_pipeline_candidates(source: str) -> list[str]:
+    """The capture pipelines to try, best first.
+
+    A camera that offers the stream's own size is asked for exactly that, as before any of
+    this: no crop, no scale, and its whole landscape view. Only a camera that cannot
+    deliver it — the Reachy Mini's own 3840x2592 sensor, a 4:3 webcam — falls back to
+    taking whatever mode it prefers, which costs it the crop. Preference cannot be
+    expressed in caps (an ordered list and a bounded range are both ignored during
+    negotiation), so it is two pipelines, tried in order.
+    """
     width, height = STREAM_SIZE
+    return [
+        relay_pipeline_description(
+            source, f"video/x-raw,width={width},height={height}"
+        ),
+        relay_pipeline_description(source),
+    ]
+
+
+def relay_pipeline_description(source: str, source_caps: str = "video/x-raw") -> str:
+    """The relay: the camera on whichever of its own modes it negotiates, centre-cropped to
+    the sim stream's aspect and scaled to its size, then converted to what upstream's render
+    thread sends (RGB, RTP raw video, payload 96) and sent where the media server reads.
+
+    ``source_caps`` is what the camera is asked for. The default asks only that the frames
+    live in system memory: a bare ``video/x-raw`` rules out the GPU-memory caps a macOS
+    camera offers first (which the crop cannot take — ``avfvideosrc`` then fails to link at
+    all) and leaves size, format and rate to the camera, so any camera feeds the stream —
+    one asked for a size it does not offer never negotiates, and never opens.
+    ``relay_pipeline_candidates`` asks for the stream's size first on top of that.
+
+    The crop and the scale are in both: they are no-ops on a camera already delivering the
+    stream's size, and what fits any other camera's mode into it. The conversion to RGB
+    comes last so it runs on the smallest frame (measured: 0.34 cores against 0.50 for
+    converting first, on a 3840x2592 camera).
+    """
+    width, height = STREAM_SIZE
+    divisor = math.gcd(width, height)
     return (
-        f"{source} ! video/x-raw,width={width},height={height} ! videoconvert ! "
-        f"videorate ! video/x-raw,format=RGB,width={width},height={height},"
+        f"{source} name={_SOURCE_NAME} ! {source_caps} ! "
+        f"aspectratiocrop aspect-ratio={width // divisor}/{height // divisor} ! "
+        f"videoscale ! videoconvert ! videorate ! "
+        f"video/x-raw,format=RGB,width={width},height={height},"
         f"framerate={_STREAM_FPS}/1 ! queue leaky=downstream max-size-buffers=2 ! "
         "rtpvrawpay mtu=1400 name=pay ! application/x-rtp,payload=96 ! "
         f"udpsink host=127.0.0.1 port={STREAM_PORT} sync=false"
@@ -157,6 +218,8 @@ class _Pipeline(Protocol):
 
     def start(self) -> bool: ...
     def error(self) -> str | None: ...
+    def source_size(self) -> tuple[int, int] | None: ...
+    def device_name(self) -> str | None: ...
     def stop(self) -> None: ...
 
 
@@ -196,8 +259,58 @@ class _GstPipeline:
         err, _debug = message.parse_error()
         return str(err.message)
 
+    def source_size(self) -> tuple[int, int] | None:
+        """The resolution the camera negotiated, once its pad has caps."""
+        element = self._pipeline.get_by_name(_SOURCE_NAME)
+        pad = None if element is None else element.get_static_pad("src")
+        caps = None if pad is None else pad.get_current_caps()
+        if caps is None or caps.get_size() == 0:
+            return None
+        structure = caps.get_structure(0)
+        has_width, width = structure.get_int("width")
+        has_height, height = structure.get_int("height")
+        if not (has_width and has_height) or width <= 0 or height <= 0:
+            return None
+        return int(width), int(height)
+
+    def device_name(self) -> str | None:
+        """What the camera calls itself, for the log: which camera the platform default
+        turned out to be is not otherwise visible, and on a machine with a Reachy Mini
+        plugged in the default is quite likely the robot's own."""
+        element = self._pipeline.get_by_name(_SOURCE_NAME)
+        for candidate in (*_bin_children(element), element):
+            if candidate is None:
+                continue
+            try:
+                name = candidate.get_property("device-name")
+            except (TypeError, AttributeError):
+                continue  # a source element without the property
+            if name:
+                return str(name)
+        return None
+
     def stop(self) -> None:
         self._pipeline.set_state(self._gst.State.NULL)
+
+
+def _bin_children(element: Any) -> list[Any]:
+    """The elements inside ``element`` when it is a bin (``autovideosrc`` wraps the real
+    camera source in one), empty otherwise."""
+    iterator = getattr(element, "iterate_elements", None)
+    if iterator is None:
+        return []
+    import gi  # pyright: ignore[reportMissingImports]
+
+    gi.require_version("Gst", "1.0")
+    from gi.repository import Gst  # pyright: ignore[reportMissingImports]
+
+    children: list[Any] = []
+    walk = iterator()
+    while True:
+        result, child = walk.next()
+        if result != Gst.IteratorResult.OK:
+            return children
+        children.append(child)
 
 
 def _open_pipeline(description: str, on_frame: Callable[[], None]) -> _Pipeline:
@@ -210,12 +323,16 @@ class WebcamRelay:
     A source that cannot start, reports an error, or delivers no frame for
     ``frame_timeout`` seconds is logged once (at ``ERROR``, with the macOS camera
     permission hint) and retried every ``retry`` seconds; a recovery is logged at
-    ``INFO``. The daemon never stops on a camera problem."""
+    ``INFO``. The daemon never stops on a camera problem.
+
+    ``on_source_size`` is called with the resolution the camera negotiated, once frames are
+    flowing — what the crop, and so the tracker's field of view, follows."""
 
     def __init__(
         self,
         device: str | int | None = None,
         *,
+        on_source_size: Callable[[tuple[int, int]], None] | None = None,
         frame_timeout: float = _FRAME_TIMEOUT_S,
         retry: float = _RETRY_S,
         clock: Callable[[], float] = time.monotonic,
@@ -223,10 +340,10 @@ class WebcamRelay:
         system: str | None = None,
     ) -> None:
         self._device = device
+        self._on_source_size = on_source_size
         self._system = platform.system() if system is None else system
-        self._description = relay_pipeline_description(
-            webcam_source(device, self._system)
-        )
+        # Built here so a device this platform cannot express is an error up front.
+        self._source = webcam_source(device, self._system)
         self._frame_timeout = frame_timeout
         self._retry = retry
         self._clock = clock
@@ -235,10 +352,6 @@ class WebcamRelay:
         self._thread: threading.Thread | None = None
         self._last_frame = 0.0
         self._failing = False
-
-    @property
-    def description(self) -> str:
-        return self._description
 
     def start(self) -> None:
         if self._thread is not None:
@@ -267,31 +380,63 @@ class WebcamRelay:
             self._stop.wait(self._retry)
 
     def _run_once(self) -> str:
-        """Run one pipeline until it fails (returns why) or the relay stops."""
+        """Try each capture pipeline, best first, until one delivers frames.
+
+        A camera that cannot give the stream's size fails the preferred pipeline outright
+        (it never negotiates), which is not a problem to report — it is the reason the
+        fallback exists. Only when none of them delivers is there something to say.
+        """
+        problem = ""
+        for description in relay_pipeline_candidates(self._source):
+            problem, delivered = self._run_pipeline(description)
+            if delivered or self._stop.is_set():
+                return problem
+        return problem
+
+    def _run_pipeline(self, description: str) -> tuple[str, bool]:
+        """Run one pipeline until it fails or the relay stops: why it ended, and whether
+        it ever delivered a frame."""
+        seen_frame = False
         try:
-            pipeline = self._open(self._description, self._on_frame)
+            pipeline = self._open(description, self._on_frame)
         except Exception as e:  # noqa: BLE001 - a missing plugin, a bad device string
-            return f"cannot build the capture pipeline: {e}"
+            return f"cannot build the capture pipeline: {e}", seen_frame
         try:
             self._last_frame = self._clock()
             if not pipeline.start():
-                return "the camera source did not start"
-            seen_frame = False
+                return "the camera source did not start", seen_frame
             started = self._last_frame
             while not self._stop.wait(0.2):
                 error = pipeline.error()
                 if error is not None:
-                    return error
+                    return error, seen_frame
                 if self._last_frame > started and not seen_frame:
                     seen_frame = True
+                    self._report_camera(pipeline)
                     if self._failing:
                         _logger.info("webcam relay: frames flowing again")
                         self._failing = False
                 if self._clock() - self._last_frame > self._frame_timeout:
-                    return f"no frame for {self._frame_timeout:g} s"
-            return ""
+                    return f"no frame for {self._frame_timeout:g} s", seen_frame
+            return "", seen_frame
         finally:
             pipeline.stop()
+
+    def _report_camera(self, pipeline: _Pipeline) -> None:
+        """Name the camera that is actually feeding the stream, and hand its resolution
+        to whoever needs it (the tracker's field of view)."""
+        size = pipeline.source_size()
+        name = pipeline.device_name()
+        _logger.info(
+            "webcam relay: %s open%s",
+            name
+            or ("the default camera" if self._device is None else repr(self._device)),
+            "" if size is None else f" at {size[0]}x{size[1]}",
+        )
+        if size is None:  # frames without readable caps: the configured hfov stands
+            return
+        if self._on_source_size is not None:
+            self._on_source_size(size)
 
     def _report(self, problem: str) -> None:
         if self._failing:
@@ -326,6 +471,17 @@ class SimDaemonExtension:
     on_app: Callable[[Any], None] | None = None
 
 
+class _RelayFactory(Protocol):
+    """How ``corrected_backend`` builds the webcam relay (tests substitute their own)."""
+
+    def __call__(
+        self,
+        device: str | int | None,
+        *,
+        on_source_size: Callable[[tuple[int, int]], None],
+    ) -> Any: ...
+
+
 @dataclass(frozen=True)
 class _Camera:
     source: str = "sim"
@@ -338,7 +494,7 @@ def corrected_backend(
     *,
     camera: _Camera | None = None,
     extensions: Sequence[SimDaemonExtension] = (),
-    relay_factory: Callable[[str | int | None], Any] = WebcamRelay,
+    relay_factory: _RelayFactory = WebcamRelay,
 ) -> type:
     """A subclass of upstream's ``MujocoBackend`` carrying the corrections.
 
@@ -349,10 +505,26 @@ def corrected_backend(
       ``webcam``; then runs each extension's ``on_backend``.
     - With a ``webcam`` camera: ``set_tracking_face`` computes the aim from the neutral
       head pose (correction 3) — every other reader of the head pose sees the real one;
-      the eye-camera render thread does nothing; the webcam relay runs with the loop.
+      the eye-camera render thread does nothing; the webcam relay runs with the loop and
+      narrows the tracker's field of view to what the crop of its camera leaves.
     """
     camera = _Camera() if camera is None else camera
     webcam = camera.source == "webcam"
+
+    def use_camera_size(size: tuple[int, int]) -> None:
+        """The relay negotiated a camera: the frame the tracker reads is that camera
+        centre-cropped, so its field of view is the configured one minus what the crop
+        takes (nothing, for a camera at or narrower than the stream's aspect)."""
+        hfov = cropped_hfov_deg(camera.hfov_deg, size)
+        _TrackerCamera.hfov_deg = hfov
+        _logger.info(
+            "webcam relay: camera %dx%d cropped to %dx%d — %.1f deg of its %.1f deg "
+            "horizontal field of view",
+            *size,
+            *STREAM_SIZE,
+            hfov,
+            camera.hfov_deg,
+        )
 
     class CorrectedMujocoBackend(backend_class):  # type: ignore[misc, valid-type]
         def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -394,7 +566,7 @@ def corrected_backend(
                 return None  # the webcam relay feeds the camera stream
 
             def run(self) -> None:
-                relay = relay_factory(camera.device)
+                relay = relay_factory(camera.device, on_source_size=use_camera_size)
                 relay.start()
                 try:
                     super().run()

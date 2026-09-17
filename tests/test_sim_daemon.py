@@ -15,6 +15,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -27,7 +28,9 @@ from reachy_mini_bridge.sim_daemon import (
     SimDaemonExtension,
     WebcamRelay,
     corrected_backend,
+    cropped_hfov_deg,
     pinhole_intrinsics,
+    relay_pipeline_candidates,
     relay_pipeline_description,
     sim_hfov_deg,
     webcam_source,
@@ -364,7 +367,9 @@ def test_webcam_mode_relays_instead_of_rendering_and_aims_from_rest() -> None:
     events: list[str] = []
 
     class _Relay:
-        def __init__(self, device: Any) -> None:
+        def __init__(
+            self, device: Any, *, on_source_size: Callable[[tuple[int, int]], None]
+        ) -> None:
             events.append(f"relay {device!r}")
 
         def start(self) -> None:
@@ -384,6 +389,46 @@ def test_webcam_mode_relays_instead_of_rendering_and_aims_from_rest() -> None:
     assert backend.get_current_head_pose()[0, 3] == 0.5  # every other reader: real pose
 
 
+def test_the_tracker_follows_the_camera_the_relay_negotiated() -> None:
+    """End to end: the relay reports the resolution its camera negotiated, and the matrix
+    the tracker resolves becomes the pinhole of what the crop leaves of that camera."""
+    from reachy_mini.vision import face_tracking
+
+    reports: list[Callable[[tuple[int, int]], None]] = []
+
+    class _Relay:
+        def __init__(
+            self, device: Any, *, on_source_size: Callable[[tuple[int, int]], None]
+        ) -> None:
+            reports.append(on_source_size)
+
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            pass
+
+    sim_daemon.install_tracker_intrinsics()
+    webcam = sim_daemon._Camera(source="webcam", device=None, hfov_deg=100.0)
+    backend = corrected_backend(_StubBackend, camera=webcam, relay_factory=_Relay)()
+    K = np.eye(3)  # upstream's specs matrix: unused, the pinhole replaces it
+    # Before any frame, the configured field of view stands.
+    np.testing.assert_allclose(
+        face_tracking.intrinsics_for_size(K, 1.0, FRAME),
+        pinhole_intrinsics(100.0, FRAME),
+    )
+    backend.run()
+    assert len(reports) == 1
+    reports[0]((2560, 1080))  # an ultrawide camera: the crop takes width off it
+    np.testing.assert_allclose(
+        face_tracking.intrinsics_for_size(K, 1.0, FRAME),
+        pinhole_intrinsics(cropped_hfov_deg(100.0, (2560, 1080)), FRAME),
+    )
+    assert sim_daemon._TrackerCamera.hfov_deg == pytest.approx(
+        cropped_hfov_deg(100.0, (2560, 1080))
+    )
+
+
 def test_webcam_source_per_platform() -> None:
     assert webcam_source(None, "Darwin") == "autovideosrc"
     assert webcam_source(1, "Darwin") == "avfvideosrc device-index=1"
@@ -399,7 +444,7 @@ def test_the_relay_sends_what_the_sim_media_server_reads() -> None:
     """The caps upstream's render thread sends (GStreamerUDPCamera) and the MuJoCo media
     server's UDP source expects: RGB 1280x720, RTP raw video, payload 96, port 5005."""
     description = relay_pipeline_description("autovideosrc")
-    assert description.startswith("autovideosrc ! ")
+    assert description.startswith("autovideosrc name=")
     for part in (
         "format=RGB,width=1280,height=720",
         "rtpvrawpay",
@@ -409,11 +454,71 @@ def test_the_relay_sends_what_the_sim_media_server_reads() -> None:
         assert part in description
 
 
+def test_the_relay_crops_and_scales_instead_of_constraining_the_camera() -> None:
+    """A camera is asked for nothing but system memory — one asked for a mode it does not
+    have never negotiates, so it never opens; a macOS camera offering GPU memory first
+    will not even link — and whatever it offers is centre-cropped to the stream's aspect
+    and scaled to its size, converted last, at the smallest frame."""
+    stages = [
+        stage.strip() for stage in relay_pipeline_description("v4l2src").split("!")
+    ]
+    assert stages[0].startswith("v4l2src name=")
+    assert stages[1] == "video/x-raw"  # system memory, and nothing else asked of it
+    assert stages[2] == "aspectratiocrop aspect-ratio=16/9"  # 1280x720 reduced
+    assert stages[3:6] == ["videoscale", "videoconvert", "videorate"]
+    # The only size in the pipeline is the stream's, downstream of the scale.
+    sized = [i for i, stage in enumerate(stages) if "width=" in stage]
+    assert sized == [6] and "width=1280,height=720" in stages[6]
+
+
+def test_the_relay_asks_for_the_streams_size_before_settling_for_a_crop() -> None:
+    """A camera that has the stream's own size is asked for exactly that, so it keeps its
+    whole landscape view; only one that cannot takes the crop. Both pipelines are
+    otherwise identical — the crop and the scale are no-ops at the stream's size."""
+    preferred, fallback = relay_pipeline_candidates("v4l2src")
+    assert "video/x-raw,width=1280,height=720 ! aspectratiocrop" in preferred
+    assert "video/x-raw ! aspectratiocrop" in fallback
+    assert (
+        preferred.replace("video/x-raw,width=1280,height=720", "video/x-raw")
+        == fallback
+    )
+
+
+def test_cropped_hfov_follows_the_width_the_crop_keeps() -> None:
+    """The crop takes nothing off the width of a camera at or narrower than 16:9 — its
+    field of view is the one configured — and narrows a wider one to what it keeps."""
+    for source in ((1280, 720), (1920, 1080), (640, 480), (3840, 2592), (1080, 1920)):
+        assert cropped_hfov_deg(70.0, source) == pytest.approx(70.0)
+
+    ultrawide = cropped_hfov_deg(100.0, (2560, 1080))  # 21:9, wider than the frame
+    kept = (16 / 9) / (2560 / 1080)
+    expected = math.degrees(2 * math.atan(math.tan(math.radians(50.0)) * kept))
+    assert ultrawide == pytest.approx(expected) and ultrawide < 100.0
+    # and the pinhole that follows is longer-focus by exactly what the crop took
+    K = pinhole_intrinsics(ultrawide, FRAME)
+    assert K[0, 0] == pytest.approx(
+        (FRAME[0] / 2) / (kept * math.tan(math.radians(50.0)))
+    )
+    assert K[0, 0] == pytest.approx(pinhole_intrinsics(100.0, FRAME)[0, 0] / kept)
+
+
 class _FakePipeline:
-    def __init__(self, on_frame: Callable[[], None], frames: bool) -> None:
+    def __init__(
+        self,
+        on_frame: Callable[[], None],
+        frames: bool,
+        size: tuple[int, int] | None = (1920, 1080),
+    ) -> None:
         self._on_frame = on_frame
         self._frames = frames
+        self._size = size
         self.stopped = False
+
+    def source_size(self) -> tuple[int, int] | None:
+        return self._size
+
+    def device_name(self) -> str | None:
+        return "Fake Camera"
 
     def start(self) -> bool:
         return True
@@ -434,6 +539,93 @@ def _wait(predicate: Callable[[], bool], timeout: float = 5.0) -> bool:
             return True
         time.sleep(0.02)
     return False
+
+
+def test_the_relay_reports_its_camera_resolution_once_frames_flow(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The size goes out with the first frame of a run, once — and a pipeline that cannot
+    report one leaves the configured field of view standing rather than guessing. Either
+    way the camera that is actually feeding the stream is named in the log: which one the
+    platform default turned out to be is not otherwise visible."""
+    sizes: list[tuple[int, int]] = []
+
+    def relay_for(size: tuple[int, int] | None) -> WebcamRelay:
+        return WebcamRelay(
+            None,
+            on_source_size=sizes.append,
+            frame_timeout=5.0,
+            retry=0.05,
+            open_pipeline=lambda _d, on_frame: _FakePipeline(on_frame, True, size),
+            system="Linux",
+        )
+
+    with caplog.at_level(logging.INFO, logger="reachy_mini_bridge.sim_daemon"):
+        relay = relay_for((3840, 2592))
+        relay.start()
+        try:
+            assert _wait(lambda: sizes == [(3840, 2592)])
+        finally:
+            relay.stop()
+        assert sizes == [(3840, 2592)]  # one report for the run, not one per frame
+        assert "Fake Camera open at 3840x2592" in caplog.text
+
+        silent = relay_for(None)
+        silent.start()
+        try:
+            assert _wait(lambda: caplog.text.count("Fake Camera open") >= 2)
+        finally:
+            silent.stop()
+    assert sizes == [(3840, 2592)]  # no size: the configured field of view stands
+
+
+def test_the_relay_falls_back_when_the_camera_lacks_the_streams_size() -> None:
+    """The camera that cannot give 1280x720 (the Reachy Mini's own sensor is one) fails
+    the preferred pipeline — that is what the fallback is for, so it is not an error the
+    person running the sim should see, and the fallback's frames flow."""
+    tried: list[str] = []
+    sizes: list[tuple[int, int]] = []
+
+    def open_pipeline(description: str, on_frame: Callable[[], None]) -> _FakePipeline:
+        tried.append(description)
+        if "width=1280,height=720 ! aspectratiocrop" in description:
+            raise RuntimeError("could not negotiate")  # no such mode on this camera
+        return _FakePipeline(on_frame, True, (3840, 2592))
+
+    relay = WebcamRelay(
+        None,
+        on_source_size=sizes.append,
+        frame_timeout=5.0,
+        retry=0.05,
+        open_pipeline=open_pipeline,
+        system="Linux",
+    )
+    with caplog_errors() as errors:
+        relay.start()
+        try:
+            assert _wait(lambda: sizes == [(3840, 2592)])
+        finally:
+            relay.stop()
+    assert len(tried) == 2 and "width=1280,height=720" in tried[0]
+    assert errors() == []  # falling back is the design, not a failure to report
+
+
+@contextmanager
+def caplog_errors() -> Iterator[Callable[[], list[str]]]:
+    """The ERROR messages the module logs inside the block."""
+    records: list[logging.LogRecord] = []
+
+    class _Collect(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    logger = logging.getLogger("reachy_mini_bridge.sim_daemon")
+    handler = _Collect()
+    logger.addHandler(handler)
+    try:
+        yield lambda: [r.getMessage() for r in records if r.levelno >= logging.ERROR]
+    finally:
+        logger.removeHandler(handler)
 
 
 def test_the_relay_logs_a_silent_camera_once_retries_and_recovers(

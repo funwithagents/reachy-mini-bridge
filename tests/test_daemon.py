@@ -8,6 +8,8 @@ readiness loop, the error paths, and the teardown.
 
 from __future__ import annotations
 
+import io
+import logging
 import os
 import subprocess
 import sys
@@ -25,11 +27,17 @@ _AUTO = DaemonConfig(spawn="auto")
 
 
 class _FakeProc:
-    def __init__(self, polls: list[int | None] | None = None, hang: bool = False):
+    def __init__(
+        self,
+        polls: list[int | None] | None = None,
+        hang: bool = False,
+        output: bytes = b"",
+    ):
         self.pid = 4242
         self._polls = iter(polls or [])
         self.hang = hang
         self.calls: list[str] = []
+        self.stdout = io.BytesIO(output) if output else None
 
     def poll(self) -> int | None:
         return next(self._polls, None)
@@ -422,6 +430,54 @@ def test_never_is_not_a_managed_mode(harness: _Harness) -> None:
         daemon.managed_daemon(DaemonConfig()),
     ):
         pass
+
+
+# --- the child's output ---------------------------------------------------------------
+
+
+def test_the_daemons_own_log_lines_reach_the_bridges_log(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A problem inside the daemon (this is the real line a webcam that cannot open
+    produces) surfaces at its own level; ordinary chatter stays at DEBUG."""
+    output = (
+        b"reachy_mini.daemon.daemon - INFO - Daemon version: 1.10.0\n"
+        b"__main__ - ERROR - webcam relay (the default camera): Internal data stream "
+        b"error.; retrying every 5 s\n"
+        b"uvicorn.error - WARNING - something to know about\n"
+        b"a line in no particular format\n"
+    )
+    with caplog.at_level(logging.DEBUG, logger="reachy_mini_bridge.daemon.child"):
+        child = daemon._ChildOutput(io.BytesIO(output))
+        child.stop()  # joins the reader: every line is through by here
+    levels = [(r.levelno, r.getMessage()) for r in caplog.records]
+    assert [level for level, _ in levels] == [
+        logging.DEBUG,  # the daemon's own INFO is chatter to the bridge
+        logging.ERROR,
+        logging.WARNING,
+        logging.DEBUG,  # a line in no recognised format
+    ]
+    assert "webcam relay" in levels[1][1]
+    assert levels[2][1] == "uvicorn.error - WARNING - something to know about"
+    assert "Daemon version" in levels[0][1]
+
+
+def test_a_failed_launch_carries_the_daemons_own_words(harness: _Harness) -> None:
+    """The `DaemonError` of a daemon that exits during startup quotes what it printed,
+    so the reason is in the error rather than in a stream nobody kept."""
+    harness.proc = _FakeProc(
+        polls=[None, 1],
+        output=b"reachy_mini.daemon.daemon - ERROR - Address already in use\n",
+    )
+    harness.ready = iter([False, False])
+    with (
+        pytest.raises(DaemonError) as excinfo,
+        daemon.managed_daemon(_AUTO, backend="sim"),
+    ):
+        pass  # pragma: no cover - never reached
+    message = str(excinfo.value)
+    assert "exited during startup (exit 1)" in message
+    assert "Address already in use" in message
 
 
 # --- failure paths -----------------------------------------------------------------

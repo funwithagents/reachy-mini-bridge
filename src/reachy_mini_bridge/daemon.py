@@ -4,8 +4,8 @@ Upstream's ``ReachyMini`` is a client that connects to a separately running daem
 its constructor. ``managed_daemon`` sits between "a config that says ``sim``" (or a
 USB-attached ``real`` robot) and "a daemon ready to accept that client": own it or borrow
 it, wait for *readiness* (the backend is up, not merely the port), launch headless by
-default, scrub the GStreamer
-environment the child inherits, and stop exactly what was started. Shared by
+default, scrub the GStreamer environment the child inherits, forward the child's own log
+lines into the bridge's, and stop exactly what was started. Shared by
 ``ReachyMiniApi`` and the testing harness (``reachy_mini_bridge.testing``).
 
 The process-spawning and readiness-probing steps are module-private callables
@@ -16,16 +16,19 @@ call time, so the deterministic tests script them without a daemon.
 from __future__ import annotations
 
 import importlib.util
+import logging
 import os
 import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
+from collections import deque
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Protocol
+from typing import IO, Protocol
 
 from .config import DAEMON_BACKENDS, DaemonConfig
 from .errors import DaemonError
@@ -41,6 +44,23 @@ __all__ = [
 
 _POLL_INTERVAL_S = 1.0
 _TERMINATE_GRACE_S = 10.0
+
+# The child's own log lines (specs/daemon.md "The child's output reaches the bridge's log"):
+# re-emitted under this logger, at the level the line carries when it carries one — the
+# daemon logs `name - LEVEL - message` — and at DEBUG otherwise, so a working daemon is
+# quiet while a problem inside it reaches whoever is running the bridge. The last lines ride
+# along on the DaemonError of a launch that never becomes ready.
+_child_logger = logging.getLogger(f"{__name__}.child")
+_CHILD_LEVELS = {
+    "CRITICAL": logging.CRITICAL,
+    "ERROR": logging.ERROR,
+    "WARNING": logging.WARNING,
+}
+_CHILD_TAIL_LINES = 12
+# How long a reader gets to finish draining a pipe that has ended before its lines are
+# quoted or its thread let go: a stopped daemon's pipe is at EOF, so this is slack, not a
+# wait — a daemon still running (the readiness timeout) spends it once, on the error path.
+_CHILD_DRAIN_S = 0.5
 
 # GStreamer-bundle env vars that `reachy_mini`'s `gstreamer_bundle.pth` *prepends* to at
 # every Python startup. A parent that has imported `reachy_mini` (every bridge process)
@@ -82,6 +102,8 @@ class _Process(Protocol):
 
     @property
     def pid(self) -> int: ...
+    @property
+    def stdout(self) -> IO[bytes] | None: ...
     def poll(self) -> int | None: ...
     def terminate(self) -> None: ...
     def kill(self) -> None: ...
@@ -98,6 +120,77 @@ def scrubbed_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
     for key in _GST_BUNDLE_ENV:
         env.pop(key, None)
     return env
+
+
+def child_line_level(line: str) -> int:
+    """The level a child's log line carries — the daemon logs ``name - LEVEL - message`` —
+    or ``DEBUG``, which is where an unrecognised line belongs until it proves otherwise."""
+    for name, level in _CHILD_LEVELS.items():
+        if f" - {name} - " in line:
+            return level
+    return logging.DEBUG
+
+
+class _ChildOutput:
+    """Drains a spawned daemon's merged stdout/stderr into the bridge's log, in its own
+    thread, keeping the last lines for the error of a launch that fails.
+
+    A ``None`` stream (a scripted process in the tests) forwards nothing.
+    """
+
+    def __init__(self, stream: IO[bytes] | None) -> None:
+        self._stream = stream
+        self._lines: deque[str] = deque(maxlen=_CHILD_TAIL_LINES)
+        self._thread: threading.Thread | None = None
+        if stream is not None:
+            self._thread = threading.Thread(
+                target=self._drain, name="daemon-output", daemon=True
+            )
+            self._thread.start()
+
+    def _drain(self) -> None:
+        stream = self._stream
+        assert stream is not None
+        try:
+            for raw in stream:
+                line = raw.decode("utf-8", "replace").rstrip()
+                if not line:
+                    continue
+                self._lines.append(line)
+                _child_logger.log(child_line_level(line), "%s", line)
+        except (OSError, ValueError):
+            pass  # the pipe closed under the read: the daemon was stopped
+
+    def tail(self) -> str:
+        """The daemon's last lines, ready to append to a ``DaemonError`` (empty if none).
+
+        A daemon that has just died still has words in flight: give the reader the moment
+        it needs to finish the pipe before quoting it.
+        """
+        self._settle(_CHILD_DRAIN_S)
+        lines = list(self._lines)
+        if not lines:
+            return ""
+        return "; the daemon's last output:\n  " + "\n  ".join(lines)
+
+    def _settle(self, timeout: float) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=timeout)
+
+    def stop(self) -> None:
+        """Let the reader finish the pipe, then close it if it never ends.
+
+        Draining before closing is what keeps a dying daemon's last lines — closing first
+        cuts the read off mid-stream and loses exactly the words that explain the failure.
+        """
+        self._settle(_CHILD_DRAIN_S)
+        alive = self._thread is not None and self._thread.is_alive()
+        if alive and self._stream is not None:
+            try:
+                self._stream.close()  # unblock a read on a pipe that will not end
+            except OSError:
+                pass
+            self._settle(1.0)
 
 
 def launch_command(config: DaemonConfig, *, backend: str = "sim") -> list[str]:
@@ -229,8 +322,10 @@ def _spawn(cmd: list[str], env: dict[str, str]) -> _Process:
     return subprocess.Popen(
         cmd,
         stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        # One pipe for both, drained by `_ChildOutput` into the bridge's log: a daemon that
+        # cannot open a camera or a port says so, and someone hears it.
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         env=env,
         # Own session => own process group (specs/daemon.md "The child runs in its own
         # session"): a terminal's Ctrl+C is a SIGINT to the whole foreground group, and a
@@ -286,11 +381,15 @@ def managed_daemon(
 
     cmd = launch_command(config, backend=backend)
     proc = _spawn(cmd, scrubbed_env())
+    output = _ChildOutput(proc.stdout)
     try:
-        _wait_until_ready(host, port, config, backend, proc=proc, cmd=cmd)
+        _wait_until_ready(
+            host, port, config, backend, proc=proc, cmd=cmd, output=output
+        )
         yield DaemonHandle(host=host, port=port, owned=True, pid=proc.pid)
     finally:
         _stop(proc)
+        output.stop()
 
 
 def _wait_until_ready(
@@ -301,14 +400,16 @@ def _wait_until_ready(
     *,
     proc: _Process | None,
     cmd: list[str] | None,
+    output: _ChildOutput | None = None,
 ) -> None:
     hint = _VIEWER_HINT if backend == "sim" and not config.headless else ""
+    tail = output.tail if output is not None else str
     deadline = time.monotonic() + config.startup_timeout
     while True:
         if proc is not None and (code := proc.poll()) is not None:
             raise DaemonError(
                 f"{backend} daemon exited during startup (exit {code}); command: "
-                f"{' '.join(cmd or [])}{hint}"
+                f"{' '.join(cmd or [])}{hint}{tail()}"
             )
         if _ready(host, port):
             return
@@ -318,7 +419,9 @@ def _wait_until_ready(
                 if proc is not None
                 else f"port {port} on {host} is open but no ready Reachy Mini daemon answers"
             )
-            raise DaemonError(f"{what} within {config.startup_timeout:g}s{hint}")
+            raise DaemonError(
+                f"{what} within {config.startup_timeout:g}s{hint}{tail()}"
+            )
         _sleep(_POLL_INTERVAL_S)
 
 
