@@ -621,7 +621,12 @@ OVERSHOOT_MAX_DEG = 12.0
 PITCH_TOLERANCE_DEG = 3.0
 # The tracked face's normalised image position once centred (|x|, |y| in [-1, 1]).
 CENTRED = 0.1
-NEUTRAL_THRESHOLD_DEG = 5.0
+# How far off neutral the head may sit once it has been handed back. The idle move
+# roams in roll/pitch/yaw (specs/motion.md "The moves"): it averages ~6 deg from neutral
+# and reaches 10.3 deg at the corner of its envelope, so this is measured as a mean over
+# a window rather than one sample. A head still locked on the face sits at the face's
+# 18.4 deg, well clear of the threshold.
+NEUTRAL_THRESHOLD_DEG = 12.0
 # An emotion's choreography under tracking, well above breathing's own sway.
 MOVE_THRESHOLD_DEG = 5.0
 
@@ -767,14 +772,19 @@ def _assert_tracked(track: _Track, pitch_ahead: float | None = None) -> None:
     )
 
 
-async def _sample_z_range(robot: Any, seconds: float) -> float:
+async def _sample_idle(robot: Any, seconds: float) -> tuple[float, float]:
+    """The head's z range and its mean angle from neutral over `seconds` — the two
+    things the idle move shows: it breathes on z, and it roams a few degrees about
+    neutral rather than holding one heading (specs/motion.md "The moves")."""
     zs: list[float] = []
+    angles: list[float] = []
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         pose = await asyncio.to_thread(robot.get_current_head_pose)
         zs.append(float(pose[2, 3]))
+        angles.append(_angle_from_neutral_deg(pose))
         await asyncio.sleep(0.1)
-    return max(zs) - min(zs)
+    return max(zs) - min(zs), sum(angles) / len(angles)
 
 
 @pytest.fixture
@@ -848,11 +858,9 @@ def test_attention_hands_the_head_back_and_reengages_on_the_face(
         assert await _wait_for(lambda: api.attention == "watching", hand_back), (
             f"attention still {api.attention!r} {hand_back:.0f}s after the face left"
         )
-        settled = _angle_from_neutral_deg(
-            await asyncio.to_thread(robot.get_current_head_pose)
-        )
-        # long enough to always contain a whole breath, wherever the sample starts
-        z_range = await _sample_z_range(robot, BREATH_S + BREATH_REST_S[1] + 1.0)
+        # long enough to always contain a whole breath, wherever the sample starts;
+        # `settled` is the mean over that window, since the idle move roams
+        z_range, settled = await _sample_idle(robot, BREATH_S + BREATH_REST_S[1] + 1.0)
         face_scene.place(FACE, _face_at(-LATERAL_M))
         face_scene.show(FACE)
         reengaged = await _wait_for(lambda: api.attention == "engaged", 8.0)
@@ -864,11 +872,14 @@ def test_attention_hands_the_head_back_and_reengages_on_the_face(
     first, settled, z_range, attention, again = asyncio.run(scenario())
     _assert_tracked(first)
     print(
-        f"\n[e2e] settled at {settled:.1f} deg from neutral while alone, breathing z "
+        f"\n[e2e] settled {settled:.1f} deg from neutral on average while alone, "
+        f"breathing z "
         f"range {z_range:.4f} m, attention after the face returned: {attention!r}"
     )
     assert settled <= NEUTRAL_THRESHOLD_DEG, (
-        f"head did not settle back near neutral once alone ({settled:.1f} deg)"
+        f"head did not settle back into the idle move once alone ({settled:.1f} deg "
+        "from neutral on average, the face was at "
+        f"{abs(_expected_yaw_deg(LATERAL_M)):.1f})"
     )
     assert z_range >= 0.002, "the head is not breathing after the hand-back"
     assert attention == "engaged", "attention did not re-engage once the face came back"

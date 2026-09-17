@@ -514,6 +514,7 @@ On a Reachy Mini Lite over USB (`REACHY_MINI_E2E_TARGET=real uv run pytest tests
 - [ ] Idle robot breathes visibly, with no micro-vibration and no slow downward drift over 2 minutes.
 - [ ] Face tracking: stand in front of the robot (it follows), leave the frame — after ~3 s the head breathes again; come back — it follows again with no jump either way.
 - [ ] Breaths are separated by visible rests of varying length, the antennas move one at a time and never toward each other, and neither the start nor the end of a breath or an antenna move shows a snap (plan [202609171234](202609171234_organic-breathing-rests-and-independent-antennas.md)).
+- [x] The idle head visibly looks about — turning, tilting and nodding a few degrees — without drifting away from neutral over 2 minutes, and the antennas read as expressive: a mix of quick flicks and slower roams, still one at a time and never toward each other, with no snap at any segment boundary (plan [202609172115](202609172115_expressive-idle-head-rotation-and-antenna-flicks.md)). **Confirmed on a robot, 2026-09-17: the idle reads markedly better than the previous one.** The finer sub-claims — no drift over a full two minutes, no snap at any segment boundary — were not walked separately; watch for them when the rest of this checklist is done.
 - [ ] An emotion interrupts breathing, plays fully, eases back to neutral, breathing resumes.
 - [ ] `set_breathing(False)` while idle eases the head to neutral and holds still.
 - [ ] `set_breathing(True)` while idle resumes breathing without a visible jump.

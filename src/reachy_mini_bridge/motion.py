@@ -29,6 +29,7 @@ import websockets.exceptions
 from reachy_mini.motion.goto import GotoMove
 from reachy_mini.motion.move import Move
 from reachy_mini.reachy_mini import INIT_ANTENNAS_JOINT_POSITIONS, INIT_HEAD_POSE
+from reachy_mini.utils import create_head_pose
 from reachy_mini.utils.interpolation import InterpolationTechnique, time_trajectory
 
 from .errors import BridgeError
@@ -61,8 +62,30 @@ _LOST_CONNECTION_MESSAGE = "the motion loop lost its connection to the daemon"
 BREATH_Z_M = 0.005  # a breath peaks this far above neutral, then returns to it
 BREATH_S = 5.0  # one breath: a raised-cosine rise and fall
 BREATH_REST_S = (1.0, 5.0)  # uniform rest at neutral between two breaths
-ANTENNA_HOLD_S = (0.5, 4.0)  # uniform hold between two antenna moves
-ANTENNA_MOVE_S = (0.8, 2.5)  # uniform duration of one minjerk antenna move
+# The head's rotation roam: three independent tracks that make the idle head look about
+# rather than hold one heading. Yaw carries most of it, roll the least — it is a tilt,
+# which reads strongly at a small angle. The envelope's corner is ~10.3 deg from neutral.
+HEAD_YAW_RAD = math.radians(8.0)
+HEAD_PITCH_RAD = math.radians(5.0)
+HEAD_ROLL_RAD = math.radians(4.0)
+HEAD_HOLD_S = (1.2, 4.5)  # uniform hold between two rotation moves
+HEAD_MOVE_S = (1.2, 2.8)  # uniform duration of one minjerk rotation move
+# A roam target lands at least this fraction of an axis' span away from where the track
+# sits, so no move is too small to see: a plain uniform draw often lands next to the
+# current angle and spends a couple of seconds travelling a couple of degrees.
+ROAM_MIN_TRAVEL_FRACTION = 0.4
+ANTENNA_HOLD_S = (0.4, 2.5)  # uniform hold between two antenna segments
+# An antenna move's duration follows from its travel: a mean speed is drawn here and the
+# duration is travel / speed, clamped to ANTENNA_MOVE_S. Drawing the duration instead is
+# what made every move as slow as the longest one.
+ANTENNA_SPEED_RAD_S = (math.radians(20.0), math.radians(70.0))
+ANTENNA_MOVE_S = (0.25, 1.2)  # clamp on travel / speed, not a draw
+# A flick is the quick raised-cosine perk that punctuates the roaming and carries most of
+# the idle's expressiveness. It is the only segment that passes ANTENNA_MAX_RAD.
+ANTENNA_FLICK_PROBABILITY = 0.35
+ANTENNA_FLICK_S = (0.25, 0.5)
+ANTENNA_FLICK_RAD = (math.radians(12.0), math.radians(25.0))
+ANTENNA_FLICK_MAX_RAD = math.radians(45.0)
 
 NEUTRAL_HEAD: npt.NDArray[np.float64] = np.array(INIT_HEAD_POSE, dtype=np.float64)
 NEUTRAL_ANTENNAS: npt.NDArray[np.float64] = np.array(
@@ -116,16 +139,18 @@ class _Segment:
     """
 
     start: float  # value at the segment's start
-    end: float  # value at its end (== start for a hold or a breath)
+    end: float  # value at its end (== start for a hold or a pulse)
     duration: float
-    shape: Literal["hold", "breath", "minjerk"]
-    peak: float = 0.0  # breath only: the value at mid-segment
+    # "pulse" is an out-and-back raised cosine — a breath on the head's z track, a flick
+    # on an antenna's; it ends where it started.
+    shape: Literal["hold", "pulse", "minjerk"]
+    peak: float = 0.0  # pulse only: the value at mid-segment
 
     def value(self, t: float) -> float:
         u = min(max(t / self.duration, 0.0), 1.0)
         if self.shape == "hold":
             return self.start
-        if self.shape == "breath":
+        if self.shape == "pulse":
             return (
                 self.start
                 + (self.peak - self.start) * (1.0 - math.cos(2.0 * math.pi * u)) / 2.0
@@ -158,13 +183,55 @@ class _Track:
 
 
 def _breath() -> _Segment:
-    return _Segment(0.0, 0.0, BREATH_S, "breath", peak=BREATH_Z_M)
+    return _Segment(0.0, 0.0, BREATH_S, "pulse", peak=BREATH_Z_M)
+
+
+def _roam_target(rng: random.Random, prev: float, lo: float, hi: float) -> float:
+    """A new target in ``[lo, hi]`` at least ``ROAM_MIN_TRAVEL_FRACTION`` of the span
+    away from ``prev`` — uniform over the range with the band around ``prev`` removed, so
+    no roam is too small to see (specs/motion.md "The moves").
+
+    The two remaining intervals are drawn in proportion to their lengths. They are never
+    both empty for a fraction below 0.5, so there is no degenerate case to fall back on.
+    """
+    min_travel = ROAM_MIN_TRAVEL_FRACTION * (hi - lo)
+    low = max(0.0, (prev - min_travel) - lo)
+    high = max(0.0, hi - (prev + min_travel))
+    u = rng.uniform(0.0, low + high)
+    return lo + u if u < low else prev + min_travel + (u - low)
+
+
+@dataclass(frozen=True)
+class _IdleOffsets:
+    """Every idle track's signed offset from neutral at one instant, and the pose they
+    make (specs/motion.md "The moves").
+
+    ``pose(scale)`` is the single place the tracks become a pose: at ``1.0`` it is what
+    ``BreathingMove.evaluate`` returns, at ``0.0`` it is exactly ``NEUTRAL``, and the
+    values between are the envelope ``_BreathingFadeOut`` rides out on.
+    """
+
+    z_m: float
+    rpy_rad: npt.NDArray[np.float64]  # roll, pitch, yaw offsets from neutral
+    # Each antenna's outward lean beyond the neutral lean (0.0 == NEUTRAL_ANTENNAS).
+    antennas_rad: npt.NDArray[np.float64]
+
+    def pose(self, scale: float = 1.0) -> Pose:
+        roll, pitch, yaw = scale * self.rpy_rad
+        # Scaling the Euler angles rather than slerping is indistinguishable at the
+        # envelope's <= 8 deg, and lands exactly on the identity at scale 0.
+        head = create_head_pose(
+            z=scale * self.z_m, roll=roll, pitch=pitch, yaw=yaw, degrees=False
+        )
+        antennas = NEUTRAL_ANTENNAS + ANTENNA_OUTWARD * (scale * self.antennas_rad)
+        return head, antennas, NEUTRAL_BODY_YAW
 
 
 class BreathingMove(Move):
     """The idle move with breathing on (specs/motion.md "The moves"): a randomised plan
-    of rest-to-rest segments — raised-cosine breaths separated by random rests on the
-    head's z axis, and two independent antenna tracks roaming outward from vertical.
+    of six independent rest-to-rest tracks — raised-cosine breaths separated by random
+    rests on the head's z axis, three head rotations roaming about neutral, and two
+    antennas roaming and flicking outward from vertical.
 
     ``evaluate(t)`` is a pure function of ``t`` for a given ``rng``: the plan extends
     lazily as ``t`` grows and is never re-drawn. The loop builds an unseeded move at
@@ -173,27 +240,68 @@ class BreathingMove(Move):
 
     def __init__(self, rng: random.Random | None = None) -> None:
         rng = rng if rng is not None else random.Random()
-        # One independent stream per track, so one antenna's draws never shift the
-        # other's (or the head's).
-        head_rng = random.Random(rng.random())
-        antenna_rngs = [random.Random(rng.random()), random.Random(rng.random())]
+        # One independent stream per track, so one track's draws never shift another's.
+        breath_rng = random.Random(rng.random())
+        rotation_rngs = [random.Random(rng.random()) for _ in range(3)]
+        antenna_rngs = [random.Random(rng.random()) for _ in range(2)]
 
-        def next_head(prev: _Segment) -> _Segment:
-            if prev.shape == "breath":
-                return _Segment(0.0, 0.0, head_rng.uniform(*BREATH_REST_S), "hold")
+        def next_breath(prev: _Segment) -> _Segment:
+            if prev.shape == "pulse":
+                return _Segment(0.0, 0.0, breath_rng.uniform(*BREATH_REST_S), "hold")
             return _breath()
 
-        # The plan begins with a breath, so a fresh idle shows life at once.
-        self._head = _Track(_breath(), next_head)
+        # The breath track begins with a breath, so a fresh idle shows life at once.
+        self._breath = _Track(_breath(), next_breath)
+
+        def rotation_drawer(
+            r: random.Random, limit: float
+        ) -> Callable[[_Segment], _Segment]:
+            def next_rotation(prev: _Segment) -> _Segment:
+                if prev.shape == "minjerk":
+                    return _Segment(prev.end, prev.end, r.uniform(*HEAD_HOLD_S), "hold")
+                target = _roam_target(r, prev.end, -limit, limit)
+                return _Segment(prev.end, target, r.uniform(*HEAD_MOVE_S), "minjerk")
+
+            return next_rotation
+
+        # Each rotation track begins with a hold at neutral, so evaluate(0) is the
+        # identity and starts at rest whatever the seed.
+        self._rotations = [
+            _Track(
+                _Segment(0.0, 0.0, r.uniform(*HEAD_HOLD_S), "hold"),
+                rotation_drawer(r, limit),
+            )
+            for r, limit in zip(
+                rotation_rngs,
+                (HEAD_ROLL_RAD, HEAD_PITCH_RAD, HEAD_YAW_RAD),
+                strict=True,
+            )
+        ]
 
         def antenna_drawer(r: random.Random) -> Callable[[_Segment], _Segment]:
             def next_antenna(prev: _Segment) -> _Segment:
-                if prev.shape == "minjerk":
+                if prev.shape != "hold":
                     return _Segment(
                         prev.end, prev.end, r.uniform(*ANTENNA_HOLD_S), "hold"
                     )
-                target = r.uniform(ANTENNA_MIN_RAD, ANTENNA_MAX_RAD)
-                return _Segment(prev.end, target, r.uniform(*ANTENNA_MOVE_S), "minjerk")
+                if r.random() < ANTENNA_FLICK_PROBABILITY:
+                    peak = min(
+                        prev.end + r.uniform(*ANTENNA_FLICK_RAD), ANTENNA_FLICK_MAX_RAD
+                    )
+                    return _Segment(
+                        prev.end,
+                        prev.end,
+                        r.uniform(*ANTENNA_FLICK_S),
+                        "pulse",
+                        peak=peak,
+                    )
+                target = _roam_target(r, prev.end, ANTENNA_MIN_RAD, ANTENNA_MAX_RAD)
+                speed = r.uniform(*ANTENNA_SPEED_RAD_S)
+                duration = min(
+                    max(abs(target - prev.end) / speed, ANTENNA_MOVE_S[0]),
+                    ANTENNA_MOVE_S[1],
+                )
+                return _Segment(prev.end, target, duration, "minjerk")
 
             return next_antenna
 
@@ -212,15 +320,23 @@ class BreathingMove(Move):
     def duration(self) -> float:
         return math.inf
 
+    def offsets(self, t: float) -> _IdleOffsets:
+        """Every track's offset from neutral at ``t`` — what ``evaluate`` poses, and
+        what the fade-out scales."""
+        return _IdleOffsets(
+            z_m=self._breath.value(t),
+            rpy_rad=np.array([track.value(t) for track in self._rotations]),
+            antennas_rad=np.array(
+                [track.value(t) - ANTENNA_MIN_RAD for track in self._antennas]
+            ),
+        )
+
     def evaluate(
         self, t: float
     ) -> tuple[
         npt.NDArray[np.float64] | None, npt.NDArray[np.float64] | None, float | None
     ]:
-        head = NEUTRAL_HEAD.copy()
-        head[2, 3] += self._head.value(t)
-        angles = np.array([track.value(t) for track in self._antennas])
-        return head, ANTENNA_OUTWARD * angles, NEUTRAL_BODY_YAW
+        return self.offsets(t).pose()
 
 
 class _BreathingFadeOut(Move):
@@ -248,12 +364,7 @@ class _BreathingFadeOut(Move):
         npt.NDArray[np.float64] | None, npt.NDArray[np.float64] | None, float | None
     ]:
         envelope = 1.0 - _fade_in(t, self._duration)
-        head, antennas, body_yaw = self._move.evaluate(self._t_offset + t)
-        assert head is not None and antennas is not None  # BreathingMove sets both
-        head = head.copy()
-        head[2, 3] = NEUTRAL_HEAD[2, 3] + envelope * (head[2, 3] - NEUTRAL_HEAD[2, 3])
-        antennas = NEUTRAL_ANTENNAS + envelope * (antennas - NEUTRAL_ANTENNAS)
-        return head, antennas, body_yaw
+        return self._move.offsets(self._t_offset + t).pose(envelope)
 
 
 def blend_into(source: Pose, move: Move, seconds: float = BLEND_S) -> GotoMove:

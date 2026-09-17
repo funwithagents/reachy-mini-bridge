@@ -11,6 +11,7 @@ import asyncio
 import concurrent.futures
 import itertools
 import logging
+import math
 import random
 import time
 from pathlib import Path
@@ -24,6 +25,7 @@ from reachy_mini.motion.move import Move
 from reachy_mini_bridge.errors import BridgeError
 from reachy_mini_bridge.fake_reachy_mini import FakeReachyMini
 from reachy_mini_bridge.motion import (
+    ANTENNA_FLICK_MAX_RAD,
     ANTENNA_MAX_RAD,
     ANTENNA_MIN_RAD,
     ANTENNA_OUTWARD,
@@ -32,14 +34,19 @@ from reachy_mini_bridge.motion import (
     BREATH_S,
     BREATH_Z_M,
     CONTROL_HZ,
+    HEAD_PITCH_RAD,
+    HEAD_ROLL_RAD,
+    HEAD_YAW_RAD,
     NEUTRAL,
     NEUTRAL_ANTENNAS,
     NEUTRAL_BODY_YAW,
     NEUTRAL_HEAD,
+    ROAM_MIN_TRAVEL_FRACTION,
     BreathingMove,
     HoldMove,
     MotionSession,
     _BreathingFadeOut,
+    _roam_target,
     blend_into,
 )
 
@@ -71,6 +78,20 @@ def _outward(move: BreathingMove, t: float) -> npt.NDArray[np.float64]:
     return ANTENNA_OUTWARD * antennas
 
 
+# The rotation tracks' limits, in the order `_IdleOffsets.rpy_rad` holds them.
+ROTATION_LIMITS = np.array([HEAD_ROLL_RAD, HEAD_PITCH_RAD, HEAD_YAW_RAD])
+# The furthest the composed rotation can sit from neutral: the envelope's corner.
+ROTATION_CORNER_DEG = float(np.degrees(np.linalg.norm(ROTATION_LIMITS)))
+
+
+def _angle_from_neutral_deg(move: BreathingMove, t: float) -> float:
+    """The head's rotation angle from the identity pose, in degrees."""
+    head, _antennas, _yaw = move.evaluate(t)
+    assert head is not None
+    rot = np.asarray(head)[:3, :3]
+    return float(np.degrees(np.arccos(np.clip((np.trace(rot) - 1) / 2, -1.0, 1.0))))
+
+
 @pytest.mark.parametrize("seed", range(5))
 def test_breathing_starts_at_neutral_at_rest(seed: int) -> None:
     move = BreathingMove(random.Random(seed))
@@ -95,11 +116,13 @@ def test_breath_is_a_raised_cosine_then_a_rest() -> None:
     zs = [_z(move, k * 0.01) for k in range(6000)]
     assert min(zs) >= 0.0
     assert max(zs) <= BREATH_Z_M + 1e-12
-    head, _antennas, _yaw = move.evaluate(BREATH_S / 2)
-    assert head is not None
-    diff = np.asarray(head) - NEUTRAL[0]
-    diff[2, 3] = 0.0
-    assert np.allclose(diff, 0.0)  # only z moves
+    # the head translates on z alone — x, y and body yaw stay neutral — whatever the
+    # rotation tracks are doing meanwhile
+    for k in range(0, 6000, 7):
+        head, _antennas, yaw = move.evaluate(k * 0.01)
+        assert head is not None
+        assert head[0, 3] == 0.0 and head[1, 3] == 0.0
+        assert yaw == NEUTRAL[2]
 
 
 def test_breathing_rests_vary_in_length() -> None:
@@ -124,10 +147,13 @@ def test_breathing_rests_vary_in_length() -> None:
 def test_antennas_stay_outward_within_range(seed: int) -> None:
     assert np.array_equal(ANTENNA_OUTWARD * ANTENNA_MIN_RAD, NEUTRAL_ANTENNAS)
     move = BreathingMove(random.Random(seed))
-    for k in range(6000):  # 120 s at 20 ms
-        outward = _outward(move, k * 0.02)
-        assert np.all(outward >= ANTENNA_MIN_RAD - 1e-9)
-        assert np.all(outward <= ANTENNA_MAX_RAD + 1e-9)
+    leans = np.array([_outward(move, k * 0.02) for k in range(6000)])  # 120 s at 20 ms
+    assert np.all(leans >= ANTENNA_MIN_RAD - 1e-9), "an antenna leaned inside neutral"
+    assert np.all(leans <= ANTENNA_FLICK_MAX_RAD + 1e-9)
+    # only a flick passes the roaming ceiling, and a flick is punctuation: the antennas
+    # spend the great majority of their time inside the roaming window (measured ~4%)
+    above = float(np.mean(leans > ANTENNA_MAX_RAD))
+    assert 0.0 < above < 0.15, f"{above:.3f} of samples above the roaming ceiling"
 
 
 def test_antennas_move_independently() -> None:
@@ -151,8 +177,12 @@ def test_breathing_is_continuous_and_pure() -> None:
     poses = [move.evaluate(t) for t in ts]
     zs = [float(h[2, 3]) for h, _, _ in poses if h is not None]
     ants = [a for _, a, _ in poses if a is not None]
+    rpys = [move.offsets(t).rpy_rad for t in ts]
     assert max(abs(b - a) for a, b in itertools.pairwise(zs)) < 0.0003
-    assert max(float(np.max(np.abs(b - a))) for a, b in itertools.pairwise(ants)) < 0.02
+    # a flick is the fastest thing the plan does: ~5 deg (0.088 rad) per tick at its peak
+    assert max(float(np.max(np.abs(b - a))) for a, b in itertools.pairwise(ants)) < 0.11
+    # the rotations are slow by comparison: ~0.35 deg (0.006 rad) per tick at their peak
+    assert max(float(np.max(np.abs(b - a))) for a, b in itertools.pairwise(rpys)) < 0.02
     twin = BreathingMove(random.Random(0))
     for t, (head, antennas, _yaw) in zip(ts[::7], poses[::7], strict=True):
         twin_head, twin_antennas, _ = twin.evaluate(t)
@@ -169,6 +199,73 @@ def test_breathing_is_continuous_and_pure() -> None:
     assert np.array_equal(head_10, head_10_ref) and np.array_equal(ant_10, ant_10_ref)
 
 
+@pytest.mark.parametrize("seed", range(5))
+def test_head_rotation_roams_within_its_envelope(seed: int) -> None:
+    """specs/motion.md "The moves": the idle head looks about on three independent
+    rotation tracks, reaching each axis' limit without ever passing it."""
+    move = BreathingMove(random.Random(seed))
+    ts = [k / CONTROL_HZ for k in range(int(300 * CONTROL_HZ))]  # 300 s
+    rpy = np.array([move.offsets(t).rpy_rad for t in ts])
+    assert np.all(np.abs(rpy) <= ROTATION_LIMITS + 1e-9)
+    # each axis uses its range in both directions (measured >= 0.95 of the limit)
+    assert np.all(rpy.max(axis=0) >= 0.7 * ROTATION_LIMITS), "an axis never roamed +"
+    assert np.all((-rpy).max(axis=0) >= 0.7 * ROTATION_LIMITS), "an axis never roamed -"
+    angles = [_angle_from_neutral_deg(move, t) for t in ts[::7]]
+    assert max(angles) <= ROTATION_CORNER_DEG + 1.0
+    # the head lives a few degrees off neutral rather than hugging it or the corner
+    assert 4.0 < float(np.median(angles)) < 8.0
+
+
+@pytest.mark.parametrize("seed", range(5))
+def test_head_rotation_keeps_at_least_one_axis_moving(seed: int) -> None:
+    """specs/motion.md "The moves": three independent tracks mean the head is almost
+    always doing something — the idle head before them held one fixed heading."""
+    move = BreathingMove(random.Random(seed))
+    ts = [k / CONTROL_HZ for k in range(int(300 * CONTROL_HZ))]
+    rpy = np.array([move.offsets(t).rpy_rad for t in ts])
+    speeds = np.abs(np.diff(rpy, axis=0)) * CONTROL_HZ
+    moving = float((speeds > math.radians(0.5)).any(axis=1).mean())
+    assert moving > 0.5, f"the head rotated only {moving:.0%} of the time"
+
+
+@pytest.mark.parametrize("seed", range(5))
+def test_antennas_move_fast_enough_to_read_and_flick(seed: int) -> None:
+    """specs/motion.md "The moves": drawing a speed (not a duration) and punctuating the
+    roaming with flicks puts the antennas in the band the emotions library commands.
+    A fixed-duration plan over the same window reads 4 deg/s at p90 and 13 at p99."""
+    move = BreathingMove(random.Random(seed))
+    ts = [k / CONTROL_HZ for k in range(int(300 * CONTROL_HZ))]
+    leans = np.degrees(np.array([_outward(move, t) for t in ts]))
+    speeds = np.abs(np.diff(leans, axis=0)) * CONTROL_HZ
+    p90, p99 = np.percentile(speeds, [90, 99])
+    assert p90 > 20.0, f"antenna speed p90 only {p90:.1f} deg/s"
+    assert p99 > 80.0, f"antenna speed p99 only {p99:.1f} deg/s"
+    # each excursion past the roaming ceiling is one flick (measured ~110 over 300 s)
+    flicks = sum(
+        1
+        for column in leans.T
+        for above, _run in itertools.groupby(column > np.degrees(ANTENNA_MAX_RAD))
+        if above
+    )
+    assert flicks >= 20, f"only {flicks} flicks in 300 s"
+
+
+@pytest.mark.parametrize(
+    ("lo", "hi"), [(-HEAD_YAW_RAD, HEAD_YAW_RAD), (ANTENNA_MIN_RAD, ANTENNA_MAX_RAD)]
+)
+def test_roam_target_always_travels(lo: float, hi: float) -> None:
+    """specs/motion.md "The moves": a roam target lands inside the range and far enough
+    from where the track sits that the move is worth making."""
+    rng = random.Random(0)
+    span = hi - lo
+    for k in range(41):
+        prev = lo + span * k / 40
+        for _ in range(50):
+            target = _roam_target(rng, prev, lo, hi)
+            assert lo - 1e-12 <= target <= hi + 1e-12
+            assert abs(target - prev) >= ROAM_MIN_TRAVEL_FRACTION * span - 1e-12
+
+
 def test_fade_out_lands_at_neutral_at_rest() -> None:
     move = BreathingMove(random.Random(0))
     offset = next(
@@ -176,6 +273,7 @@ def test_fade_out_lands_at_neutral_at_rest() -> None:
         for k in range(6000)
         if _z(move, k * 0.01) > 0.0
         and np.any(_outward(move, k * 0.01) > ANTENNA_MIN_RAD + 1e-6)
+        and np.any(np.abs(move.offsets(k * 0.01).rpy_rad) > math.radians(1.0))
     )
     fade = _BreathingFadeOut(move, t_offset=offset)
     assert fade.duration == BLEND_S
@@ -191,10 +289,25 @@ def test_fade_out_lands_at_neutral_at_rest() -> None:
     poses = [fade.evaluate(k * period) for k in range(int(BLEND_S * CONTROL_HZ) + 1)]
     zs = [float(h[2, 3]) for h, _, _ in poses if h is not None]
     ants = [a for _, a, _ in poses if a is not None]
-    # the envelope adds its own slope: 5 mm over BLEND_S at a minjerk peak (1.875x mean)
-    # is ~0.31 mm per tick, and up to 15° of antenna lean the same way is ~0.016 rad
+    # the envelope adds its own slope on top of the plan's, which keeps playing under it
     assert max(abs(b - a) for a, b in itertools.pairwise(zs)) < 0.0005
-    assert max(float(np.max(np.abs(b - a))) for a, b in itertools.pairwise(ants)) < 0.03
+    assert max(float(np.max(np.abs(b - a))) for a, b in itertools.pairwise(ants)) < 0.12
+
+    # The rotation fades out with everything else: the plan keeps playing underneath, so
+    # a track caught mid-move can still be growing — but the envelope only ever scales it
+    # down, and it lands at zero.
+    def angle_deg(pose: npt.NDArray[np.float64]) -> float:
+        rot = np.asarray(pose)[:3, :3]
+        return float(np.degrees(np.arccos(np.clip((np.trace(rot) - 1) / 2, -1.0, 1.0))))
+
+    angles = [angle_deg(h) for h, _, _ in poses if h is not None]
+    assert angles[0] > 0.5, "the fade-out did not start from a rotated head"
+    assert angles[-1] == pytest.approx(0.0, abs=1e-4)
+    for k, angle in enumerate(angles):
+        played = move.offsets(offset + k * period).pose()[0]
+        assert angle <= angle_deg(played) + 1e-9, (
+            "the fade-out rotated the head further than the plan itself did"
+        )
 
 
 def test_blend_into_goes_from_source_to_the_moves_start() -> None:
