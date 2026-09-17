@@ -17,13 +17,17 @@ un-underscored; the rest stays module-private.
 from __future__ import annotations
 
 import os
+import shutil
+import tempfile
 from collections.abc import Iterator
+from contextlib import contextmanager
 
 import pytest
 
 from reachy_mini_bridge import daemon
 from reachy_mini_bridge.config import LOOPBACK_HOSTS, DaemonConfig
 from reachy_mini_bridge.errors import DaemonError
+from reachy_mini_bridge.testing.sim_scene import write_test_scene
 
 _DEFAULT_HOST = "127.0.0.1"
 _DEFAULT_PORT = 8000
@@ -66,6 +70,33 @@ def _sim_viewer() -> bool:
     }
 
 
+TEST_SCENE = "test"
+
+
+def sim_scene() -> str | None:
+    """The `sim` scene from `REACHY_MINI_E2E_SIM_SCENE`: unset (upstream's default),
+    an upstream scene name (`minimal`), a path to an MJCF file (`.xml`, loaded through the
+    bridge's launcher), or `test` — the bridge's generated test scene, its props (a face
+    today) hidden until a test shows them (specs/sim_scene.md)."""
+    value = os.environ.get("REACHY_MINI_E2E_SIM_SCENE", "").strip()
+    return value or None
+
+
+@contextmanager
+def _resolved_sim_scene() -> Iterator[str | None]:
+    """The `DaemonConfig.scene` value for the selected scene; `test` is generated into
+    a temporary directory that lives as long as the daemon."""
+    scene = sim_scene()
+    if scene != TEST_SCENE:
+        yield scene
+        return
+    tmp = tempfile.mkdtemp(prefix="reachy-mini-test-scene-")
+    try:
+        yield str(write_test_scene(tmp))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 # --- daemon lifecycle: own it or borrow it (via the library) ---
 
 
@@ -74,7 +105,8 @@ def managed_daemon(target_: str) -> Iterator[tuple[str, int]]:
 
     Borrows a daemon already ready at the address (never tears it down). Otherwise it
     spawns one through `reachy_mini_bridge.daemon.managed_daemon` and owns its teardown:
-    a MuJoCo daemon for `sim`, the hardware daemon for `real` — only on a loopback address
+    a MuJoCo daemon for `sim` (on the scene `REACHY_MINI_E2E_SIM_SCENE` selects, see
+    `sim_scene`), the hardware daemon for `real` — only on a loopback address
     (a USB robot on this machine; the harness never starts a daemon elsewhere, so a remote
     `real` address skips). Skips cleanly (never fails) when the launcher / sim extra is
     missing, the port is busy with something else, no robot answers, or the daemon can't
@@ -92,10 +124,20 @@ def managed_daemon(target_: str) -> Iterator[tuple[str, int]]:
             pytest.skip(f"no reachable real Reachy Mini daemon at {host}:{port}")
         config = DaemonConfig(spawn="auto")
         backend_ = "real"
-    else:
-        pytest.importorskip("mujoco", reason="sim extra (mujoco) not installed")
-        config = DaemonConfig(spawn="auto", headless=not _sim_viewer())
-        backend_ = "sim"
+        with _spawned(config, host, port, backend_) as handle:
+            yield handle
+        return
+    pytest.importorskip("mujoco", reason="sim extra (mujoco) not installed")
+    with _resolved_sim_scene() as scene:
+        config = DaemonConfig(spawn="auto", headless=not _sim_viewer(), scene=scene)
+        with _spawned(config, host, port, "sim") as handle:
+            yield handle
+
+
+@contextmanager
+def _spawned(
+    config: DaemonConfig, host: str, port: int, backend_: str
+) -> Iterator[tuple[str, int]]:
     try:
         with daemon.managed_daemon(
             config, host=host, port=port, backend=backend_

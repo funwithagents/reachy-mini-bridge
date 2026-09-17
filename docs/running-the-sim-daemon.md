@@ -43,6 +43,22 @@ launchctl asuser $(id -u) \
   <venv>/bin/mjpython -m reachy_mini.daemon.app.main --sim --scene minimal --preload-datasets
 ```
 
+### A face in the sim (viewer + scene file)
+
+Upstream's scenes ship nothing to look at. The bridge's shipped testing package can write a **test scene** — hidden-by-default props, a portrait plane today — in front of the robot and run the daemon on it through its own launcher, which lets you show, place, move and hide the props while the daemon runs ([../specs/sim_scene.md](../specs/sim_scene.md)):
+
+```python
+from reachy_mini_bridge.testing.sim_scene import write_test_scene
+
+write_test_scene("/tmp/scene")  # -> /tmp/scene/scene.xml (the face starts hidden)
+```
+
+```
+mjpython -m reachy_mini_bridge.testing.sim_scene --scene-path /tmp/scene/scene.xml --preload-datasets
+```
+
+The launcher also steps the daemon's head tracking on every control tick — upstream's MuJoCo loop never does (only the robot loop), so a stock `--sim` daemon detects faces but never turns toward them. Then, from any process: `SimSceneClient().show("face")` to bring it into view, `.place("face", (0.45, 0.15, 0.20), duration=1.5)` to move it, `.hide("face")` to take it away again — or `curl -X POST localhost:8000/api/sim-scene/bodies/face -H 'Content-Type: application/json' -d '{"visible": true}'`. A `ReachyMiniConfig` whose `daemon.scene` is that `.xml` path does the launch for you (`"headless": false` — the face needs the viewer's camera to be seen). The e2e harness does it from `REACHY_MINI_E2E_SIM_SCENE=test`.
+
 ### Real robot
 
 A wireless robot runs its own daemon — nothing to start. Point the client at it (`connection_mode="network"`, the robot's host); everything is available, including **hardware** AEC, camera, and DoA.

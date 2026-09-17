@@ -35,7 +35,7 @@ Where things live. This is a coarse, module-level map — for the full file inve
 | `src/reachy_mini_bridge/daemon.py` | Bridge-owned `reachy-mini-daemon` lifecycle — `managed_daemon` (own-it-or-borrow-it), `is_daemon_ready`, `launch_command`, `scrubbed_env` | [specs/daemon.md](specs/daemon.md) |
 | `src/reachy_mini_bridge/errors.py` | Bridge exception hierarchy — `BridgeError` base + `MotorsNotEnabledError`, `GravityCompensationUnsupportedError`, `DaemonError`; `ConfigError(ValueError)` | [specs/api.md](specs/api.md), [specs/config.md](specs/config.md), [specs/daemon.md](specs/daemon.md) |
 | `src/reachy_mini_bridge/tools.py` | `ReachyMiniTools` agent/LLM tools (placeholder; Draft) | [specs/tools.md](specs/tools.md) |
-| `src/reachy_mini_bridge/testing/` | Shipped testing harness (package) — `live_api` fixture, `requires_caps`, `require_env` for consumers' e2e tests (`fixtures.py` plugin, private `_daemon.py` wrapping `daemon.py`, `support.py`) | [specs/testing_support.md](specs/testing_support.md) |
+| `src/reachy_mini_bridge/testing/` | Shipped testing harness (package) — `live_api` fixture, `requires_caps`, `require_env` for consumers' e2e tests (`fixtures.py` plugin, private `_daemon.py` wrapping `daemon.py`, `support.py`); `sim_scene.py` — the bridge's test scene: hidden-by-default scriptable props (a face today, `assets/face.png`) a test shows/moves/hides through a `python -m reachy_mini_bridge.testing.sim_scene` launcher (`SceneDirector` + `/api/sim-scene` router) and `SimSceneClient` | [specs/testing_support.md](specs/testing_support.md), [specs/sim_scene.md](specs/sim_scene.md) |
 
 **Keep this map current:** when you add, rename, or remove a top-level `src/reachy_mini_bridge/` module or a root directory, update the map in the same change — same discipline as keeping spec/plan statuses honest (below). A test (`tests/test_project_map.py`) enforces that every `src/reachy_mini_bridge/*.py` module appears here and vice-versa — and that the spec frontmatter (see below) stays honest too.
 
@@ -89,10 +89,11 @@ The `live_api` fixture brings up the daemon itself — **don't start one by hand
 |---|---|---|
 | sim, headless (default) | `uv run pytest tests-e2e -rs` | spawns `reachy-mini-daemon --sim --headless` (the `sim` extra, in the dev group) |
 | sim, viewer | `REACHY_MINI_E2E_SIM_VIEWER=1 uv run pytest tests-e2e -rs` | spawns the MuJoCo viewer via `mjpython` — needs an unlocked GUI session |
+| sim, viewer, with a face | `REACHY_MINI_E2E_SIM_VIEWER=1 REACHY_MINI_E2E_SIM_SCENE=test uv run pytest tests-e2e -rs` | as above, on the bridge's test scene (a hidden-by-default portrait a test shows and moves) — enables the `faces` tests: tracking, the attention hand-back, breathing when alone ([specs/sim_scene.md](specs/sim_scene.md)) |
 | real robot on USB (Lite) | `REACHY_MINI_E2E_TARGET=real uv run pytest tests-e2e -rs` | spawns `reachy-mini-daemon` (serial port auto-detected); the robot wakes up, moves and plays sound, and goes to sleep when the daemon stops |
 | real robot on the network (wireless) | `REACHY_MINI_E2E_TARGET=real REACHY_MINI_HOST=<robot ip> uv run pytest tests-e2e -rs` | borrows the robot's own daemon, or skips — it never spawns on a remote host |
 
-- **Read the skips.** `-rs` prints why each test skipped. A skip means a capability was probed absent (`motion`, `audio`, `camera`, `gravity_compensation`) or a credential is missing — it is not a pass; report it as such.
+- **Read the skips.** `-rs` prints why each test skipped. A skip means a capability was probed absent (`motion`, `audio`, `camera`, `gravity_compensation`, `faces`) or a credential is missing — it is not a pass; report it as such.
 - **Capabilities are probed**, not inferred from the target: the headless sim has no camera; `gravity_compensation` needs hardware on the Placo kinematics engine (`reachy-mini[placo_kinematics]` installed — a harness-spawned real daemon then uses it automatically).
 - **Credentials:** `ELEVENLABS_API_KEY` enables the real-TTS test.
 - **macOS permissions:** the process running the tests needs camera and microphone access; without it the camera probe finds no frame and the camera test skips.

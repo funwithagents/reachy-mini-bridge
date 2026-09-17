@@ -59,11 +59,12 @@ Four modules, with the daemon machinery kept private behind the plugin:
 
 ### Public surface
 
-The package exposes exactly the three names the bridge's own live tier uses — `live_api` through the `reachy_mini_bridge.testing.fixtures` plugin module, and the two skip gates re-exported from `reachy_mini_bridge.testing`:
+The package exposes exactly the names the bridge's own live tier uses — the `live_api` and `sim_scene` fixtures through the `reachy_mini_bridge.testing.fixtures` plugin module, and the two skip gates re-exported from `reachy_mini_bridge.testing`:
 
 - **`live_api`** — a **module-scoped** pytest fixture yielding `(api, capabilities)`: a connected `ReachyMiniApi` over the resolved target and the `frozenset` of capabilities probed against that live daemon. It brings the daemon up under own-it-or-borrow-it (reuse one already reachable, else spawn one and own its teardown — a MuJoCo daemon for `sim`, the hardware daemon for `real` when the address is loopback, i.e. a USB robot on this machine; a non-loopback `real` address is borrow-or-skip), builds the api from a `ReachyMiniConfig` ([config.md](config.md)) whose `robot` block carries the harness's connection options (`connection_mode="network"`, the resolved host/port, `media_backend="local"`) and whose `daemon.spawn` is `"never"` — the fixture, not the api, owns the daemon so one daemon serves a whole test module — with media on, probes, and tears down what it spawned.
 - **`requires_caps(live, *caps)`** — the skip gate: given the `live_api` value, `pytest.skip(...)` unless every named capability (`motion` / `audio` / `camera` / `gravity_compensation` / …, table in [testing.md](testing.md)) was probed on the current target. A test written once runs wherever its needs are met.
 - **`require_env(name)`** — return an env var or skip when it's absent, so a live test skips (never fails) without its credentials.
+- **`sim_scene`** — a second **module-scoped** fixture in the plugin module: a `SimSceneClient` ([sim_scene.md](sim_scene.md)) on the fixture-managed daemon, to show, place, move and hide the face(s) of the bridge's generated scene. Meaningful only where `live_api` probed `faces`; gate with `requires_caps(live_api, "camera", "faces")`.
 
 A consumer's e2e test then reads:
 
@@ -84,6 +85,7 @@ Target and connection are chosen by the same env vars the bridge's tier uses, so
 - `REACHY_MINI_E2E_TARGET` — `sim` (default) | `real`.
 - `REACHY_MINI_HOST` / `REACHY_MINI_PORT` — the daemon address (borrow a daemon already there; for `real`, the robot's daemon — spawned by the harness when the address is loopback and nothing is ready).
 - `REACHY_MINI_E2E_SIM_VIEWER` — headfull MuJoCo viewer instead of headless (local, needs a GUI/GL context; see [../docs/running-the-sim-daemon.md](../docs/running-the-sim-daemon.md)).
+- `REACHY_MINI_E2E_SIM_SCENE` — the `sim` scene: unset (upstream's default), an upstream scene name (`minimal`), a path to an `.xml` scene file, or `test` — the harness writes the bridge's test scene ([sim_scene.md](sim_scene.md)) into a temporary directory for the daemon's lifetime and launches the daemon on it; its props start hidden, so the `faces` capability (a `face` body exists) is probed true regardless, and the `sim_scene` fixture shows/places/hides them.
 
 ### The gotchas move into the shipped code
 
@@ -97,4 +99,4 @@ A consumer-facing guide (`docs/testing-with-the-bridge.md`, linked from the [REA
 
 ## Open questions
 
-1. **Consumer daemon knobs.** Beyond the env vars above, some consumer may want the harness to use a MuJoCo scene or a daemon that skips dataset preloading. The knobs exist on `DaemonConfig` ([config.md](config.md)); whether the harness exposes them (env vars, or a `DaemonConfig` a consumer's conftest hands in) is deferred until one actually needs it — the borrow-or-spawn-sim path with the current env vars covers the known cases. (A genuine deferral, not a load-bearing unknown.)
+1. **Consumer daemon knobs.** The scene is now an env var (`REACHY_MINI_E2E_SIM_SCENE`, above). Dataset preloading and the startup timeout still exist only on `DaemonConfig` ([config.md](config.md)); whether the harness exposes them (env vars, or a `DaemonConfig` a consumer's conftest hands in) is deferred until one actually needs it. (A genuine deferral, not a load-bearing unknown.)

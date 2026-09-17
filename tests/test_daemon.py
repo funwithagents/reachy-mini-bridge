@@ -13,6 +13,7 @@ import subprocess
 import sys
 import textwrap
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
@@ -111,6 +112,55 @@ def test_launch_command_headless_and_viewer(monkeypatch: pytest.MonkeyPatch) -> 
         "--scene",
         "minimal",
     ]
+
+
+def test_launch_command_runs_a_scene_file_through_the_bridge_launcher(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A `scene` ending in `.xml` is a scene *file* (specs/sim_scene.md): the bridge's
+    own launcher module runs upstream's daemon on it — under mjpython for the viewer,
+    this interpreter headless — with the path made absolute."""
+    monkeypatch.setattr(daemon.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.chdir(tmp_path)
+    scene = tmp_path / "scene.xml"
+    assert daemon.launch_command(DaemonConfig(scene="scene.xml")) == [
+        sys.executable,
+        "-m",
+        "reachy_mini_bridge.testing.sim_scene",
+        "--scene-path",
+        str(scene),
+        "--headless",
+        "--preload-datasets",
+    ]
+    assert daemon.launch_command(
+        DaemonConfig(headless=False, scene=str(scene), preload_datasets=False)
+    ) == [
+        "/bin/mjpython",
+        "-m",
+        "reachy_mini_bridge.testing.sim_scene",
+        "--scene-path",
+        str(scene),
+        "--no-preload-datasets",
+    ]
+    # a real daemon ignores the sim knobs, scene file included
+    monkeypatch.setattr(daemon, "_placo_available", lambda: False)
+    assert daemon.launch_command(DaemonConfig(scene="scene.xml"), backend="real") == [
+        "/bin/reachy-mini-daemon",
+        "--preload-datasets",
+    ]
+
+
+def test_launch_command_scene_file_still_needs_the_sim_extra(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(daemon.shutil, "which", lambda name: None)
+    with pytest.raises(DaemonError, match=r"reachy-mini-bridge\[sim\]"):
+        daemon.launch_command(DaemonConfig(scene="/tmp/scene.xml"))
+    monkeypatch.setattr(
+        daemon.shutil, "which", lambda name: "/bin/x" if name != "mjpython" else None
+    )
+    with pytest.raises(DaemonError, match="mjpython"):
+        daemon.launch_command(DaemonConfig(headless=False, scene="/tmp/scene.xml"))
 
 
 def test_launch_command_requires_the_launcher(monkeypatch: pytest.MonkeyPatch) -> None:

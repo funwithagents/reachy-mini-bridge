@@ -17,4 +17,8 @@
 # holds no process-global state today, so no reset fixture is needed yet — see
 # specs/testing.md.)
 
-from reachy_mini_bridge.testing.fixtures import _live_daemon, live_api  # noqa: F401
+from reachy_mini_bridge.testing.fixtures import (  # noqa: F401
+    _live_daemon,
+    live_api,
+    sim_scene,
+)

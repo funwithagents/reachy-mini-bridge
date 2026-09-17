@@ -85,7 +85,7 @@ How the bridge brings up the daemon the robot client talks to — the MuJoCo dae
 |---|---|---|---|
 | `spawn` | `"never"` \| `"auto"` \| `"always"` | `"never"` | `never`: connect only, to a daemon someone else runs. `auto`: reuse a daemon already ready at `robot.host:port`, else spawn one and own its teardown. `always`: spawn and own one; the port already in use is an error. |
 | `headless` | bool | `true` | `sim` only. `true` launches the headless MuJoCo daemon (motion + audio, no camera on macOS); `false` launches the viewer under `mjpython` (adds the camera's GL context; needs an unlocked GUI session). |
-| `scene` | string \| null | `null` | `sim` only. MuJoCo scene name, passed as `--scene` when set. |
+| `scene` | string \| null | `null` | `sim` only. An upstream MuJoCo scene *name* (`empty`, `minimal`), passed as `--scene` when set — or, when it ends in `.xml`, the path of a scene *file* the bridge's own launcher loads (hidden-by-default props — a face today — a test shows/moves from tests: [sim_scene.md](sim_scene.md), written by `write_test_scene`). |
 | `preload_datasets` | bool | `true` | `true` passes `--preload-datasets`: the daemon downloads the recorded-move datasets (emotions, dances) in the background after it starts, so the first `play_emotion` does not wait on a download; readiness is not delayed. `false` passes `--no-preload-datasets` (the datasets then load on first use). |
 | `startup_timeout` | number | `45.0` | Seconds to wait for a spawned or booting daemon to become ready. |
 

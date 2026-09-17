@@ -98,6 +98,7 @@ daemon at setup:
 | `audio` | recording yields a mic sample | ✅ | ✅ | ✅ |
 | `camera` | a camera frame comes back (needs a GL context) | ⚠️ not on headless macOS | ✅ | ✅ |
 | `gravity_compensation` | hardware daemon on the Placo kinematics engine | ❌ | ❌ | ✅ with `reachy-mini[placo_kinematics]` |
+| `faces` | the daemon runs the bridge's test scene, which has a `face` body — hidden until shown (`REACHY_MINI_E2E_SIM_SCENE=test`) | ✅ (nothing looks at it) | ✅ | ❌ |
 | `doa` | mic-array direction of arrival | ❌ | ❌ | ✅ (reserved) |
 
 Capabilities are **probed, not assumed** from the backend type — environment quirks decide
@@ -120,6 +121,25 @@ The `live_api` fixture reads the same knobs the bridge's own tier uses:
 | `REACHY_MINI_HOST` | `127.0.0.1` | daemon host (borrow one already running, or your robot; loopback lets the harness start a USB robot's daemon) |
 | `REACHY_MINI_PORT` | `8000` | daemon port |
 | `REACHY_MINI_E2E_SIM_VIEWER` | unset | `1` to launch the headfull MuJoCo viewer (local; needs a GUI/GL context) |
+| `REACHY_MINI_E2E_SIM_SCENE` | unset | the sim scene: an upstream name (`minimal`), a path to an `.xml` scene file, or `test` — the bridge's generated test scene, its props (a portrait plane) hidden until a test shows them |
+
+**Testing tracking without a person.** With `REACHY_MINI_E2E_SIM_VIEWER=1` and
+`REACHY_MINI_E2E_SIM_SCENE=test`, the harness launches the bridge's test scene and probes
+`faces` (a `face` prop exists — hidden by default); the `sim_scene` fixture (from the same
+plugin module) hands you a `SimSceneClient` to show, place, move and hide it while your
+code runs — the daemon's real face detector and tracking do the rest:
+
+```python
+def test_it_looks_at_whoever_is_there(live_api, sim_scene):
+    requires_caps(live_api, "camera", "faces")
+    api, _caps = live_api
+    sim_scene.place("face", (0.45, 0.15, 0.20))  # 20° to the robot's left
+    sim_scene.show("face")
+    ...
+    sim_scene.hide("face")  # nobody there: the head is handed back to the idle move
+```
+
+See [specs/sim_scene.md](../specs/sim_scene.md) for the scene's geometry and the endpoint.
 
 **Own it or borrow it:** the fixture reuses a daemon already reachable at the address
 (never tears it down); otherwise it spawns one and owns its teardown — a MuJoCo daemon for

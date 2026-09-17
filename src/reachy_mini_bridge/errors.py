@@ -16,6 +16,7 @@ __all__ = [
     "DaemonError",
     "GravityCompensationUnsupportedError",
     "MotorsNotEnabledError",
+    "SimSceneError",
 ]
 
 
@@ -57,4 +58,12 @@ class ConfigError(ValueError):
 
     A ``ValueError`` — the same taxonomy tts-engine uses — so a caller can catch either
     ``ConfigError`` for the specific type or ``ValueError`` for any bad-config surface.
+    """
+
+
+class SimSceneError(BridgeError):
+    """A sim-scene request failed: the daemon at the address does not serve the bridge's
+    sim-scene endpoint (it was not launched through ``reachy_mini_bridge.testing.sim_scene``), it
+    is unreachable, or it refused the request (an unknown body, a malformed pose). See
+    specs/sim_scene.md.
     """

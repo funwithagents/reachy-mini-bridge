@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -18,7 +19,7 @@ import pytest
 from reachy_mini_bridge import api as api_module
 from reachy_mini_bridge import daemon, testing
 from reachy_mini_bridge.config import DaemonConfig
-from reachy_mini_bridge.errors import DaemonError
+from reachy_mini_bridge.errors import DaemonError, SimSceneError
 from reachy_mini_bridge.testing import _daemon, fixtures, require_env, requires_caps
 from reachy_mini_bridge.testing.support import (
     require_env as support_require_env,
@@ -89,7 +90,7 @@ def test_live_api_and_daemon_are_module_scoped_fixtures():
     # Importing the plugin module registers the fixtures without touching a daemon.
     # `@pytest.fixture` wraps each in a FixtureFunctionDefinition carrying its marker;
     # assert both are fixtures *and* module-scoped (one daemon per test file, per spec).
-    for fixture in (fixtures.live_api, fixtures._live_daemon):
+    for fixture in (fixtures.live_api, fixtures._live_daemon, fixtures.sim_scene):
         marker = getattr(fixture, "_fixture_function_marker", None)
         assert marker is not None, f"{fixture!r} is not a pytest fixture"
         assert marker.scope == "module"
@@ -123,6 +124,17 @@ def test_address_reads_env_with_defaults(monkeypatch: pytest.MonkeyPatch):
     assert _daemon.address() == ("192.168.1.5", 9100)
 
 
+def test_sim_scene_reads_the_env(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("REACHY_MINI_E2E_SIM_SCENE", raising=False)
+    assert _daemon.sim_scene() is None
+    monkeypatch.setenv("REACHY_MINI_E2E_SIM_SCENE", "  ")
+    assert _daemon.sim_scene() is None
+    monkeypatch.setenv("REACHY_MINI_E2E_SIM_SCENE", "minimal")
+    assert _daemon.sim_scene() == "minimal"
+    monkeypatch.setenv("REACHY_MINI_E2E_SIM_SCENE", "test")
+    assert _daemon.sim_scene() == _daemon.TEST_SCENE
+
+
 # --- daemon bring-up per target (library lifecycle scripted, no daemon) ---
 
 
@@ -131,6 +143,7 @@ class _RecordedSpawns:
 
     def __init__(self, error: Exception | None = None) -> None:
         self.calls: list[tuple[str, str, int]] = []
+        self.configs: list[DaemonConfig] = []
         self.error = error
 
     @contextmanager
@@ -138,6 +151,7 @@ class _RecordedSpawns:
         self, config: DaemonConfig, *, host: str, port: int, backend: str
     ) -> Iterator[daemon.DaemonHandle]:
         self.calls.append((backend, host, port))
+        self.configs.append(config)
         if self.error is not None:
             raise self.error
         yield daemon.DaemonHandle(host, port, owned=True, pid=1)
@@ -178,12 +192,89 @@ def test_real_target_skips_a_remote_address_without_spawning(
     assert spawns.calls == []
 
 
+def test_sim_target_passes_the_selected_scene(monkeypatch: pytest.MonkeyPatch):
+    pytest.importorskip("mujoco", reason="sim extra (mujoco) not installed")
+    monkeypatch.delenv("REACHY_MINI_HOST", raising=False)
+    monkeypatch.delenv("REACHY_MINI_E2E_SIM_VIEWER", raising=False)
+    spawns = _RecordedSpawns()
+    _patch_lifecycle(monkeypatch, ready=False, spawns=spawns)
+
+    monkeypatch.delenv("REACHY_MINI_E2E_SIM_SCENE", raising=False)
+    assert next(_daemon.managed_daemon("sim")) == ("127.0.0.1", 8000)
+    monkeypatch.setenv("REACHY_MINI_E2E_SIM_SCENE", "minimal")
+    next(_daemon.managed_daemon("sim"))
+    monkeypatch.setenv("REACHY_MINI_E2E_SIM_SCENE", "/somewhere/mine.xml")
+    next(_daemon.managed_daemon("sim"))
+    assert [c.scene for c in spawns.configs] == [None, "minimal", "/somewhere/mine.xml"]
+    assert all(c.headless and c.spawn == "auto" for c in spawns.configs)
+    assert spawns.calls == [("sim", "127.0.0.1", 8000)] * 3
+
+
+def test_sim_target_generates_the_test_scene_for_the_daemon_lifetime(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`test` writes the bridge's test scene into a temporary directory that outlives
+    the daemon (the file must exist while the daemon runs) and is removed afterwards."""
+    pytest.importorskip("mujoco", reason="sim extra (mujoco) not installed")
+    monkeypatch.delenv("REACHY_MINI_HOST", raising=False)
+    monkeypatch.setenv("REACHY_MINI_E2E_SIM_VIEWER", "1")
+    monkeypatch.setenv("REACHY_MINI_E2E_SIM_SCENE", "test")
+    spawns = _RecordedSpawns()
+    _patch_lifecycle(monkeypatch, ready=False, spawns=spawns)
+
+    lifecycle = _daemon.managed_daemon("sim")
+    next(lifecycle)
+    (config,) = spawns.configs
+    assert config.scene is not None and config.scene.endswith("scene.xml")
+    assert not config.headless
+    scene = Path(config.scene)
+    assert scene.is_file()
+    assert 'name="face"' in scene.read_text(encoding="utf-8")
+    with pytest.raises(StopIteration):
+        next(lifecycle)
+    assert not scene.exists()
+
+
 def test_a_daemon_that_cannot_start_skips(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("REACHY_MINI_HOST", raising=False)
     spawns = _RecordedSpawns(error=DaemonError("real daemon exited during startup"))
     _patch_lifecycle(monkeypatch, ready=False, spawns=spawns)
     with pytest.raises(pytest.skip.Exception, match="exited during startup"):
         next(_daemon.managed_daemon("real"))
+
+
+# --- faces capability probe ---
+
+
+def test_faces_probe_needs_a_face_body_on_the_sim_scene_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class _Client:
+        def __init__(self, host: str, port: int) -> None:
+            self.address = (host, port)
+
+        def bodies(self) -> dict[str, object]:
+            return answers[self.address]
+
+    answers: dict[tuple[str, int], dict[str, object]] = {
+        ("127.0.0.1", 8000): {"face": object()},
+        ("127.0.0.1", 8001): {"duck": object()},
+    }
+    monkeypatch.setattr(fixtures, "SimSceneClient", _Client)
+    assert fixtures._probe_faces("127.0.0.1", 8000)
+    assert not fixtures._probe_faces("127.0.0.1", 8001)
+
+
+def test_faces_probe_absent_without_the_endpoint(monkeypatch: pytest.MonkeyPatch):
+    class _NoEndpoint:
+        def __init__(self, host: str, port: int) -> None:
+            pass
+
+        def bodies(self) -> dict[str, object]:
+            raise SimSceneError("no sim-scene endpoint")
+
+    monkeypatch.setattr(fixtures, "SimSceneClient", _NoEndpoint)
+    assert not fixtures._probe_faces("127.0.0.1", 8000)
 
 
 # --- gravity_compensation capability probe ---

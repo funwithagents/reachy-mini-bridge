@@ -45,7 +45,7 @@ flowchart TD
 The layers above are backend-agnostic — they are typed against `AnyReachyMini`, the `ReachyMini | FakeReachyMini` union alias (see [robot.md](robot.md)):
 
 - **`real`** *(default)* — the upstream `reachy_mini.ReachyMini` used directly (no wrapper), talking to the daemon and hardware. For a robot plugged into this machine over USB, the bridge brings its hardware daemon up itself when asked (`daemon.spawn`), the same way as for `sim`.
-- **`sim`** — the same `ReachyMini` constructed with `use_sim=True`, driving the upstream MuJoCo mockup. Needs the `sim` extra (`reachy_mini[mujoco]`). The bridge brings the MuJoCo daemon up itself when asked (`daemon.spawn` in [config.md](config.md), lifecycle in [daemon.md](daemon.md)) — own-it-or-borrow-it, headless by default, torn down on exit.
+- **`sim`** — the same `ReachyMini` constructed with `use_sim=True`, driving the upstream MuJoCo mockup. Needs the `sim` extra (`reachy_mini[mujoco]`). The bridge brings the MuJoCo daemon up itself when asked (`daemon.spawn` in [config.md](config.md), lifecycle in [daemon.md](daemon.md)) — own-it-or-borrow-it, headless by default, torn down on exit. It can also put a **face** in the sim ([sim_scene.md](sim_scene.md)): a portrait plane in front of the eye camera that tests show, move and hide while the daemon runs, so tracking, attention and breathing are exercised through the daemon's real detector on the viewer sim.
 - **`fake`** — a first-party `FakeReachyMini` with no daemon, no hardware, no `reachy_mini` import: a duck-typed stand-in that records commands and returns synthetic perception. Powers the deterministic `tests/` tier and offline dev/demos.
 
 ## Configuration
