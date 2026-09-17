@@ -512,6 +512,7 @@ Run: `uv run pytest tests-e2e -rs` (headless sim). Every motion test must **pass
 On a Reachy Mini Lite over USB (`REACHY_MINI_E2E_TARGET=real uv run pytest tests-e2e -rs`, then a small script over `ReachyMiniApi("real")` with `daemon.spawn = "auto"`), walk this list and write the outcome of each line under Verification below:
 
 - [ ] Idle robot breathes visibly, with no micro-vibration and no slow downward drift over 2 minutes.
+- [ ] Breaths are separated by visible rests of varying length, the antennas move one at a time and never toward each other, and neither the start nor the end of a breath or an antenna move shows a snap (plan [202609171234](202609171234_organic-breathing-rests-and-independent-antennas.md)).
 - [ ] An emotion interrupts breathing, plays fully, eases back to neutral, breathing resumes.
 - [ ] `set_breathing(False)` while idle eases the head to neutral and holds still.
 - [ ] `set_breathing(True)` while idle resumes breathing without a visible jump.

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import itertools
+import random
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -21,11 +22,14 @@ from reachy_mini.motion.move import Move
 from reachy_mini_bridge.errors import BridgeError
 from reachy_mini_bridge.fake_reachy_mini import FakeReachyMini
 from reachy_mini_bridge.motion import (
-    ANTENNA_HZ,
-    ANTENNA_SWAY_RAD,
+    ANTENNA_MAX_RAD,
+    ANTENNA_MIN_RAD,
+    ANTENNA_OUTWARD,
     BLEND_S,
-    BREATH_HZ,
+    BREATH_REST_S,
+    BREATH_S,
     BREATH_Z_M,
+    CONTROL_HZ,
     NEUTRAL,
     NEUTRAL_ANTENNAS,
     NEUTRAL_BODY_YAW,
@@ -33,6 +37,7 @@ from reachy_mini_bridge.motion import (
     BreathingMove,
     HoldMove,
     MotionSession,
+    _BreathingFadeOut,
     blend_into,
 )
 
@@ -51,31 +56,143 @@ def test_hold_is_neutral_at_any_time() -> None:
         assert body_yaw == NEUTRAL[2]
 
 
-def test_breathing_starts_at_neutral_and_breathes_in_z() -> None:
-    move = BreathingMove()
+def _z(move: BreathingMove, t: float) -> float:
+    head, _antennas, _yaw = move.evaluate(t)
+    assert head is not None
+    return float(head[2, 3])
+
+
+def _outward(move: BreathingMove, t: float) -> npt.NDArray[np.float64]:
+    """Each antenna's lean outward from vertical, in rad (sign folded away)."""
+    _head, antennas, _yaw = move.evaluate(t)
+    assert antennas is not None
+    return ANTENNA_OUTWARD * antennas
+
+
+@pytest.mark.parametrize("seed", range(5))
+def test_breathing_starts_at_neutral_at_rest(seed: int) -> None:
+    move = BreathingMove(random.Random(seed))
+    assert move.duration == float("inf")
     head0, antennas0, yaw0 = move.evaluate(0.0)
     assert head0 is not None and antennas0 is not None
     assert np.allclose(head0, NEUTRAL[0])
     assert np.allclose(antennas0, NEUTRAL[1])
-    assert yaw0 == 0.0
+    assert yaw0 == NEUTRAL[2]
+    head1, antennas1, _yaw1 = move.evaluate(1e-3)  # zero initial velocity
+    assert head1 is not None and antennas1 is not None
+    assert np.allclose(head1, NEUTRAL[0], atol=1e-6)
+    assert np.allclose(antennas1, NEUTRAL[1], atol=1e-6)
 
-    t = 1 / (4 * BREATH_HZ)
-    head, _antennas, yaw = move.evaluate(t)
+
+def test_breath_is_a_raised_cosine_then_a_rest() -> None:
+    move = BreathingMove(random.Random(0))
+    assert _z(move, BREATH_S / 2) == pytest.approx(BREATH_Z_M, abs=1e-9)
+    assert _z(move, BREATH_S) == pytest.approx(0.0, abs=1e-9)
+    # the shortest rest is 1 s: right after the first breath z reads exactly neutral
+    assert all(_z(move, BREATH_S + k * 0.01) == 0.0 for k in range(100))
+    zs = [_z(move, k * 0.01) for k in range(6000)]
+    assert min(zs) >= 0.0
+    assert max(zs) <= BREATH_Z_M + 1e-12
+    head, _antennas, _yaw = move.evaluate(BREATH_S / 2)
     assert head is not None
-    assert head[2, 3] == pytest.approx(BREATH_Z_M, abs=1e-6)
-    diff = np.asarray(head) - np.eye(4)
+    diff = np.asarray(head) - NEUTRAL[0]
     diff[2, 3] = 0.0
-    assert np.allclose(diff, 0.0)
-    assert yaw == 0.0
+    assert np.allclose(diff, 0.0)  # only z moves
 
 
-def test_breathing_antennas_sway_in_counter_phase() -> None:
-    move = BreathingMove()
-    t = 1 / (4 * ANTENNA_HZ)
-    _head, antennas, _yaw = move.evaluate(t)
-    assert antennas is not None
-    expected = NEUTRAL_ANTENNAS + np.array([ANTENNA_SWAY_RAD, -ANTENNA_SWAY_RAD])
-    assert antennas == pytest.approx(expected, abs=1e-6)
+def test_breathing_rests_vary_in_length() -> None:
+    move = BreathingMove(random.Random(0))
+    step = 0.01
+    zs = [_z(move, k * step) for k in range(30000)]  # 300 s
+    rests: list[float] = []
+    for at_rest, run in itertools.groupby(zs, key=lambda z: z == 0.0):
+        if at_rest:
+            rests.append(len(list(run)) * step)
+    # t = 0 is a breath's first sample (z == 0 for one sample, not a rest) and the last
+    # run may be cut by the scan window: keep only whole runs at least half the shortest
+    # rest
+    rests = [r for r in rests[:-1] if r >= BREATH_REST_S[0] / 2]
+    assert len(rests) >= 20
+    for rest in rests:
+        assert BREATH_REST_S[0] - 2 * step <= rest <= BREATH_REST_S[1] + 2 * step
+    assert max(rests) - min(rests) > 0.5
+
+
+@pytest.mark.parametrize("seed", range(5))
+def test_antennas_stay_outward_within_range(seed: int) -> None:
+    assert np.array_equal(ANTENNA_OUTWARD * ANTENNA_MIN_RAD, NEUTRAL_ANTENNAS)
+    move = BreathingMove(random.Random(seed))
+    for k in range(6000):  # 120 s at 20 ms
+        outward = _outward(move, k * 0.02)
+        assert np.all(outward >= ANTENNA_MIN_RAD - 1e-9)
+        assert np.all(outward <= ANTENNA_MAX_RAD + 1e-9)
+
+
+def test_antennas_move_independently() -> None:
+    move = BreathingMove(random.Random(0))
+    samples = np.array([_outward(move, k * 0.02) for k in range(6000)])
+    right, left = samples[:, 0], samples[:, 1]
+    assert not np.allclose(right, left)
+    for series in (right, left):
+        holds = {
+            round(v, 3) for v, run in itertools.groupby(series) if len(list(run)) >= 25
+        }
+        assert len(holds) >= 3, (
+            "each antenna should have reached several distinct holds"
+        )
+
+
+def test_breathing_is_continuous_and_pure() -> None:
+    move = BreathingMove(random.Random(0))
+    period = 1.0 / CONTROL_HZ
+    ts = [k * period for k in range(int(120 * CONTROL_HZ))]
+    poses = [move.evaluate(t) for t in ts]
+    zs = [float(h[2, 3]) for h, _, _ in poses if h is not None]
+    ants = [a for _, a, _ in poses if a is not None]
+    assert max(abs(b - a) for a, b in itertools.pairwise(zs)) < 0.0003
+    assert max(float(np.max(np.abs(b - a))) for a, b in itertools.pairwise(ants)) < 0.02
+    twin = BreathingMove(random.Random(0))
+    for t, (head, antennas, _yaw) in zip(ts[::7], poses[::7], strict=True):
+        twin_head, twin_antennas, _ = twin.evaluate(t)
+        assert head is not None and twin_head is not None
+        assert antennas is not None and twin_antennas is not None
+        assert np.array_equal(head, twin_head) and np.array_equal(
+            antennas, twin_antennas
+        )
+    # out-of-order re-evaluation on the same move reads the same plan
+    head_10, ant_10, _ = move.evaluate(10.0)
+    head_10_ref, ant_10_ref, _ = poses[int(10.0 * CONTROL_HZ)]
+    assert head_10 is not None and head_10_ref is not None
+    assert ant_10 is not None and ant_10_ref is not None
+    assert np.array_equal(head_10, head_10_ref) and np.array_equal(ant_10, ant_10_ref)
+
+
+def test_fade_out_lands_at_neutral_at_rest() -> None:
+    move = BreathingMove(random.Random(0))
+    offset = next(
+        k * 0.01
+        for k in range(6000)
+        if _z(move, k * 0.01) > 0.0
+        and np.any(_outward(move, k * 0.01) > ANTENNA_MIN_RAD + 1e-6)
+    )
+    fade = _BreathingFadeOut(move, t_offset=offset)
+    assert fade.duration == BLEND_S
+    head_end, antennas_end, _ = fade.evaluate(BLEND_S)
+    assert head_end is not None and antennas_end is not None
+    assert np.allclose(head_end, NEUTRAL[0], atol=1e-6)
+    assert np.allclose(antennas_end, NEUTRAL[1], atol=1e-6)
+    head_near, antennas_near, _ = fade.evaluate(BLEND_S - 1e-3)
+    assert head_near is not None and antennas_near is not None
+    assert np.allclose(head_near, NEUTRAL[0], atol=1e-5)
+    assert np.allclose(antennas_near, NEUTRAL[1], atol=1e-5)
+    period = 1.0 / CONTROL_HZ
+    poses = [fade.evaluate(k * period) for k in range(int(BLEND_S * CONTROL_HZ) + 1)]
+    zs = [float(h[2, 3]) for h, _, _ in poses if h is not None]
+    ants = [a for _, a, _ in poses if a is not None]
+    # the envelope adds its own slope: 5 mm over BLEND_S at a minjerk peak (1.875x mean)
+    # is ~0.31 mm per tick, and up to 15° of antenna lean the same way is ~0.016 rad
+    assert max(abs(b - a) for a, b in itertools.pairwise(zs)) < 0.0005
+    assert max(float(np.max(np.abs(b - a))) for a, b in itertools.pairwise(ants)) < 0.03
 
 
 def test_blend_into_goes_from_source_to_the_moves_start() -> None:

@@ -32,7 +32,13 @@ from reachy_mini_bridge.errors import (
     MotorsNotEnabledError,
 )
 from reachy_mini_bridge.fake_reachy_mini import FakeReachyMini
-from reachy_mini_bridge.motion import BLEND_S, BREATH_Z_M, NEUTRAL_ANTENNAS
+from reachy_mini_bridge.motion import (
+    ANTENNA_MIN_RAD,
+    ANTENNA_OUTWARD,
+    BLEND_S,
+    BREATH_Z_M,
+    NEUTRAL_ANTENNAS,
+)
 
 
 class _ToneSynth:
@@ -1137,20 +1143,20 @@ def test_start_head_tracking_requires_entry() -> None:
 # --- presence & breathing (motion loop) ---------------------------------------------
 
 
-def test_breathing_targets_oscillate_in_z() -> None:
-    async def run() -> tuple[list[float], tuple[float, float]]:
+def test_breathing_rises_from_neutral_and_antennas_lean_outward() -> None:
+    async def run() -> tuple[list[float], npt.NDArray[np.float64]]:
         async with ReachyMiniApi("fake") as api:
             await api.set_motors_state("enabled")
-            await asyncio.sleep(BLEND_S + 0.8)
-            z = _head_z(api)[-20:]
+            await asyncio.sleep(BLEND_S + 1.0)
             _head, antennas, _yaw = _fake(api).last_target
-            return z, (float(antennas[0]), float(antennas[1]))
+            return _head_z(api)[-20:], np.asarray(antennas, dtype=np.float64)
 
-    z, (a0, a1) = asyncio.run(run())
+    z, antennas = asyncio.run(run())
+    # 1 s into the first breath z has risen ~1.7 mm, from ~0.8 mm twenty ticks earlier
     assert max(z) - min(z) > 0.0005
-    assert all(abs(v) <= BREATH_Z_M + 1e-6 for v in z)
-    # counter-phase sway: the two antennas' offsets from neutral have opposite signs
-    assert (a0 - NEUTRAL_ANTENNAS[0]) * (a1 - NEUTRAL_ANTENNAS[1]) <= 0
+    assert all(-1e-6 <= v <= BREATH_Z_M + 1e-6 for v in z)
+    # outward only: neither antenna ever leans inside its neutral lean
+    assert np.all(ANTENNA_OUTWARD * antennas >= ANTENNA_MIN_RAD - 1e-6)
 
 
 def test_breathing_off_holds_neutral() -> None:
@@ -1195,7 +1201,7 @@ def test_set_breathing_while_idle_eases_to_neutral() -> None:
             await asyncio.sleep(1.0)
             before = len(_fake(api).targets)
             await api.set_breathing(False)
-            # A fade-out (continuing breathing's own phase to zero velocity) precedes
+            # A fade-out (playing the breathing plan on, its offsets fading to zero) precedes
             # the neutral blend, so this settles a full BLEND_S later than a plain one.
             await asyncio.sleep(2 * BLEND_S + 0.2)
             return _head_z(api)[before:]

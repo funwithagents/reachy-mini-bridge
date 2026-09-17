@@ -29,7 +29,7 @@ from reachy_mini import ReachyMini
 from reachy_mini_bridge.api import ReachyMiniApi
 from reachy_mini_bridge.audio import TTSEngineSynthesizer
 from reachy_mini_bridge.errors import GravityCompensationUnsupportedError
-from reachy_mini_bridge.motion import BLEND_S
+from reachy_mini_bridge.motion import BLEND_S, BREATH_REST_S, BREATH_S
 from reachy_mini_bridge.testing import require_env, requires_caps
 
 # A public ElevenLabs voice used throughout tts-engine's own docs; override with
@@ -269,7 +269,7 @@ def test_breathing_moves_the_head_and_breathing_off_holds_it(
     live_api: tuple[ReachyMiniApi, frozenset[str]],
 ) -> None:
     """specs/motion.md: with presence and breathing on, the idle move visibly breathes
-    (a slow z-axis sine); `set_breathing(False)` holds the head still afterwards."""
+    (slow breaths on the z axis, with random rests between them); `set_breathing(False)` holds the head still afterwards."""
     requires_caps(live_api, "motion")
     api, _caps = live_api
     robot: Any = api.robot
@@ -286,7 +286,8 @@ def test_breathing_moves_the_head_and_breathing_off_holds_it(
     async def scenario() -> tuple[float, float]:
         await api.set_motors_state("enabled")
         await asyncio.sleep(1.0)
-        breathing_range = await sample_z(6.0)
+        # long enough to always contain a whole breath, wherever the sample starts
+        breathing_range = await sample_z(BREATH_S + BREATH_REST_S[1] + 1.0)
         await api.set_breathing(False)
         await asyncio.sleep(BLEND_S + 0.5)
         still_range = await sample_z(3.0)

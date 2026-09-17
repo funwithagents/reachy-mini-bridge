@@ -12,15 +12,17 @@ daemon-side move makes the daemon drop every ``set_target`` for its duration.
 from __future__ import annotations
 
 import asyncio
+import bisect
 import concurrent.futures
 import logging
 import math
 import queue
+import random
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Literal, Self
 
 import numpy as np
 from reachy_mini.motion.goto import GotoMove
@@ -47,17 +49,28 @@ _logger = logging.getLogger(__name__)
 CONTROL_HZ = 60.0
 # Every entry into a move is a minjerk blend of this length (specs/motion.md "The loop").
 BLEND_S = 0.5
-# BreathingMove parameters — the conversation app's, seen on hardware.
-BREATH_Z_M = 0.005
-BREATH_HZ = 0.1
-ANTENNA_SWAY_RAD = math.radians(15)
-ANTENNA_HZ = 0.5
+# BreathingMove parameters (specs/motion.md "The moves"). The peaks are the conversation
+# app's, seen on hardware; the rests and the independent antennas are what make the idle
+# read as organic rather than mechanical.
+BREATH_Z_M = 0.005  # a breath peaks this far above neutral, then returns to it
+BREATH_S = 5.0  # one breath: a raised-cosine rise and fall
+BREATH_REST_S = (1.0, 5.0)  # uniform rest at neutral between two breaths
+ANTENNA_HOLD_S = (0.5, 4.0)  # uniform hold between two antenna moves
+ANTENNA_MOVE_S = (0.8, 2.5)  # uniform duration of one minjerk antenna move
 
 NEUTRAL_HEAD: npt.NDArray[np.float64] = np.array(INIT_HEAD_POSE, dtype=np.float64)
 NEUTRAL_ANTENNAS: npt.NDArray[np.float64] = np.array(
     INIT_ANTENNAS_JOINT_POSITIONS, dtype=np.float64
 )
 NEUTRAL_BODY_YAW = 0.0
+# The antennas roam between the neutral lean (upstream's ~10° anti-shake offset — the
+# floor is exactly NEUTRAL_ANTENNAS, not the rounded radians(10)) and that lean plus the
+# previous animation's 15° sway, i.e. ~25° outward.
+ANTENNA_MIN_RAD = float(abs(NEUTRAL_ANTENNAS[0]))
+ANTENNA_MAX_RAD = ANTENNA_MIN_RAD + math.radians(15)
+# Joint sign of "outward from vertical" per antenna [right, left]: the sign of upstream's
+# SLEEP_ANTENNAS_JOINT_POSITIONS ([-3.05, 3.05], the antennas folded fully out).
+ANTENNA_OUTWARD: npt.NDArray[np.float64] = np.array([-1.0, 1.0])
 
 # (head 4x4, antennas [right, left] rad, body yaw rad) — a fully specified pose.
 type Pose = tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], float]
@@ -81,28 +94,113 @@ class HoldMove(Move):
 
 
 def _fade_in(t: float, duration: float = BLEND_S) -> float:
-    """Smooth 0 -> 1 ramp (the same minjerk shape as the entry blend).
-
-    A sine's value is zero exactly where its slope is steepest, so entering
-    ``BreathingMove`` at full amplitude hands off from the blend's zero velocity
-    (minjerk ends at rest) straight into the antennas' peak angular velocity in one
-    control tick — a real jerk, not a tick-rate artifact: seen on hardware as a snap at
-    the exact moment breathing starts, worse at a slower tick rate (a bigger single-step
-    jump), not better (specs/motion.md open question 1). Fading the amplitude in over
-    ``duration`` keeps the velocity at zero there too, matching the blend it follows.
-    """
+    """The minjerk 0 -> 1 ramp (the entry blend's shape) that ``_BreathingFadeOut``
+    inverts to fade a plan's offsets out to neutral at rest."""
     if t >= duration:
         return 1.0
     return time_trajectory(t / duration, InterpolationTechnique.MIN_JERK)
 
 
-class BreathingMove(Move):
-    """The idle move with breathing on: a slow z sine, antennas swaying in counter-phase.
+@dataclass(frozen=True)
+class _Segment:
+    """One rest-to-rest piece of a scalar track: a hold, a breath or a minjerk move.
 
-    The amplitude fades in over the first ``BLEND_S`` seconds (see :func:`_fade_in`) so
-    the entry blend's zero velocity carries continuously into the sine, rather than
-    snapping the antennas straight to their peak angular velocity.
+    Every shape has zero slope at both ends, so consecutive segments hand off with
+    continuous velocity whatever their order (specs/motion.md "The moves").
     """
+
+    start: float  # value at the segment's start
+    end: float  # value at its end (== start for a hold or a breath)
+    duration: float
+    shape: Literal["hold", "breath", "minjerk"]
+    peak: float = 0.0  # breath only: the value at mid-segment
+
+    def value(self, t: float) -> float:
+        u = min(max(t / self.duration, 0.0), 1.0)
+        if self.shape == "hold":
+            return self.start
+        if self.shape == "breath":
+            return (
+                self.start
+                + (self.peak - self.start) * (1.0 - math.cos(2.0 * math.pi * u)) / 2.0
+            )
+        return self.start + (self.end - self.start) * float(
+            time_trajectory(u, InterpolationTechnique.MIN_JERK)
+        )
+
+
+class _Track:
+    """A lazily generated sequence of segments. ``value(t)`` is a pure function of
+    ``t``: segments are drawn only when ``t`` runs past the last one, and never
+    re-drawn, so any ``t`` evaluates the same whenever it is asked."""
+
+    def __init__(
+        self, first: _Segment, draw_next: Callable[[_Segment], _Segment]
+    ) -> None:
+        self._segments = [first]
+        self._ends = [first.duration]  # cumulative end time of each segment
+        self._draw_next = draw_next
+
+    def value(self, t: float) -> float:
+        while t >= self._ends[-1]:
+            nxt = self._draw_next(self._segments[-1])
+            self._segments.append(nxt)
+            self._ends.append(self._ends[-1] + nxt.duration)
+        i = bisect.bisect_right(self._ends, t)
+        seg_start = self._ends[i - 1] if i > 0 else 0.0
+        return self._segments[i].value(t - seg_start)
+
+
+def _breath() -> _Segment:
+    return _Segment(0.0, 0.0, BREATH_S, "breath", peak=BREATH_Z_M)
+
+
+class BreathingMove(Move):
+    """The idle move with breathing on (specs/motion.md "The moves"): a randomised plan
+    of rest-to-rest segments — raised-cosine breaths separated by random rests on the
+    head's z axis, and two independent antenna tracks roaming outward from vertical.
+
+    ``evaluate(t)`` is a pure function of ``t`` for a given ``rng``: the plan extends
+    lazily as ``t`` grows and is never re-drawn. The loop builds an unseeded move at
+    each idle entry; tests pass ``random.Random(seed)``.
+    """
+
+    def __init__(self, rng: random.Random | None = None) -> None:
+        rng = rng if rng is not None else random.Random()
+        # One independent stream per track, so one antenna's draws never shift the
+        # other's (or the head's).
+        head_rng = random.Random(rng.random())
+        antenna_rngs = [random.Random(rng.random()), random.Random(rng.random())]
+
+        def next_head(prev: _Segment) -> _Segment:
+            if prev.shape == "breath":
+                return _Segment(0.0, 0.0, head_rng.uniform(*BREATH_REST_S), "hold")
+            return _breath()
+
+        # The plan begins with a breath, so a fresh idle shows life at once.
+        self._head = _Track(_breath(), next_head)
+
+        def antenna_drawer(r: random.Random) -> Callable[[_Segment], _Segment]:
+            def next_antenna(prev: _Segment) -> _Segment:
+                if prev.shape == "minjerk":
+                    return _Segment(
+                        prev.end, prev.end, r.uniform(*ANTENNA_HOLD_S), "hold"
+                    )
+                target = r.uniform(ANTENNA_MIN_RAD, ANTENNA_MAX_RAD)
+                return _Segment(prev.end, target, r.uniform(*ANTENNA_MOVE_S), "minjerk")
+
+            return next_antenna
+
+        # Each antenna begins with a hold at the floor (== its neutral value).
+        self._antennas = [
+            _Track(
+                _Segment(
+                    ANTENNA_MIN_RAD, ANTENNA_MIN_RAD, r.uniform(*ANTENNA_HOLD_S), "hold"
+                ),
+                antenna_drawer(r),
+            )
+            for r in antenna_rngs
+        ]
 
     @property
     def duration(self) -> float:
@@ -113,26 +211,24 @@ class BreathingMove(Move):
     ) -> tuple[
         npt.NDArray[np.float64] | None, npt.NDArray[np.float64] | None, float | None
     ]:
-        envelope = _fade_in(t)
         head = NEUTRAL_HEAD.copy()
-        head[2, 3] += envelope * BREATH_Z_M * math.sin(2.0 * math.pi * BREATH_HZ * t)
-        sway = envelope * ANTENNA_SWAY_RAD * math.sin(2.0 * math.pi * ANTENNA_HZ * t)
-        antennas = NEUTRAL_ANTENNAS + np.array([sway, -sway])
-        return head, antennas, NEUTRAL_BODY_YAW
+        head[2, 3] += self._head.value(t)
+        angles = np.array([track.value(t) for track in self._antennas])
+        return head, ANTENNA_OUTWARD * angles, NEUTRAL_BODY_YAW
 
 
 class _BreathingFadeOut(Move):
-    """The mirror of ``BreathingMove``'s fade-in: leaving breathing has the same
-    velocity-continuity problem as entering it, on the way out. A plain
-    ``blend_into`` assumes the source is at rest (minjerk starts at zero velocity),
-    but interrupting the sine mid-swing leaves it commanding a real, nonzero velocity
-    the tick before — handing off into a fresh blend snaps it to a stop. This move
-    continues breathing's own phase from ``t_offset`` while fading its amplitude down
-    to zero over ``duration``, landing exactly at neutral with zero velocity, so
-    whatever follows (a blend, or nothing) starts from a state actually at rest.
+    """Leaving breathing mid-plan (specs/motion.md "The moves"): keep playing ``move``
+    from ``t_offset`` while a minjerk envelope scales every track's offset from neutral
+    down to zero over ``duration`` — landing at neutral at rest, so whatever follows
+    (a blend, or nothing) starts from a source that is actually at rest. A plain blend
+    assumes that, and a track caught mid-segment is not at rest.
     """
 
-    def __init__(self, t_offset: float, duration: float = BLEND_S) -> None:
+    def __init__(
+        self, move: BreathingMove, t_offset: float, duration: float = BLEND_S
+    ) -> None:
+        self._move = move
         self._t_offset = t_offset
         self._duration = duration
 
@@ -146,16 +242,12 @@ class _BreathingFadeOut(Move):
         npt.NDArray[np.float64] | None, npt.NDArray[np.float64] | None, float | None
     ]:
         envelope = 1.0 - _fade_in(t, self._duration)
-        abs_t = self._t_offset + t
-        head = NEUTRAL_HEAD.copy()
-        head[2, 3] += (
-            envelope * BREATH_Z_M * math.sin(2.0 * math.pi * BREATH_HZ * abs_t)
-        )
-        sway = (
-            envelope * ANTENNA_SWAY_RAD * math.sin(2.0 * math.pi * ANTENNA_HZ * abs_t)
-        )
-        antennas = NEUTRAL_ANTENNAS + np.array([sway, -sway])
-        return head, antennas, NEUTRAL_BODY_YAW
+        head, antennas, body_yaw = self._move.evaluate(self._t_offset + t)
+        assert head is not None and antennas is not None  # BreathingMove sets both
+        head = head.copy()
+        head[2, 3] = NEUTRAL_HEAD[2, 3] + envelope * (head[2, 3] - NEUTRAL_HEAD[2, 3])
+        antennas = NEUTRAL_ANTENNAS + envelope * (antennas - NEUTRAL_ANTENNAS)
+        return head, antennas, body_yaw
 
 
 def blend_into(source: Pose, move: Move, seconds: float = BLEND_S) -> GotoMove:
@@ -266,12 +358,14 @@ class MotionSession:
         self._breathing = enabled
         if self._playing is not None and self._playing.primary is not None:
             return  # applies once the queue drains
-        elapsed = self._breathing_steady_state_elapsed()
-        if not enabled and elapsed is not None:
-            # Fade breathing's own amplitude out rather than handing its current
-            # (nonzero) velocity straight to a fresh blend, which assumes rest.
+        breathing = self._playing_breathing()
+        if not enabled and breathing is not None:
+            # Fade the plan's offsets out rather than handing a track caught
+            # mid-segment (a nonzero velocity) straight to a fresh blend, which assumes
+            # rest (specs/motion.md "Leaving breathing mid-plan").
+            move, elapsed = breathing
             self._playing = _Playing(
-                stages=[_BreathingFadeOut(t_offset=elapsed)],
+                stages=[_BreathingFadeOut(move, t_offset=elapsed)],
                 primary=None,
                 stage=0,
                 stage_start=time.monotonic(),
@@ -279,18 +373,16 @@ class MotionSession:
             return
         self._playing = None  # re-blend into the other idle move next tick
 
-    def _breathing_steady_state_elapsed(self) -> float | None:
-        """Seconds into ``BreathingMove`` if that's what's currently playing (past its
-        entry blend, no primary), else ``None``."""
+    def _playing_breathing(self) -> tuple[BreathingMove, float] | None:
+        """The ``BreathingMove`` currently playing past its entry blend (no primary),
+        with the seconds elapsed into it — else ``None``."""
         playing = self._playing
-        if (
-            playing is None
-            or playing.primary is not None
-            or playing.stage != 1
-            or not isinstance(playing.stages[1], BreathingMove)
-        ):
+        if playing is None or playing.primary is not None or playing.stage != 1:
             return None
-        return time.monotonic() - playing.stage_start
+        move = playing.stages[1]
+        if not isinstance(move, BreathingMove):
+            return None
+        return move, time.monotonic() - playing.stage_start
 
     def pause(self) -> None:
         self._commands.put(self._on_pause)
@@ -328,10 +420,10 @@ class MotionSession:
         if self._playing is not None and self._playing.primary is not None:
             self._playing.primary.done.cancel()
         if self._presence and self._commanding and not self._paused:
-            elapsed = self._breathing_steady_state_elapsed()
+            breathing = self._playing_breathing()
             exit_stage: Move = (
-                _BreathingFadeOut(t_offset=elapsed)
-                if elapsed is not None
+                _BreathingFadeOut(breathing[0], t_offset=breathing[1])
+                if breathing is not None
                 else blend_into(self._last_target, HoldMove())
             )
             self._playing = _Playing(
