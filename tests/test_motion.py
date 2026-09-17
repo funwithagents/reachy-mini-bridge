@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import itertools
+import logging
 import random
 import time
 from pathlib import Path
@@ -17,6 +18,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
+import websockets.exceptions
 from reachy_mini.motion.move import Move
 
 from reachy_mini_bridge.errors import BridgeError
@@ -553,3 +555,67 @@ def test_a_failing_tick_fails_the_primary_and_keeps_the_loop_alive() -> None:
     exc, before, after = asyncio.run(run())
     assert isinstance(exc, RuntimeError)
     assert after > before
+
+
+# --- a lost connection (specs/motion.md "Lifecycle") ---------------------------------
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ConnectionError("Lost connection with the server."),
+        websockets.exceptions.ConnectionClosedError(None, None),
+    ],
+    ids=["ConnectionError", "ConnectionClosedError"],
+)
+def test_lost_connection_logs_once_and_pauses_for_good(
+    error: Exception, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.WARNING, logger="reachy_mini_bridge.motion")
+
+    async def run() -> tuple[
+        concurrent.futures.Future[None],
+        concurrent.futures.Future[None],
+        int,
+        int,
+        float,
+    ]:
+        robot = FakeReachyMini()
+        real_set_target = robot.set_target
+
+        def set_target(*args: object, **kwargs: object) -> None:
+            if daemon_gone:
+                raise error
+            real_set_target(*args, **kwargs)  # type: ignore[arg-type]
+
+        daemon_gone = False
+        monkeypatch.setattr(robot, "set_target", set_target)
+        session = MotionSession(robot, presence=True, breathing=True)
+        async with session:
+            session.resume()
+            in_flight = session.submit(_TestPrimary(2.0, 0.02), None)
+            await asyncio.sleep(BLEND_S + 0.15)  # the trajectory is playing
+            daemon_gone = True
+            await asyncio.sleep(0.1)
+            count_after_loss = len(robot.targets)
+            session.resume()  # a motors resume cannot restart a dead stream
+            later = session.submit(_TestPrimary(0.2, 0.01), None)
+            await asyncio.sleep(0.2)
+            count_later = len(robot.targets)
+            t0 = time.monotonic()
+        return in_flight, later, count_after_loss, count_later, time.monotonic() - t0
+
+    in_flight, later, count_after_loss, count_later, exit_s = asyncio.run(run())
+    exc = in_flight.exception(timeout=1)
+    assert isinstance(exc, BridgeError) and exc.__cause__ is error
+    later_exc = later.exception(timeout=1)
+    assert isinstance(later_exc, BridgeError)
+    assert count_later == count_after_loss  # nothing sent after the loss
+    assert exit_s < 0.2  # no exit blend into a dead socket
+    warnings = [
+        r
+        for r in caplog.records
+        if r.name == "reachy_mini_bridge.motion" and r.levelno >= logging.WARNING
+    ]
+    assert len(warnings) == 1
+    assert "lost connection" in warnings[0].getMessage()

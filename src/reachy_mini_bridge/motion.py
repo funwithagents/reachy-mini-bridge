@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, Self
 
 import numpy as np
+import websockets.exceptions
 from reachy_mini.motion.goto import GotoMove
 from reachy_mini.motion.move import Move
 from reachy_mini.reachy_mini import INIT_ANTENNAS_JOINT_POSITIONS, INIT_HEAD_POSE
@@ -49,6 +50,11 @@ _logger = logging.getLogger(__name__)
 CONTROL_HZ = 60.0
 # Every entry into a move is a minjerk blend of this length (specs/motion.md "The loop").
 BLEND_S = 0.5
+# What upstream raises once the daemon is gone (specs/motion.md "Lifecycle"): the builtin
+# ConnectionError from ws_client.send_command after its receive loop noticed the close,
+# and websockets' ConnectionClosed (not a ConnectionError) on the send that races it.
+_LOST_CONNECTION_ERRORS = (ConnectionError, websockets.exceptions.ConnectionClosed)
+_LOST_CONNECTION_MESSAGE = "the motion loop lost its connection to the daemon"
 # BreathingMove parameters (specs/motion.md "The moves"). The peaks are the conversation
 # app's, seen on hardware; the rests and the independent antennas are what make the idle
 # read as organic rather than mechanical.
@@ -315,6 +321,7 @@ class MotionSession:
         self._presence = presence
         self._breathing = breathing
         self._paused = True
+        self._lost = False  # the daemon is gone: paused for good (specs "Lifecycle")
         self._commanding = False  # sent a target on the previous tick
         self._last_target: Pose = NEUTRAL
         self._queue: list[_Primary] = []  # pending primaries, FIFO
@@ -333,6 +340,9 @@ class MotionSession:
         return primary.done
 
     def _on_submit(self, primary: _Primary) -> None:
+        if self._lost:
+            primary.done.set_exception(BridgeError(_LOST_CONNECTION_MESSAGE))
+            return
         self._queue.append(primary)
         self._paused = False  # specs/motion.md "Motors": play_emotion resumes the loop
 
@@ -426,6 +436,8 @@ class MotionSession:
         self._commands.put(self._on_resume)
 
     def _on_resume(self) -> None:
+        if self._lost:
+            return  # nothing to resume into: the session is over
         self._paused = False  # the next tick re-anchors: _commanding is False
 
     def close(self) -> None:
@@ -486,6 +498,8 @@ class MotionSession:
             if not self._paused:
                 try:
                     self._tick(time.monotonic())
+                except _LOST_CONNECTION_ERRORS as e:
+                    self._on_lost_connection(e)
                 except Exception as e:  # noqa: BLE001 - the loop must survive a bad tick
                     _logger.warning("motion tick failed: %s", e)
                     self._fail_current(e)
@@ -605,3 +619,22 @@ class MotionSession:
             if not primary.done.done():
                 primary.done.set_exception(error)
         self._playing = None
+
+    def _on_lost_connection(self, error: Exception) -> None:
+        """A lost connection is not a bad tick (specs/motion.md "Lifecycle"): one warning,
+        then pause for good — a paused loop sends nothing, so it logs nothing more.
+        Upstream's client does not reconnect; the caller exits and re-enters the api."""
+        _logger.warning("motion loop paused: lost connection to the daemon: %s", error)
+        self._lost = True
+        self._paused = True
+        self._commanding = False
+        pending = list(self._queue)
+        self._queue.clear()
+        if self._playing is not None and self._playing.primary is not None:
+            pending.append(self._playing.primary)
+        self._playing = None
+        for primary in pending:
+            if not primary.done.done():
+                failure = BridgeError(_LOST_CONNECTION_MESSAGE)
+                failure.__cause__ = error
+                primary.done.set_exception(failure)

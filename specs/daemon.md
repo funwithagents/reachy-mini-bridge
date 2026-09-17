@@ -89,9 +89,15 @@ The spawned process runs with the GStreamer-bundle variables removed from its in
 
 The child's stdout/stderr are discarded; a failed launch is reported through `DaemonError` (exit code + command), which the user can re-run by hand to see the daemon's own output.
 
+### The child runs in its own session
+
+The spawned daemon is started with `start_new_session=True` (`setsid()` in the child — the bridge's hosts are macOS and Linux) and its stdin detached (`DEVNULL`, like its stdout/stderr), so it belongs to neither the terminal's session nor its foreground process group. A terminal's Ctrl+C delivers `SIGINT` to every process in the foreground group; a daemon sharing that group would shut down *at the same moment* as the bridge process — closing its WebSocket clients with `1012 service restart` — and the api's ordered teardown ([api.md](api.md) "Lifecycle") would then run against a daemon that is already gone: the motion loop's every tick failing (a warning per tick), upstream's wobbler printing tracebacks for the speech offsets still scheduled for a playing sound, the camera pipeline reporting end-of-stream, and the robot left wherever the dying daemon dropped it. In its own session the daemon sees no terminal signal at all: the bridge process alone gets the `KeyboardInterrupt`, exits the api against a live daemon (motion eases to neutral, tracking and wobbling are switched off daemon-side, media and the client close), and only then does teardown terminate the daemon, which uses its grace to put the robot to sleep. The order in which things stop is the bridge's to decide, and only the bridge stops the daemon.
+
 ### Teardown stops what the bridge started
 
 On exit, an **owned** daemon is terminated (`SIGTERM`), given 10 seconds to exit, then killed. A real daemon uses that grace to put the robot to sleep (measured at about 8 seconds on a Lite). A **borrowed** daemon is left running. Teardown runs on every exit path, including when the body raises.
+
+**An orphaned daemon is the accepted trade-off of the detached session.** Because the daemon no longer shares the terminal's session, it outlives a bridge process that never reaches teardown — one that is `SIGKILL`ed, crashes without unwinding, or loses its terminal (the `SIGHUP` of a closed window goes to the terminal's session, which the daemon has left). Such a daemon keeps serving on its port, with the robot awake. On the next run, `daemon.spawn: "auto"` borrows it (`owned=False`, so the bridge never stops it) and `"always"` raises `DaemonError` naming the port already in use; `pkill -f reachy-mini-daemon` stops it by hand. A parent-death watchdog is deferred (open question 2).
 
 ### One implementation, two users
 
@@ -99,7 +105,7 @@ On exit, an **owned** daemon is terminated (`SIGTERM`), given 10 seconds to exit
 
 ### Testable without a daemon
 
-The process-spawning and readiness-probing steps are injectable seams (module-private callables `managed_daemon` resolves at call time), so the deterministic `tests/` tier drives the own-or-borrow decisions, the readiness loop, the exit-code and timeout errors, and the teardown against a scripted stand-in process — no `reachy-mini-daemon`, no `mujoco`. `launch_command` and the environment scrub are pure functions, tested directly. The live tier exercises the real spawn through the harness.
+The process-spawning and readiness-probing steps are injectable seams (module-private callables `managed_daemon` resolves at call time), so the deterministic `tests/` tier drives the own-or-borrow decisions, the readiness loop, the exit-code and timeout errors, and the teardown against a scripted stand-in process — no `reachy-mini-daemon`, no `mujoco`. `launch_command` and the environment scrub are pure functions, tested directly. The real `_spawn` seam has its own tests on a trivial long-lived child (POSIX only): the child's session and process group differ from the spawner's, and a `SIGINT` sent to the spawner's whole process group leaves the child alive. The live tier exercises the real spawn through the harness.
 
 ## Relationship to the other specs
 
@@ -111,3 +117,4 @@ The process-spawning and readiness-probing steps are injectable seams (module-pr
 ## Open questions
 
 1. **Daemon output.** Whether to forward the child's stdout/stderr into the bridge's logger (at `DEBUG`) instead of discarding it, for diagnosing failed launches in-process, is deferred until the discard-plus-`DaemonError` path proves insufficient in practice.
+2. **Parent-death watchdog.** Stopping an orphaned daemon automatically ("Teardown" above) is deferred: Linux offers `prctl(PR_SET_PDEATHSIG, SIGTERM)` in a `preexec_fn`, macOS has no equivalent, and a cross-platform answer is a wrapper process polling `os.getppid()` — extra moving parts for a benign case (`auto` borrows the orphan; `pkill` stops it). Revisit if orphans prove to be a nuisance in practice.

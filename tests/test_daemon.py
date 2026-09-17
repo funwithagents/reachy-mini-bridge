@@ -8,7 +8,10 @@ readiness loop, the error paths, and the teardown.
 
 from __future__ import annotations
 
+import os
 import subprocess
+import sys
+import textwrap
 from collections.abc import Iterator
 
 import pytest
@@ -174,6 +177,59 @@ def test_scrubbed_env_defaults_to_the_process_env(
     env = daemon.scrubbed_env()
     assert "GST_PLUGIN_PATH_1_0" not in env
     assert env["RMB_KEEP_ME"] == "1"
+
+
+# --- the real spawn seam (specs/daemon.md "The child runs in its own session") -------
+
+_SLEEPER = [sys.executable, "-c", "import time; time.sleep(30)"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX sessions / process groups")
+def test_spawn_puts_the_child_in_its_own_session() -> None:
+    proc = daemon._spawn(_SLEEPER, daemon.scrubbed_env())
+    try:
+        assert os.getsid(proc.pid) != os.getsid(0)
+        assert os.getpgid(proc.pid) != os.getpgid(0)
+    finally:
+        proc.terminate()
+        proc.wait()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX sessions / process groups")
+def test_terminal_sigint_does_not_reach_the_child() -> None:
+    """The bug itself: a terminal's Ctrl+C is a SIGINT to the whole foreground process
+    group. The harness below plays the bridge process: it spawns a child through the
+    real seam, then interrupts its own process group as a terminal would — the child
+    must survive it (only `_stop` ends a daemon, after the robot session closed)."""
+    harness = textwrap.dedent(
+        f"""
+        import os, signal, sys, time
+        from reachy_mini_bridge import daemon
+        # A handler, not SIG_IGN: an ignored disposition is inherited across exec,
+        # which would shield the child whatever the seam does.
+        signal.signal(signal.SIGINT, lambda *_: None)
+        child = daemon._spawn({_SLEEPER!r}, daemon.scrubbed_env())
+        time.sleep(0.2)
+        os.killpg(os.getpgrp(), signal.SIGINT)  # what the terminal does on Ctrl+C
+        time.sleep(0.5)
+        print(child.poll())
+        child.terminate()
+        child.wait()
+        """
+    )
+    # In its own session, so the killpg cannot reach this pytest process.
+    result = subprocess.run(
+        [sys.executable, "-c", harness],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        start_new_session=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "None", (
+        f"the child died of the group SIGINT (poll={result.stdout.strip()})"
+    )
 
 
 # --- own it or borrow it -----------------------------------------------------------

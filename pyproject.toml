@@ -14,6 +14,10 @@ dependencies = [
     # rate); MIT, wraps BSD-2-Clause libsamplerate, ships prebuilt wheels. Permissive
     # and small, so it sits in the core rather than an extra (see specs/audio.md).
     "samplerate>=0.2",
+    # The motion loop catches websockets' ConnectionClosed to tell a lost daemon from a
+    # bad tick (specs/motion.md "Lifecycle"). Already resolved through reachy-mini
+    # (websockets<16,>=12); declared because the bridge imports it directly.
+    "websockets>=12",
 ]
 
 [project.optional-dependencies]

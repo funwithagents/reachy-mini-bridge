@@ -198,7 +198,18 @@ def _placo_available() -> bool:
 
 def _spawn(cmd: list[str], env: dict[str, str]) -> _Process:
     return subprocess.Popen(
-        cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env
+        cmd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=env,
+        # Own session => own process group (specs/daemon.md "The child runs in its own
+        # session"): a terminal's Ctrl+C is a SIGINT to the whole foreground group, and a
+        # daemon sharing it would die *with* the bridge instead of last — the api's
+        # teardown would then run against a dead server (a warning per motion tick,
+        # wobbler tracebacks, the robot left wherever it dropped). Detached, the daemon
+        # sees no terminal signal; only `_stop` ends it, after the robot session closed.
+        start_new_session=True,
     )
 
 
