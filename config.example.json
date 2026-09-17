@@ -9,7 +9,7 @@
   },
   "daemon": {
     "spawn": "auto",
-    "headless": true,
+    "headless": false,
     "scene": null,
     "preload_datasets": true,
     "startup_timeout": 45.0

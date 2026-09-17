@@ -51,13 +51,26 @@ dev = [
     # bridge dogfoods it in tests-e2e/; stays optional for consumers.
     "reachy-mini-bridge[test]",
 ]
+# The Gradio control panel in examples/control_panel (specs/control_panel.md): a
+# manual test/demo app, not part of the package. Its own group so a consumer or CI
+# can leave it out (`uv sync --no-group demo`); pulled in by default (see
+# `default-groups` below) so `uv run pyright` covers examples/ in a normal dev env.
+demo = [
+    "gradio>=5",
+    "reachy-mini-bridge[sim,tts]",
+]
 
 [tool.uv.sources]
 # tts-engine is a first-party sibling repo; a local path dependency during
 # development (a pinned git URL later, per specs/project.md).
 tts-engine = { path = "../tts-engine", editable = true }
+# Self-reference for the groups above that pull in the package's own extras.
+reachy-mini-bridge = { workspace = true }
 
 [tool.uv]
+# Both groups install by default: `demo` is separate so it can be opted out of, not so
+# that the verification gate (ruff / pyright over examples/) runs in a partial env.
+default-groups = ["dev", "demo"]
 # reachy-mini gates PyGObject to Linux (macOS/Windows use the self-contained
 # gstreamer-bundle). PyGObject/pycairo are sdist-only in the pinned range, so uv's
 # universal lock would try to *build* them on a non-Linux host just to read their
@@ -75,9 +88,11 @@ target-version = "py312"  # keep in sync with requires-python
 [tool.pytest.ini_options]
 # Only the fast, deterministic tier is collected by default; tests-e2e/ is opt-in.
 testpaths = ["tests"]
+# Lets tests/ import the example app (`examples.control_panel...`, specs/control_panel.md).
+pythonpath = ["."]
 
 [tool.pyright]
-include = ["src", "tests", "tests-e2e"]  # type-check test code too, not just src
+include = ["src", "tests", "tests-e2e", "examples"]  # type-check tests and examples too
 venvPath = "."
 venv = ".venv"
 pythonVersion = "3.12"

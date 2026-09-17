@@ -18,6 +18,7 @@ Where things live. This is a coarse, module-level map — for the full file inve
 | `tests/` | Fast, deterministic, no-network tests; mirrors the `src/reachy_mini_bridge/` module structure |
 | `tests-e2e/` | Opt-in live tests that call real external services (not collected by default `pytest`) |
 | `docs/` | Reference notes (not specs) — e.g. [docs/reachy-mini-api.md](docs/reachy-mini-api.md), what we learned about the upstream `reachy_mini` SDK |
+| `examples/` | Runnable example apps, not part of the package — `control_panel/`, a Gradio control panel over `ReachyMiniApi` (`demo` dependency group; `uv run python -m examples.control_panel --config <file>`; spec: [specs/control_panel.md](specs/control_panel.md)) |
 
 ### `src/reachy_mini_bridge/` modules
 

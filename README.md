@@ -31,6 +31,7 @@ The upstream `reachy_mini` SDK gives full, low-level access to the robot. The br
 | [plans/](plans/) | Implementation plans that turned those specs into code |
 | [docs/](docs/) | Reference notes: the upstream SDK, running the sim daemon, testing your project against the bridge |
 | [tests/](tests/), [tests-e2e/](tests-e2e/) | The fast offline suite (default `pytest`) and the opt-in live suite against a sim or real daemon |
+| [examples/](examples/) | Runnable examples, not part of the package: `control_panel/`, a Gradio control panel with a button for every verb (see [Try it from a browser](#try-it-from-a-browser)) |
 
 This is a spec-driven project: [AGENTS.md](AGENTS.md) is the operating manual (how specs, plans and statuses work) and [specs/_overview.md](specs/_overview.md) the architecture.
 
@@ -84,6 +85,17 @@ async with ReachyMiniApi.from_json_file("robot.json") as api:
 
 `from_dict(...)` and `from_json(...)` take the same config as a dict or a JSON string.
 
+### Try it from a browser
+
+The repo ships a Gradio **control panel** — every verb a button, the api's state on screen and refreshed twice a second (motor state, attention, the mode flags, a mic level meter, the camera frame, a log), with a Stop button next to `say` and `play_emotion` that cancels the verb mid-flight. It runs from a checkout (it needs the `demo` dependency group, installed by `uv sync`):
+
+```
+uv run python -m examples.control_panel --config config.example.json   # the sim viewer, spawned for you
+uv run python -m examples.control_panel                                # no config: the offline fake
+```
+
+then open `http://127.0.0.1:7860`. The example config opens the MuJoCo viewer window next to the panel, so the robot's motion and its camera are both visible (an unlocked GUI session is needed). Point `--config` at a `real` config to drive the robot. Design and limits: [specs/control_panel.md](specs/control_panel.md).
+
 ## What the API does
 
 All verbs are `async`; units are human (degrees, seconds, named emotions). The underlying `reachy_mini.ReachyMini` stays reachable as `api.robot` for anything the bridge does not cover.
@@ -131,7 +143,7 @@ Routing both directions through the bridge is what keeps the robot's hardware ec
 {
   "backend": "sim",
   "robot": { "host": "127.0.0.1", "port": 8000 },
-  "daemon": { "spawn": "auto", "headless": true },
+  "daemon": { "spawn": "auto", "headless": false },
   "tts": { "module": { "type": "elevenlabs", "api_key_env": "ELEVENLABS_API_KEY", "voice_id": "..." } },
   "audio": { "xvf3800": null },
   "motion": { "presence": true, "breathing": true, "wobbling": true, "tracking": true }
@@ -139,7 +151,7 @@ Routing both directions through the bridge is what keeps the robot's hardware ec
 ```
 
 - `robot` — keyword arguments forwarded verbatim to upstream `ReachyMini(...)`; ignored on `fake`, so one file switches backends by changing `backend` alone.
-- `daemon` — `sim`, or `real` for a robot plugged into this machine over USB (loopback `host` only). `"spawn": "auto"` reuses a daemon already listening at `host:port` or spawns one — a headless MuJoCo daemon for `sim`, the robot's hardware daemon for `real` (it wakes the robot, and puts it to sleep on exit) — and stops it on exit; `"always"` insists on spawning; `"never"` (default) only connects, which is what a wireless robot needs. `"headless": false` opens the MuJoCo viewer; `headless` and `scene` play no part on `real`.
+- `daemon` — `sim`, or `real` for a robot plugged into this machine over USB (loopback `host` only). `"spawn": "auto"` reuses a daemon already listening at `host:port` or spawns one — the MuJoCo daemon for `sim`, the robot's hardware daemon for `real` (it wakes the robot, and puts it to sleep on exit) — and stops it on exit; `"always"` insists on spawning; `"never"` (default) only connects, which is what a wireless robot needs. For `sim`, `"headless": false` (the example config) opens the MuJoCo **viewer**, so you watch the robot move and the camera works; it needs an unlocked GUI session. `"headless": true` (the default) runs the sim without a window, which on macOS has no camera. `headless` and `scene` play no part on `real`.
 - `tts` — the tts-engine module block that builds the default voice for `say`.
 - `audio` — the XVF3800 mic-array profile applied on connect.
 - `motion` — everything that shapes the robot's behaviour at rest, all `true` by default: `presence` (stay alive between verbs) and `breathing` (breathe vs. hold neutral when idle), changed at runtime with `set_presence` / `set_breathing`; `wobbling` (sway the head with every sound the robot plays), changed with `set_wobbling`; `tracking` (autonomously keep a detected face centered, once motors are enabled), changed with `start_head_tracking` / `stop_head_tracking`.

@@ -45,9 +45,10 @@ def test_from_json_file_round_trips_the_repo_example() -> None:
         "media_backend": "local",
         "timeout": 5.0,
     }
+    # The example is the sim viewer (specs/config.md): headless is off on purpose.
     assert cfg.daemon == DaemonConfig(
         spawn="auto",
-        headless=True,
+        headless=False,
         scene=None,
         preload_datasets=True,
         startup_timeout=45.0,

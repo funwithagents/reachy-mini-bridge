@@ -25,14 +25,14 @@ The shape and the constructor trio mirror [`tts-engine`'s configuration](../../t
 {
   "backend": "sim",
   "robot":  { "host": "127.0.0.1", "port": 8000 },
-  "daemon": { "spawn": "auto", "headless": true },
+  "daemon": { "spawn": "auto", "headless": false },
   "tts":    { "module": { "type": "elevenlabs", "api_key_env": "ELEVENLABS_API_KEY", "voice_id": "..." } },
   "audio":  { "xvf3800": null },
   "motion": { "presence": true, "breathing": true, "wobbling": true, "tracking": true }
 }
 ```
 
-Every block is optional: `ReachyMiniConfig()` is a valid config — the `real` backend, upstream's connection defaults, no daemon management, no default synthesizer, firmware audio defaults, and every `motion` switch on. `config.example.json` in the repo root documents every field with placeholder values and is kept in sync with this spec.
+Every block is optional: `ReachyMiniConfig()` is a valid config — the `real` backend, upstream's connection defaults, no daemon management, no default synthesizer, firmware audio defaults, and every `motion` switch on. `config.example.json` in the repo root documents every field with placeholder values and is kept in sync with this spec. It describes the **sim viewer** (`backend: "sim"`, `daemon.spawn: "auto"`, `daemon.headless: false`): the configuration that shows the most — the robot moving in the MuJoCo window, and a working camera — so it is what the README and the [control panel](control_panel.md) start from.
 
 ```python
 @dataclass
