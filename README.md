@@ -96,7 +96,7 @@ uv run python -m examples.control_panel --config config.example.json   # the sim
 uv run python -m examples.control_panel                                # no config: the offline fake
 ```
 
-then open `http://127.0.0.1:7860`. The example config opens the MuJoCo viewer window next to the panel, so the robot's motion and its camera are both visible (an unlocked GUI session is needed). Point `--config` at a `real` config to drive the robot. Design and limits: [specs/control_panel.md](specs/control_panel.md).
+then open `http://127.0.0.1:7860`. The example config opens the MuJoCo viewer window next to the panel and uses your **webcam** as the robot's camera: enable the motors and the simulated robot turns to follow you (see [The simulator](#the-simulator)). It needs an unlocked GUI session and, on macOS, camera permission for the terminal that runs it. Set the config's `daemon.camera.source` to `"sim"` for the rendered scene instead. Point `--config` at a `real` config to drive the robot. Design and limits: [specs/control_panel.md](specs/control_panel.md).
 
 ## What the API does
 
@@ -141,7 +141,7 @@ Routing both directions through the bridge is what keeps the robot's hardware ec
 
 The `sim` backend is upstream's MuJoCo simulation, started through the bridge's own launcher, `python -m reachy_mini_bridge.sim_daemon` (a config with `"daemon": {"spawn": "auto"}` does it for you). The launcher runs upstream's daemon unchanged apart from these additions ([specs/sim_daemon.md](specs/sim_daemon.md)):
 
-- **Face tracking works.** Upstream's sim never runs its tracking step, and its tracker uses a camera matrix scaled for the real robot's sensor, which puts the head about 45° off the face. The launcher fixes both. With the viewer open, the head turns onto a face, swings a few degrees past it, and settles on it. These are bugs in the upstream simulator; a draft report is in [docs/upstream-sim-face-tracking.md](docs/upstream-sim-face-tracking.md).
+- **Face tracking works.** Upstream's sim never runs its tracking step, and its tracker uses a camera matrix scaled for the real robot's sensor, which puts the head about 45° off the face. The launcher fixes both. With the viewer open, the head turns onto a face, swings a few degrees past it, and settles on it. These are bugs in the upstream simulator. The corrections are pinned by fast offline tests that step the corrected loop in MuJoCo with no daemon running, and by the live tests below.
 - **Your webcam as the robot's camera.** With `"daemon": {"camera": {"source": "webcam"}}`, the sim's camera shows your computer's webcam instead of the rendered scene. Face tracking, `get_camera_frame()` and the control panel then see you, with or without the viewer window. The webcam counts as fixed where the robot's eye rests, so the head follows you without drifting. On macOS, the terminal or editor that starts the daemon needs camera permission.
 - **A face to test with.** The testing package can write a scene with a portrait that a test shows, moves and hides while the daemon runs ([specs/sim_scene.md](specs/sim_scene.md)). The pytest plugin's sim always runs on it.
 
@@ -163,7 +163,7 @@ A sim started by hand with upstream's `reachy-mini-daemon --sim` works for motio
 ```
 
 - `robot` — keyword arguments forwarded verbatim to upstream `ReachyMini(...)`; ignored on `fake`, so one file switches backends by changing `backend` alone.
-- `daemon` — `sim`, or `real` for a robot plugged into this machine over USB (loopback `host` only). `"spawn": "auto"` reuses a daemon already listening at `host:port` or spawns one — the MuJoCo daemon for `sim`, the robot's hardware daemon for `real` (it wakes the robot, and puts it to sleep on exit) — and stops it on exit; `"always"` insists on spawning; `"never"` (default) only connects, which is what a wireless robot needs. For `sim`, `"headless": false` (the example config) opens the MuJoCo **viewer**, so you watch the robot move and the camera works; it needs an unlocked GUI session. `"headless": true` (the default) runs the sim without a window, which has no rendered camera. `"camera": {"source": "webcam"}` makes the sim see through the computer's webcam instead — you in front of the screen are who the simulated robot follows, with or without the viewer ([specs/sim_daemon.md](specs/sim_daemon.md)). `headless`, `scene` and `camera` play no part on `real`.
+- `daemon` — `sim`, or `real` for a robot plugged into this machine over USB (loopback `host` only). `"spawn": "auto"` reuses a daemon already listening at `host:port` or spawns one — the MuJoCo daemon for `sim`, the robot's hardware daemon for `real` (it wakes the robot, and puts it to sleep on exit) — and stops it on exit; `"always"` insists on spawning; `"never"` (default) only connects, which is what a wireless robot needs. For `sim`, `"headless": false` (the example config) opens the MuJoCo **viewer**, so you watch the robot move and the camera works; it needs an unlocked GUI session. `"headless": true` (the default) runs the sim without a window, which has no rendered camera. `"camera": {"source": "webcam"}` (the example config) makes the sim see through the computer's webcam instead — you in front of the screen are who the simulated robot follows, with or without the viewer ([specs/sim_daemon.md](specs/sim_daemon.md)). `headless`, `scene` and `camera` play no part on `real`.
 - `tts` — the tts-engine module block that builds the default voice for `say`.
 - `audio` — the XVF3800 mic-array profile applied on connect.
 - `motion` — everything that shapes the robot's behaviour at rest, all `true` by default: `presence` (stay alive between verbs) and `breathing` (breathe vs. hold neutral when idle), changed at runtime with `set_presence` / `set_breathing`; `wobbling` (sway the head with every sound the robot plays), changed with `set_wobbling`; `tracking` (autonomously keep a detected face centered, once motors are enabled), changed with `start_head_tracking` / `stop_head_tracking`.
@@ -198,9 +198,11 @@ uv run ruff check .
 uv run ruff format .
 uv run pyright
 uv run pytest            # fast offline tier only
-uv run pytest tests-e2e  # live tier: spawns a headless sim daemon, or borrows one
+uv run pytest tests-e2e -rs                                  # live tier, headless sim: motion + audio
+REACHY_MINI_E2E_SIM_VIEWER=1 uv run pytest tests-e2e -rs     # + camera and face tracking (unlocked GUI session)
+REACHY_MINI_E2E_TARGET=real uv run pytest tests-e2e -rs      # a robot plugged in over USB
 ```
 
-The live tier reads `REACHY_MINI_E2E_TARGET` (`sim`, default, or `real`), `REACHY_MINI_HOST` / `REACHY_MINI_PORT`, and `REACHY_MINI_E2E_SIM_VIEWER=1` for the MuJoCo viewer. Tests that can't get a daemon skip.
+The live tier spawns a daemon or borrows one already running at `REACHY_MINI_HOST` / `REACHY_MINI_PORT`. Every sim it spawns runs through the bridge's launcher on the test scene, so with the viewer the tracking tests show the portrait and check that the head turns onto it and settles. `-rs` prints why each test skipped: a skip means a capability or credential was missing, not a pass. The full matrix of targets and capabilities is in [AGENTS.md](AGENTS.md) "Running the live e2e tests".
 
 Design changes start in [specs/](specs/) and are built through [plans/](plans/); [AGENTS.md](AGENTS.md) describes the workflow and status discipline. Reference notes on the upstream SDK are in [docs/reachy-mini-api.md](docs/reachy-mini-api.md).

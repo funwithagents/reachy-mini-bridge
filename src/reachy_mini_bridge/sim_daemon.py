@@ -17,8 +17,7 @@ face tracking work in the sim, and a choice of camera source:
 
 ``--camera webcam`` relays a host camera into the stream the MuJoCo daemon's media server
 reads (RTP raw video on UDP 5005) instead of the eye-camera render, so the tracker and
-every client see the person in front of the computer. Draft upstream report:
-docs/upstream-sim-face-tracking.md.
+every client see the person in front of the computer.
 
 Importing this module pulls in neither ``mujoco`` nor GStreamer; the daemon-side pieces
 import them when they run.

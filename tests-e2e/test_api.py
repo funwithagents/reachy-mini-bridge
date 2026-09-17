@@ -605,8 +605,8 @@ def test_camera_frame_delivers_a_frame(
 # `engaged` / `watching` state start fresh.
 
 FACE = "face"
-# Upstream recentres the head this long after the last detection
-# (docs/upstream-head-tracking-after-face-loss.md); the api's grace period runs on top.
+# Upstream recentres the head this long after the last detection (docs/reachy-mini-api.md
+# "Composition order in the daemon"); the api's grace period runs on top.
 DAEMON_LOST_TIMEOUT_S = 2.0
 LATERAL_M = 0.15
 # Where the head settles.

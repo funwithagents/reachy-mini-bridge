@@ -2,7 +2,7 @@
 
 **Status:** Done
 
-Implements [specs/sim_scene.md](../specs/sim_scene.md): a hidden-by-default portrait plane in the bridge's shipped test scene that the bridge can show, place, move and hide while the daemon runs, so the viewer-sim e2e tier exercises face tracking, the attention hand-back and breathing-when-alone through the daemon's real detection pipeline. Ships in `reachy_mini_bridge.testing` (test-support tooling, not core), alongside the bundled portrait asset. Leaves out the spec's deferrals (headless EGL rendering, an upstream `--scene-path`, multiple prop shapes beyond the portrait plane, filing the draft upstream reports).
+Implements [specs/sim_scene.md](../specs/sim_scene.md): a hidden-by-default portrait plane in the bridge's shipped test scene that the bridge can show, place, move and hide while the daemon runs, so the viewer-sim e2e tier exercises face tracking, the attention hand-back and breathing-when-alone through the daemon's real detection pipeline. Ships in `reachy_mini_bridge.testing` (test-support tooling, not core), alongside the bundled portrait asset. Leaves out the spec's deferrals (headless EGL rendering, an upstream `--scene-path`, multiple prop shapes beyond the portrait plane, reporting the findings upstream).
 
 ## Scope
 

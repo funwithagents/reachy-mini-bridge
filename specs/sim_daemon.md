@@ -16,7 +16,7 @@ tests:
 
 Every MuJoCo daemon the bridge starts runs through the bridge's own launcher, `python -m reachy_mini_bridge.sim_daemon`: upstream's daemon, unchanged in everything but three corrections that make **face tracking work in the sim** — so the viewer sim is a robot stand-in a person can test against by hand, not only a motion and audio target — and one addition, a **host webcam as the sim's camera**, so a person in front of the computer is who the simulated robot sees and follows.
 
-Upstream's MuJoCo backend (SDK 1.10) gets face tracking wrong in three independent ways, each of which alone makes the head miss the face ([../docs/upstream-sim-face-tracking.md](../docs/upstream-sim-face-tracking.md) is the draft upstream report, with the measurements):
+Upstream's MuJoCo backend (SDK 1.10) gets face tracking wrong in three independent ways, each of which alone makes the head miss the face (the measurements are in [../docs/reachy-mini-api.md](../docs/reachy-mini-api.md) "Face tracking" and below):
 
 1. its control loop never steps tracking, so the head never follows at all;
 2. the tracker's camera intrinsics are mis-scaled for the sim camera, so the head settles ~45° away from the face — and, re-engaged from a small weight, freezes on an unreachable aim;
@@ -105,4 +105,4 @@ The live check is manual and in [the plan](../plans/202609171842_sim-daemon-laun
 1. **Webcam calibration.** `hfov` with an ideal pinhole is good enough to follow a person by eye; a calibrated matrix and distortion (upstream ships a calibration tool for the robot's camera) would make the aim precise. Deferred until a manual test needs better than a few degrees.
 2. **The intrinsics clients see.** `GET /api/camera/specs` and the SDK's `media.camera.K` still report upstream's `MujocoCameraSpecs.K`, which is wrong for the rendered camera (and for a webcam); a client computing geometry from frames — upstream's `look_at_image` — inherits the error. Correcting what the daemon reports is deferred until the bridge ships a gaze-from-pixels verb ([api.md](api.md) deferred `look_at_image`), and belongs in the same upstream fix.
 3. **Other webcam formats.** A camera that cannot deliver 1280×720 (a 4:3-only device) is a capture error today; scaling with borders and deriving the focal length from the content width is the extension, deferred until such a camera is in use.
-4. **Removing the corrections.** Each correction is its own piece so it can be dropped once upstream ships the fix ([../docs/upstream-sim-face-tracking.md](../docs/upstream-sim-face-tracking.md)); the fast convergence tests stay, as the check that upstream's fix actually converges.
+4. **Removing the corrections.** Each correction is its own piece so it can be dropped once upstream ships the fix; the fast convergence tests stay, as the check that upstream's fix actually converges.

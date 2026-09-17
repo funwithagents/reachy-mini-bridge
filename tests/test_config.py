@@ -46,12 +46,13 @@ def test_from_json_file_round_trips_the_repo_example() -> None:
         "media_backend": "local",
         "timeout": 5.0,
     }
-    # The example is the sim viewer (specs/config.md): headless is off on purpose.
+    # The example is the sim viewer seeing through the host webcam (specs/config.md):
+    # headless is off and the camera source is `webcam` on purpose.
     assert cfg.daemon == DaemonConfig(
         spawn="auto",
         headless=False,
         scene=None,
-        camera=SimCameraSettings(source="sim", device=None, hfov_deg=70.0),
+        camera=SimCameraSettings(source="webcam", device=None, hfov_deg=70.0),
         preload_datasets=True,
         startup_timeout=45.0,
     )

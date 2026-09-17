@@ -16,10 +16,9 @@ here are what it runs, for when you want to start a daemon by hand.
 reachy_mini_bridge.sim_daemon` ([../specs/sim_daemon.md](../specs/sim_daemon.md)):
 upstream's daemon plus the corrections that make face tracking work in the sim (upstream's
 MuJoCo loop never steps tracking, and its tracker's intrinsics put the head ~45° off the
-face — [upstream-sim-face-tracking.md](upstream-sim-face-tracking.md)), and a choice of
-camera source. It takes upstream's flags. Start the sim through it when you start one by
-hand for the bridge to borrow; upstream's `reachy-mini-daemon --sim` below works for motion
-and audio but not for face tracking.
+face), and a choice of camera source. It takes upstream's flags. Start the sim through it
+when you start one by hand for the bridge to borrow; upstream's `reachy-mini-daemon --sim`
+below works for motion and audio but not for face tracking.
 
 ### Headless sim — CI (motion + audio, no camera)
 

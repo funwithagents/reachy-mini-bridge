@@ -60,7 +60,7 @@ _CONSUMED_SLICE: list[tuple[str, type, str]] = [
         )
     ),
     # `stop_sound` stays out: upstream `MediaManager` has no such member yet; the fake
-    # models the proposed one (docs/upstream-play-move-cancellation.md).
+    # models the missing one (docs/reachy-mini-api.md "Cancelling a move").
     *(
         ("media", MediaManager, name)
         for name in (

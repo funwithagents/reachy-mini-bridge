@@ -2,7 +2,7 @@
 
 **Status:** Done
 
-Implements [specs/sim_daemon.md](../specs/sim_daemon.md) and the changes it drives in [specs/daemon.md](../specs/daemon.md) ("The launch command"), [specs/config.md](../specs/config.md) (`daemon.camera`) and [specs/sim_scene.md](../specs/sim_scene.md) ("Head tracking converges on the face"). Delivers a core `reachy_mini_bridge.sim_daemon` launcher that every bridge-spawned sim runs through — tracking stepped on each control tick, the tracker's intrinsics corrected, and a `webcam` camera source with fixed-camera tracking geometry — rebuilds the test scene's launcher as an extension of it, and tightens the face e2e tests from "the head reacted" to "the head converged". Leaves out the spec's deferrals: webcam calibration, correcting the intrinsics the daemon reports to clients, non-720p webcams, and filing [docs/upstream-sim-face-tracking.md](../docs/upstream-sim-face-tracking.md).
+Implements [specs/sim_daemon.md](../specs/sim_daemon.md) and the changes it drives in [specs/daemon.md](../specs/daemon.md) ("The launch command"), [specs/config.md](../specs/config.md) (`daemon.camera`) and [specs/sim_scene.md](../specs/sim_scene.md) ("Head tracking converges on the face"). Delivers a core `reachy_mini_bridge.sim_daemon` launcher that every bridge-spawned sim runs through — tracking stepped on each control tick, the tracker's intrinsics corrected, and a `webcam` camera source with fixed-camera tracking geometry — rebuilds the test scene's launcher as an extension of it, and tightens the face e2e tests from "the head reacted" to "the head converged". Leaves out the spec's deferrals: webcam calibration, correcting the intrinsics the daemon reports to clients, non-720p webcams, and reporting the corrections upstream.
 
 ## Background (the investigation this plan rests on)
 
@@ -21,7 +21,7 @@ Upstream's MuJoCo backend never calls `step_head_tracking()`, and the face track
 - `tests-e2e/test_faces.py` — convergence assertions; module docstring rewritten
 - `specs/sim_daemon.md` / `specs/sim_scene.md` frontmatter — point at `sim_daemon.py` / `tests/test_sim_daemon.py` once they exist
 - `AGENTS.md` — project-map row for `sim_daemon.py`; e2e table note that every sim runs through the launcher; a manual "sim with a webcam" line
-- Docs: `docs/running-the-sim-daemon.md` (recipes on the launcher, starting one by hand to borrow, the webcam section, macOS camera permission), `docs/reachy-mini-api.md` ("Face tracking": the intrinsics finding, pointer to the upstream draft), `docs/testing-with-the-bridge.md` (face tests assert convergence), `README.md` (`daemon.camera`), `specs/_overview.md` (sim backend bullet)
+- Docs: `docs/running-the-sim-daemon.md` (recipes on the launcher, starting one by hand to borrow, the webcam section, macOS camera permission), `docs/reachy-mini-api.md` ("Face tracking": the intrinsics finding), `docs/testing-with-the-bridge.md` (face tests assert convergence), `README.md` (`daemon.camera`), `specs/_overview.md` (sim backend bullet)
 - Statuses: `sim_daemon.md` Stable → Implemented, `daemon.md` and `sim_scene.md` Updated → Implemented (both files + `specs/_index.md`); `config.md` stays `Updated` while [202609162000_motion-loop-presence-and-breathing.md](202609162000_motion-loop-presence-and-breathing.md) is `In progress`; this plan → Done
 
 ## Steps

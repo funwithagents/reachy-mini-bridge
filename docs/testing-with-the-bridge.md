@@ -74,11 +74,14 @@ def test_it_speaks(live_api):
     asyncio.run(api.say("hello", my_synth))
 
 
-def test_it_follows_a_face(live_api):
+def test_it_nods(live_api):
     requires_caps(live_api, "motion")
     api, _caps = live_api
     ...
 ```
+
+(A test that needs the robot to *see* something gates on `camera`, and on `faces` when it
+uses the sim's portrait — see "Testing tracking without a person" below.)
 
 `require_env("SOME_API_KEY")` is the credential counterpart: it skips the test when the
 variable is unset, so a contributor with no keys is never broken.

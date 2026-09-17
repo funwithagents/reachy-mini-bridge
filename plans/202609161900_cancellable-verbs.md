@@ -2,7 +2,7 @@
 
 **Status:** Done
 
-Implements the "Cancellation" contract in [specs/api.md](../specs/api.md) (every async verb is fully cancellable) and the `play_emotion` guarantee it adds, [specs/audio.md](../specs/audio.md) "Stopping a sound file" (`MediaSession.stop_sound()`), and the fake's move timing in [specs/robot.md](../specs/robot.md). It closes the gap measured on a Reachy Mini Lite: a cancelled `play_emotion` stopped commanding the trajectory, but its sound played on for 15 s with the head wobbler swaying the head to it ([docs/upstream-play-move-cancellation.md](../docs/upstream-play-move-cancellation.md)).
+Implements the "Cancellation" contract in [specs/api.md](../specs/api.md) (every async verb is fully cancellable) and the `play_emotion` guarantee it adds, [specs/audio.md](../specs/audio.md) "Stopping a sound file" (`MediaSession.stop_sound()`), and the fake's move timing in [specs/robot.md](../specs/robot.md). It closes the gap measured on a Reachy Mini Lite: a cancelled `play_emotion` stopped commanding the trajectory, but its sound played on for 15 s with the head wobbler swaying the head to it ([docs/reachy-mini-api.md](../docs/reachy-mini-api.md) "Cancelling a move").
 
 **Out of scope (do not build):** a stop for `play_sound` (api.md open question 4), `stop_talking()` (deferred), returning the head to its pre-move pose (the contract says no rewind), re-implementing upstream's playback loop, and any change to how or when the emotion's sound *starts*.
 
@@ -10,7 +10,7 @@ Implements the "Cancellation" contract in [specs/api.md](../specs/api.md) (every
 
 1. [specs/api.md](../specs/api.md) — the "Cancellation" section and the `play_emotion` bullet under "Expression".
 2. [specs/audio.md](../specs/audio.md) — the "Stopping a sound file" bullet under "Shared", and the lifecycle paragraph of "One media session".
-3. [docs/upstream-play-move-cancellation.md](../docs/upstream-play-move-cancellation.md) — why the SDK's own `cancel_move()` must **not** be used.
+3. [docs/reachy-mini-api.md](../docs/reachy-mini-api.md) "Cancelling a move" — why the SDK's own `cancel_move()` must **not** be used.
 4. The code you will change: [`src/reachy_mini_bridge/audio.py`](../src/reachy_mini_bridge/audio.py), [`src/reachy_mini_bridge/api.py`](../src/reachy_mini_bridge/api.py), [`src/reachy_mini_bridge/fake_reachy_mini.py`](../src/reachy_mini_bridge/fake_reachy_mini.py), and their tests `tests/test_audio.py`, `tests/test_api.py`, `tests/test_robot.py`, `tests-e2e/test_api.py`.
 
 ## Facts the design rests on (already verified — do not re-investigate)
@@ -45,8 +45,8 @@ Do the steps in order; run `uv run pytest` after each one.
     def stop_sound(self) -> None:
         """Stop the sound file `play_sound` started.
 
-        Fake-only member: it models the `MediaManager.stop_sound()` proposed upstream
-        (docs/upstream-play-move-cancellation.md); the bridge stops the real backend's
+        Fake-only member: it models the `MediaManager.stop_sound()` upstream lacks
+        (docs/reachy-mini-api.md "Cancelling a move"); the bridge stops the real backend's
         playbin itself meanwhile (specs/audio.md "Stopping a sound file").
         """
         self._commands.append(("media.stop_sound", {}))
@@ -135,7 +135,7 @@ def test_local_audio_backend_keeps_the_playbin_the_bridge_stops() -> None:
     assert "self._playbin" in inspect.getsource(GStreamerAudio.stop_playing)
 ```
 
-Do **not** add `stop_sound` to `_CONSUMED_SLICE` (upstream `MediaManager` has no such member yet); add a comment above the `media` entries saying so, pointing at `docs/upstream-play-move-cancellation.md`.
+Do **not** add `stop_sound` to `_CONSUMED_SLICE` (upstream `MediaManager` has no such member yet); add a comment above the `media` entries saying so, pointing at `docs/reachy-mini-api.md` "Cancelling a move".
 
 ### Step 2 — the fake keeps a move's timing
 
@@ -202,7 +202,7 @@ class _FakeRecordedMoves:
             await self.robot.async_play_move(move)
         except BaseException:
             # Upstream's loop stops on cancel (or on its own error) but leaves the
-            # move's sound playing — docs/upstream-play-move-cancellation.md. Stop it
+            # move's sound playing (docs/reachy-mini-api.md "Cancelling a move"). Stop it
             # before propagating; the media session stays open.
             if has_sound:
                 media.stop_sound()
