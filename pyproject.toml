@@ -17,9 +17,10 @@ dependencies = [
     # Our first-party streaming TTS engine, the default `say` synthesizer adapter's
     # backend (see specs/audio.md). A base dependency: its own base is numpy plus a
     # sounddevice it imports only for its local player, which the bridge never builds
-    # (it injects a robot-speaker sink). The providers are opt-in extras below. Local
-    # path dependency during development; a pinned git URL later (specs/project.md).
-    "tts-engine",
+    # (it injects a robot-speaker sink). The providers are opt-in extras below. A
+    # direct git reference, so a downstream project inherits the source; tracks main
+    # for now, to be pinned to a tag or commit once it settles (specs/project.md).
+    "tts-engine @ git+https://github.com/funwithagents/tts-engine@main",
     # The motion loop catches websockets' ConnectionClosed to tell a lost daemon from a
     # bad tick (specs/motion.md "Lifecycle"). Already resolved through reachy-mini
     # (websockets<16,>=12); declared because the bridge imports it directly.
@@ -73,9 +74,6 @@ demo = [
 ]
 
 [tool.uv.sources]
-# tts-engine is a first-party sibling repo; a local path dependency during
-# development (a pinned git URL later, per specs/project.md).
-tts-engine = { path = "../tts-engine", editable = true }
 # Self-reference for the groups above that pull in the package's own extras.
 reachy-mini-bridge = { workspace = true }
 

@@ -2570,9 +2570,9 @@ requires-dist = [
     { name = "reachy-mini", specifier = ">=1.10" },
     { name = "reachy-mini", extras = ["mujoco"], marker = "extra == 'sim'", specifier = ">=1.10" },
     { name = "samplerate", specifier = ">=0.2" },
-    { name = "tts-engine", editable = "../tts-engine" },
-    { name = "tts-engine", extras = ["elevenlabs"], marker = "extra == 'tts-elevenlabs'", editable = "../tts-engine" },
-    { name = "tts-engine", extras = ["pocket"], marker = "extra == 'tts-pocket'", editable = "../tts-engine" },
+    { name = "tts-engine", git = "https://github.com/funwithagents/tts-engine?rev=main" },
+    { name = "tts-engine", extras = ["elevenlabs"], marker = "extra == 'tts-elevenlabs'" },
+    { name = "tts-engine", extras = ["pocket"], marker = "extra == 'tts-pocket'" },
     { name = "websockets", specifier = ">=12" },
 ]
 provides-extras = ["sim", "tts-elevenlabs", "tts-pocket", "test"]
@@ -3109,7 +3109,7 @@ wheels = [
 [[package]]
 name = "tts-engine"
 version = "0.1.0"
-source = { editable = "../tts-engine" }
+source = { git = "https://github.com/funwithagents/tts-engine?rev=main#d104413f5dabec55e4d968d3181d2c89524d78ef" }
 dependencies = [
     { name = "numpy" },
     { name = "sounddevice" },
@@ -3122,29 +3122,6 @@ elevenlabs = [
 ]
 pocket = [
     { name = "pocket-tts" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "elevenlabs", marker = "extra == 'elevenlabs'" },
-    { name = "mcp", marker = "extra == 'mcp'", specifier = "<2" },
-    { name = "miniaudio", marker = "extra == 'elevenlabs'" },
-    { name = "numpy" },
-    { name = "pocket-tts", marker = "extra == 'pocket'", specifier = ">=3.1.0" },
-    { name = "sounddevice" },
-    { name = "tts-engine", extras = ["elevenlabs", "pocket", "mcp"], marker = "extra == 'all'" },
-    { name = "uvicorn", marker = "extra == 'mcp'" },
-]
-provides-extras = ["elevenlabs", "pocket", "mcp", "all"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pyright", specifier = ">=1.1.411" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-mock" },
-    { name = "ruff", specifier = ">=0.8.0" },
-    { name = "tts-engine", extras = ["all"] },
 ]
 
 [[package]]
