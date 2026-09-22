@@ -29,13 +29,13 @@ import time
 import urllib.request
 from contextlib import AsyncExitStack, suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any, Self, cast
 
 from reachy_mini.motion.move import Move
 
 from . import daemon as _daemon
 from .audio import MediaSession, TTSEngineSynthesizer, cancel_safe_step
-from .config import ReachyMiniConfig
+from .config import IDLE_MODES, ReachyMiniConfig
 from .errors import (
     BridgeError,
     GravityCompensationUnsupportedError,
@@ -52,6 +52,7 @@ if TYPE_CHECKING:
     import numpy.typing as npt
 
     from .audio import SpeechSynthesizer
+    from .motion import IdleMode, IdleMoveFactory
     from .robot import AnyReachyMini
 
 __all__ = ["ReachyMiniApi"]
@@ -142,6 +143,13 @@ class _FakeRecordedMoves:
         return _FakeRecordedMove(move_name, sound_path=sound)
 
 
+def _idle_mode(value: str) -> IdleMode:
+    """``value`` narrowed to an idle mode, or ``ValueError``."""
+    if value not in IDLE_MODES:
+        raise ValueError(f"idle mode must be one of {IDLE_MODES}, got {value!r}")
+    return cast("IdleMode", value)
+
+
 class ReachyMiniApi:
     """Async-native, intention-level API over a robot backend.
 
@@ -194,17 +202,19 @@ class ReachyMiniApi:
         # The bridge's record of the wobbling mode (upstream has no getter).
         self._wobbling = False
         # The motion loop's switches (specs/motion.md), initialized from the config and
-        # reset to it on exit; set_presence/set_breathing change them while entered.
+        # reset to it on exit; set_presence/set_idle/set_idle_move change them while
+        # entered.
         self._presence = self._config.motion.presence
-        self._breathing = self._config.motion.breathing
+        self._idle: IdleMode = _idle_mode(self._config.motion.idle)
+        self._idle_move: IdleMoveFactory | None = self._config.motion.idle_move
         # The api's own record of the tracking weight last requested (as for wobbling),
         # so play_emotion can dip it to 0 for a move and restore it afterwards. None
         # means tracking is not currently active (paused for lack of motors, or off).
         self._tracking_weight: float | None = None
         # Whether tracking should be on whenever motors allow it (the config default,
         # or the caller's last start_head_tracking/stop_head_tracking) — mirrors
-        # _presence/_breathing; distinct from _tracking_weight because tracking, unlike
-        # presence/breathing, needs motors enabled to actually engage.
+        # _presence/_idle; distinct from _tracking_weight because tracking, unlike
+        # presence/idle, needs motors enabled to actually engage.
         self._tracking_wanted = self._config.motion.tracking
         # The attention loop (specs/api.md "Attention"): its state while tracking is
         # active ("engaged" / "watching", None otherwise), the task running it, the
@@ -341,7 +351,10 @@ class ReachyMiniApi:
             # stack unwinds in reverse, so the loop eases to neutral before wobbling
             # (and everything else) tears down.
             motion = MotionSession(
-                robot, presence=self._presence, breathing=self._breathing
+                robot,
+                presence=self._presence,
+                idle=self._idle,
+                idle_move=self._idle_move,
             )
             await stack.enter_async_context(motion)
             self._motion = motion
@@ -378,7 +391,8 @@ class ReachyMiniApi:
             self._attention = None
             self._moves_in_flight = 0
             self._presence = self._config.motion.presence
-            self._breathing = self._config.motion.breathing
+            self._idle = _idle_mode(self._config.motion.idle)
+            self._idle_move = self._config.motion.idle_move
 
     async def _disable_wobbling_if_on(self, robot: AnyReachyMini) -> None:
         # The daemon-side switch is shared across clients: never leave it armed.
@@ -749,13 +763,13 @@ class ReachyMiniApi:
         """
         return self._wobbling
 
-    # --- presence & breathing (background motion) ---
+    # --- presence & the idle move (background motion) ---
 
     async def set_presence(self, enabled: bool) -> None:
         """Whether the robot stays alive between verbs (specs/motion.md).
 
-        On, the motion loop fills every idle moment with the idle move (breathing, or
-        a still neutral hold); off, the bridge commands the head only while a verb
+        On, the motion loop fills every idle moment with the idle move (breathing, a
+        still neutral hold, or the caller's own); off, the bridge commands the head only while a verb
         runs and leaves it where the last move ended — for a caller driving the head
         through the raw robot. Emotions play either way. A mode, not a move: it holds
         until changed and needs no motors. Idle, it transitions at once (through the
@@ -770,21 +784,43 @@ class ReachyMiniApi:
         """Whether presence is on — the config's value outside a session."""
         return self._presence
 
-    async def set_breathing(self, enabled: bool) -> None:
-        """Which idle move presence plays (specs/motion.md): breathing (a slow z-axis
-        sine with counter-phase antenna sway) or the still hold at neutral.
+    async def set_idle(self, mode: str) -> None:
+        """Which idle move presence plays (specs/motion.md): ``"breathing"`` (the
+        built-in animation), ``"hold"`` (a still neutral) or ``"custom"`` (the move
+        registered with :meth:`set_idle_move`; the hold while none is registered).
 
         A mode, not a move: it holds until changed and needs no motors. Idle, it
-        transitions at once through the usual blend; during an emotion it is recorded
-        and applied when the emotion ends.
+        transitions at once (a playing breathing or custom move fades out to neutral
+        first); during an emotion it is recorded and applied when the emotion ends.
+        Raises ``ValueError`` for any other value.
         """
-        self._breathing = enabled
-        self._require_motion().set_breathing(enabled)
+        checked = _idle_mode(mode)
+        motion = self._require_motion()
+        self._idle = checked
+        motion.set_idle(checked)
 
     @property
-    def breathing(self) -> bool:
-        """Whether breathing is on — the config's value outside a session."""
-        return self._breathing
+    def idle(self) -> str:
+        """The idle mode — the config's value outside a session."""
+        return self._idle
+
+    async def set_idle_move(self, factory: IdleMoveFactory | None) -> None:
+        """Register the custom idle move (specs/motion.md "Custom idle moves"): a
+        zero-argument callable returning a fresh ``IdleMove`` — a subclass itself, or a
+        function — or ``None`` to clear it.
+
+        Stored whatever the idle mode is, and played whenever the mode is ``"custom"``;
+        in that mode, idle, it takes effect at once. Raises ``ValueError`` for a factory
+        that is not callable, raises, builds no ``IdleMove``, or whose ``offsets(0.0)``
+        is not an ``IdleOffsets`` of finite numbers — the registered move then stays.
+        """
+        self._require_motion().set_idle_move(factory)  # checks before it stores
+        self._idle_move = factory
+
+    @property
+    def idle_move(self) -> IdleMoveFactory | None:
+        """The registered custom idle move factory — the config's outside a session."""
+        return self._idle_move
 
     # --- audio in (microphone) ---
 

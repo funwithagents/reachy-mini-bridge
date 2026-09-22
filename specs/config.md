@@ -28,11 +28,11 @@ The shape and the constructor trio mirror [`tts-engine`'s configuration](../../t
   "daemon": { "spawn": "auto", "headless": false, "camera": { "source": "webcam" } },
   "tts":    { "module": { "type": "elevenlabs", "api_key_env": "ELEVENLABS_API_KEY", "voice_id": "..." } },
   "audio":  { "xvf3800": null },
-  "motion": { "presence": true, "breathing": true, "wobbling": true, "tracking": true }
+  "motion": { "presence": true, "idle": "breathing", "wobbling": true, "tracking": true }
 }
 ```
 
-Every block is optional: `ReachyMiniConfig()` is a valid config — the `real` backend, upstream's connection defaults, no daemon management, no default synthesizer, firmware audio defaults, and every `motion` switch on. `config.example.json` in the repo root documents every field with placeholder values and is kept in sync with this spec. It describes the **sim viewer seeing through the host webcam** (`backend: "sim"`, `daemon.spawn: "auto"`, `daemon.headless: false`, `daemon.camera.source: "webcam"`): the configuration that shows the most — the robot moving in the MuJoCo window, and its camera on the person in front of the computer, whom it follows — so it is what the README and the [control panel](control_panel.md) start from. Set `source` to `"sim"` for the rendered eye camera instead.
+Every block is optional: `ReachyMiniConfig()` is a valid config — the `real` backend, upstream's connection defaults, no daemon management, no default synthesizer, firmware audio defaults, and the `motion` defaults (every switch on, the idle mode `"breathing"`). `config.example.json` in the repo root documents every field with placeholder values and is kept in sync with this spec. It describes the **sim viewer seeing through the host webcam** (`backend: "sim"`, `daemon.spawn: "auto"`, `daemon.headless: false`, `daemon.camera.source: "webcam"`): the configuration that shows the most — the robot moving in the MuJoCo window, and its camera on the person in front of the computer, whom it follows — so it is what the README and the [control panel](control_panel.md) start from. Set `source` to `"sim"` for the rendered eye camera instead.
 
 ```python
 @dataclass
@@ -45,8 +45,8 @@ class ReachyMiniConfig:
     # a tts-engine `engine` block, verbatim
     tts: dict[str, Any] | None = None
     audio: AudioSettings = field(default_factory=AudioSettings)
-    # everything that shapes the robot's behaviour at rest: the loop's own switches
-    # (presence, breathing) and the daemon-side modes the api arms (wobbling, tracking)
+    # everything that shapes the robot's behaviour at rest: the loop's own modes
+    # (presence, idle, idle_move) and the daemon-side modes the api arms (wobbling, tracking)
     motion: MotionSettings = field(default_factory=MotionSettings)
 ```
 
@@ -148,12 +148,13 @@ The value is carried verbatim to `MediaSession(robot, audio_config=...)`, whose 
 
 ### `motion` block → `MotionSettings`
 
-The initial values of everything that shapes the robot's behaviour at rest: the loop's own idle switches (`presence`, `breathing`, [motion.md](motion.md) "Two switches") and the two daemon-side modes the api arms around them (`wobbling`, `tracking`). Applied when the session starts; each has a runtime verb — `set_presence(enabled)` / `set_breathing(enabled)` / `set_wobbling(enabled)` / `start_head_tracking(...)` / `stop_head_tracking()` — that changes it while entered ([api.md](api.md)).
+The initial values of everything that shapes the robot's behaviour at rest: the loop's own idle modes (`presence`, `idle`, `idle_move`, [motion.md](motion.md) "Presence and the idle mode") and the two daemon-side modes the api arms around them (`wobbling`, `tracking`). Applied when the session starts; each has a runtime verb — `set_presence(enabled)` / `set_idle(mode)` / `set_idle_move(factory)` / `set_wobbling(enabled)` / `start_head_tracking(...)` / `stop_head_tracking()` — that changes it while entered ([api.md](api.md)).
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `presence` | bool | `true` | The background behaviour: while on, the loop fills every idle moment with the idle move so the robot never goes dead between verbs. `false` makes the bridge command the head only while a verb runs — for a caller driving the head through the raw robot. Emotions play either way. |
-| `breathing` | bool | `true` | Which idle move presence plays: `true` breathes (slow breaths with random rests between them, the head roaming in roll/pitch/yaw, the antennas roaming and flicking independently), `false` holds a still neutral. Ignored while `presence` is off. |
+| `idle` | `"breathing"` \| `"hold"` \| `"custom"` | `"breathing"` | Which idle move presence plays: `breathing` is the built-in animation (slow breaths with random rests between them, the head roaming in roll/pitch/yaw, the antennas roaming and flicking independently), `hold` a still neutral, `custom` the caller's own idle move — the one in `idle_move`, or registered later with `set_idle_move`; with none registered `custom` plays the hold ([motion.md](motion.md) "Custom idle moves"). Ignored while `presence` is off. |
+| `idle_move` | a zero-argument callable returning an `IdleMove`, or `None` — **Python only** | `None` | The factory of the custom idle move, stored whatever `idle` is and played whenever `idle` is `"custom"`. It is code, so it is set on the dataclass (`MotionSettings(idle="custom", idle_move=SlowNod)`); a JSON file names the mode and code supplies the move. Checked when the session starts ([motion.md](motion.md) "Custom idle moves"). |
 | `wobbling` | bool | `true` | A robot that talks sways its head while it talks: `ReachyMiniApi` enables upstream's audio-reactive head wobbling on entry and switches it off again on exit whenever it is still on ([api.md](api.md) "Audio-reactive motion (head wobbling)"; mechanism in [audio.md](audio.md) "Head wobbling"). `false` keeps the head still while audio plays (a caller driving the head precisely, or a quiet demo). |
 | `tracking` | bool | `true` | Whether the robot autonomously keeps a detected face centered ([api.md](api.md) "Attention / gaze (autonomous)"). Since tracking moves the robot, the default is realized whenever motors read `enabled` — at session entry if they already are, otherwise on the next `set_motors_state("enabled")` — and, like wobbling, is stopped again on exit if still on. `false` leaves tracking off until `start_head_tracking(...)` is called explicitly. |
 
@@ -161,12 +162,17 @@ The initial values of everything that shapes the robot's behaviour at rest: the 
 @dataclass
 class MotionSettings:
     presence: bool = True
-    breathing: bool = True
+    # "breathing" | "hold" | "custom"
+    idle: str = "breathing"
+    # Python only: the custom idle move's factory
+    idle_move: Callable[[], IdleMove] | None = None
     wobbling: bool = True
     tracking: bool = True
 ```
 
-It is one block, not several top-level keys, because all four switches configure the same thing from a caller's perspective — what the robot looks like when nothing else is commanding it — even though two live in the bridge's own loop (`presence`, `breathing`) and two are daemon-side modes the api merely arms (`wobbling`, `tracking`); more knobs in either category (a listening cue, a tracking weight) would land beside them.
+`IdleMove` is [motion.md](motion.md)'s base class, imported for type checking only, so the config module still loads without `reachy_mini`. The valid modes are the module constant `IDLE_MODES = ("breathing", "hold", "custom")`.
+
+It is one block, not several top-level keys, because every field configures the same thing from a caller's perspective — what the robot looks like when nothing else is commanding it — even though three live in the bridge's own loop (`presence`, `idle`, `idle_move`) and two are daemon-side modes the api merely arms (`wobbling`, `tracking`); more knobs in either category (a listening cue, a tracking weight) would land beside them.
 
 ### `ConfigError`
 
@@ -185,12 +191,13 @@ All enforced by `ReachyMiniConfig.from_dict` (delegating to `DaemonConfig.from_d
 - `robot` must not contain `use_sim` or `spawn_daemon`; with `daemon.spawn != "never"`, `robot.host` (if given) must be a loopback address.
 - `tts`, when not `null`, is an object with a `module` object whose `type` is a non-empty string.
 - `audio.xvf3800`, when not `null`, is a list of two-item lists with a string first item.
-- `motion.presence`, `motion.breathing`, `motion.wobbling` and `motion.tracking` are all booleans.
+- `motion.presence`, `motion.wobbling` and `motion.tracking` are booleans; `motion.idle` ∈ {`breathing`, `hold`, `custom`}.
+- `motion.idle_move` in a dict / JSON config is a `ConfigError` whose message points at `MotionSettings(idle_move=...)`: the field is set from code. The factory itself is checked when the session starts, not by the config layer.
 
 ## Relationship to the other specs
 
-- **[api.md](api.md):** `ReachyMiniApi` is constructed from a `ReachyMiniConfig` (or a backend-string shorthand for one), mirrors the `from_*` trio, applies `motion.wobbling` on entry, arms `motion.tracking` once motors allow it, and starts the motion loop with the `motion.presence` / `motion.breathing` switches.
-- **[motion.md](motion.md):** the `motion` block is the initial state of the loop's presence and breathing switches (and, for `wobbling` / `tracking`, of the daemon-side modes the api arms around it).
+- **[api.md](api.md):** `ReachyMiniApi` is constructed from a `ReachyMiniConfig` (or a backend-string shorthand for one), mirrors the `from_*` trio, applies `motion.wobbling` on entry, arms `motion.tracking` once motors allow it, and starts the motion loop with `motion.presence`, `motion.idle` and `motion.idle_move`.
+- **[motion.md](motion.md):** the `motion` block is the initial state of the loop's presence, idle mode and custom idle move (and, for `wobbling` / `tracking`, of the daemon-side modes the api arms around it).
 - **[robot.md](robot.md):** the `robot` block is what `build_robot(backend, **robot)` forwards.
 - **[daemon.md](daemon.md):** the `daemon` block configures the bridge-owned daemon lifecycle; `backend` selects its launch recipe.
 - **[sim_daemon.md](sim_daemon.md):** `daemon.camera` selects the sim daemon's camera source.

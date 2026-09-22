@@ -30,7 +30,13 @@ from reachy_mini import ReachyMini
 from reachy_mini_bridge.api import ATTENTION_GRACE_S, ReachyMiniApi
 from reachy_mini_bridge.audio import TTSEngineSynthesizer
 from reachy_mini_bridge.errors import GravityCompensationUnsupportedError
-from reachy_mini_bridge.motion import BLEND_S, BREATH_REST_S, BREATH_S
+from reachy_mini_bridge.motion import (
+    BLEND_S,
+    BREATH_REST_S,
+    BREATH_S,
+    IdleMove,
+    IdleOffsets,
+)
 from reachy_mini_bridge.testing import require_env, requires_caps
 from reachy_mini_bridge.testing.sim_scene import DEFAULT_FACE_POS, SimSceneClient
 
@@ -267,7 +273,8 @@ def test_breathing_moves_the_head_and_breathing_off_holds_it(
     live_api: tuple[ReachyMiniApi, frozenset[str]],
 ) -> None:
     """specs/motion.md: with presence and breathing on, the idle move visibly breathes
-    (slow breaths on the z axis, with random rests between them); `set_breathing(False)` holds the head still afterwards."""
+    (slow breaths on the z axis, with random rests between them); `set_idle("hold")`
+    holds the head still afterwards."""
     requires_caps(live_api, "motion")
     api, _caps = live_api
     robot: Any = api.robot
@@ -286,10 +293,10 @@ def test_breathing_moves_the_head_and_breathing_off_holds_it(
         await asyncio.sleep(1.0)
         # long enough to always contain a whole breath, wherever the sample starts
         breathing_range = await sample_z(BREATH_S + BREATH_REST_S[1] + 1.0)
-        await api.set_breathing(False)
+        await api.set_idle("hold")
         await asyncio.sleep(BLEND_S + 0.5)
         still_range = await sample_z(3.0)
-        await api.set_breathing(True)
+        await api.set_idle("breathing")
         return breathing_range, still_range
 
     breathing_range, still_range = asyncio.run(scenario())
@@ -298,6 +305,54 @@ def test_breathing_moves_the_head_and_breathing_off_holds_it(
     )
     assert breathing_range >= 0.002
     assert still_range < 0.001
+
+
+class _Lift(IdleMove):
+    """A custom idle move: the head held 8 mm above neutral."""
+
+    def offsets(self, t: float) -> IdleOffsets:
+        return IdleOffsets(z_mm=8.0)
+
+
+def test_custom_idle_move_drives_the_head(
+    live_api: tuple[ReachyMiniApi, frozenset[str]],
+) -> None:
+    """specs/motion.md "Custom idle moves": a registered `IdleMove` plays in the
+    `custom` idle mode — the head rises to its offset — and leaving the mode brings the
+    head back to neutral."""
+    requires_caps(live_api, "motion")
+    api, _caps = live_api
+    robot: Any = api.robot
+
+    async def head_z() -> float:
+        pose = await asyncio.to_thread(robot.get_current_head_pose)
+        return float(pose[2, 3])
+
+    async def scenario() -> tuple[float, float, float]:
+        await api.set_motors_state("enabled")
+        await api.set_idle("hold")
+        await asyncio.sleep(2 * BLEND_S + 1.0)
+        neutral_z = await head_z()
+        try:
+            await api.set_idle_move(_Lift)
+            await api.set_idle("custom")
+            await asyncio.sleep(BLEND_S + 1.5)
+            lifted_z = await head_z()
+            await api.set_idle("hold")
+            await asyncio.sleep(2 * BLEND_S + 1.0)
+            back_z = await head_z()
+        finally:
+            await api.set_idle_move(None)
+            await api.set_idle("breathing")
+        return neutral_z, lifted_z, back_z
+
+    neutral_z, lifted_z, back_z = asyncio.run(scenario())
+    print(
+        f"\n[e2e] custom idle: neutral z {neutral_z:.4f} m, lifted {lifted_z:.4f} m, "
+        f"back {back_z:.4f} m"
+    )
+    assert lifted_z - neutral_z >= 0.005  # 8 mm commanded
+    assert abs(back_z - neutral_z) < 0.002
 
 
 def test_wobbling_is_on_by_default_and_sways_the_head(
@@ -317,7 +372,7 @@ def test_wobbling_is_on_by_default_and_sways_the_head(
     robot: Any = api.robot
 
     async def scenario() -> tuple[float, float]:
-        await api.set_breathing(False)  # isolate the wobble from breathing's own sway
+        await api.set_idle("hold")  # isolate the wobble from breathing's own sway
         await asyncio.sleep(BLEND_S + 0.5)
         try:
             start = await _still_head_pose(api)
@@ -330,7 +385,7 @@ def test_wobbling_is_on_by_default_and_sways_the_head(
                     return peak, settled
                 await asyncio.sleep(0.05)
         finally:
-            await api.set_breathing(True)
+            await api.set_idle("breathing")
 
     peak, settled = asyncio.run(scenario())
     print(f"\n[e2e] wobble on: peak {peak:.2f} deg, settled {settled:.2f} deg")
@@ -351,7 +406,7 @@ def test_wobbling_off_keeps_the_head_still_while_audio_plays(
     api, _caps = live_api
 
     async def scenario() -> float:
-        await api.set_breathing(False)  # isolate stillness from breathing's own sway
+        await api.set_idle("hold")  # isolate stillness from breathing's own sway
         await asyncio.sleep(BLEND_S + 0.5)
         try:
             start = await _still_head_pose(api)
@@ -361,7 +416,7 @@ def test_wobbling_off_keeps_the_head_still_while_audio_plays(
             finally:
                 await api.set_wobbling(True)
         finally:
-            await api.set_breathing(True)
+            await api.set_idle("breathing")
 
     peak = asyncio.run(scenario())
     print(f"\n[e2e] wobble off: peak {peak:.2f} deg")
@@ -544,7 +599,7 @@ def test_cancelled_emotion_stops_motion_and_sound(
         await api.set_wobbling(True)
         # The hold keeps the joints still after the return blend; breathing would
         # otherwise still be moving them when we sample (specs/motion.md).
-        await api.set_breathing(False)
+        await api.set_idle("hold")
         try:
             task = asyncio.create_task(api.play_emotion("dance2"))
             await asyncio.sleep(3.0)  # long enough to see the dance and hear its sound
@@ -570,7 +625,7 @@ def test_cancelled_emotion_stops_motion_and_sound(
             playbin = getattr(robot.media.audio, "_playbin", "not-local")
             return latency, travel, playbin
         finally:
-            await api.set_breathing(True)
+            await api.set_idle("breathing")
 
     latency, travel, playbin = asyncio.run(scenario())
     print(

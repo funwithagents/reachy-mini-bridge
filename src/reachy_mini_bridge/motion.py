@@ -20,6 +20,7 @@ import queue
 import random
 import threading
 import time
+from abc import abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, Self
@@ -41,7 +42,15 @@ if TYPE_CHECKING:
 
     from .robot import AnyReachyMini
 
-__all__ = ["BreathingMove", "HoldMove", "MotionSession"]
+__all__ = [
+    "BreathingMove",
+    "HoldMove",
+    "IdleMode",
+    "IdleMove",
+    "IdleMoveFactory",
+    "IdleOffsets",
+    "MotionSession",
+]
 
 _logger = logging.getLogger(__name__)
 
@@ -123,7 +132,7 @@ class HoldMove(Move):
 
 
 def _fade_in(t: float, duration: float = BLEND_S) -> float:
-    """The minjerk 0 -> 1 ramp (the entry blend's shape) that ``_BreathingFadeOut``
+    """The minjerk 0 -> 1 ramp (the entry blend's shape) that ``_IdleFadeOut``
     inverts to fade a plan's offsets out to neutral at rest."""
     if t >= duration:
         return 1.0
@@ -202,32 +211,69 @@ def _roam_target(rng: random.Random, prev: float, lo: float, hi: float) -> float
 
 
 @dataclass(frozen=True)
-class _IdleOffsets:
-    """Every idle track's signed offset from neutral at one instant, and the pose they
-    make (specs/motion.md "The moves").
+class IdleOffsets:
+    """An idle move's signed offsets from neutral at one instant, in human units
+    (specs/motion.md "The moves"). ``IdleOffsets()`` is neutral.
 
-    ``pose(scale)`` is the single place the tracks become a pose: at ``1.0`` it is what
-    ``BreathingMove.evaluate`` returns, at ``0.0`` it is exactly ``NEUTRAL``, and the
-    values between are the envelope ``_BreathingFadeOut`` rides out on.
+    ``pose(scale)`` is the single place offsets become a pose: at ``1.0`` it is the
+    move's pose, at ``0.0`` it is exactly ``NEUTRAL``, and the values between are the
+    envelope ``_IdleFadeOut`` rides out on.
     """
 
-    z_m: float
-    rpy_rad: npt.NDArray[np.float64]  # roll, pitch, yaw offsets from neutral
-    # Each antenna's outward lean beyond the neutral lean (0.0 == NEUTRAL_ANTENNAS).
-    antennas_rad: npt.NDArray[np.float64]
+    z_mm: float = 0.0  # head height above neutral
+    roll_deg: float = 0.0
+    pitch_deg: float = 0.0
+    yaw_deg: float = 0.0
+    # Each antenna's lean outward beyond its neutral lean; negative leans inward.
+    antenna_right_deg: float = 0.0
+    antenna_left_deg: float = 0.0
 
     def pose(self, scale: float = 1.0) -> Pose:
-        roll, pitch, yaw = scale * self.rpy_rad
-        # Scaling the Euler angles rather than slerping is indistinguishable at the
-        # envelope's <= 8 deg, and lands exactly on the identity at scale 0.
+        # Scaling the Euler angles rather than slerping is indistinguishable at idle
+        # amplitudes, and lands exactly on the identity at scale 0.
         head = create_head_pose(
-            z=scale * self.z_m, roll=roll, pitch=pitch, yaw=yaw, degrees=False
+            z=scale * self.z_mm / 1000.0,
+            roll=math.radians(scale * self.roll_deg),
+            pitch=math.radians(scale * self.pitch_deg),
+            yaw=math.radians(scale * self.yaw_deg),
+            degrees=False,
         )
-        antennas = NEUTRAL_ANTENNAS + ANTENNA_OUTWARD * (scale * self.antennas_rad)
-        return head, antennas, NEUTRAL_BODY_YAW
+        leans = np.radians(
+            scale * np.array([self.antenna_right_deg, self.antenna_left_deg])
+        )
+        return head, NEUTRAL_ANTENNAS + ANTENNA_OUTWARD * leans, NEUTRAL_BODY_YAW
 
 
-class BreathingMove(Move):
+class IdleMove(Move):
+    """Base class of every animated idle move (specs/motion.md "The moves"): infinite,
+    and described as offsets from neutral so the loop can fade it out to neutral at
+    rest. Subclass it and implement ``offsets`` to write a custom idle move."""
+
+    @property
+    def duration(self) -> float:
+        return math.inf
+
+    @abstractmethod
+    def offsets(self, t: float) -> IdleOffsets:
+        """The pose's offsets from neutral at ``t`` seconds into this idle entry."""
+
+    def evaluate(
+        self, t: float
+    ) -> tuple[
+        npt.NDArray[np.float64] | None, npt.NDArray[np.float64] | None, float | None
+    ]:
+        return self.offsets(t).pose()
+
+
+# A zero-argument callable building a fresh idle move; the loop calls it at every idle
+# entry. An ``IdleMove`` subclass is one.
+type IdleMoveFactory = Callable[[], IdleMove]
+# The idle mode (specs/motion.md "Presence and the idle mode"); config.IDLE_MODES holds
+# the same three values for the config layer, which cannot import this module.
+type IdleMode = Literal["breathing", "hold", "custom"]
+
+
+class BreathingMove(IdleMove):
     """The idle move with breathing on (specs/motion.md "The moves"): a randomised plan
     of six independent rest-to-rest tracks — raised-cosine breaths separated by random
     rests on the head's z axis, three head rotations roaming about neutral, and two
@@ -316,39 +362,33 @@ class BreathingMove(Move):
             for r in antenna_rngs
         ]
 
-    @property
-    def duration(self) -> float:
-        return math.inf
-
-    def offsets(self, t: float) -> _IdleOffsets:
-        """Every track's offset from neutral at ``t`` — what ``evaluate`` poses, and
-        what the fade-out scales."""
-        return _IdleOffsets(
-            z_m=self._breath.value(t),
-            rpy_rad=np.array([track.value(t) for track in self._rotations]),
-            antennas_rad=np.array(
-                [track.value(t) - ANTENNA_MIN_RAD for track in self._antennas]
-            ),
+    def offsets(self, t: float) -> IdleOffsets:
+        """Every track's offset from neutral at ``t`` (the tracks run in metres and
+        radians; ``IdleOffsets`` is in human units)."""
+        roll, pitch, yaw = (math.degrees(track.value(t)) for track in self._rotations)
+        right, left = (
+            math.degrees(track.value(t) - ANTENNA_MIN_RAD) for track in self._antennas
+        )
+        return IdleOffsets(
+            z_mm=self._breath.value(t) * 1000.0,
+            roll_deg=roll,
+            pitch_deg=pitch,
+            yaw_deg=yaw,
+            antenna_right_deg=right,
+            antenna_left_deg=left,
         )
 
-    def evaluate(
-        self, t: float
-    ) -> tuple[
-        npt.NDArray[np.float64] | None, npt.NDArray[np.float64] | None, float | None
-    ]:
-        return self.offsets(t).pose()
 
-
-class _BreathingFadeOut(Move):
-    """Leaving breathing mid-plan (specs/motion.md "The moves"): keep playing ``move``
-    from ``t_offset`` while a minjerk envelope scales every track's offset from neutral
-    down to zero over ``duration`` — landing at neutral at rest, so whatever follows
-    (a blend, or nothing) starts from a source that is actually at rest. A plain blend
-    assumes that, and a track caught mid-segment is not at rest.
+class _IdleFadeOut(Move):
+    """Leaving an idle move mid-plan (specs/motion.md "The moves"): keep playing ``move``
+    from ``t_offset`` while a minjerk envelope scales every offset from neutral down to
+    zero over ``duration`` — landing at neutral at rest, so whatever follows (a blend,
+    or nothing) starts from a source that is actually at rest. A plain blend assumes
+    that, and a track caught mid-segment is not at rest.
     """
 
     def __init__(
-        self, move: BreathingMove, t_offset: float, duration: float = BLEND_S
+        self, move: IdleMove, t_offset: float, duration: float = BLEND_S
     ) -> None:
         self._move = move
         self._t_offset = t_offset
@@ -365,6 +405,74 @@ class _BreathingFadeOut(Move):
     ]:
         envelope = 1.0 - _fade_in(t, self._duration)
         return self._move.offsets(self._t_offset + t).pose(envelope)
+
+
+class _CustomIdleError(Exception):
+    """A caller's idle move (or its factory) misbehaved on the motion thread."""
+
+
+def _checked_offsets(move: IdleMove, t: float) -> IdleOffsets:
+    """``move.offsets(t)``, or ``_CustomIdleError`` when it raises or returns anything
+    but an ``IdleOffsets`` of finite numbers."""
+    try:
+        offsets = move.offsets(t)
+    except Exception as e:
+        raise _CustomIdleError(f"offsets({t:.3f}) raised: {e!r}") from e
+    if not isinstance(offsets, IdleOffsets):
+        raise _CustomIdleError(
+            f"offsets({t:.3f}) returned {type(offsets).__name__}, not IdleOffsets"
+        )
+    values = (
+        offsets.z_mm,
+        offsets.roll_deg,
+        offsets.pitch_deg,
+        offsets.yaw_deg,
+        offsets.antenna_right_deg,
+        offsets.antenna_left_deg,
+    )
+    if not all(isinstance(v, (int, float)) and math.isfinite(v) for v in values):
+        raise _CustomIdleError(f"offsets({t:.3f}) holds a non-finite value: {offsets}")
+    return offsets
+
+
+def _build_custom_idle(factory: Callable[[], object]) -> IdleMove:
+    """Call ``factory``; ``_CustomIdleError`` when it raises or builds no ``IdleMove``."""
+    try:
+        move = factory()
+    except Exception as e:
+        raise _CustomIdleError(f"the idle move factory raised: {e!r}") from e
+    if not isinstance(move, IdleMove):
+        raise _CustomIdleError(
+            f"the idle move factory returned {type(move).__name__}, not an IdleMove"
+        )
+    return move
+
+
+def check_idle_move_factory(factory: object) -> None:
+    """Registration-time check (specs/motion.md "Custom idle moves"): ``ValueError``
+    unless ``factory`` is a callable building an ``IdleMove`` whose ``offsets(0.0)`` is
+    an ``IdleOffsets`` of finite numbers. Runs on the caller's thread."""
+    if not callable(factory):
+        # ValueError, not TypeError: the api's one error for bad input (specs/api.md)
+        raise ValueError(  # noqa: TRY004
+            "an idle move factory must be a zero-argument callable returning an "
+            f"IdleMove (an IdleMove subclass is one), got {type(factory).__name__}"
+        )
+    try:
+        _checked_offsets(_build_custom_idle(factory), 0.0)
+    except _CustomIdleError as e:
+        raise ValueError(f"invalid idle move: {e}") from e
+
+
+class _CustomIdle(IdleMove):
+    """The caller's idle move as the loop plays it: every ``offsets`` call checked, so
+    a misbehaving move surfaces as ``_CustomIdleError`` whatever stage reads it."""
+
+    def __init__(self, move: IdleMove) -> None:
+        self._move = move
+
+    def offsets(self, t: float) -> IdleOffsets:
+        return _checked_offsets(self._move, t)
 
 
 def blend_into(source: Pose, move: Move, seconds: float = BLEND_S) -> GotoMove:
@@ -421,8 +529,15 @@ class MotionSession:
     """
 
     def __init__(
-        self, robot: AnyReachyMini, *, presence: bool, breathing: bool
+        self,
+        robot: AnyReachyMini,
+        *,
+        presence: bool,
+        idle: IdleMode,
+        idle_move: IdleMoveFactory | None = None,
     ) -> None:
+        if idle_move is not None:
+            check_idle_move_factory(idle_move)
         self._robot = robot
         self._commands: queue.SimpleQueue[Callable[[], None]] = queue.SimpleQueue()
         self._thread = threading.Thread(
@@ -430,7 +545,11 @@ class MotionSession:
         )
         # --- thread-owned state (touch only from closures run by the thread, or _run) ---
         self._presence = presence
-        self._breathing = breathing
+        self._idle: IdleMode = idle
+        self._idle_move = idle_move
+        # The registered custom move failed on this thread: play the hold in its place
+        # until another is registered (specs/motion.md "Custom idle moves").
+        self._idle_move_failed = False
         self._paused = True
         self._lost = False  # the daemon is gone: paused for good (specs "Lifecycle")
         self._commanding = False  # sent a target on the previous tick
@@ -470,38 +589,57 @@ class MotionSession:
         if not enabled:
             self._commanding = False  # quiet at once, no easing
 
-    def set_breathing(self, enabled: bool) -> None:
-        self._commands.put(lambda: self._on_set_breathing(enabled))
+    def set_idle(self, mode: IdleMode) -> None:
+        self._commands.put(lambda: self._on_set_idle(mode))
 
-    def _on_set_breathing(self, enabled: bool) -> None:
-        if enabled == self._breathing:
+    def _on_set_idle(self, mode: IdleMode) -> None:
+        if mode == self._idle:
             return
-        self._breathing = enabled
+        self._idle = mode
+        self._reenter_idle()
+
+    def set_idle_move(self, factory: IdleMoveFactory | None) -> None:
+        """Register (or clear, with ``None``) the custom idle move's factory. Checked
+        here, on the caller's thread: ``ValueError`` for a bad one, nothing changed."""
+        if factory is not None:
+            check_idle_move_factory(factory)
+        self._commands.put(lambda: self._on_set_idle_move(factory))
+
+    def _on_set_idle_move(self, factory: IdleMoveFactory | None) -> None:
+        self._idle_move = factory
+        self._idle_move_failed = False
+        if self._idle == "custom":
+            self._reenter_idle()
+
+    def _reenter_idle(self) -> None:
+        """Make the loop re-select its idle move, now that the mode or the custom move
+        changed. With a primary playing nothing happens: the change applies when the
+        queue drains."""
         if self._playing is not None and self._playing.primary is not None:
-            return  # applies once the queue drains
-        breathing = self._playing_breathing()
-        if not enabled and breathing is not None:
+            return
+        idle = self._playing_idle()
+        if idle is not None:
             # Fade the plan's offsets out rather than handing a track caught
             # mid-segment (a nonzero velocity) straight to a fresh blend, which assumes
-            # rest (specs/motion.md "Leaving breathing mid-plan").
-            move, elapsed = breathing
+            # rest (specs/motion.md "Leaving an idle move mid-plan").
+            move, elapsed = idle
             self._playing = _Playing(
-                stages=[_BreathingFadeOut(move, t_offset=elapsed)],
+                stages=[_IdleFadeOut(move, t_offset=elapsed)],
                 primary=None,
                 stage=0,
                 stage_start=time.monotonic(),
             )
             return
-        self._playing = None  # re-blend into the other idle move next tick
+        self._playing = None  # re-blend into the new idle move next tick
 
-    def _playing_breathing(self) -> tuple[BreathingMove, float] | None:
-        """The ``BreathingMove`` currently playing past its entry blend (no primary),
-        with the seconds elapsed into it — else ``None``."""
+    def _playing_idle(self) -> tuple[IdleMove, float] | None:
+        """The ``IdleMove`` currently playing past its entry blend (no primary), with
+        the seconds elapsed into it — else ``None`` (the hold is not an ``IdleMove``)."""
         playing = self._playing
         if playing is None or playing.primary is not None or playing.stage != 1:
             return None
         move = playing.stages[1]
-        if not isinstance(move, BreathingMove):
+        if not isinstance(move, IdleMove):
             return None
         return move, time.monotonic() - playing.stage_start
 
@@ -564,10 +702,10 @@ class MotionSession:
         if self._playing is not None and self._playing.primary is not None:
             self._playing.primary.done.cancel()
         if self._presence and self._commanding and not self._paused:
-            breathing = self._playing_breathing()
+            idle = self._playing_idle()
             exit_stage: Move = (
-                _BreathingFadeOut(breathing[0], t_offset=breathing[1])
-                if breathing is not None
+                _IdleFadeOut(idle[0], t_offset=idle[1])
+                if idle is not None
                 else blend_into(self._last_target, HoldMove())
             )
             self._playing = _Playing(
@@ -585,8 +723,12 @@ class MotionSession:
         return self._presence
 
     @property
-    def breathing(self) -> bool:
-        return self._breathing
+    def idle(self) -> IdleMode:
+        return self._idle
+
+    @property
+    def idle_move(self) -> IdleMoveFactory | None:
+        return self._idle_move
 
     # --- lifecycle ---
 
@@ -611,6 +753,8 @@ class MotionSession:
                     self._tick(time.monotonic())
                 except _LOST_CONNECTION_ERRORS as e:
                     self._on_lost_connection(e)
+                except _CustomIdleError as e:
+                    self._on_custom_idle_failure(e)
                 except Exception as e:  # noqa: BLE001 - the loop must survive a bad tick
                     _logger.warning("motion tick failed: %s", e)
                     self._fail_current(e)
@@ -636,7 +780,18 @@ class MotionSession:
             return primary.move, primary
         if not self._presence:
             return None
-        return (BreathingMove() if self._breathing else HoldMove()), None
+        return self._build_idle(), None
+
+    def _build_idle(self) -> Move:
+        if self._idle == "breathing":
+            return BreathingMove()
+        if (
+            self._idle == "custom"
+            and self._idle_move is not None
+            and not self._idle_move_failed
+        ):
+            return _CustomIdle(_build_custom_idle(self._idle_move))
+        return HoldMove()
 
     def _tick(self, now: float) -> None:
         playing = self._playing
@@ -730,6 +885,19 @@ class MotionSession:
             if not primary.done.done():
                 primary.done.set_exception(error)
         self._playing = None
+
+    def _on_custom_idle_failure(self, error: Exception) -> None:
+        """The caller's idle move misbehaved (specs/motion.md "Custom idle moves"): one
+        warning, then the hold plays in its place until another move is registered."""
+        _logger.warning(
+            "custom idle move failed; holding neutral until another is registered: %s",
+            error,
+        )
+        self._idle_move_failed = True
+        exit_blend = self._playing is not None and self._playing.exit_blend
+        self._playing = None
+        if exit_blend:
+            self._stop = True  # nothing left to ease out with: stop now
 
     def _on_lost_connection(self, error: Exception) -> None:
         """A lost connection is not a bad tick (specs/motion.md "Lifecycle"): one warning,

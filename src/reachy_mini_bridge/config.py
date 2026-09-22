@@ -18,9 +18,14 @@ import inspect
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .errors import ConfigError
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from .motion import IdleMove
 
 __all__ = [
     "AudioSettings",
@@ -37,6 +42,9 @@ SPAWN_MODES = ("never", "auto", "always")
 # What the sim daemon's camera stream carries (specs/sim_daemon.md "Camera sources").
 CAMERA_SOURCES = ("sim", "webcam")
 DEFAULT_WEBCAM_HFOV_DEG = 70.0
+# The idle modes (specs/motion.md "Presence and the idle mode"); motion.IdleMode is the
+# same three values as a type.
+IDLE_MODES = ("breathing", "hold", "custom")
 
 # Upstream kwargs the bridge owns; each maps to the config field that replaces it.
 _RESERVED_ROBOT_KEYS = {
@@ -259,14 +267,18 @@ class AudioSettings:
 @dataclass
 class MotionSettings:
     """Everything that shapes the robot's behaviour at rest, applied when the session
-    starts (specs/motion.md, specs/api.md): the loop's own idle switches (``presence``,
-    ``breathing``) and the daemon-side modes the api arms around them (``wobbling``,
+    starts (specs/motion.md, specs/api.md): the loop's own idle modes (``presence``,
+    ``idle``, ``idle_move``) and the daemon-side modes the api arms around them (``wobbling``,
     ``tracking``)."""
 
     # The background behaviour: idle moments are filled with the idle move.
     presence: bool = True
-    # Which idle move presence plays: breathing, or a still neutral hold.
-    breathing: bool = True
+    # Which idle move presence plays: "breathing" (built in), "hold" (a still neutral)
+    # or "custom" (the caller's own; the hold while none is registered).
+    idle: str = "breathing"
+    # Python only: the custom idle move's factory, played whenever idle is "custom".
+    # A JSON config names the mode; code supplies the move.
+    idle_move: Callable[[], IdleMove] | None = None
     # Audio-reactive head sway, enabled on entry.
     wobbling: bool = True
     # Autonomous face tracking, armed once motors read enabled.
@@ -275,24 +287,29 @@ class MotionSettings:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> MotionSettings:
         block = _require_object(data, "motion")
+        if "idle_move" in block:
+            raise ConfigError(
+                "'motion.idle_move' is set from code, not from a dict / JSON config: "
+                "build MotionSettings(idle_move=...) or call set_idle_move(...)"
+            )
         _reject_unknown_keys(
-            block, "motion", {"presence", "breathing", "wobbling", "tracking"}
+            block, "motion", {"presence", "idle", "wobbling", "tracking"}
         )
         presence = block.get("presence", True)
-        breathing = block.get("breathing", True)
+        idle = block.get("idle", "breathing")
         wobbling = block.get("wobbling", True)
         tracking = block.get("tracking", True)
         if not isinstance(presence, bool):
             raise ConfigError("'motion.presence' must be a boolean")
-        if not isinstance(breathing, bool):
-            raise ConfigError("'motion.breathing' must be a boolean")
+        if idle not in IDLE_MODES:
+            raise ConfigError(
+                f"'motion.idle' must be one of {IDLE_MODES}, got {idle!r}"
+            )
         if not isinstance(wobbling, bool):
             raise ConfigError("'motion.wobbling' must be a boolean")
         if not isinstance(tracking, bool):
             raise ConfigError("'motion.tracking' must be a boolean")
-        return cls(
-            presence=presence, breathing=breathing, wobbling=wobbling, tracking=tracking
-        )
+        return cls(presence=presence, idle=idle, wobbling=wobbling, tracking=tracking)
 
     @classmethod
     def from_json(cls, text: str) -> MotionSettings:

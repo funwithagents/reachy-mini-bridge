@@ -129,7 +129,7 @@ def test_snapshot_reflects_the_modes_and_the_camera_is_rgb() -> None:
         assert isinstance(state, PanelState)
         assert state.backend == "fake"
         assert state.motors in ("enabled", "disabled", "gravity_compensation")
-        assert (state.presence, state.breathing, state.wobbling) == (True, True, True)
+        assert (state.presence, state.idle, state.wobbling) == (True, "breathing", True)
         assert state.tracking is False
         assert state.attention is None
         assert state.voice == "none"
@@ -138,16 +138,12 @@ def test_snapshot_reflects_the_modes_and_the_camera_is_rgb() -> None:
         assert state.emotions == ["happy", "sad", "curious"]
 
         controller.set_presence(False)
-        controller.set_breathing(False)
+        controller.set_idle("hold")
         controller.set_wobbling(False)
         controller.set_motors_state("enabled")
         controller.start_head_tracking(0.5)
         state = controller.snapshot()
-        assert (state.presence, state.breathing, state.wobbling) == (
-            False,
-            False,
-            False,
-        )
+        assert (state.presence, state.idle, state.wobbling) == (False, "hold", False)
         assert state.tracking is True
         assert state.attention == "engaged"
         assert ("start_head_tracking", {"weight": 0.5}) in _fake(controller).commands

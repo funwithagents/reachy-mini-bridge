@@ -12,7 +12,7 @@ The upstream `reachy_mini` SDK gives full, low-level access to the robot. The br
 | **Speaking** | `media.push_audio_sample` takes float32 audio at the robot's sample rate and channel layout, and returns as soon as the audio is queued | `say(text)` with any text-to-speech engine behind a small `SpeechSynthesizer` protocol. The bridge resamples to the robot's rate and fans mono out to its channels. `say` returns when the robot has *finished* speaking, and cancelling it silences the speaker at once |
 | **Listening** | Poll `media.get_audio_sample` for float32 stereo blocks | `async for chunk in api.audio_input()` yields int16 mono PCM, ready for any speech recognizer. Recording and playback share one media session, which is what keeps the robot's hardware echo cancellation working while it talks and listens at once |
 | **Interrupting** | Cancelling `async_play_move` stops the motion, but the emotion's sound plays to its end and the head keeps swaying to it. `cancel_move()` stops the sound by tearing down the whole audio pipeline, which kills the microphone | Cancelling the task interrupts any verb. `play_emotion` stops both motion and sound, and the microphone, speaker and robot stay usable for the next verb |
-| **Staying alive** | Nothing: the head holds whatever pose the last command left it at | Between verbs the robot breathes (or holds a still neutral pose) so it never looks dead; emotions blend in and back out instead of snapping, and one thread is the only writer of the target pose |
+| **Staying alive** | Nothing: the head holds whatever pose the last command left it at | Between verbs the robot breathes (or holds a still neutral pose, or plays an idle move you wrote) so it never looks dead; emotions blend in and back out instead of snapping, and one thread is the only writer of the target pose |
 | **Motor safety** | A move sent with motors off does nothing, with no error. Gravity compensation sent to a daemon that doesn't support it drops the connection | Moving verbs raise `MotorsNotEnabledError`. Gravity compensation is checked first and raises `GravityCompensationUnsupportedError` without sending anything |
 | **The daemon** | Start `reachy-mini-daemon` yourself. Spawning it from a Python process that has already imported `reachy_mini` can crash it | Optionally started for you (sim, or a robot plugged in over USB), or an already running one is reused. A daemon the bridge started is stopped on exit, and the robot goes to sleep |
 | **Clean shutdown** | Up to the app | Leaving `async with` turns head wobbling back off (the setting is shared by every app on the daemon), then closes the audio, the connection and the daemon in order, even when a step fails. Cancelling during start-up leaks nothing |
@@ -109,13 +109,15 @@ All verbs are `async`; units are human (degrees, seconds, named emotions). The u
 | Gaze | `start_head_tracking(weight=1.0)`, `stop_head_tracking()`, `tracking` — the daemon keeps a detected face centered; on by default (the config's `motion.tracking` flag), armed once motors are `enabled` |
 | Speech out | `say(text, synth=None)`, `play_sound(file)` |
 | Motion while talking | `set_wobbling(enabled)`, `wobbling` — upstream's audio-reactive head sway; on by default, set by the config's `motion.wobbling` flag |
-| Staying alive | `set_presence(enabled)` / `presence`, `set_breathing(enabled)` / `breathing` — the idle behaviour between verbs; both on by default, set by the config's `motion` block |
+| Staying alive | `set_presence(enabled)` / `presence`, `set_idle("breathing" | "hold" | "custom")` / `idle`, `set_idle_move(factory)` / `idle_move` — the idle behaviour between verbs; set by the config's `motion` block |
 | Mic in | `audio_input(mono=True)` async iterator of int16 PCM bytes, plus `mic_sample_rate` / `mic_channels` |
 | Camera | `get_camera_frame()` — raw BGR `ndarray`, `None` when no frame is available |
 
 Verbs that move the robot require motors `enabled` and raise `MotorsNotEnabledError` otherwise. The errors a caller catches — `BridgeError` (the base), `MotorsNotEnabledError`, `GravityCompensationUnsupportedError`, `ConfigError` — import from `reachy_mini_bridge`, next to `ReachyMiniApi`, `ReachyMiniConfig`, `SpeechSynthesizer` and `TTSEngineSynthesizer`; `DaemonError` lives in `reachy_mini_bridge.errors`.
 
 **Talking.** `say` streams text-to-speech to the robot speaker through a `SpeechSynthesizer` — a small protocol (`sample_rate` + `stream(text)` yielding float32 mono chunks) importable from `reachy_mini_bridge`. Bring your own, or configure the default `tts-engine` adapter through the config's `tts` block. Without either, `say` raises `BridgeError`; a `tts` block that fails to build (a provider whose extra isn't installed, a missing API key) leaves the robot usable and exposes the cause on `api.synthesizer_error`. `say` returns once the utterance has finished playing; cancel the task to stop it (queued audio is flushed). Cancelling the task is how you interrupt any verb: `play_emotion` stops the motion and the emotion's sound the same way, and the session stays usable for the next verb (see [specs/api.md](specs/api.md) "Cancellation").
+
+**Your own idle move.** Subclass `IdleMove` and return the pose as offsets from neutral in human units: `IdleOffsets(z_mm=…, roll_deg=…, pitch_deg=…, yaw_deg=…, antenna_right_deg=…, antenna_left_deg=…)`. Register the class (a factory: the loop builds a fresh move at every idle entry, with `t` starting at 0) and select the `custom` mode, in either order: `await api.set_idle_move(SlowNod)` then `await api.set_idle("custom")`, or `MotionSettings(idle="custom", idle_move=SlowNod)` in the config. `offsets(t)` runs at 60 Hz on the motion thread, so keep it fast and start it at rest. See [specs/motion.md](specs/motion.md) "Custom idle moves".
 
 **Listening.** The bridge does no speech recognition. It exposes the robot's echo-cancelled microphone as a stream and you feed it to the ASR of your choice:
 
@@ -177,7 +179,7 @@ A sim started by hand with upstream's `reachy-mini-daemon --sim` works for motio
 
   "motion": {
     "presence": true,
-    "breathing": true,
+    "idle": "breathing",
     "wobbling": true,
     "tracking": true
   }
@@ -266,12 +268,12 @@ Omit the block and `say` raises unless you pass your own `SpeechSynthesizer`. A 
 
 ### `motion` — what the robot does at rest
 
-All four default to `true`, and each has a runtime verb that changes it while the session is entered.
+The three switches default to `true` and `idle` to `"breathing"`, and each has a runtime verb that changes it while the session is entered.
 
 | Field | Default | What it does | Runtime verb |
 |---|---|---|---|
 | `presence` | `true` | Fills every idle moment with the idle move, so the robot never looks dead between verbs. `false` commands the head only while a verb runs — for a caller driving the head itself. Emotions play either way | `set_presence` |
-| `breathing` | `true` | Which idle move presence plays: `true` breathes (slow breaths with rests, the head roaming, the antennas flicking), `false` holds a still neutral. Ignored while `presence` is off | `set_breathing` |
+| `idle` | `"breathing"` | Which idle move presence plays: `breathing` (slow breaths with rests, the head roaming, the antennas flicking), `hold` (a still neutral) or `custom` (your own `IdleMove`, registered from code with `MotionSettings(idle_move=...)` or `set_idle_move`; the hold until one is registered). Ignored while `presence` is off | `set_idle` / `set_idle_move` |
 | `wobbling` | `true` | Sways the head with every sound the robot plays. `false` keeps it still while audio plays | `set_wobbling` |
 | `tracking` | `true` | Autonomously keeps a detected face centered. Armed as soon as motors read `enabled`, and stopped again on exit. `false` leaves it off until you call `start_head_tracking()` | `start_head_tracking` / `stop_head_tracking` |
 

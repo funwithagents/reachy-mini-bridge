@@ -516,12 +516,13 @@ On a Reachy Mini Lite over USB (`REACHY_MINI_E2E_TARGET=real uv run pytest tests
 - [ ] Breaths are separated by visible rests of varying length, the antennas move one at a time and never toward each other, and neither the start nor the end of a breath or an antenna move shows a snap (plan [202609171234](202609171234_organic-breathing-rests-and-independent-antennas.md)).
 - [x] The idle head visibly looks about — turning, tilting and nodding a few degrees — without drifting away from neutral over 2 minutes, and the antennas read as expressive: a mix of quick flicks and slower roams, still one at a time and never toward each other, with no snap at any segment boundary (plan [202609172115](202609172115_expressive-idle-head-rotation-and-antenna-flicks.md)). **Confirmed on a robot, 2026-09-17: the idle reads markedly better than the previous one.** The finer sub-claims — no drift over a full two minutes, no snap at any segment boundary — were not walked separately; watch for them when the rest of this checklist is done.
 - [ ] An emotion interrupts breathing, plays fully, eases back to neutral, breathing resumes.
-- [ ] `set_breathing(False)` while idle eases the head to neutral and holds still.
-- [ ] `set_breathing(True)` while idle resumes breathing without a visible jump.
-- [ ] Toggling breathing mid-emotion does not disturb the emotion; it applies on the next idle.
-- [ ] With breathing off, an emotion still plays and returns to neutral.
+- [ ] `set_idle("hold")` while idle eases the head to neutral and holds still.
+- [ ] `set_idle("breathing")` while idle resumes breathing without a visible jump.
+- [ ] Changing the idle mode mid-emotion does not disturb the emotion; it applies on the next idle.
+- [ ] With the idle mode `hold`, an emotion still plays and returns to neutral.
 - [ ] With presence off, an emotion plays and the head stays where it ended; `set_presence(True)` eases it back.
-- [ ] With breathing off, wobbling (`say`) and face tracking still work.
+- [ ] With the idle mode `hold`, wobbling (`say`) and face tracking still work.
+- [ ] A custom idle move (`set_idle_move` + `set_idle("custom")`) plays smoothly, and leaving it (`set_idle("breathing")`) eases to neutral with no snap.
 - [ ] Audio (`say`) wobbles on top of breathing.
 - [ ] Face tracking follows a person and yields cleanly during an emotion, then resumes.
 - [ ] `set_motors_state("disabled")`, push the head down by hand, `set_motors_state("enabled")`: the head eases into the idle move, no snap.

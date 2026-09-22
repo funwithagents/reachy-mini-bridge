@@ -322,17 +322,17 @@ def test_motion_block_sets_the_switches() -> None:
         {
             "motion": {
                 "presence": False,
-                "breathing": False,
+                "idle": "hold",
                 "wobbling": False,
                 "tracking": False,
             }
         }
     )
     assert cfg.motion == MotionSettings(
-        presence=False, breathing=False, wobbling=False, tracking=False
+        presence=False, idle="hold", wobbling=False, tracking=False
     )
-    cfg = ReachyMiniConfig.from_dict({"motion": {"breathing": False}})
-    assert cfg.motion == MotionSettings(presence=True, breathing=False)
+    cfg = ReachyMiniConfig.from_dict({"motion": {"idle": "custom"}})
+    assert cfg.motion == MotionSettings(presence=True, idle="custom", idle_move=None)
     cfg = ReachyMiniConfig.from_json('{"motion": {"wobbling": false}}')
     assert cfg.motion == MotionSettings(wobbling=False)
     cfg = ReachyMiniConfig.from_dict({"motion": {"tracking": False}})
@@ -343,7 +343,6 @@ def test_motion_block_sets_the_switches() -> None:
     "motion",
     [
         {"presence": "yes"},
-        {"breathing": 1},
         {"wobbling": "yes"},
         {"tracking": 1},
     ],
@@ -353,9 +352,35 @@ def test_motion_rejects_non_booleans(motion: dict[str, object]) -> None:
         ReachyMiniConfig.from_dict({"motion": motion})
 
 
+@pytest.mark.parametrize("idle", [True, "breathe", "", None])
+def test_motion_rejects_an_unknown_idle_mode(idle: object) -> None:
+    with pytest.raises(ConfigError, match=r"motion\.idle"):
+        ReachyMiniConfig.from_dict({"motion": {"idle": idle}})
+
+
 def test_motion_rejects_unknown_keys() -> None:
-    with pytest.raises(ConfigError, match="idle"):
-        ReachyMiniConfig.from_dict({"motion": {"idle": True}})
+    with pytest.raises(ConfigError, match="breathing"):
+        ReachyMiniConfig.from_dict({"motion": {"breathing": True}})
+
+
+def test_motion_idle_move_is_python_only() -> None:
+    with pytest.raises(ConfigError, match="set from code"):
+        ReachyMiniConfig.from_dict({"motion": {"idle_move": "my.module:Nod"}})
+
+    def factory() -> object:
+        raise AssertionError("the config layer never calls the factory")
+
+    settings = MotionSettings(idle="custom", idle_move=factory)  # type: ignore[arg-type]
+    assert ReachyMiniConfig(motion=settings).motion.idle_move is factory
+
+
+def test_idle_modes_match_the_motion_loops_type() -> None:
+    from typing import get_args
+
+    from reachy_mini_bridge.config import IDLE_MODES
+    from reachy_mini_bridge.motion import IdleMode
+
+    assert get_args(IdleMode.__value__) == IDLE_MODES
 
 
 def test_motion_must_be_an_object() -> None:

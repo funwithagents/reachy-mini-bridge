@@ -21,6 +21,7 @@ import numpy.typing as npt
 
 from examples.control_panel.controller import ControlPanelController, PanelState
 from reachy_mini_bridge import BridgeError, ReachyMiniConfig
+from reachy_mini_bridge.config import IDLE_MODES
 
 REFRESH_S = 0.5
 LOG_LINES = 50
@@ -43,7 +44,7 @@ def state_table(state: PanelState) -> str:
         ("attention", state.attention or "—"),
         ("voice", state.voice),
         ("presence", "on" if state.presence else "off"),
-        ("breathing", "on" if state.breathing else "off"),
+        ("idle", state.idle),
         ("wobbling", "on" if state.wobbling else "off"),
         ("tracking", "on" if state.tracking else "off"),
         ("busy", ", ".join(state.busy) or "—"),
@@ -154,7 +155,9 @@ def build_app(controller: ControlPanelController) -> gr.Blocks:
                 with gr.Row():
                     wobbling = gr.Checkbox(config.motion.wobbling, label="Wobbling")
                     presence = gr.Checkbox(config.motion.presence, label="Presence")
-                    breathing = gr.Checkbox(config.motion.breathing, label="Breathing")
+                    idle = gr.Radio(
+                        list(IDLE_MODES), value=config.motion.idle, label="Idle"
+                    )
 
         timer = gr.Timer(REFRESH_S)
         timer.tick(
@@ -192,7 +195,7 @@ def build_app(controller: ControlPanelController) -> gr.Blocks:
         bind(stop_tracking.click, "stop_head_tracking", controller.stop_head_tracking)
         bind(wobbling.input, "set_wobbling", controller.set_wobbling, wobbling)
         bind(presence.input, "set_presence", controller.set_presence, presence)
-        bind(breathing.input, "set_breathing", controller.set_breathing, breathing)
+        bind(idle.input, "set_idle", controller.set_idle, idle)
 
     return demo
 

@@ -23,11 +23,14 @@ from .errors import (
     GravityCompensationUnsupportedError,
     MotorsNotEnabledError,
 )
+from .motion import IdleMove, IdleOffsets
 
 __all__ = [
     "BridgeError",
     "ConfigError",
     "GravityCompensationUnsupportedError",
+    "IdleMove",
+    "IdleOffsets",
     "MotorsNotEnabledError",
     "ReachyMiniApi",
     "ReachyMiniConfig",

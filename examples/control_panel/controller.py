@@ -50,7 +50,7 @@ class PanelState:
     backend: str
     motors: str
     presence: bool
-    breathing: bool
+    idle: str
     wobbling: bool
     tracking: bool
     attention: str | None
@@ -337,7 +337,7 @@ class ControlPanelController:
             backend=api.config.backend,
             motors=motors,
             presence=api.presence,
-            breathing=api.breathing,
+            idle=api.idle,
             wobbling=api.wobbling,
             tracking=api.tracking,
             attention=api.attention,
@@ -376,8 +376,8 @@ class ControlPanelController:
     def set_presence(self, enabled: bool) -> None:
         self._call(self._api.set_presence(enabled))
 
-    def set_breathing(self, enabled: bool) -> None:
-        self._call(self._api.set_breathing(enabled))
+    def set_idle(self, mode: str) -> None:
+        self._call(self._api.set_idle(mode))
 
     # --- spanning verbs ---------------------------------------------------------------
 

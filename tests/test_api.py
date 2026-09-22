@@ -38,6 +38,9 @@ from reachy_mini_bridge.motion import (
     BLEND_S,
     BREATH_Z_M,
     NEUTRAL_ANTENNAS,
+    HoldMove,
+    IdleMove,
+    IdleOffsets,
 )
 
 
@@ -131,6 +134,8 @@ def test_package_front_door_drives_the_fake() -> None:
         "BridgeError",
         "ConfigError",
         "GravityCompensationUnsupportedError",
+        "IdleMove",
+        "IdleOffsets",
         "MotorsNotEnabledError",
         "ReachyMiniApi",
         "ReachyMiniConfig",
@@ -1293,8 +1298,8 @@ def test_breathing_rises_from_neutral_and_antennas_lean_outward() -> None:
     assert np.all(ANTENNA_OUTWARD * antennas >= ANTENNA_MIN_RAD - 1e-6)
 
 
-def test_breathing_off_holds_neutral() -> None:
-    config = ReachyMiniConfig(backend="fake", motion=MotionSettings(breathing=False))
+def test_idle_hold_holds_neutral() -> None:
+    config = ReachyMiniConfig(backend="fake", motion=MotionSettings(idle="hold"))
 
     async def run() -> list[float]:
         async with ReachyMiniApi(config) as api:
@@ -1328,13 +1333,13 @@ def test_presence_off_sends_nothing_when_idle() -> None:
     assert final_count == after_count
 
 
-def test_set_breathing_while_idle_eases_to_neutral() -> None:
+def test_set_idle_hold_while_breathing_eases_to_neutral() -> None:
     async def run() -> list[float]:
         async with ReachyMiniApi("fake") as api:
             await api.set_motors_state("enabled")
             await asyncio.sleep(1.0)
             before = len(_fake(api).targets)
-            await api.set_breathing(False)
+            await api.set_idle("hold")
             # A fade-out (playing the breathing plan on, its offsets fading to zero) precedes
             # the neutral blend, so this settles a full BLEND_S later than a plain one.
             await asyncio.sleep(2 * BLEND_S + 0.2)
@@ -1367,11 +1372,11 @@ def test_set_presence_on_resumes_from_the_present_pose() -> None:
 
 def test_switches_are_recorded_and_default_from_the_config() -> None:
     config = ReachyMiniConfig(
-        backend="fake", motion=MotionSettings(presence=False, breathing=False)
+        backend="fake", motion=MotionSettings(presence=False, idle="hold")
     )
     api = ReachyMiniApi(config)
     assert api.presence is False
-    assert api.breathing is False
+    assert api.idle == "hold"
 
     async def run() -> None:
         async with api:
@@ -1381,14 +1386,107 @@ def test_switches_are_recorded_and_default_from_the_config() -> None:
 
     asyncio.run(run())
     assert api.presence is False  # reset to the config's values after exit
-    assert api.breathing is False
+    assert api.idle == "hold"
 
 
 def test_switch_verbs_require_entry() -> None:
     with pytest.raises(BridgeError):
         asyncio.run(ReachyMiniApi("fake").set_presence(True))
     with pytest.raises(BridgeError):
-        asyncio.run(ReachyMiniApi("fake").set_breathing(True))
+        asyncio.run(ReachyMiniApi("fake").set_idle("hold"))
+    with pytest.raises(BridgeError):
+        asyncio.run(ReachyMiniApi("fake").set_idle_move(None))
+
+
+class _Lift(IdleMove):
+    """A custom idle move: the head held 8 mm above neutral."""
+
+    def offsets(self, t: float) -> IdleOffsets:
+        return IdleOffsets(z_mm=8.0)
+
+
+def test_custom_idle_move_from_the_config_plays() -> None:
+    config = ReachyMiniConfig(
+        backend="fake", motion=MotionSettings(idle="custom", idle_move=_Lift)
+    )
+    api = ReachyMiniApi(config)
+    assert (api.idle, api.idle_move) == ("custom", _Lift)  # readable before entry
+
+    async def run() -> list[float]:
+        async with api:
+            await api.set_motors_state("enabled")
+            await asyncio.sleep(BLEND_S + 0.3)
+            return _head_z(api)
+
+    z = asyncio.run(run())
+    assert z[-1] == pytest.approx(0.008, abs=1e-6)
+
+
+def test_set_idle_move_and_set_idle_work_in_either_order() -> None:
+    async def run(move_first: bool) -> tuple[list[float], str, object]:
+        async with ReachyMiniApi("fake") as api:
+            await api.set_motors_state("enabled")
+            if move_first:
+                await api.set_idle_move(_Lift)  # stored while breathing plays
+                await api.set_idle("custom")
+            else:
+                await api.set_idle("custom")  # the hold, until a move is registered
+                await api.set_idle_move(_Lift)
+            await asyncio.sleep(2 * BLEND_S + 0.4)
+            return _head_z(api), api.idle, api.idle_move
+
+    for move_first in (True, False):
+        z, idle, idle_move = asyncio.run(run(move_first))
+        assert z[-1] == pytest.approx(0.008, abs=1e-6)
+        assert (idle, idle_move) == ("custom", _Lift)
+
+
+def test_idle_modes_reset_to_the_config_on_exit() -> None:
+    api = ReachyMiniApi("fake")
+
+    async def run() -> None:
+        async with api:
+            await api.set_idle_move(_Lift)
+            await api.set_idle("custom")
+            assert (api.idle, api.idle_move) == ("custom", _Lift)
+
+    asyncio.run(run())
+    assert (api.idle, api.idle_move) == ("breathing", None)
+
+
+def test_set_idle_rejects_an_unknown_mode() -> None:
+    async def run() -> str:
+        async with ReachyMiniApi("fake") as api:
+            with pytest.raises(ValueError, match="idle mode"):
+                await api.set_idle("sleeping")
+            return api.idle
+
+    assert asyncio.run(run()) == "breathing"
+
+
+def test_set_idle_move_rejects_a_bad_factory_and_keeps_the_registered_one() -> None:
+    async def run() -> object:
+        async with ReachyMiniApi("fake") as api:
+            await api.set_idle_move(_Lift)
+            with pytest.raises(ValueError, match="idle move"):
+                await api.set_idle_move(HoldMove)  # type: ignore[arg-type]
+            return api.idle_move
+
+    assert asyncio.run(run()) is _Lift
+
+
+def test_a_bad_idle_move_in_the_config_fails_bring_up() -> None:
+    config = ReachyMiniConfig(
+        backend="fake",
+        motion=MotionSettings(idle="custom", idle_move=HoldMove),  # type: ignore[arg-type]
+    )
+
+    async def run() -> None:
+        async with ReachyMiniApi(config):
+            pass
+
+    with pytest.raises(ValueError, match="idle move"):
+        asyncio.run(run())
 
 
 def test_exit_leaves_the_head_at_neutral() -> None:
