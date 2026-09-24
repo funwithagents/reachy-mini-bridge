@@ -16,6 +16,7 @@ call time, so the deterministic tests script them without a daemon.
 from __future__ import annotations
 
 import importlib.util
+import json
 import logging
 import os
 import shutil
@@ -24,6 +25,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 from collections import deque
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
@@ -32,7 +34,6 @@ from typing import IO, Protocol
 
 from .config import DAEMON_BACKENDS, DaemonConfig
 from .errors import DaemonError
-from .robot import build_robot
 
 __all__ = [
     "DaemonHandle",
@@ -40,9 +41,12 @@ __all__ = [
     "launch_command",
     "managed_daemon",
     "scrubbed_env",
+    "status_url",
 ]
 
 _POLL_INTERVAL_S = 1.0
+# One readiness probe's HTTP timeout: a daemon that answers slower than this is polled again.
+_PROBE_TIMEOUT_S = 3.0
 _TERMINATE_GRACE_S = 10.0
 
 # The child's own log lines (specs/daemon.md "The child's output reaches the bridge's log"):
@@ -203,20 +207,16 @@ def launch_command(config: DaemonConfig, *, backend: str = "sim") -> list[str]:
     flags]``; viewer ``mjpython -m reachy_mini_bridge.sim_daemon [...]`` (the render's GL
     context; needs a GUI session). A ``config.scene`` ending in ``.xml`` is a scene *file*,
     run by the test scene's launcher (``reachy_mini_bridge.testing.sim_scene``,
-    specs/sim_scene.md) built on it. ``real`` — a USB-attached robot:
-    ``reachy-mini-daemon [--kinematics-engine Placo] --[no-]preload-datasets``, Placo
-    whenever it is importable (gravity compensation needs it). Media stays on. Raises
-    ``DaemonError`` when a launcher is not on ``PATH``.
+    specs/sim_scene.md) built on it. ``real`` — a USB-attached robot: ``<this interpreter>
+    -m reachy_mini_bridge.real_daemon [--kinematics-engine Placo] --[no-]preload-datasets``
+    — the bridge's real daemon launcher (specs/real_daemon.md: upstream's hardware daemon
+    with the macOS camera check), Placo whenever it is importable (gravity compensation
+    needs it). Media stays on. Raises ``DaemonError`` when a sim launcher is not on
+    ``PATH``.
     """
     _check_backend(backend)
     if backend == "real":
-        exe = shutil.which("reachy-mini-daemon")
-        if exe is None:
-            raise DaemonError(
-                "no 'reachy-mini-daemon' launcher on PATH — it ships with reachy-mini, "
-                "the bridge's base dependency"
-            )
-        cmd = [exe]
+        cmd = [sys.executable, "-m", "reachy_mini_bridge.real_daemon"]
         if _placo_available():
             cmd += ["--kinematics-engine", "Placo"]
         cmd.append(_preload_flag(config))
@@ -274,24 +274,31 @@ def _scene_is_path(scene: str) -> bool:
 # --- probes and process seams (patched by tests) -----------------------------------
 
 
-def is_daemon_ready(host: str, port: int) -> bool:
-    """True once the daemon's *backend* is up (``get_status().backend_status`` is set).
+def status_url(host: str, port: int) -> str:
+    """The daemon's status endpoint at ``host:port`` (``GET /api/daemon/status``)."""
+    netloc = f"[{host}]" if ":" in host else host
+    return f"http://{netloc}:{port}/api/daemon/status"
 
-    Stronger than an open port or an accepted WebSocket: ``/ws/sdk`` answers 403 until
-    the daemon has woken, and accepts the socket even when its MuJoCo backend failed to
-    start. Probes with a plain network client, media off (cheap). Any failure ⇒ False.
+
+def is_daemon_ready(host: str, port: int) -> bool:
+    """True once the daemon's *backend* is up: ``GET /api/daemon/status`` answers with a
+    ``backend_status`` that is set.
+
+    Stronger than an open port: the daemon serves nothing until it has woken, and its
+    status carries a ``backend_status`` only once the backend runs — a MuJoCo backend
+    that failed to start (no GL context) leaves it ``None``. A plain HTTP read, with no
+    side effect on the daemon: an SDK client built with ``media_backend="no_media"``
+    (upstream 1.10 / 1.11) makes the daemon release and re-acquire its media, rebuilding
+    its camera and audio pipelines (specs/daemon.md "Readiness means the backend is
+    up"). Any failure ⇒ False.
     """
     try:
-        with build_robot(
-            "real",
-            connection_mode="network",
-            spawn_daemon=False,
-            host=host,
-            port=port,
-            media_backend="no_media",
-        ) as robot:
-            return robot.client.get_status().backend_status is not None
-    except Exception:  # noqa: BLE001  (not connectable yet)
+        with urllib.request.urlopen(
+            status_url(host, port), timeout=_PROBE_TIMEOUT_S
+        ) as response:
+            status = json.load(response)
+        return isinstance(status, dict) and status.get("backend_status") is not None
+    except Exception:  # noqa: BLE001  (not serving, or not ready, yet)
         return False
 
 

@@ -8,14 +8,19 @@ readiness loop, the error paths, and the teardown.
 
 from __future__ import annotations
 
+import http.server
 import io
+import json
 import logging
 import os
+import socket
 import subprocess
 import sys
 import textwrap
+import threading
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any, Self
 
 import pytest
 
@@ -24,6 +29,7 @@ from reachy_mini_bridge.config import DaemonConfig, SimCameraSettings
 from reachy_mini_bridge.errors import DaemonError
 
 _AUTO = DaemonConfig(spawn="auto")
+_REAL_LAUNCHER = [sys.executable, "-m", "reachy_mini_bridge.real_daemon"]
 
 
 class _FakeProc:
@@ -193,7 +199,7 @@ def test_launch_command_runs_a_scene_file_through_the_bridge_launcher(
     monkeypatch.setattr(daemon, "_placo_available", lambda: False)
     config = DaemonConfig(scene="scene.xml", camera=SimCameraSettings(source="webcam"))
     assert daemon.launch_command(config, backend="real") == [
-        "/bin/reachy-mini-daemon",
+        *_REAL_LAUNCHER,
         "--preload-datasets",
     ]
 
@@ -227,37 +233,40 @@ def test_launch_command_requires_the_launcher(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_launch_command_real_robot(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(daemon.shutil, "which", lambda name: f"/bin/{name}")
     monkeypatch.setattr(daemon, "_placo_available", lambda: False)
-    # No --sim; the sim-only knobs (headless, scene) play no part.
+    # The bridge's real daemon launcher in this interpreter, no --sim; the sim-only knobs
+    # (headless, scene) play no part.
     assert daemon.launch_command(
         DaemonConfig(headless=False, scene="minimal"), backend="real"
-    ) == ["/bin/reachy-mini-daemon", "--preload-datasets"]
+    ) == [*_REAL_LAUNCHER, "--preload-datasets"]
     assert daemon.launch_command(
         DaemonConfig(preload_datasets=False), backend="real"
-    ) == ["/bin/reachy-mini-daemon", "--no-preload-datasets"]
+    ) == [*_REAL_LAUNCHER, "--no-preload-datasets"]
 
 
 def test_launch_command_real_uses_placo_when_installed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(daemon.shutil, "which", lambda name: f"/bin/{name}")
     monkeypatch.setattr(daemon, "_placo_available", lambda: True)
     assert daemon.launch_command(DaemonConfig(), backend="real") == [
-        "/bin/reachy-mini-daemon",
+        *_REAL_LAUNCHER,
         "--kinematics-engine",
         "Placo",
         "--preload-datasets",
     ]
 
 
-def test_launch_command_real_requires_the_launcher(
+def test_launch_command_real_needs_no_launcher_on_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The hardware daemon runs through the bridge's own module: `reachy_mini` is a base
+    dependency, so nothing on PATH is required (the sim recipes still need the extra)."""
     monkeypatch.setattr(daemon.shutil, "which", lambda name: None)
-    with pytest.raises(DaemonError, match="reachy-mini-daemon") as excinfo:
-        daemon.launch_command(DaemonConfig(), backend="real")
-    assert "[sim]" not in str(excinfo.value)  # the launcher ships with the base dep
+    monkeypatch.setattr(daemon, "_placo_available", lambda: False)
+    assert daemon.launch_command(DaemonConfig(), backend="real") == [
+        *_REAL_LAUNCHER,
+        "--preload-datasets",
+    ]
 
 
 def test_launch_command_rejects_an_unknown_backend() -> None:
@@ -290,6 +299,84 @@ _SLEEPER = [sys.executable, "-c", "import time; time.sleep(30)"]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX sessions / process groups")
+# --- the readiness probe -----------------------------------------------------------
+
+
+class _StatusServer:
+    """A daemon's `GET /api/daemon/status` stand-in: one scripted response."""
+
+    def __init__(self, body: bytes, code: int = 200) -> None:
+        outer = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                outer.paths.append(self.path)
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args: Any) -> None:
+                pass
+
+        self.paths: list[str] = []
+        self._server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        self.port = self._server.server_address[1]
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+
+    def __enter__(self) -> Self:
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+
+def _status(backend_status: object) -> bytes:
+    return json.dumps(
+        {"type": "daemon_status", "state": "running", "backend_status": backend_status}
+    ).encode()
+
+
+def test_is_daemon_ready_reads_the_status_endpoint_without_touching_media() -> None:
+    """Ready means the status carries a backend: the probe is one plain GET (an SDK client
+    built with `no_media` would make the daemon rebuild its whole media pipeline)."""
+    with _StatusServer(_status({"motor_control_mode": "enabled"})) as server:
+        assert daemon.is_daemon_ready("127.0.0.1", server.port) is True
+        assert server.paths == ["/api/daemon/status"]
+    with _StatusServer(_status(None)) as server:
+        assert daemon.is_daemon_ready("127.0.0.1", server.port) is False
+
+
+@pytest.mark.parametrize(
+    ("body", "code"),
+    [(b"not json", 200), (b'"a string"', 200), (b'{"detail": "no"}', 404)],
+)
+def test_is_daemon_ready_reads_anything_else_as_not_ready(
+    body: bytes, code: int
+) -> None:
+    with _StatusServer(body, code) as server:
+        assert daemon.is_daemon_ready("127.0.0.1", server.port) is False
+
+
+def test_is_daemon_ready_is_false_on_a_closed_port() -> None:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    assert daemon.is_daemon_ready("127.0.0.1", port) is False
+
+
+def test_status_url_brackets_an_ipv6_host() -> None:
+    assert daemon.status_url("127.0.0.1", 8000) == (
+        "http://127.0.0.1:8000/api/daemon/status"
+    )
+    assert daemon.status_url("::1", 8001) == "http://[::1]:8001/api/daemon/status"
+
+
+# --- the spawn seam ------------------------------------------------------------------
+
+
 def test_spawn_puts_the_child_in_its_own_session() -> None:
     proc = daemon._spawn(_SLEEPER, daemon.scrubbed_env())
     try:
@@ -374,7 +461,7 @@ def test_auto_spawns_the_real_recipe_for_a_real_backend(harness: _Harness) -> No
     with daemon.managed_daemon(_AUTO, backend="real") as handle:
         assert handle.owned is True
     (cmd, env), *_ = harness.spawned
-    assert cmd == ["/bin/reachy-mini-daemon", "--preload-datasets"]
+    assert cmd == [*_REAL_LAUNCHER, "--preload-datasets"]
     assert not any(k in env for k in daemon._GST_BUNDLE_ENV)
     assert harness.proc.calls == ["terminate", "wait"]
 

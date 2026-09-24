@@ -154,7 +154,7 @@ webcam as the robot's camera ([running-the-sim-daemon.md](running-the-sim-daemon
 **Own it or borrow it:** the fixture reuses a daemon already reachable at the address
 (never tears it down); otherwise it spawns one and owns its teardown — a MuJoCo daemon for
 `sim`, and for `real` on a loopback address (a robot plugged into this machine over USB)
-the hardware daemon, `reachy-mini-daemon`, which finds the robot's serial port itself, wakes
+the hardware daemon (upstream's `reachy-mini-daemon`, run through the bridge's real daemon launcher — [../specs/real_daemon.md](../specs/real_daemon.md)), which finds the robot's serial port itself, wakes
 the robot, and puts it to sleep when the fixture stops it. A wireless robot runs its own
 daemon: point `REACHY_MINI_HOST` at it. When it can't bring one up (missing sim extra, busy
 port, no robot answering), the test **skips** rather than failing.
