@@ -21,7 +21,8 @@ dependencies = [
     # sounddevice it imports only for its local player, which the bridge never builds
     # (it injects a robot-speaker sink). The providers are opt-in extras below. A
     # direct git reference, so a downstream project inherits the source; tracks main
-    # for now, to be pinned to a tag or commit once it settles (specs/project.md).
+    # for now, to be pinned to a tag or commit once it settles (specs/project.md). A
+    # downstream that wants its own checkout of tts-engine overrides it (see there).
     "tts-engine @ git+https://github.com/funwithagents/tts-engine@main",
     # The motion loop catches websockets' ConnectionClosed to tell a lost daemon from a
     # bad tick (specs/motion.md "Lifecycle"). Already resolved through reachy-mini
