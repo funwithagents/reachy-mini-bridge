@@ -435,8 +435,8 @@ class TTSEngineSynthesizer:
 
     ``tts-engine`` is a base dependency; the provider the block's ``module.type``
     names comes from the matching extra (``reachy-mini-bridge[tts-elevenlabs]`` /
-    ``[tts-pocket]``), and tts-engine raises its own ``ConfigError`` naming the
-    missing one. The import stays local to the constructor so importing this module
+    ``[tts-gradium]`` / ``[tts-pocket]``), and tts-engine raises its own
+    ``ConfigError`` naming the missing one. The import stays local to the constructor so importing this module
     stays cheap for a caller who supplies their own synthesizer. ``tts-engine`` is
     push-based (a sink is fed int16 chunks); this adapter bridges that to the
     pull-based float32 iterator the contract requires via a thread-safe queue,

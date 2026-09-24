@@ -471,6 +471,35 @@ def test_say_with_elevenlabs_speaks_through_the_robot(
     asyncio.run(api.say("Hello, I am Reachy Mini.", synth))
 
 
+def test_say_with_gradium_speaks_through_the_robot(
+    live_api: tuple[ReachyMiniApi, frozenset[str]],
+) -> None:
+    """Another cloud provider end-to-end: `TTSEngineSynthesizer` (Gradium) → speaker.
+
+    Configured at 16 kHz, the speaker rate, so it covers the path the other two
+    providers' rates don't: the say sink's resample skipped on real network audio.
+    Gated on `GRADIUM_API_KEY` (skips cleanly without a key) and `audio`.
+    """
+    require_env("GRADIUM_API_KEY")
+    requires_caps(live_api, "audio")
+    api, _caps = live_api
+
+    synth = TTSEngineSynthesizer(
+        {
+            "module": {
+                "type": "gradium",
+                "api_key_env": "GRADIUM_API_KEY",
+                # "Alex", from the flagship catalog, used in tts-engine's own docs.
+                "voice_id": "91EdXxJDbWICDBgz",
+                "sample_rate": 16000,
+            }
+        }
+    )
+    # At `sample_rate: 16000` the module emits the speaker rate: nothing to resample.
+    assert synth.sample_rate == 16000
+    asyncio.run(api.say("Hello, I am Reachy Mini.", synth))
+
+
 def test_gravity_compensation_dispatches_over_the_live_path(
     live_api: tuple[ReachyMiniApi, frozenset[str]],
 ) -> None:

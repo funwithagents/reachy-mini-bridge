@@ -870,6 +870,19 @@ wheels = [
 ]
 
 [[package]]
+name = "gradium"
+version = "0.6.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/7a/af/fe31dc88950a0771f182167e4fb2d554b8e663d616223959416bd3a58d8a/gradium-0.6.4.tar.gz", hash = "sha256:b7230de41f6931c46a14cbb6ce3dba74902a29fda5fe09822b786a094158857c", size = 1330277, upload-time = "2026-09-04T14:45:38.407Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f3/f8/d9f8043737636d9f3df7f6693b8b50e77a2b29f6cad245ec0bd8a14db5f9/gradium-0.6.4-py3-none-any.whl", hash = "sha256:0800afc099f990c4f9609485add4700c880c04b6a1b84f9b001f1d1e5128d132", size = 29650, upload-time = "2026-09-04T14:45:36.892Z" },
+]
+
+[[package]]
 name = "groovy"
 version = "0.1.2"
 source = { registry = "https://pypi.org/simple" }
@@ -2547,6 +2560,9 @@ test = [
 tts-elevenlabs = [
     { name = "tts-engine", extra = ["elevenlabs"] },
 ]
+tts-gradium = [
+    { name = "tts-engine", extra = ["gradium"] },
+]
 tts-pocket = [
     { name = "tts-engine", extra = ["pocket"] },
 ]
@@ -2559,7 +2575,7 @@ demo = [
 dev = [
     { name = "pyright" },
     { name = "pytest" },
-    { name = "reachy-mini-bridge", extra = ["sim", "test", "tts-elevenlabs", "tts-pocket"] },
+    { name = "reachy-mini-bridge", extra = ["sim", "test", "tts-elevenlabs", "tts-gradium", "tts-pocket"] },
     { name = "ruff" },
 ]
 
@@ -2572,10 +2588,11 @@ requires-dist = [
     { name = "samplerate", specifier = ">=0.2" },
     { name = "tts-engine", git = "https://github.com/funwithagents/tts-engine?rev=main" },
     { name = "tts-engine", extras = ["elevenlabs"], marker = "extra == 'tts-elevenlabs'" },
+    { name = "tts-engine", extras = ["gradium"], marker = "extra == 'tts-gradium'" },
     { name = "tts-engine", extras = ["pocket"], marker = "extra == 'tts-pocket'" },
     { name = "websockets", specifier = ">=12" },
 ]
-provides-extras = ["sim", "tts-elevenlabs", "tts-pocket", "test"]
+provides-extras = ["sim", "tts-elevenlabs", "tts-gradium", "tts-pocket", "test"]
 
 [package.metadata.requires-dev]
 demo = [
@@ -2587,7 +2604,7 @@ dev = [
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "reachy-mini-bridge", extras = ["sim"], editable = "." },
     { name = "reachy-mini-bridge", extras = ["test"], editable = "." },
-    { name = "reachy-mini-bridge", extras = ["tts-elevenlabs", "tts-pocket"], editable = "." },
+    { name = "reachy-mini-bridge", extras = ["tts-elevenlabs", "tts-gradium", "tts-pocket"], editable = "." },
     { name = "ruff", specifier = ">=0.16.6" },
 ]
 
@@ -3119,6 +3136,9 @@ dependencies = [
 elevenlabs = [
     { name = "elevenlabs" },
     { name = "miniaudio" },
+]
+gradium = [
+    { name = "gradium" },
 ]
 pocket = [
     { name = "pocket-tts" },

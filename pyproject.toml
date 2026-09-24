@@ -43,6 +43,8 @@ sim = ["reachy-mini[mujoco]>=1.10"]
 # extra installs it. A caller supplying their own SpeechSynthesizer needs neither.
 # ElevenLabs: the cloud provider (needs ELEVENLABS_API_KEY); a few MB.
 tts-elevenlabs = ["tts-engine[elevenlabs]"]
+# Gradium: a cloud provider (needs GRADIUM_API_KEY); a few MB.
+tts-gradium = ["tts-engine[gradium]"]
 # pocket-tts: the local model (no key, no network at synthesis time) — pulls torch
 # (hundreds of MB) and downloads the model weights on first use.
 tts-pocket = ["tts-engine[pocket]"]
@@ -63,11 +65,12 @@ dev = [
     # Pull the sim backend into the dev env so the sim e2e tests run (not skip).
     # `sim` stays an optional extra for consumers; only dev installs it by default.
     "reachy-mini-bridge[sim]",
-    # Both providers in the dev env: pocket so the real-TTS live test runs with no
+    # Every provider in the dev env: pocket so the real-TTS live test runs with no
     # credential (the cost is torch in every dev sync — accepted, as in tts-engine's
-    # own dev group), elevenlabs so the key-gated cloud test can run when a key is
-    # set rather than fail on a missing extra. Consumers install one at a time.
-    "reachy-mini-bridge[tts-elevenlabs,tts-pocket]",
+    # own dev group), elevenlabs and gradium so the key-gated cloud tests can run
+    # when a key is set rather than fail on a missing extra. Consumers install one
+    # at a time.
+    "reachy-mini-bridge[tts-elevenlabs,tts-gradium,tts-pocket]",
     # Pull the test extra into the dev env so the shipped harness type-checks and the
     # bridge dogfoods it in tests-e2e/; stays optional for consumers.
     "reachy-mini-bridge[test]",

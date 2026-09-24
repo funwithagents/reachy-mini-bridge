@@ -51,6 +51,7 @@ uv add "reachy-mini-bridge[sim,test] @ ../reachy-mini-bridge"   # a checkout nex
 | `sim` | `reachy_mini[mujoco]` | The `sim` backend (MuJoCo) |
 | `tts-pocket` | `tts-engine[pocket]` | The default voice for `say` on the local pocket-tts model: no key, no network once the weights are cached, but torch (hundreds of MB) |
 | `tts-elevenlabs` | `tts-engine[elevenlabs]` | The default voice for `say` on ElevenLabs (`ELEVENLABS_API_KEY`); a few MB |
+| `tts-gradium` | `tts-engine[gradium]` | The default voice for `say` on Gradium (`GRADIUM_API_KEY`); a few MB |
 | `test` | `pytest` | The shipped `reachy_mini_bridge.testing` harness for your e2e tests |
 
 Importing the package imports `reachy_mini`, which needs its native libraries installed but not a running daemon.
@@ -257,6 +258,20 @@ Or the cloud provider (`tts-elevenlabs`), whose key is read from the named envir
   }
 }
 ```
+
+Or Gradium (`tts-gradium`), keyed the same way:
+
+```json
+"tts": {
+  "module": {
+    "type": "gradium",
+    "api_key_env": "GRADIUM_API_KEY",
+    "voice_id": "..."
+  }
+}
+```
+
+Whatever the provider, `say` plays audio that arrives at the speaker's 16 kHz as is and resamples any other rate to it.
 
 Omit the block and `say` raises unless you pass your own `SpeechSynthesizer`. A block that fails to build — extra not installed, API key unset — leaves the robot fully usable without a voice and puts the cause on `api.synthesizer_error`.
 
