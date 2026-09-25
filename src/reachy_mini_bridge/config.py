@@ -33,6 +33,7 @@ __all__ = [
     "MotionSettings",
     "ReachyMiniConfig",
     "SimCameraSettings",
+    "SimDisplaySettings",
 ]
 
 BACKENDS = ("real", "sim", "fake")
@@ -42,6 +43,10 @@ SPAWN_MODES = ("never", "auto", "always")
 # What the sim daemon's camera stream carries (specs/sim_daemon.md "Camera sources").
 CAMERA_SOURCES = ("sim", "webcam")
 DEFAULT_WEBCAM_HFOV_DEG = 70.0
+# The MuJoCo viewer's displays (specs/config.md `daemon.sim_displays`; specs/sim_daemon.md
+# "Viewer overlay"): each name is a field of SimDisplaySettings and a `--sim-display`
+# value of the sim daemon launcher. Add a display here and as a field, nowhere else.
+SIM_DISPLAYS = ("camera_overlay",)
 # The idle modes (specs/motion.md "Presence and the idle mode"); motion.IdleMode is the
 # same three values as a type.
 IDLE_MODES = ("breathing", "hold", "custom")
@@ -152,17 +157,53 @@ class SimCameraSettings:
 
 
 @dataclass
+class SimDisplaySettings:
+    """What the MuJoCo viewer window shows besides the scene (specs/config.md
+    ``daemon.sim_displays``): one boolean per display, every one off by default.
+    ``camera_overlay`` draws the sim daemon's camera stream in the top-right corner of
+    the viewer (specs/sim_daemon.md "Viewer overlay"). A display needs the viewer, so
+    ``DaemonConfig.from_dict`` rejects one set with ``headless``."""
+
+    camera_overlay: bool = False
+
+    def enabled(self) -> list[str]:
+        """The names of the displays that are on, in ``SIM_DISPLAYS`` order."""
+        return [name for name in SIM_DISPLAYS if getattr(self, name)]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> SimDisplaySettings:
+        block = _require_object(data, "daemon.sim_displays")
+        _reject_unknown_keys(block, "daemon.sim_displays", set(SIM_DISPLAYS))
+        values: dict[str, bool] = {}
+        for name in SIM_DISPLAYS:
+            value = block.get(name, False)
+            if not isinstance(value, bool):
+                raise ConfigError(f"'daemon.sim_displays.{name}' must be a boolean")
+            values[name] = value
+        return cls(**values)
+
+    @classmethod
+    def from_json(cls, text: str) -> SimDisplaySettings:
+        return cls.from_dict(_loads(text))
+
+    @classmethod
+    def from_json_file(cls, path: str | Path) -> SimDisplaySettings:
+        return cls.from_dict(_load_file(path))
+
+
+@dataclass
 class DaemonConfig:
     """How the bridge brings up the daemon the robot client talks to (specs/daemon.md).
 
-    ``headless``, ``scene`` and ``camera`` are MuJoCo knobs: they play no part for a
-    ``real`` daemon.
+    ``headless``, ``scene``, ``camera`` and ``sim_displays`` are MuJoCo knobs: they play
+    no part for a ``real`` daemon.
     """
 
     spawn: str = "never"
     headless: bool = True
     scene: str | None = None
     camera: SimCameraSettings = field(default_factory=SimCameraSettings)
+    sim_displays: SimDisplaySettings = field(default_factory=SimDisplaySettings)
     preload_datasets: bool = True
     startup_timeout: float = 45.0
 
@@ -177,6 +218,7 @@ class DaemonConfig:
                 "headless",
                 "scene",
                 "camera",
+                "sim_displays",
                 "preload_datasets",
                 "startup_timeout",
             },
@@ -193,6 +235,12 @@ class DaemonConfig:
         if scene is not None and (not isinstance(scene, str) or not scene):
             raise ConfigError("'daemon.scene' must be a non-empty string or null")
         camera = SimCameraSettings.from_dict(block.get("camera", {}))
+        displays = SimDisplaySettings.from_dict(block.get("sim_displays", {}))
+        if headless and displays.enabled():
+            raise ConfigError(
+                f"'daemon.sim_displays.{displays.enabled()[0]}' needs the viewer: set "
+                "'daemon.headless' to false"
+            )
         preload = block.get("preload_datasets", True)
         if not isinstance(preload, bool):
             raise ConfigError("'daemon.preload_datasets' must be a boolean")
@@ -204,6 +252,7 @@ class DaemonConfig:
             headless=headless,
             scene=scene,
             camera=camera,
+            sim_displays=displays,
             preload_datasets=preload,
             startup_timeout=float(timeout),
         )

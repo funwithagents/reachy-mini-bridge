@@ -61,6 +61,8 @@ launchctl asuser $(id -u) \
   <venv>/bin/mjpython -m reachy_mini_bridge.sim_daemon --scene minimal --preload-datasets
 ```
 
+**See what the robot sees.** `--sim-display camera_overlay` draws the camera stream in the top-right corner of the viewer window — the rendered eye camera, or the webcam with `--camera webcam`, mirrored so you see yourself as in a mirror (the stream itself stays as the camera sees) — with the camera's name at the top left. In a config: `"daemon": {"headless": false, "sim_displays": {"camera_overlay": true}}` (the example config has it on). Viewer only: with `--headless` it is an argument error, and the config refuses it with `headless: true`. It needs the MuJoCo the `sim` extra installs (3.3.1 or later, "The MuJoCo version" above); an older one gets one warning and no picture.
+
 ### A face in the sim (viewer + scene file)
 
 Upstream's scenes ship nothing to look at. The bridge's shipped testing package can write a **test scene** — hidden-by-default props, a portrait plane today — in front of the robot and run the daemon on it through its own launcher, which lets you show, place, move and hide the props while the daemon runs ([../specs/sim_scene.md](../specs/sim_scene.md)):
@@ -82,7 +84,7 @@ It is the sim daemon launcher with the scene added, so the head converges on the
 For manual tests of face-driven behaviour, the sim can see through the computer's webcam instead of its rendered eye camera ([../specs/sim_daemon.md](../specs/sim_daemon.md) "Camera sources"): the person in front of the screen is who the simulated robot detects and follows, with or without the viewer.
 
 ```
-mjpython -m reachy_mini_bridge.sim_daemon --camera webcam [--webcam-device 1] [--webcam-hfov 70]
+mjpython -m reachy_mini_bridge.sim_daemon --camera webcam [--webcam-device 1] [--webcam-hfov 70] [--sim-display camera_overlay]
 uv run python -m reachy_mini_bridge.sim_daemon --headless --camera webcam
 ```
 

@@ -25,7 +25,11 @@ from typing import Any, Self
 import pytest
 
 from reachy_mini_bridge import daemon
-from reachy_mini_bridge.config import DaemonConfig, SimCameraSettings
+from reachy_mini_bridge.config import (
+    DaemonConfig,
+    SimCameraSettings,
+    SimDisplaySettings,
+)
 from reachy_mini_bridge.errors import DaemonError
 
 _AUTO = DaemonConfig(spawn="auto")
@@ -165,6 +169,41 @@ def test_launch_command_passes_the_webcam_camera_source(
     # device and field of view play no part for the rendered camera
     rendered = SimCameraSettings(source="sim", device=1, hfov_deg=62.5)
     assert "--camera" not in daemon.launch_command(DaemonConfig(camera=rendered))
+
+
+def test_launch_command_turns_on_the_viewer_displays(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`daemon.sim_displays` becomes one `--sim-display <name>` per display that is on,
+    after the camera flags, on every sim recipe; nothing when every display is off."""
+    monkeypatch.setattr(daemon.shutil, "which", lambda name: f"/bin/{name}")
+    overlay = SimDisplaySettings(camera_overlay=True)
+    assert daemon.launch_command(
+        DaemonConfig(headless=False, sim_displays=overlay)
+    ) == [
+        "/bin/mjpython",
+        "-m",
+        "reachy_mini_bridge.sim_daemon",
+        "--preload-datasets",
+        "--sim-display",
+        "camera_overlay",
+    ]
+    webcam = SimCameraSettings(source="webcam")
+    assert daemon.launch_command(
+        DaemonConfig(headless=False, camera=webcam, sim_displays=overlay)
+    )[-6:] == [
+        "--camera",
+        "webcam",
+        "--webcam-hfov",
+        "70",
+        "--sim-display",
+        "camera_overlay",
+    ]
+    scene = str(tmp_path / "scene.xml")
+    assert daemon.launch_command(
+        DaemonConfig(headless=False, scene=scene, sim_displays=overlay)
+    )[-3:] == ["--preload-datasets", "--sim-display", "camera_overlay"]
+    assert "--sim-display" not in daemon.launch_command(DaemonConfig(headless=False))
 
 
 def test_launch_command_runs_a_scene_file_through_the_bridge_launcher(

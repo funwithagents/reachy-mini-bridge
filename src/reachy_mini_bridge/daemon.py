@@ -204,8 +204,9 @@ def launch_command(config: DaemonConfig, *, backend: str = "sim") -> list[str]:
     launcher (specs/sim_daemon.md: upstream's daemon with its face-tracking corrections and
     the ``config.camera`` source): headless ``<this interpreter> -m
     reachy_mini_bridge.sim_daemon --headless --[no-]preload-datasets [--scene S] [camera
-    flags]``; viewer ``mjpython -m reachy_mini_bridge.sim_daemon [...]`` (the render's GL
-    context; needs a GUI session). A ``config.scene`` ending in ``.xml`` is a scene *file*,
+    flags]``; viewer ``mjpython -m reachy_mini_bridge.sim_daemon [...] [display flags]``
+    (the render's GL context; needs a GUI session; ``--sim-display <name>`` per display
+    on in ``config.sim_displays``). A ``config.scene`` ending in ``.xml`` is a scene *file*,
     run by the test scene's launcher (``reachy_mini_bridge.testing.sim_scene``,
     specs/sim_scene.md) built on it. ``real`` — a USB-attached robot: ``<this interpreter>
     -m reachy_mini_bridge.real_daemon [--kinematics-engine Placo] --[no-]preload-datasets``
@@ -245,13 +246,22 @@ def launch_command(config: DaemonConfig, *, backend: str = "sim") -> list[str]:
     if config.headless:
         cmd.append("--headless")
     cmd.append(_preload_flag(config))
-    cmd += _camera_flags(config)
+    cmd += _camera_flags(config) + _display_flags(config)
     return cmd
 
 
 def _preload_flag(config: DaemonConfig) -> str:
     # Always explicit: the daemon's own default is not to preload.
     return "--preload-datasets" if config.preload_datasets else "--no-preload-datasets"
+
+
+def _display_flags(config: DaemonConfig) -> list[str]:
+    """The launcher's viewer displays: ``--sim-display <name>`` per display enabled in
+    ``daemon.sim_displays`` (the config guarantees the viewer for any of them)."""
+    flags: list[str] = []
+    for name in config.sim_displays.enabled():
+        flags += ["--sim-display", name]
+    return flags
 
 
 def _camera_flags(config: DaemonConfig) -> list[str]:

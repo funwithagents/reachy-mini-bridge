@@ -14,7 +14,7 @@ tests:
 
 ## Purpose
 
-Every MuJoCo daemon the bridge starts runs through the bridge's own launcher, `python -m reachy_mini_bridge.sim_daemon`: upstream's daemon, unchanged in everything but three corrections that make **face tracking work in the sim** — so the viewer sim is a robot stand-in a person can test against by hand, not only a motion and audio target — and one addition, a **host webcam as the sim's camera**, so a person in front of the computer is who the simulated robot sees and follows.
+Every MuJoCo daemon the bridge starts runs through the bridge's own launcher, `python -m reachy_mini_bridge.sim_daemon`: upstream's daemon, unchanged in everything but three corrections that make **face tracking work in the sim** — so the viewer sim is a robot stand-in a person can test against by hand, not only a motion and audio target — and two additions: a **host webcam as the sim's camera**, so a person in front of the computer is who the simulated robot sees and follows, and a **camera overlay** on the viewer window, so the person watching the sim also sees what the robot sees.
 
 Upstream's MuJoCo backend (SDK 1.10) gets face tracking wrong in three independent ways, each of which alone makes the head miss the face (the measurements are in [../docs/reachy-mini-api.md](../docs/reachy-mini-api.md) "Face tracking" and below):
 
@@ -30,7 +30,8 @@ The launcher corrects all three inside the daemon process, so the bridge — the
 
 ```
 python -m reachy_mini_bridge.sim_daemon [--scene NAME] [--headless] [--[no-]preload-datasets]
-    [--camera sim|webcam] [--webcam-device DEVICE] [--webcam-hfov DEGREES] [upstream flags…]
+    [--camera sim|webcam] [--webcam-device DEVICE] [--webcam-hfov DEGREES]
+    [--sim-display camera_overlay] [upstream flags…]
 ```
 
 `run_sim_daemon(argv=None, *, extensions=())` substitutes the backend class upstream's daemon constructs (`reachy_mini.daemon.daemon.MujocoBackend`) with the bridge's subclass (`corrected_backend(...)`, below), rewrites `sys.argv` to `--sim [--scene NAME] [--headless] --[no-]preload-datasets` plus any unrecognised flags forwarded verbatim, and calls upstream's `main()`. Everything else — the FastAPI app, the media server, readiness, shutdown — is upstream's.
@@ -82,6 +83,16 @@ With `--camera webcam`, the aim is computed from the camera's **fixed** pose: `T
 
 The parallax between the webcam and the robot's eye (a webcam above a screen, a person at arm's length) is not modelled: the head aims along the direction the webcam sees the face in, which is what a person watching the viewer expects.
 
+### Viewer overlay
+
+`--sim-display camera_overlay` — `daemon.sim_displays.camera_overlay` in a config ([config.md](config.md)) — draws the camera stream as a picture in the top-right corner of the MuJoCo viewer window: the webcam's frames with `--camera webcam`, the rendered eye camera's with `sim`. It is a display, not a camera: the stream clients and the tracker read is untouched; and headless there is no window to draw on, so the flag is an argument error with `--headless` (the config rejects the field with `headless: true` the same way). `sim_displays` is the home of every viewer display, `--sim-display <name>` its flag, repeatable; the camera overlay is the first.
+
+- **How it is drawn.** MuJoCo's passive viewer draws images over its 3D view on every frame through `viewer.Handle.set_images` (MuJoCo 3.3.1+ — why the bridge's `sim` extra requires 3.3.x itself, [project.md](project.md)): an RGB `uint8` image of exactly a rectangle's size, top-down (the binding flips it for OpenGL), copied on the call, drawn until replaced or cleared. The rectangle (`overlay_rect`) is 16:9, a quarter of the 3D view's width (`OVERLAY_FRACTION`), both sides even, inset by 2 % of the view's width (`OVERLAY_MARGIN`) from its top-right corner. It is recomputed from the handle's `viewport` — framebuffer pixels, twice the window's points on a Retina display — for every frame, so a resize keeps the picture in its corner; a view whose picture would have a side under 32 px draws nothing. The picture carries a 2 px light frame, so it stands out from a scene of its own colours (the eye camera's view of the empty scene is the viewer's own skybox and floor). One line of text at the view's top left (`set_texts`) names the camera — the webcam's name and negotiated size, the words the relay logs, or `eye camera 1280x720`. The overlay says what it does at `INFO` in the daemon's log — attached to the viewer, fed by the eye camera render, the first frame drawn and where — and a draw that raises is one `WARNING` with the traceback, then quiet.
+- **Threads.** `set_images` waits for the viewer's render thread (up to one UI frame), so it never runs on the physics loop or a feed thread: frames go through `ViewerOverlay.show` into a latest-frame slot, and the overlay's own thread resamples the latest to the rectangle (`resample_nearest`, nearest neighbour — the daemon has no OpenCV) and draws it. A feed faster than the viewer only ever loses intermediate frames.
+- **Where the frames come from.** *Webcam:* a `tee` after the relay pipeline's RGB 1280×720 caps adds a second branch — a leaky one-buffer queue, `videoscale` to 640×360 (`OVERLAY_SOURCE_SIZE`), a horizontal `videoflip`, an `appsink` named `overlay` — whose samples are copied into arrays and shown; the stream branch is the same as without the overlay and never waits on it. The picture is **mirrored**, as a person in front of a camera expects to see themselves; the flip lives in the overlay branch alone, so the stream and the tracker keep what the camera sees (the "not mirrored" of "Camera sources" still holds for them). The rendered eye camera's picture is not mirrored: it is the scene, which the viewer shows beside it. *Rendered eye camera:* upstream's `rendering_loop` gets its offscreen renderer from `_get_renderer`, which the corrected backend wraps so every rendered frame is also shown (resampled to 640×360) on the render thread, before it goes to the stream.
+- **The viewer handle.** Upstream's `run()` keeps the handle it launches as a local and closes it itself at the end. While `run()` runs with the overlay on, `mujoco.viewer.launch_passive` (looked up on the module at call time) is substituted by a wrapper that hands the handle to the overlay and binds the handle's `close` to stop the overlay first — a draw issued after the close could wait on a render thread that is gone. The original is restored when `run()` returns, also on an exception; a process-local substitution like the tracker intrinsics, gone the day upstream keeps the handle on `self`.
+- **Degrade rule.** A handle without `set_images` — a MuJoCo before 3.3.1, which a downstream installing `reachy-mini[mujoco]` alongside the bridge would get — is one `WARNING` naming the installed version, and no picture; nothing else changes. Nothing in the bridge depends on the MuJoCo version at runtime.
+
 ### Testable without a daemon
 
 The corrections and the argv handling are pure or in-process, so the deterministic `tests/` tier pins them (skipping without the `sim` extra, like the scene tests):
@@ -91,14 +102,15 @@ The corrections and the argv handling are pure or in-process, so the determinist
 - **Intrinsics.** The tracker's matrix for `sim` equals the pinhole of the scene's `fovy` at 320×180 (and at 1280×720), for `webcam` of the given `hfov` — and, once the relay has reported a source wider than 16:9, of the narrowed field of view the crop leaves.
 - **Any camera feeds the stream.** The capture pipeline crops and scales into 1280×720 rather than constraining the source; the relay reports the resolution it negotiated.
 - **Stepping and hooks.** A control tick steps tracking after the kinematics update; `on_backend` runs once the model exists, `on_app` on the built app.
-- **Launcher argv.** Flag rewriting and passthrough; the webcam flags rejected without `--camera webcam`; the render thread not started and the relay started in webcam mode (the capture pipeline behind a seam).
+- **Launcher argv.** Flag rewriting and passthrough; the webcam flags rejected without `--camera webcam`; `--sim-display` rejected with `--headless` and reaching the backend as its displays; the render thread not started and the relay started in webcam mode (the capture pipeline behind a seam).
+- **The viewer overlay.** `overlay_rect` places the picture (16:9, even sides, the corner, the margin, `None` on a view too small); `resample_nearest` keeps the size and the corners; the relay description with the overlay has the `tee` branch and an unchanged stream branch, and without it is today's string; on a fake viewer handle the overlay draws the latest frame at the rectangle's size, skips to the latest frame while the viewer is busy, follows a resized viewport, labels, clears on stop, and warns once on a handle without `set_images`; the corrected backend taps the renderer in `sim` mode and hands the overlay to the relay in `webcam` mode; the run hands the viewer to the overlay and stops it before the close, restoring the launch function even when the run raises.
 
 The live check is manual and in [the plan](../plans/202609171842_sim-daemon-launcher-tracking-corrections-and-webcam.md): the viewer sim with the test scene (automated in the attention / gaze tests of `tests-e2e/test_api.py`, which check the head's path onto the face and where it settles), and the viewer sim with a webcam and a person in front of it.
 
 ## Relationship to the other specs
 
-- **[daemon.md](daemon.md):** `launch_command` builds every `sim` recipe on this launcher (the test scene's for a `.xml` scene), forwarding the camera flags from `DaemonConfig.camera`.
-- **[config.md](config.md):** `daemon.camera` (`source`, `device`, `hfov_deg`) configures the camera source.
+- **[daemon.md](daemon.md):** `launch_command` builds every `sim` recipe on this launcher (the test scene's for a `.xml` scene), forwarding the camera flags from `DaemonConfig.camera` and a `--sim-display` per display on in `DaemonConfig.sim_displays`.
+- **[config.md](config.md):** `daemon.camera` (`source`, `device`, `hfov_deg`) configures the camera source; `daemon.sim_displays` (`camera_overlay`) the viewer displays.
 - **[sim_scene.md](sim_scene.md):** the test scene is a `SimDaemonExtension`; its face tests rely on corrections 1 and 2.
 - **[api.md](api.md):** "Attention" runs unchanged on top; the corrections are what make its hand-back and re-engage converge in the sim.
 - **[testing.md](testing.md) / [testing_support.md](testing_support.md):** the harness spawns through `daemon.py`, so the e2e tier gets the corrected sim with no change of its own.

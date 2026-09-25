@@ -97,7 +97,7 @@ uv run python -m examples.control_panel --config config.example.json   # the sim
 uv run python -m examples.control_panel                                # no config: the offline fake
 ```
 
-then open `http://127.0.0.1:7860`. The example config opens the MuJoCo viewer window next to the panel and uses your **webcam** as the robot's camera: enable the motors and the simulated robot turns to follow you (see [The simulator](#the-simulator)). It needs an unlocked GUI session and, on macOS, camera permission for the terminal that runs it. Set the config's `daemon.camera.source` to `"sim"` for the rendered scene instead. Point `--config` at a `real` config to drive the robot. Design and limits: [specs/control_panel.md](specs/control_panel.md).
+then open `http://127.0.0.1:7860`. The example config opens the MuJoCo viewer window next to the panel and uses your **webcam** as the robot's camera, shown in the corner of that window: enable the motors and the simulated robot turns to follow you (see [The simulator](#the-simulator)). It needs an unlocked GUI session and, on macOS, camera permission for the terminal that runs it. Set the config's `daemon.camera.source` to `"sim"` for the rendered scene instead. Point `--config` at a `real` config to drive the robot. Design and limits: [specs/control_panel.md](specs/control_panel.md).
 
 ## What the API does
 
@@ -146,6 +146,7 @@ The `sim` backend is upstream's MuJoCo simulation, started through the bridge's 
 
 - **Face tracking works.** Upstream's sim never runs its tracking step, and its tracker uses a camera matrix scaled for the real robot's sensor, which puts the head about 45° off the face. The launcher fixes both. With the viewer open, the head turns onto a face, swings a few degrees past it, and settles on it. These are bugs in the upstream simulator. The corrections are pinned by fast offline tests that step the corrected loop in MuJoCo with no daemon running, and by the live tests below.
 - **Your webcam as the robot's camera.** With `"daemon": {"camera": {"source": "webcam"}}`, the sim's camera shows your computer's webcam instead of the rendered scene. Face tracking, `get_camera_frame()` and the control panel then see you, with or without the viewer window. The webcam counts as fixed where the robot's eye rests, so the head follows you without drifting. On macOS, the terminal or editor that starts the daemon needs camera permission.
+- **See what it sees.** With `"daemon": {"headless": false, "sim_displays": {"camera_overlay": true}}`, the viewer window shows the camera stream in its top-right corner — your webcam, or the rendered eye camera. The example config has it on.
 - **A face to test with.** The testing package can write a scene with a portrait that a test shows, moves and hides while the daemon runs ([specs/sim_scene.md](specs/sim_scene.md)). The pytest plugin's sim always runs on it.
 
 A sim started by hand with upstream's `reachy-mini-daemon --sim` works for motion and audio, but has none of these additions. Commands for every mode: [docs/running-the-sim-daemon.md](docs/running-the-sim-daemon.md).

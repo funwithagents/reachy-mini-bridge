@@ -13,11 +13,13 @@ from pathlib import Path
 import pytest
 
 from reachy_mini_bridge.config import (
+    SIM_DISPLAYS,
     AudioSettings,
     DaemonConfig,
     MotionSettings,
     ReachyMiniConfig,
     SimCameraSettings,
+    SimDisplaySettings,
 )
 from reachy_mini_bridge.errors import ConfigError
 
@@ -53,6 +55,7 @@ def test_from_json_file_round_trips_the_repo_example() -> None:
         headless=False,
         scene=None,
         camera=SimCameraSettings(source="webcam", device=None, hfov_deg=70.0),
+        sim_displays=SimDisplaySettings(camera_overlay=True),
         preload_datasets=True,
         startup_timeout=45.0,
     )
@@ -309,6 +312,50 @@ def test_daemon_camera_rejects_bad_values(camera: dict[str, object], key: str) -
 def test_daemon_camera_must_be_an_object() -> None:
     with pytest.raises(ConfigError, match=r"daemon\.camera"):
         ReachyMiniConfig.from_dict({"daemon": {"camera": "webcam"}})
+
+
+def test_daemon_sim_displays_default_off() -> None:
+    assert ReachyMiniConfig.from_dict({}).daemon.sim_displays == SimDisplaySettings()
+    assert SimDisplaySettings().enabled() == []
+    assert SIM_DISPLAYS == ("camera_overlay",)
+
+
+def test_daemon_sim_displays_turn_on_a_viewer_display() -> None:
+    cfg = ReachyMiniConfig.from_dict(
+        {
+            "backend": "sim",
+            "daemon": {"headless": False, "sim_displays": {"camera_overlay": True}},
+        }
+    )
+    assert cfg.daemon.sim_displays == SimDisplaySettings(camera_overlay=True)
+    assert cfg.daemon.sim_displays.enabled() == ["camera_overlay"]
+    assert SimDisplaySettings.from_json('{"camera_overlay": true}').enabled() == [
+        "camera_overlay"
+    ]
+
+
+def test_daemon_sim_displays_need_the_viewer() -> None:
+    """A display is drawn in the viewer window; with the headless daemon (the default)
+    there is none, so the config says so instead of silently showing nothing."""
+    with pytest.raises(ConfigError, match=r"sim_displays\.camera_overlay.*headless"):
+        ReachyMiniConfig.from_dict(
+            {"backend": "sim", "daemon": {"sim_displays": {"camera_overlay": True}}}
+        )
+    off = ReachyMiniConfig.from_dict(
+        {"backend": "sim", "daemon": {"sim_displays": {"camera_overlay": False}}}
+    )
+    assert off.daemon.headless and off.daemon.sim_displays.enabled() == []
+
+
+@pytest.mark.parametrize(
+    "displays",
+    [{"camera_overlay": "yes"}, {"camera_overlay": 1}, {"hud": True}, "camera_overlay"],
+)
+def test_daemon_sim_displays_reject_bad_values(displays: object) -> None:
+    with pytest.raises(ConfigError, match=r"daemon\.sim_displays"):
+        ReachyMiniConfig.from_dict(
+            {"backend": "sim", "daemon": {"headless": False, "sim_displays": displays}}
+        )
 
 
 def test_motion_defaults_are_on() -> None:

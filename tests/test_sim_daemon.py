@@ -26,12 +26,15 @@ import pytest
 from reachy_mini_bridge import sim_daemon
 from reachy_mini_bridge.sim_daemon import (
     SimDaemonExtension,
+    ViewerOverlay,
     WebcamRelay,
     corrected_backend,
     cropped_hfov_deg,
+    overlay_rect,
     pinhole_intrinsics,
     relay_pipeline_candidates,
     relay_pipeline_description,
+    resample_nearest,
     sim_hfov_deg,
     webcam_source,
 )
@@ -368,7 +371,11 @@ def test_webcam_mode_relays_instead_of_rendering_and_aims_from_rest() -> None:
 
     class _Relay:
         def __init__(
-            self, device: Any, *, on_source_size: Callable[[tuple[int, int]], None]
+            self,
+            device: Any,
+            *,
+            on_source_size: Callable[[tuple[int, int]], None],
+            overlay: Any = None,
         ) -> None:
             events.append(f"relay {device!r}")
 
@@ -398,7 +405,11 @@ def test_the_tracker_follows_the_camera_the_relay_negotiated() -> None:
 
     class _Relay:
         def __init__(
-            self, device: Any, *, on_source_size: Callable[[tuple[int, int]], None]
+            self,
+            device: Any,
+            *,
+            on_source_size: Callable[[tuple[int, int]], None],
+            overlay: Any = None,
         ) -> None:
             reports.append(on_source_size)
 
@@ -556,7 +567,9 @@ def test_the_relay_reports_its_camera_resolution_once_frames_flow(
             on_source_size=sizes.append,
             frame_timeout=5.0,
             retry=0.05,
-            open_pipeline=lambda _d, on_frame: _FakePipeline(on_frame, True, size),
+            open_pipeline=lambda description, on_frame, on_overlay_frame=None: (
+                _FakePipeline(on_frame, True, size)
+            ),
             system="Linux",
         )
 
@@ -586,7 +599,11 @@ def test_the_relay_falls_back_when_the_camera_lacks_the_streams_size() -> None:
     tried: list[str] = []
     sizes: list[tuple[int, int]] = []
 
-    def open_pipeline(description: str, on_frame: Callable[[], None]) -> _FakePipeline:
+    def open_pipeline(
+        description: str,
+        on_frame: Callable[[], None],
+        on_overlay_frame: Callable[[np.ndarray], None] | None = None,
+    ) -> _FakePipeline:
         tried.append(description)
         if "width=1280,height=720 ! aspectratiocrop" in description:
             raise RuntimeError("could not negotiate")  # no such mode on this camera
@@ -636,7 +653,11 @@ def test_the_relay_logs_a_silent_camera_once_retries_and_recovers(
     pipelines: list[_FakePipeline] = []
     frames = threading.Event()
 
-    def open_pipeline(description: str, on_frame: Callable[[], None]) -> _FakePipeline:
+    def open_pipeline(
+        description: str,
+        on_frame: Callable[[], None],
+        on_overlay_frame: Callable[[np.ndarray], None] | None = None,
+    ) -> _FakePipeline:
         pipeline = _FakePipeline(on_frame, frames.is_set())
         pipelines.append(pipeline)
         return pipeline
@@ -663,6 +684,384 @@ def test_the_relay_logs_a_silent_camera_once_retries_and_recovers(
         finally:
             relay.stop()
     assert all(p.stopped for p in pipelines)
+
+
+# --- the viewer overlay -----------------------------------------------------------------
+
+
+def test_overlay_rect_sits_in_the_top_right_corner() -> None:
+    """A 16:9 picture a quarter of the view's width, even-sided, inset by the margin from
+    the top-right corner — MuJoCo rectangles have their origin at the bottom-left, so
+    the corner is where left+width and bottom+height meet the view's."""
+    for viewport in ((0, 0, 1920, 1080), (10, 20, 1280, 720)):
+        rect = overlay_rect(viewport)
+        assert rect is not None
+        left, bottom, width, height = rect
+        view_left, view_bottom, view_width, view_height = viewport
+        assert width == int(view_width * 0.25) // 2 * 2
+        assert width % 2 == 0 and height % 2 == 0
+        assert abs(width / height - 16 / 9) < 0.02
+        inset = int(view_width * 0.02)
+        assert left + width + inset == view_left + view_width
+        assert bottom + height + inset == view_bottom + view_height
+        assert left > view_left and bottom > view_bottom
+    assert overlay_rect((0, 0, 100, 60)) is None  # too small a picture to draw
+    assert overlay_rect((0, 0, 1920, 40)) is None  # a view not tall enough for it
+
+
+def test_resample_nearest_keeps_the_size_and_the_corners() -> None:
+    frame = np.zeros((360, 640, 3), dtype=np.uint8)
+    frame[0, 0], frame[0, -1] = (1, 2, 3), (4, 5, 6)
+    frame[-1, 0], frame[-1, -1] = (7, 8, 9), (10, 11, 12)
+    for size in ((480, 270), (1280, 720), (33, 17)):
+        out = resample_nearest(frame, size)
+        assert out.shape == (size[1], size[0], 3) and out.flags.c_contiguous
+        assert tuple(out[0, 0]) == (1, 2, 3) and tuple(out[0, -1]) == (4, 5, 6)
+        assert tuple(out[-1, 0]) == (7, 8, 9) and tuple(out[-1, -1]) == (10, 11, 12)
+    same = resample_nearest(frame, (640, 360))
+    assert same is not frame and np.array_equal(same, frame)
+
+
+def test_the_relay_pipeline_grows_an_overlay_branch_only_when_asked() -> None:
+    """With the overlay, a tee after the RGB caps adds a leaky one-buffer branch scaled
+    to the overlay's size and mirrored into a named appsink; the stream branch is
+    unchanged, so the media server and the tracker see exactly what they see without
+    it — unmirrored, as the camera does."""
+    plain = relay_pipeline_description("autovideosrc")
+    assert plain == (
+        "autovideosrc name=camera ! video/x-raw ! aspectratiocrop aspect-ratio=16/9 ! "
+        "videoscale ! videoconvert ! videorate ! "
+        "video/x-raw,format=RGB,width=1280,height=720,framerate=25/1 ! "
+        "queue leaky=downstream max-size-buffers=2 ! rtpvrawpay mtu=1400 name=pay ! "
+        "application/x-rtp,payload=96 ! udpsink host=127.0.0.1 port=5005 sync=false"
+    )
+    head, marker, stream = plain.partition("framerate=25/1 ! ")
+    with_overlay = relay_pipeline_description("autovideosrc", overlay=True)
+    assert with_overlay.startswith(f"{head}{marker}tee name=t ! {stream} t. ! ")
+    assert with_overlay.split(" t. ! ")[1] == (
+        "queue leaky=downstream max-size-buffers=1 ! videoscale ! "
+        "video/x-raw,width=640,height=360 ! videoflip method=horizontal-flip ! "
+        "appsink name=overlay emit-signals=true max-buffers=1 drop=true sync=false"
+    )
+    assert all("appsink" in d for d in relay_pipeline_candidates("v", overlay=True))
+    assert not any("tee" in d for d in relay_pipeline_candidates("v"))
+
+
+class _FakeHandle:
+    """Stands in for `mujoco.viewer.Handle`: records the overlay calls, and holds a
+    `set_images` call until released, as the real one waits for the render thread."""
+
+    def __init__(
+        self,
+        viewport: tuple[int, int, int, int] = (0, 0, 1920, 1080),
+        events: list[str] | None = None,
+    ) -> None:
+        self.resize(viewport)
+        self.events = [] if events is None else events
+        self.images: list[tuple[Any, np.ndarray]] = []
+        self.texts: list[Any] = []
+        self.cleared: list[str] = []
+        self.running = True
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.release.set()
+
+    def resize(self, viewport: tuple[int, int, int, int]) -> None:
+        left, bottom, width, height = viewport
+        self.viewport = SimpleNamespace(
+            left=left, bottom=bottom, width=width, height=height
+        )
+
+    def is_running(self) -> bool:
+        return self.running
+
+    def set_images(self, pairs: list[tuple[Any, np.ndarray]]) -> None:
+        self.entered.set()
+        self.release.wait(5.0)
+        self.images.extend(pairs)
+
+    def set_texts(self, texts: Any) -> None:
+        self.texts.append(texts)
+
+    def clear_images(self) -> None:
+        self.cleared.append("images")
+
+    def clear_texts(self) -> None:
+        self.cleared.append("texts")
+
+    def close(self) -> None:
+        self.running = False
+        self.events.append("close")
+
+
+def _rect(left: int, bottom: int, width: int, height: int) -> tuple[int, int, int, int]:
+    return (left, bottom, width, height)
+
+
+def _overlay() -> ViewerOverlay:
+    return ViewerOverlay(rect_factory=_rect, text_style=("font", "grid"))
+
+
+def test_the_overlay_draws_the_latest_frame_at_the_corner_rectangle() -> None:
+    handle = _FakeHandle()
+    overlay = _overlay()
+    overlay.attach(handle)
+    try:
+        assert overlay.drawing
+        overlay.show(np.full((360, 640, 3), 1, dtype=np.uint8))
+        assert _wait(lambda: len(handle.images) == 1)
+        rect, image = handle.images[0]
+        assert rect == overlay_rect((0, 0, 1920, 1080))
+        assert image.shape == (rect[3], rect[2], 3) and image.dtype == np.uint8
+        assert int(image[rect[3] // 2, rect[2] // 2, 0]) == 1
+        # a light frame around the picture, so it shows against a same-coloured scene
+        assert int(image[0, 0, 0]) == 230 and int(image[-1, -1, 0]) == 230
+        assert int(image[1, rect[2] // 2, 0]) == 230 and int(image[2, 2, 0]) == 1
+        handle.resize((0, 0, 1280, 720))  # a resized window: the picture follows
+        overlay.show(np.full((360, 640, 3), 2, dtype=np.uint8))
+        assert _wait(lambda: len(handle.images) == 2)
+        assert handle.images[1][0] == overlay_rect((0, 0, 1280, 720))
+        overlay.label("webcam: Fake Camera 1920x1080")
+        assert _wait(lambda: len(handle.texts) == 1)
+        assert handle.texts == [("font", "grid", "webcam: Fake Camera 1920x1080", "")]
+    finally:
+        overlay.stop()
+    assert not overlay.drawing and handle.cleared == ["images", "texts"]
+    overlay.stop()  # idempotent
+    assert handle.cleared == ["images", "texts"]
+
+
+def test_the_overlay_skips_to_the_latest_frame_while_the_viewer_is_busy() -> None:
+    """`set_images` waits for the viewer's render thread; frames shown meanwhile replace
+    each other, and the next draw is the latest one — never a queue of stale frames."""
+    handle = _FakeHandle()
+    overlay = _overlay()
+    overlay.attach(handle)
+    try:
+        handle.release.clear()
+        overlay.show(np.full((36, 64, 3), 1, dtype=np.uint8))
+        assert handle.entered.wait(5.0)  # the first draw is waiting on the viewer
+        overlay.show(np.full((36, 64, 3), 2, dtype=np.uint8))
+        overlay.show(np.full((36, 64, 3), 3, dtype=np.uint8))
+        handle.release.set()
+        assert _wait(lambda: len(handle.images) == 2)
+        time.sleep(0.1)
+        assert [int(image[10, 10, 0]) for _, image in handle.images] == [1, 3]
+    finally:
+        overlay.stop()
+
+
+def test_the_overlay_warns_once_on_a_mujoco_without_set_images(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class _OldHandle:
+        viewport = SimpleNamespace(left=0, bottom=0, width=1920, height=1080)
+
+        def is_running(self) -> bool:
+            return True
+
+    overlay = _overlay()
+    with caplog.at_level(logging.WARNING, logger="reachy_mini_bridge.sim_daemon"):
+        overlay.attach(_OldHandle())
+        overlay.show(np.zeros((36, 64, 3), dtype=np.uint8))
+        overlay.label("webcam")
+        overlay.stop()
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1 and "3.3.1" in warnings[0].getMessage()
+    assert not overlay.drawing
+
+
+def test_the_overlay_reports_a_failing_draw_once(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A draw that raises is a WARNING with the traceback the first time — the person
+    running the sim sees why there is no picture — and quiet after that."""
+
+    class _BrokenHandle(_FakeHandle):
+        def set_images(self, pairs: list[tuple[Any, np.ndarray]]) -> None:
+            raise ValueError("Image shape (1, 1) does not match target shape")
+
+    handle = _BrokenHandle()
+    overlay = _overlay()
+    with caplog.at_level(logging.INFO, logger="reachy_mini_bridge.sim_daemon"):
+        overlay.attach(handle)
+        for value in (1, 2, 3):
+            overlay.show(np.full((36, 64, 3), value, dtype=np.uint8))
+            time.sleep(0.05)
+        assert _wait(
+            lambda: sum("draw failed" in r.getMessage() for r in caplog.records) >= 1
+        )
+        time.sleep(0.1)
+        overlay.stop()
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1 and "draw failed" in warnings[0].getMessage()
+    assert warnings[0].exc_info is not None
+    assert any("drawing on the viewer" in r.getMessage() for r in caplog.records)
+
+
+class _FakeOverlay:
+    def __init__(self, events: list[str] | None = None) -> None:
+        self.events = [] if events is None else events
+        self.frames: list[np.ndarray] = []
+        self.labels: list[str] = []
+        self.handle: Any = None
+
+    def attach(self, handle: Any) -> None:
+        self.handle = handle
+        self.events.append("attach")
+
+    def show(self, frame: np.ndarray) -> None:
+        self.frames.append(frame)
+
+    def label(self, text: str) -> None:
+        self.labels.append(text)
+
+    def stop(self) -> None:
+        self.events.append("stop")
+
+
+class _SimStubBackend(_StubBackend):
+    """A stub for `sim` camera mode, where the corrected backend reads the scene's eye
+    camera off the model: a minimal MuJoCo model with just that camera."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        mujoco = pytest.importorskip("mujoco")
+        self.model = mujoco.MjModel.from_xml_string(
+            '<mujoco><worldbody><camera name="eye_camera" fovy="80"/></worldbody>'
+            "</mujoco>"
+        )
+
+
+class _RenderingStubBackend(_SimStubBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.renderer = SimpleNamespace(
+            render=lambda: np.full((720, 1280, 3), 7, dtype=np.uint8),
+            update_scene=lambda *args: None,
+            scene="scene",
+        )
+
+    def _get_renderer(self, camera_name: str) -> Any:
+        return self.renderer
+
+
+def test_sim_mode_with_the_overlay_taps_the_eye_camera_renderer() -> None:
+    """Upstream's render thread gets its renderer from `_get_renderer`; with the overlay
+    on, every frame it renders is also shown, at the overlay's size, and the stream still
+    gets the full frame. Off, the renderer is upstream's own."""
+    overlays: list[_FakeOverlay] = []
+
+    def make() -> _FakeOverlay:
+        overlays.append(_FakeOverlay())
+        return overlays[-1]
+
+    on = sim_daemon._Displays(camera_overlay=True)
+    backend = corrected_backend(
+        _RenderingStubBackend, displays=on, overlay_factory=make
+    )()
+    renderer = backend._get_renderer("eye_camera")
+    frame = renderer.render()
+    assert frame.shape == (720, 1280, 3) and int(frame[0, 0, 0]) == 7
+    assert len(overlays) == 1 and len(overlays[0].frames) == 1
+    shown = overlays[0].frames[0]
+    assert shown.shape == (360, 640, 3) and int(shown[0, 0, 0]) == 7
+    assert overlays[0].labels == ["eye camera 1280x720"]
+    assert renderer.scene == "scene"  # everything else is the renderer's
+    off = corrected_backend(_RenderingStubBackend)()
+    assert off._get_renderer("eye_camera") is off.renderer
+
+
+def test_webcam_mode_with_the_overlay_hands_it_to_the_relay() -> None:
+    relays: list[Any] = []
+    events: list[str] = []
+
+    class _Relay:
+        def __init__(
+            self,
+            device: Any,
+            *,
+            on_source_size: Callable[[tuple[int, int]], None],
+            overlay: Any = None,
+        ) -> None:
+            relays.append(overlay)
+
+        def start(self) -> None:
+            events.append("relay start")
+
+        def stop(self) -> None:
+            events.append("relay stop")
+
+    webcam = sim_daemon._Camera(source="webcam")
+    on = sim_daemon._Displays(camera_overlay=True)
+    overlay = _FakeOverlay(events)
+    backend = corrected_backend(
+        _StubBackend,
+        camera=webcam,
+        displays=on,
+        relay_factory=_Relay,
+        overlay_factory=lambda: overlay,
+        viewer_module=SimpleNamespace(launch_passive=lambda *a, **kw: None),
+    )()
+    backend.run()
+    assert relays == [overlay]
+    assert events == ["relay start", "relay stop", "stop"]
+
+
+def test_the_run_hands_the_viewer_to_the_overlay_and_stops_it_before_the_close() -> (
+    None
+):
+    """Upstream's run() launches the viewer as a local and closes it itself; the run
+    wrapper hands that handle to the overlay and makes its close stop the overlay first,
+    then restores the launch function — also when the run raises."""
+    events: list[str] = []
+    handle = _FakeHandle(events=events)
+
+    def launch_passive(*args: Any, **kwargs: Any) -> _FakeHandle:
+        events.append(f"launch {kwargs.get('show_left_ui')}")
+        return handle
+
+    viewer_module = SimpleNamespace(launch_passive=launch_passive)
+
+    class _ViewerBackend(_SimStubBackend):
+        def run(self) -> None:
+            viewer = viewer_module.launch_passive(None, None, show_left_ui=False)
+            events.append("running")
+            viewer.close()
+            events.append("after close")
+
+    overlay = _FakeOverlay(events)
+    on = sim_daemon._Displays(camera_overlay=True)
+    corrected_backend(
+        _ViewerBackend,
+        displays=on,
+        overlay_factory=lambda: overlay,
+        viewer_module=viewer_module,
+    )().run()
+    assert overlay.handle is handle
+    assert events == [
+        "launch False",
+        "attach",
+        "running",
+        "stop",
+        "close",
+        "after close",
+        "stop",  # the run's own finally: idempotent on the overlay
+    ]
+    assert viewer_module.launch_passive is launch_passive
+
+    class _FailingBackend(_SimStubBackend):
+        def run(self) -> None:
+            raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        corrected_backend(
+            _FailingBackend,
+            displays=on,
+            overlay_factory=lambda: overlay,
+            viewer_module=viewer_module,
+        )().run()
+    assert viewer_module.launch_passive is launch_passive
 
 
 # --- the launcher -----------------------------------------------------------------------
@@ -728,6 +1127,26 @@ def test_run_sim_daemon_viewer_defaults(monkeypatch: pytest.MonkeyPatch) -> None
     assert argv[1:] == ["--sim", "--preload-datasets"]
 
 
+def test_run_sim_daemon_turns_on_a_viewer_display(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`--sim-display camera_overlay` reaches the corrected backend as its displays and
+    nothing of it reaches upstream's argv."""
+    pytest.importorskip("reachy_mini.daemon.app.main")
+    seen: dict[str, Any] = {}
+
+    def corrected(backend_class: type, **kwargs: Any) -> type:
+        seen.update(kwargs)
+        return backend_class
+
+    monkeypatch.setattr(sim_daemon, "corrected_backend", corrected)
+    argv = _run(["--sim-display", "camera_overlay"], monkeypatch)
+    assert argv[1:] == ["--sim", "--preload-datasets"]
+    assert seen["displays"] == sim_daemon._Displays(camera_overlay=True)
+    _run([], monkeypatch)
+    assert seen["displays"] == sim_daemon._Displays()
+
+
 @pytest.mark.parametrize(
     "argv",
     [
@@ -735,6 +1154,8 @@ def test_run_sim_daemon_viewer_defaults(monkeypatch: pytest.MonkeyPatch) -> None
         ["--webcam-hfov", "60"],
         ["--camera", "webcam", "--webcam-hfov", "180"],
         ["--camera", "usb"],
+        ["--headless", "--sim-display", "camera_overlay"],
+        ["--sim-display", "hud"],
     ],
 )
 def test_run_sim_daemon_refuses_bad_camera_flags(argv: list[str]) -> None:
