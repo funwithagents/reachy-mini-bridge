@@ -19,6 +19,10 @@ For the design behind this, see [specs/testing_support.md](../specs/testing_supp
 Importing the package pulls in `reachy_mini` (a base dependency) — that needs its native
 libs installed, **not** a running daemon. The `fake` path needs no daemon and no extra.
 
+The `sim` extra installs MuJoCo 3.3.x itself rather than through `reachy_mini[mujoco]`,
+which pins 3.3.0; nothing to add on your side, but don't install that upstream extra next to
+it (see [running-the-sim-daemon.md](running-the-sim-daemon.md) "The MuJoCo version").
+
 ## Unit tests — the `fake` backend
 
 Construct `ReachyMiniApi("fake")` directly. The fake records every command it receives on

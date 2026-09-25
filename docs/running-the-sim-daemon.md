@@ -48,6 +48,12 @@ From a real Terminal (your GUI session) this opens the window. From a **backgrou
 
 > **The screen must be unlocked.** Even inside your GUI session, a **locked screen** (or a display asleep) denies the window server a GL context, so the viewer daemon either **hangs** (produces no output → the e2e harness times out) or **segfaults** (`exit -11` in the harness). This is the main source of "flaky" `REACHY_MINI_E2E_SIM_VIEWER=1` runs: unlock the screen and re-run. The headless target has no such requirement — it exercises the same api/audio/motion paths without a display (only the camera needs the viewer's GL context).
 
+### The MuJoCo version
+
+Upstream's `mujoco` extra is one requirement, `mujoco==3.3.0` (February 2025). The bridge's `sim` extra does not go through it: it requires `mujoco>=3.3.1,<3.4` itself, so anything that installs `reachy-mini-bridge[sim]` gets the newest 3.3.x patch release with nothing to add on its side, and upstream's pin never enters the resolution. 3.3.1 is the floor because it gave the passive viewer image and text overlays (`set_images` / `set_texts`), which the launcher needs to draw the camera stream over the scene; `<3.4` keeps to patch releases of the version upstream tests on (the daemon also runs unchanged on 3.14.0 — measured in [upstream-mujoco-version-pin.md](upstream-mujoco-version-pin.md), the report asking upstream for a range).
+
+Do not install `reachy-mini[mujoco]` (or `[all]`) next to the bridge: that brings the pin back and the resolver fails on the conflict. (Unrelated to MuJoCo: a project's lock on macOS also needs the `dependency-metadata` entries for `pygobject` / `pycairo` that the bridge's `pyproject.toml` carries, or uv tries to build them from source.)
+
 To launch it from a non-GUI shell while you're logged in graphically:
 
 ```

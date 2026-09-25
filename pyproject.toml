@@ -36,8 +36,16 @@ Repository = "https://github.com/funwithagents/reachy-mini-bridge"
 Issues = "https://github.com/funwithagents/reachy-mini-bridge/issues"
 
 [project.optional-dependencies]
-# The `sim` backend drives the upstream MuJoCo mockup (see specs/robot.md).
-sim = ["reachy-mini[mujoco]>=1.10"]
+# The `sim` backend drives the upstream MuJoCo mockup (see specs/robot.md). MuJoCo is
+# declared here directly, not through `reachy-mini[mujoco]`: that extra is the single
+# requirement `mujoco==3.3.0` (February 2025), an exact pin no dependent can loosen, and
+# MuJoCo 3.3.1 gave the passive viewer the image/text overlays (`Handle.set_images` /
+# `set_texts`) the sim daemon launcher needs to show the camera stream over the viewer
+# (specs/sim_daemon.md). Requiring `mujoco` ourselves keeps the pin out of every
+# consumer's graph; `<3.4` stays on patch releases of the version upstream tests on.
+# When bumping reachy-mini, check its `mujoco` extra is still only `mujoco`. Upstream
+# report: docs/upstream-mujoco-version-pin.md.
+sim = ["mujoco>=3.3.1,<3.4"]
 # One extra per tts-engine provider, mapping onto tts-engine's own extras (see
 # specs/audio.md): the `tts` block's `module.type` picks the provider, and the matching
 # extra installs it. A caller supplying their own SpeechSynthesizer needs neither.
