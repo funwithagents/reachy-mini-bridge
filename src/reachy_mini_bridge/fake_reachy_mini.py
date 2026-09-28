@@ -12,6 +12,7 @@ live in [robot.py](robot.py).
 
 from __future__ import annotations
 
+import math
 import time
 from typing import Any, Self
 
@@ -30,6 +31,12 @@ _CHUNK_FRAMES = 160  # 10 ms at 16 kHz
 # Synthetic camera frame size (small; just enough for tests to assert real HxWx3 shape).
 _FRAME_WIDTH = 64
 _FRAME_HEIGHT = 48
+
+# The camera calibration a client reads (``media.camera.camera_specs``): a Lite-like
+# 3840x2592 sensor of ~88° horizontal field of view, streamed uncropped, no distortion —
+# what the head tracker's robot camera model is built from (specs/head_tracking.md).
+_SENSOR_SIZE = (3840, 2592)
+_SENSOR_HFOV_DEG = 88.0
 
 
 class _FakeBackendStatus:
@@ -54,17 +61,6 @@ class _FakeStatus:
         self.mockup_sim_enabled = mockup_sim_enabled
 
 
-class _FakeFaceTarget:
-    """Stand-in for upstream's ``FaceTarget``, built from the REST payload's dict."""
-
-    def __init__(self, target: dict[str, Any]) -> None:
-        self.detected: bool = bool(target["detected"])
-        self.x: float | None = target["x"]
-        self.y: float | None = target["y"]
-        self.roll: float | None = target["roll"]
-        self.ts: float | None = target["ts"]
-
-
 def _face_target(
     *,
     detected: bool,
@@ -85,6 +81,9 @@ class _FakeDaemonClient:
     """
 
     def __init__(self) -> None:
+        # Where the SDK client connected: the daemon on this host.
+        self.host = "127.0.0.1"
+        self.port = 8000
         self.motor_control_mode = "disabled"
         # The daemon's kinematics engine (upstream serves it over HTTP, not the SDK):
         # Placo, so gravity compensation is accepted; tests flip it to exercise refusal.
@@ -133,12 +132,39 @@ class _FakeAudioControl:
         self._commands.append(("audio.clear_player", {}))
 
 
+class _FakeResolution:
+    """Stand-in for upstream's ``CameraResolution``: ``value`` is (width, height, fps,
+    crop factor)."""
+
+    def __init__(self, width: int, height: int, fps: int, crop: float) -> None:
+        self.value = (width, height, fps, crop)
+
+
+class _FakeCameraSpecs:
+    """Stand-in for upstream's ``CameraSpecs`` (the fields the head tracker reads)."""
+
+    def __init__(self) -> None:
+        width, height = _SENSOR_SIZE
+        f = (width / 2.0) / math.tan(math.radians(_SENSOR_HFOV_DEG) / 2.0)
+        self.K = np.array([[f, 0.0, width / 2.0], [0.0, f, height / 2.0], [0, 0, 1.0]])
+        self.D = np.zeros(5)
+        self.default_resolution = _FakeResolution(width, height, 30, 1.0)
+
+
+class _FakeCamera:
+    """Stand-in for ``media.camera``: only its calibration."""
+
+    def __init__(self) -> None:
+        self.camera_specs = _FakeCameraSpecs()
+
+
 class _FakeMedia:
     """Stand-in for the upstream ``MediaManager`` — the v1 media slice only."""
 
     def __init__(self, commands: list[tuple[str, dict[str, Any]]]) -> None:
         self._commands = commands
         self.audio = _FakeAudioControl(commands)
+        self.camera = _FakeCamera()
         self._recording = False
         self._playing = False
 
@@ -288,11 +314,6 @@ class FakeReachyMini:
 
     def stop_head_tracking(self) -> None:
         self.commands.append(("stop_head_tracking", {}))
-
-    def get_tracked_face(
-        self, wait: bool = True, timeout: float = 5.0
-    ) -> _FakeFaceTarget:
-        return _FakeFaceTarget(self.client.face_target)
 
     # --- the scene in front of the camera (fake-only: a test's stand-in for a person) ---
     def show_face(

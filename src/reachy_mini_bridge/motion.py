@@ -21,6 +21,7 @@ import random
 import threading
 import time
 from abc import abstractmethod
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, Self
@@ -31,7 +32,12 @@ from reachy_mini.motion.goto import GotoMove
 from reachy_mini.motion.move import Move
 from reachy_mini.reachy_mini import INIT_ANTENNAS_JOINT_POSITIONS, INIT_HEAD_POSE
 from reachy_mini.utils import create_head_pose
-from reachy_mini.utils.interpolation import InterpolationTechnique, time_trajectory
+from reachy_mini.utils.interpolation import (
+    InterpolationTechnique,
+    compose_world_offset,
+    linear_pose_interpolation,
+    time_trajectory,
+)
 
 from .errors import BridgeError
 
@@ -95,6 +101,16 @@ ANTENNA_FLICK_PROBABILITY = 0.35
 ANTENNA_FLICK_S = (0.25, 0.5)
 ANTENNA_FLICK_RAD = (math.radians(12.0), math.radians(25.0))
 ANTENNA_FLICK_MAX_RAD = math.radians(45.0)
+# The gaze layer (specs/motion.md "The gaze layer"). The loop keeps the head poses the
+# robot reported over this window, for the head tracker to aim a face against the pose
+# the head had when its frame was taken, and to estimate that delay from them.
+GAZE_HISTORY_S = 4.0
+# Each tick the eased aim moves this fraction of the way to the latest aim: upstream's
+# daemon-side 0.15 per tick at 50 Hz, scaled to 60 Hz.
+GAZE_ALPHA = 0.12
+# While the head holds a face, breathing keeps its breath and antennas in full and tones
+# its head roaming down to this fraction — ±8° of yaw would carry it off the person.
+BREATHING_GAZE_ROTATION_SCALE = 0.25
 
 NEUTRAL_HEAD: npt.NDArray[np.float64] = np.array(INIT_HEAD_POSE, dtype=np.float64)
 NEUTRAL_ANTENNAS: npt.NDArray[np.float64] = np.array(
@@ -243,11 +259,31 @@ class IdleOffsets:
         )
         return head, NEUTRAL_ANTENNAS + ANTENNA_OUTWARD * leans, NEUTRAL_BODY_YAW
 
+    def scaled(
+        self,
+        *,
+        translation: float = 1.0,
+        rotation: float = 1.0,
+        antennas: float = 1.0,
+    ) -> IdleOffsets:
+        """A copy with the z offset, the three angles and the two antenna leans each
+        multiplied by their group's factor — e.g. an idle move's ``gaze_offsets`` as its
+        ``offsets`` with the head's roaming toned down."""
+        return IdleOffsets(
+            z_mm=self.z_mm * translation,
+            roll_deg=self.roll_deg * rotation,
+            pitch_deg=self.pitch_deg * rotation,
+            yaw_deg=self.yaw_deg * rotation,
+            antenna_right_deg=self.antenna_right_deg * antennas,
+            antenna_left_deg=self.antenna_left_deg * antennas,
+        )
+
 
 class IdleMove(Move):
     """Base class of every animated idle move (specs/motion.md "The moves"): infinite,
     and described as offsets from neutral so the loop can fade it out to neutral at
-    rest. Subclass it and implement ``offsets`` to write a custom idle move."""
+    rest. Subclass it and implement ``offsets`` to write a custom idle move; override
+    ``gaze_offsets`` to say what it does while the head tracks a face."""
 
     @property
     def duration(self) -> float:
@@ -256,6 +292,12 @@ class IdleMove(Move):
     @abstractmethod
     def offsets(self, t: float) -> IdleOffsets:
         """The pose's offsets from neutral at ``t`` seconds into this idle entry."""
+
+    def gaze_offsets(self, t: float) -> IdleOffsets:
+        """The motion while the head tracks a face, as offsets from the aim rather than
+        from neutral (specs/motion.md "The gaze layer"). Neutral by default: the head
+        sits on the aim and the antennas rest."""
+        return IdleOffsets()
 
     def evaluate(
         self, t: float
@@ -378,6 +420,11 @@ class BreathingMove(IdleMove):
             antenna_left_deg=left,
         )
 
+    def gaze_offsets(self, t: float) -> IdleOffsets:
+        """While the head holds a face: the breath and the antennas in full, the head's
+        roaming toned down to ``BREATHING_GAZE_ROTATION_SCALE``."""
+        return self.offsets(t).scaled(rotation=BREATHING_GAZE_ROTATION_SCALE)
+
 
 class _IdleFadeOut(Move):
     """Leaving an idle move mid-plan (specs/motion.md "The moves"): keep playing ``move``
@@ -406,21 +453,31 @@ class _IdleFadeOut(Move):
         envelope = 1.0 - _fade_in(t, self._duration)
         return self._move.offsets(self._t_offset + t).pose(envelope)
 
+    def gaze_pose(self, t: float) -> Pose:
+        """The move's gaze motion under the same envelope, so a fade-out under a held
+        aim fades that motion out too, continuous with what played before it."""
+        envelope = 1.0 - _fade_in(t, self._duration)
+        return self._move.gaze_offsets(self._t_offset + t).pose(envelope)
+
 
 class _CustomIdleError(Exception):
     """A caller's idle move (or its factory) misbehaved on the motion thread."""
 
 
-def _checked_offsets(move: IdleMove, t: float) -> IdleOffsets:
-    """``move.offsets(t)``, or ``_CustomIdleError`` when it raises or returns anything
-    but an ``IdleOffsets`` of finite numbers."""
+def _checked_offsets(
+    move: IdleMove,
+    t: float,
+    method: Literal["offsets", "gaze_offsets"] = "offsets",
+) -> IdleOffsets:
+    """``move.offsets(t)`` (or ``move.gaze_offsets(t)``), or ``_CustomIdleError`` when
+    it raises or returns anything but an ``IdleOffsets`` of finite numbers."""
     try:
-        offsets = move.offsets(t)
+        offsets = getattr(move, method)(t)
     except Exception as e:
-        raise _CustomIdleError(f"offsets({t:.3f}) raised: {e!r}") from e
+        raise _CustomIdleError(f"{method}({t:.3f}) raised: {e!r}") from e
     if not isinstance(offsets, IdleOffsets):
         raise _CustomIdleError(
-            f"offsets({t:.3f}) returned {type(offsets).__name__}, not IdleOffsets"
+            f"{method}({t:.3f}) returned {type(offsets).__name__}, not IdleOffsets"
         )
     values = (
         offsets.z_mm,
@@ -431,7 +488,7 @@ def _checked_offsets(move: IdleMove, t: float) -> IdleOffsets:
         offsets.antenna_left_deg,
     )
     if not all(isinstance(v, (int, float)) and math.isfinite(v) for v in values):
-        raise _CustomIdleError(f"offsets({t:.3f}) holds a non-finite value: {offsets}")
+        raise _CustomIdleError(f"{method}({t:.3f}) holds a non-finite value: {offsets}")
     return offsets
 
 
@@ -450,8 +507,9 @@ def _build_custom_idle(factory: Callable[[], object]) -> IdleMove:
 
 def check_idle_move_factory(factory: object) -> None:
     """Registration-time check (specs/motion.md "Custom idle moves"): ``ValueError``
-    unless ``factory`` is a callable building an ``IdleMove`` whose ``offsets(0.0)`` is
-    an ``IdleOffsets`` of finite numbers. Runs on the caller's thread."""
+    unless ``factory`` is a callable building an ``IdleMove`` whose ``offsets(0.0)`` and
+    ``gaze_offsets(0.0)`` are ``IdleOffsets`` of finite numbers. Runs on the caller's
+    thread."""
     if not callable(factory):
         # ValueError, not TypeError: the api's one error for bad input (specs/api.md)
         raise ValueError(  # noqa: TRY004
@@ -459,20 +517,39 @@ def check_idle_move_factory(factory: object) -> None:
             f"IdleMove (an IdleMove subclass is one), got {type(factory).__name__}"
         )
     try:
-        _checked_offsets(_build_custom_idle(factory), 0.0)
+        move = _build_custom_idle(factory)
+        _checked_offsets(move, 0.0)
+        _checked_offsets(move, 0.0, "gaze_offsets")
     except _CustomIdleError as e:
         raise ValueError(f"invalid idle move: {e}") from e
 
 
 class _CustomIdle(IdleMove):
-    """The caller's idle move as the loop plays it: every ``offsets`` call checked, so
-    a misbehaving move surfaces as ``_CustomIdleError`` whatever stage reads it."""
+    """The caller's idle move as the loop plays it: every ``offsets`` and
+    ``gaze_offsets`` call checked, so a misbehaving move surfaces as
+    ``_CustomIdleError`` whatever stage reads it."""
 
     def __init__(self, move: IdleMove) -> None:
         self._move = move
 
     def offsets(self, t: float) -> IdleOffsets:
         return _checked_offsets(self._move, t)
+
+    def gaze_offsets(self, t: float) -> IdleOffsets:
+        return _checked_offsets(self._move, t, "gaze_offsets")
+
+
+def nearest_index(
+    times: npt.NDArray[np.float64], queries: npt.NDArray[np.float64]
+) -> npt.NDArray[np.intp]:
+    """For each query time, the index of the nearest of ``times`` (ascending) — the
+    first for a query before them, the last for one after."""
+    right = np.clip(np.searchsorted(times, queries), 1, max(len(times) - 1, 1))
+    left = right - 1
+    if len(times) == 1:
+        return np.zeros(queries.shape, dtype=np.intp)
+    nearer_left = queries - times[left] <= times[right] - queries
+    return np.where(nearer_left, left, right)
 
 
 def blend_into(source: Pose, move: Move, seconds: float = BLEND_S) -> GotoMove:
@@ -495,6 +572,24 @@ def blend_into(source: Pose, move: Move, seconds: float = BLEND_S) -> GotoMove:
         duration=seconds,
         method=InterpolationTechnique.MIN_JERK,
     )
+
+
+@dataclass
+class _Fade:
+    """A scalar that follows its target through a minjerk ramp of ``BLEND_S``,
+    restarted from where it is whenever the target changes."""
+
+    current: float = 0.0
+    start_value: float = 0.0
+    target: float = 0.0
+    start: float = 0.0
+
+    def value(self, now: float, target: float) -> float:
+        if target != self.target:
+            self.start_value, self.target, self.start = self.current, target, now
+        ramp = _fade_in(now - self.start)
+        self.current = self.start_value + (self.target - self.start_value) * ramp
+        return self.current
 
 
 @dataclass
@@ -557,6 +652,22 @@ class MotionSession:
         self._queue: list[_Primary] = []  # pending primaries, FIFO
         self._playing: _Playing | None = None
         self._stop = False
+        # The gaze layer (specs/motion.md "The gaze layer"): the latest aim and focus
+        # the tracker handed over, the eased aim the loop composes, the effective
+        # weight's minjerk fade from `_gaze_w_from` to `_gaze_w_to`, begun at
+        # `_gaze_w_start`, and focus's own fade (the head's gaze motion faded out).
+        self._gaze_target: npt.NDArray[np.float64] | None = None
+        self._gaze_focus = False
+        self._focus_fade = _Fade()
+        self._gaze_aim: npt.NDArray[np.float64] | None = None
+        self._gaze_w_eff = 0.0
+        self._gaze_w_from = 0.0
+        self._gaze_w_to = 0.0
+        self._gaze_w_start = 0.0
+        # The head poses the robot reported over the last GAZE_HISTORY_S, recorded on
+        # every pass of the thread (commanding or not), read from any thread.
+        self._history: deque[tuple[float, npt.NDArray[np.float64]]] = deque()
+        self._history_lock = threading.Lock()
 
     # --- api-facing commands (event-loop thread; enqueue and return at once) ---
 
@@ -587,7 +698,7 @@ class MotionSession:
             return  # applies once the queue drains
         self._playing = None
         if not enabled:
-            self._commanding = False  # quiet at once, no easing
+            self._stop_commanding()  # quiet at once, no easing
 
     def set_idle(self, mode: IdleMode) -> None:
         self._commands.put(lambda: self._on_set_idle(mode))
@@ -648,7 +759,7 @@ class MotionSession:
 
     def _on_pause(self) -> None:
         self._paused = True
-        self._commanding = False
+        self._stop_commanding()
         pending = list(self._queue)
         self._queue.clear()
         if self._playing is not None and self._playing.primary is not None:
@@ -660,26 +771,43 @@ class MotionSession:
                     BridgeError("the motors left 'enabled': the motion loop paused")
                 )
 
-    def reanchor(self) -> concurrent.futures.Future[None]:
-        """Ask the loop to re-enter its idle move from the present pose read from the
-        robot (specs/motion.md "Re-anchor on request") — for the api, when a daemon-side
-        layer is about to hand the head back and the stream may be far from the head.
-        The future resolves when the command has been taken; a no-op (resolved at
-        once) with a primary playing, an exit blend, presence off, or the loop paused.
-        """
-        done: concurrent.futures.Future[None] = concurrent.futures.Future()
-        self._commands.put(lambda: self._on_reanchor(done))
-        return done
+    def set_gaze(
+        self, aim: npt.NDArray[np.float64] | None, *, focus: bool = False
+    ) -> None:
+        """Hand the gaze layer an aim — a 4x4 head pose that looks at the tracked face;
+        ``aim=None`` withdraws it (specs/motion.md "The gaze layer"). With ``focus`` the
+        head holds exactly on the aim: the idle move's head motion is left out, its
+        antennas kept. Accepted whether or not the loop runs: sent before ``start`` it
+        waits in the command queue for the first tick, sent after ``close`` it is
+        dropped."""
+        target = None if aim is None else np.array(aim, dtype=np.float64)
+        self._commands.put(lambda: self._on_set_gaze(target, focus))
 
-    def _on_reanchor(self, done: concurrent.futures.Future[None]) -> None:
-        playing = self._playing
-        idle = playing is None or (playing.primary is None and not playing.exit_blend)
-        if idle and self._presence and self._commanding and not self._paused:
-            # The next tick re-selects the idle move and, since the loop is no longer
-            # "commanding", blends into it from the present pose (as after a pause).
-            self._playing = None
-            self._commanding = False
-        done.set_result(None)
+    def _on_set_gaze(self, aim: npt.NDArray[np.float64] | None, focus: bool) -> None:
+        self._gaze_target = aim
+        self._gaze_focus = focus
+
+    def head_pose_history(
+        self,
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+        """The recorded head poses (specs/motion.md "A history of head poses"): their
+        monotonic times ``(N,)``, ascending, and the reported 4x4 poses ``(N, 4, 4)``.
+        While nothing is recorded yet (the thread not started), one entry: the pose read
+        from the robot, now. Safe from any thread; it never blocks on the robot (the SDK
+        serves the pose the daemon last published)."""
+        with self._history_lock:
+            history = list(self._history)
+        if not history:
+            present = np.array(self._robot.get_current_head_pose(), dtype=np.float64)
+            return np.array([time.monotonic()]), present[np.newaxis]
+        times = np.array([t for t, _ in history])
+        return times, np.stack([pose for _, pose in history])
+
+    def head_pose_at(self, t: float) -> npt.NDArray[np.float64]:
+        """The head pose the robot reported nearest the monotonic time ``t`` — the
+        oldest kept for a time before the window, the latest for one after it."""
+        times, poses = self.head_pose_history()
+        return poses[nearest_index(times, np.array([t]))[0]].copy()
 
     def resume(self) -> None:
         self._commands.put(self._on_resume)
@@ -748,6 +876,7 @@ class MotionSession:
             self._drain_commands()
             if self._stop:
                 break
+            self._record_head_pose()
             if not self._paused:
                 try:
                     self._tick(time.monotonic())
@@ -764,6 +893,20 @@ class MotionSession:
                 time.sleep(delay)
             else:
                 next_tick = time.monotonic()  # fell behind: don't burst to catch up
+
+    def _record_head_pose(self) -> None:
+        """Record the head pose the robot reports, commanding or not: the actual head,
+        which lags the commanded one by the IK and the motors."""
+        try:
+            pose = np.array(self._robot.get_current_head_pose(), dtype=np.float64)
+        except Exception as e:  # noqa: BLE001 - a missing pose is one gap, not a fault
+            _logger.debug("motion loop: no head pose to record: %s", e)
+            return
+        now = time.monotonic()
+        with self._history_lock:
+            self._history.append((now, pose))
+            while self._history and self._history[0][0] < now - GAZE_HISTORY_S:
+                self._history.popleft()
 
     def _drain_commands(self) -> None:
         while True:
@@ -827,7 +970,7 @@ class MotionSession:
         if playing is None:
             selected = self._select_next()
             if selected is None:
-                self._commanding = False
+                self._stop_commanding()
                 return
             move, primary = selected
             source = (
@@ -847,6 +990,7 @@ class MotionSession:
             t if math.isinf(stage.duration) else min(t, max(stage.duration - 1e-3, 0.0))
         )
         head, antennas, body_yaw = stage.evaluate(eval_t)
+        head, antennas = self._compose_gaze(now, playing, eval_t, head, antennas)
         if (
             playing.stage == 1
             and playing.primary is not None
@@ -869,6 +1013,84 @@ class MotionSession:
         )
         self._last_target = (final_head, final_antennas, final_yaw)
         self._commanding = True
+
+    def _compose_gaze(
+        self,
+        now: float,
+        playing: _Playing,
+        t: float,
+        head: npt.NDArray[np.float64] | None,
+        antennas: npt.NDArray[np.float64] | None,
+    ) -> tuple[npt.NDArray[np.float64] | None, npt.NDArray[np.float64] | None]:
+        """The gaze layer (specs/motion.md "The gaze layer"): ease the aim, fade the
+        effective weight, and compose the aim into an idle stage's pose. A primary
+        leaves the layer out and its weight at zero, so the idle re-entry after it fades
+        back in from nothing."""
+        if playing.primary is not None:
+            self._reset_gaze_fade()
+            return head, antennas
+        target = self._gaze_target
+        # The session-end fade takes the layer out with it, so the head lands neutral.
+        w_target = 0.0 if playing.exit_blend or target is None else 1.0
+        if w_target != self._gaze_w_to:
+            self._gaze_w_from, self._gaze_w_to = self._gaze_w_eff, w_target
+            self._gaze_w_start = now
+        fade = _fade_in(now - self._gaze_w_start)
+        self._gaze_w_eff = (
+            self._gaze_w_from + (self._gaze_w_to - self._gaze_w_from) * fade
+        )
+        if target is not None:
+            if self._gaze_aim is None:
+                # From the present head, so the first aim never steps it.
+                self._gaze_aim = (
+                    self._last_target[0].copy() if self._commanding else target
+                )
+            else:
+                self._gaze_aim = linear_pose_interpolation(
+                    self._gaze_aim, target, GAZE_ALPHA
+                )
+        elif self._gaze_w_eff <= 0.0:
+            self._gaze_aim = None  # withdrawn and faded out
+        w = self._gaze_w_eff
+        if w <= 0.0 or self._gaze_aim is None or head is None or antennas is None:
+            return head, antennas
+        gaze_head, gaze_antennas, _ = self._gaze_pose(playing, t)
+        focus = self._focus_fade.value(now, 1.0 if self._gaze_focus else 0.0)
+        if focus > 0.0:  # the head's gaze motion faded out: the head on the aim
+            gaze_head = linear_pose_interpolation(gaze_head, NEUTRAL_HEAD, focus)
+        aimed = compose_world_offset(self._gaze_aim, gaze_head)
+        composed_head = linear_pose_interpolation(np.asarray(head), aimed, w)
+        composed_antennas = np.asarray(antennas) + w * (
+            gaze_antennas - np.asarray(antennas)
+        )
+        return composed_head, composed_antennas
+
+    @staticmethod
+    def _gaze_pose(playing: _Playing, t: float) -> Pose:
+        """The stage's motion while the head tracks a face, as a pose relative to the
+        aim: an ``IdleMove``'s ``gaze_offsets``, a fade-out's under its envelope, neutral
+        for the hold and for a blend — save the entry blend into an ``IdleMove``, which
+        blends neutral into the move's ``gaze_offsets(0)`` so its first tick never
+        steps."""
+        stage = playing.stages[playing.stage]
+        if isinstance(stage, IdleMove):
+            return stage.gaze_offsets(t).pose()
+        if isinstance(stage, _IdleFadeOut):
+            return stage.gaze_pose(t)
+        following = playing.stages[1] if len(playing.stages) > 1 else None
+        if playing.stage == 0 and isinstance(following, IdleMove):
+            return following.gaze_offsets(0.0).pose(_fade_in(t, stage.duration))
+        return NEUTRAL
+
+    def _reset_gaze_fade(self) -> None:
+        self._gaze_w_eff = self._gaze_w_from = self._gaze_w_to = 0.0
+
+    def _stop_commanding(self) -> None:
+        """The loop stops sending targets: the gaze layer fades in afresh when
+        commanding resumes."""
+        self._commanding = False
+        self._reset_gaze_fade()
+        self._gaze_aim = None
 
     def _read_present_pose(self) -> Pose:
         head = self._robot.get_current_head_pose()
@@ -906,7 +1128,7 @@ class MotionSession:
         _logger.warning("motion loop paused: lost connection to the daemon: %s", error)
         self._lost = True
         self._paused = True
-        self._commanding = False
+        self._stop_commanding()
         pending = list(self._queue)
         self._queue.clear()
         if self._playing is not None and self._playing.primary is not None:

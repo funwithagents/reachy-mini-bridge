@@ -1,6 +1,6 @@
 # The bridge's head tracker and the motion loop's gaze layer
 
-**Status:** Todo
+**Status:** Done
 
 Implements [specs/head_tracking.md](../specs/head_tracking.md) in full and [specs/motion.md](../specs/motion.md) "The gaze layer" / "A history of commanded head poses", with the api changes in [specs/api.md](../specs/api.md) "Attention / gaze (autonomous)" (tracking as a mode, `attention` derived, no attention loop, `play_emotion` no longer touching the daemon weight) and the retirement of the sim launcher's aim-side corrections in [specs/sim_daemon.md](../specs/sim_daemon.md). Delivers a tracker that turns the detection loop's target face into a look-at aim — true intrinsics, the head pose at the frame's time, a fixed camera for a webcam — and a gaze layer in `MotionSession` that composes that aim into the idle move, fades it in and out and leaves it out of primaries; the daemon's tracking becomes a detector armed at a negligible weight. Deliberately leaves out the `custom` detection source ([202609261042](202609261042_custom-face-detectors.md)).
 
@@ -133,6 +133,15 @@ In `_tick`, after `head, antennas, body_yaw = stage.evaluate(eval_t)` and before
 - `AGENTS.md`: the `sim_daemon.py` row (one correction, not three).
 - `specs/sim_scene.md` "Head tracking converges on the face": record the overshoot the bridge tracker shows on the viewer sim in place of the daemon-side figure it quotes as pending.
 - Statuses: `specs/head_tracking.md` (built in full by this plan) and `specs/sim_daemon.md`, with their `_index.md` rows → `Implemented`; this plan `Done` here and in `_index.md`.
+
+### Step 8 — The actual-pose history and the online delay estimate
+
+The first viewer-sim run of the acceptance tests (after Step 7) showed the head hunting ±20° around the face, period ~1.9 s, even over the hold. The face the daemon reports matched the commanded head ~0.46 s before, the actual head ~0.30 s before, while `now − ts` said ~0.08 s: `ts` is the detection's time, not the frame's, the daemon smooths the centre in the image, and the actual head lags the commanded one. Adding 0.38 s by hand settled the head within 0.3° of the face after one 4° overshoot. The fix is the design now in [specs/head_tracking.md](../specs/head_tracking.md) "The aim" — no hardcoded latency:
+
+- `motion.py`: the history records the **reported** head pose (`get_current_head_pose()`) on every pass of the thread, commanding or not (a raising read skipped), `GAZE_HISTORY_S = 4.0`; `head_pose_at(t)` takes a monotonic time (nearest recorded; oldest / latest outside the window; the robot's present pose while nothing is recorded).
+- `face_detection.py`: `FaceReport.head_pose: npt.NDArray[np.float64] | None = None` (a source that knows the capture pose — the custom detector, later).
+- `head_tracking.py`: `GAZE_LATENCY_S` goes; `DELAY_WINDOW_S = 3.0`, `DELAY_MAX_S = 0.8`, `DELAY_STEP_S = 0.02`, `DELAY_MIN_MOTION_DEG = 4.0`, `DELAY_SMOOTHING = 0.3`, `DELAY_PRIOR_S = 0.2`. `observe`: a report with `head_pose` is aimed against it; otherwise `t_obs` = `ts` (same host) or the receipt time of a new detection, the pose is `pose_at(t_obs − delay)`, and each new detection (a new `ts`, or off-host a new face) joins the window, then the estimate is refitted: score every `L` by `1 − |mean of the unit world directions|` over the window (vectorised), move `DELAY_SMOOTHING` toward the argmin when the window's head poses span `DELAY_MIN_MOTION_DEG`. `delay_s` property. A fixed camera skips all of it.
+- Tests: `head_pose_at` by time and while paused; the tracker learns an unreported 0.3 s delay in the offline closed loop (estimate within 0.1 s of it) and converges; a report with `head_pose` is aimed against it; the estimate holds while the head is still. The viewer-sim acceptance suite is the check.
 
 ## Verification
 

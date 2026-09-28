@@ -342,19 +342,12 @@ def test_client_reports_an_unreachable_daemon() -> None:
 @pytest.fixture
 def upstream_daemon_globals(monkeypatch: pytest.MonkeyPatch) -> None:
     """The launcher patches upstream's daemon module globals (the backend class,
-    `create_app`, the tracker's intrinsics): undo them after the test."""
+    `create_app`): undo them after the test."""
     from reachy_mini.daemon import daemon as upstream_daemon
     from reachy_mini.daemon.app import main as upstream_main
-    from reachy_mini.vision import face_tracking
-
-    from reachy_mini_bridge import sim_daemon
 
     monkeypatch.setattr(upstream_daemon, "MujocoBackend", upstream_daemon.MujocoBackend)
     monkeypatch.setattr(upstream_main, "create_app", upstream_main.create_app)
-    monkeypatch.setattr(
-        face_tracking, "intrinsics_for_size", face_tracking.intrinsics_for_size
-    )
-    monkeypatch.setattr(sim_daemon._TrackerCamera, "hfov_deg", None)
 
 
 def test_run_daemon_rewrites_argv_installs_the_director_and_mounts_the_router(

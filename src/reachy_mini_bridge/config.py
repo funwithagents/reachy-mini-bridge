@@ -379,7 +379,7 @@ class MotionSettings:
     idle_move: Callable[[], IdleMove] | None = None
     # Audio-reactive head sway, enabled on entry.
     wobbling: bool = True
-    # Autonomous face tracking, armed once motors read enabled.
+    # The bridge's head tracker, on from session entry (a mode: no motors needed).
     tracking: bool = True
 
     @classmethod

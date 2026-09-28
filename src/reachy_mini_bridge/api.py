@@ -9,8 +9,9 @@ SDK's blocking calls run under ``asyncio.to_thread``.
 
 Constructed from a [``ReachyMiniConfig``](config.py) (or a backend-string shorthand for
 one); ``async with`` brings up the managed daemon (when configured), the robot, the
-media session, and the motion session ([motion](motion.py) — the one ``set_target``
-writer, playing emotions and the idle behaviour) in that order on an
+media session, the detection loop with the head tracker ([head_tracking](head_tracking.py)),
+and the motion session ([motion](motion.py) — the one ``set_target`` writer, playing
+emotions and the idle behaviour, with the tracker's aim composed in) in that order on an
 ``AsyncExitStack`` — see "Lifecycle" in the spec.
 
 v1 is the smallest verb set that makes the robot a conversational, face-following
@@ -24,8 +25,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-import time
-from contextlib import AsyncExitStack, suppress
+from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self, cast
 
@@ -34,7 +34,7 @@ from reachy_mini.motion.move import Move
 from . import daemon as _daemon
 from . import robot as _robot
 from .audio import MediaSession, TTSEngineSynthesizer, cancel_safe_step
-from .config import IDLE_MODES, ReachyMiniConfig
+from .config import IDLE_MODES, LOOPBACK_HOSTS, ReachyMiniConfig
 from .errors import (
     BridgeError,
     GravityCompensationUnsupportedError,
@@ -42,6 +42,7 @@ from .errors import (
 )
 from .face_detection import FaceDetection, FaceReport
 from .fake_reachy_mini import FakeReachyMini
+from .head_tracking import CameraModel, HeadTracker
 from .motion import NEUTRAL_ANTENNAS, NEUTRAL_BODY_YAW, NEUTRAL_HEAD, MotionSession
 from .observable import Observable
 from .robot import build_robot
@@ -59,12 +60,6 @@ if TYPE_CHECKING:
 __all__ = ["ReachyMiniApi"]
 
 _logger = logging.getLogger(__name__)
-
-# Attention (specs/api.md "Attention"): the head is handed back to the motion loop when
-# nobody has been tracked for the grace period. Module constants, not config.
-ATTENTION_GRACE_S = 3.0  # longer than the daemon's own 2 s recentre on face loss
-ATTENTION_WATCH_WEIGHT = 0.05  # keeps the detector running (weight 0 would pause it)
-ATTENTION_POLL_S = 0.2
 
 # Motor torque states, as the caller-facing single verb takes/returns them.
 _MOTOR_STATES = ("enabled", "disabled", "gravity_compensation")
@@ -200,34 +195,20 @@ class ReachyMiniApi:
         self._presence = self._config.motion.presence
         self._idle: IdleMode = _idle_mode(self._config.motion.idle)
         self._idle_move: IdleMoveFactory | None = self._config.motion.idle_move
-        # The api's own record of the tracking weight last requested (as for wobbling),
-        # so play_emotion can dip it to 0 for a move and restore it afterwards. None
-        # means tracking is not currently active (paused for lack of motors, or off).
-        self._tracking_weight: float | None = None
-        # Whether tracking should be on whenever motors allow it (the config default,
-        # or the caller's last start_head_tracking/stop_head_tracking) — mirrors
-        # _presence/_idle; distinct from _tracking_weight because tracking, unlike
-        # presence/idle, needs motors enabled to actually engage.
+        # Head tracking (specs/head_tracking.md): the caller's switch (the config
+        # default, reset on exit) — a mode like presence, needing no motors — and the
+        # tracker while entered, built once per session and fed the detection loop's
+        # reports while the switch is on.
         self._tracking_wanted = self._config.motion.tracking
-        # The attention loop (specs/api.md "Attention"): its state while tracking is
-        # active ("engaged" / "watching", None otherwise), the task running it, the
-        # lock every tracker send goes through, and the in-flight play_emotion count
-        # during which the loop makes no transition.
-        self._attention: str | None = None
-        self._attention_task: asyncio.Task[None] | None = None
-        self._tracking_lock = asyncio.Lock()
-        self._moves_in_flight = 0
+        self._tracker: HeadTracker | None = None
         # Faces (specs/user_perception.md): the report, readable at any time and
         # outliving sessions; the caller's detection switch (config default, reset on
-        # exit); the detection loop while entered; and what the attention loop reads
-        # from its observations — the latest report and when a face was last seen.
+        # exit); and the detection loop while entered.
         self._faces: Observable[FaceReport] = Observable(
             FaceReport.inactive(self._config.faces.detector)
         )
         self._face_detection_wanted = self._config.faces.detection
         self._detection: FaceDetection | None = None
-        self._latest_faces: FaceReport | None = None
-        self._face_seen_at: float | None = None
 
     # --- config-based constructors (mirroring ReachyMiniConfig's trio) ---
 
@@ -348,51 +329,56 @@ class ReachyMiniApi:
             # (the mode is still off, so the callback is a no-op). It holds the robot
             # itself: __aexit__ clears `self._robot` before the stack closes.
             stack.push_async_callback(self._disable_wobbling_if_on, robot)
-            stack.push_async_callback(self._stop_tracking_if_on, robot)
             if cfg.motion.wobbling:
                 await self.set_wobbling(True)
             motors_enabled = await self.get_motors_state() == "enabled"
-            # The detection loop (specs/user_perception.md "Lifecycle"): it arms the
-            # daemon's detector itself unless tracking is about to own the daemon's
-            # weight (motors enabled, so tracking starts below).
-            detection = FaceDetection(
-                robot,
-                source=cfg.faces.detector,
-                faces=self._faces,
-                owns_daemon_arming=not (self._tracking_wanted and motors_enabled),
-                on_observation=self._on_face_observation,
-            )
-            self._detection = detection
-            # Exits after the motion session, before wobbling's and tracking's cleanup.
-            stack.push_async_callback(self._stop_detection)
-            if self._face_detection_wanted or self._tracking_wanted:
-                await detection.start()
-            # Entered after wobbling, exits first (specs/motion.md "Lifecycle"): the
-            # stack unwinds in reverse, so the loop eases to neutral before wobbling
-            # (and everything else) tears down.
+            # Constructed before the detection loop and the tracker, which is wired to
+            # its set_gaze / head_pose_history; its thread starts below (specs/api.md
+            # "Lifecycle") — an aim handed over meanwhile waits in its command queue.
             motion = MotionSession(
                 robot,
                 presence=self._presence,
                 idle=self._idle,
                 idle_move=self._idle_move,
             )
+            self._tracker = HeadTracker(
+                self._camera_model(robot),
+                history=motion.head_pose_history,
+                set_gaze=motion.set_gaze,
+                same_host=getattr(robot.client, "host", None) in LOOPBACK_HOSTS,
+            )
+            # The detection loop (specs/user_perception.md "Lifecycle"), feeding the
+            # tracker while tracking is on; in `daemon` mode it arms the daemon's
+            # detector.
+            detection = FaceDetection(
+                robot,
+                source=cfg.faces.detector,
+                faces=self._faces,
+                on_observation=self._on_face_observation,
+            )
+            self._detection = detection
+            # Exits after the motion session, before wobbling's cleanup.
+            stack.push_async_callback(self._stop_detection)
+            if self._face_detection_wanted or self._tracking_wanted:
+                await detection.start()
+            # Entered after wobbling, exits first (specs/motion.md "Lifecycle"): the
+            # stack unwinds in reverse, so the loop eases to neutral before wobbling
+            # (and everything else) tears down.
             await stack.enter_async_context(motion)
             self._motion = motion
             if motors_enabled:
                 motion.resume()
-                if self._tracking_wanted:
-                    await self._start_tracking_now()
         except BaseException:
             self._robot = None
             self._media = None
             self._motion = None
+            self._tracker = None
             # The stack's callbacks read the mode records (wobbling left on is disabled),
             # so they are cleared only once it has unwound.
             try:
                 await stack.aclose()
             finally:
                 self._wobbling = False
-                self._attention = None
                 self._detection = None
             raise
         self._exit_stack = stack.pop_all()
@@ -405,16 +391,14 @@ class ReachyMiniApi:
         self._robot = None
         self._media = None
         self._motion = None
+        self._tracker = None
         self._recorded_moves_future = None
         try:
             if stack is not None:
                 await stack.aclose()
         finally:
             self._wobbling = False
-            self._tracking_weight = None
             self._tracking_wanted = self._config.motion.tracking
-            self._attention = None
-            self._moves_in_flight = 0
             self._presence = self._config.motion.presence
             self._idle = _idle_mode(self._config.motion.idle)
             self._idle_move = self._config.motion.idle_move
@@ -429,27 +413,27 @@ class ReachyMiniApi:
             await asyncio.to_thread(robot.disable_wobbling)
             self._wobbling = False
 
-    async def _stop_tracking_if_on(self, robot: AnyReachyMini) -> None:
-        # The daemon-side switch is shared across clients: never leave it armed.
-        await self._cancel_attention()
-        if self._tracking_weight is not None:
-            await asyncio.to_thread(robot.stop_head_tracking)
-            self._tracking_weight = None
-
     async def _stop_detection(self) -> None:
-        """Stop the detection loop (disarming the daemon's detector if it armed it) and
-        publish the inactive report; an exit-stack step."""
+        """Stop the detection loop (disarming the daemon's detector) and publish the
+        inactive report; an exit-stack step."""
         detection = self._detection
         if detection is not None:
             await detection.stop()
-        self._latest_faces = None
-        self._face_seen_at = None
+
+    def _camera_model(self, robot: AnyReachyMini) -> CameraModel:
+        """The tracker's camera (specs/head_tracking.md "The aim"): the bridge's pinhole
+        of the sim's camera source for a `sim` backend, the SDK client's calibration
+        otherwise."""
+        if self._config.backend == "sim":
+            return CameraModel.for_sim(self._config.daemon.camera)
+        return CameraModel.for_robot(robot)
 
     def _on_face_observation(self, report: FaceReport) -> None:
-        """The detection loop's every poll, undebounced: the attention loop's feed."""
-        self._latest_faces = report
-        if report.faces:
-            self._face_seen_at = time.monotonic()
+        """The detection loop's every poll, undebounced: the tracker's feed while
+        tracking is on."""
+        tracker = self._tracker
+        if tracker is not None and self._tracking_wanted:
+            tracker.observe(report)
 
     async def _sync_detection(self) -> None:
         """Run the detection loop while anyone needs faces (the caller's switch, or
@@ -459,89 +443,9 @@ class ReachyMiniApi:
             return
         wanted = self._face_detection_wanted or self._tracking_wanted
         if wanted and not detection.running:
-            await detection.set_owns_daemon_arming(self._tracking_weight is None)
             await detection.start()
         elif not wanted and detection.running:
             await detection.stop()
-
-    async def _start_tracking_now(self, weight: float = 1.0) -> None:
-        """Start tracking without re-checking motor state: the caller (__aenter__ or
-        set_motors_state) has just confirmed motors are enabled, and a second read
-        risks the daemon's ~0.2s status lag reporting the pre-change state. Starts
-        the attention loop engaged (specs/api.md "Attention"); a restart gets a fresh
-        loop, so a full grace period before it can hand the head back. The detection
-        loop runs meanwhile, handing the daemon's weight to tracking."""
-        await self._cancel_attention()
-        async with self._tracking_lock:
-            detection = self._detection
-            if detection is not None:
-                await detection.set_owns_daemon_arming(False)
-                if not detection.running:
-                    await detection.start()
-            await asyncio.to_thread(self.robot.start_head_tracking, weight)
-            self._tracking_weight = weight
-            self._tracking_wanted = True
-            self._attention = "engaged"
-        self._attention_task = asyncio.create_task(self._run_attention())
-
-    async def _cancel_attention(self) -> None:
-        task = self._attention_task
-        self._attention_task = None
-        self._attention = None
-        if task is not None and not task.done():
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
-
-    def _daemon_tracking_weight(self) -> float | None:
-        """The weight the daemon should hold right now: the requested weight while
-        engaged, the watch weight while watching, None when tracking is not active."""
-        if self._tracking_weight is None:
-            return None
-        if self._attention == "watching":
-            return ATTENTION_WATCH_WEIGHT
-        return self._tracking_weight
-
-    async def _run_attention(self) -> None:
-        """The attention loop (specs/api.md "Attention"): one task per tracking start,
-        cancelled by stop_head_tracking and at exit. It reads the detection loop's
-        observations (the latest report, when a face was last seen), not the robot."""
-        started = time.monotonic()  # engaged at start: a full grace period first
-        while True:
-            await asyncio.sleep(ATTENTION_POLL_S)
-            robot = self._robot
-            if robot is None:
-                return
-            now = time.monotonic()
-            seen_at = self._face_seen_at
-            last_seen = started if seen_at is None else max(started, seen_at)
-            latest = self._latest_faces
-            detected = latest is not None and bool(latest.faces)
-            async with self._tracking_lock:
-                weight = self._tracking_weight
-                if weight is None:
-                    return  # tracking stopped meanwhile
-                if self._moves_in_flight:
-                    continue  # never transition inside a play_emotion
-                if (
-                    self._attention == "engaged"
-                    and not detected
-                    and now - last_seen >= ATTENTION_GRACE_S
-                ):
-                    # Hand the head back: re-anchor the loop first so the first
-                    # target that flows is a blend from the present pose, then clear
-                    # the daemon's aim (weight 0) and keep the detector running.
-                    motion = self._motion
-                    if motion is not None:
-                        await asyncio.wrap_future(motion.reanchor())
-                    await asyncio.to_thread(robot.start_head_tracking, 0.0)
-                    await asyncio.to_thread(
-                        robot.start_head_tracking, ATTENTION_WATCH_WEIGHT
-                    )
-                    self._attention = "watching"
-                elif self._attention == "watching" and detected:
-                    await asyncio.to_thread(robot.start_head_tracking, weight)
-                    self._attention = "engaged"
 
     # --- motors / torque ---
 
@@ -576,9 +480,8 @@ class ReachyMiniApi:
 
         Also drives the motion loop (specs/motion.md "Motors"): ``enabled`` resumes it
         — re-anchored on the present pose, so the head eases into the idle move rather
-        than snapping — and arms face tracking too if it's wanted but not yet active
-        (the config default, or a ``start_head_tracking`` call made before motors were
-        enabled); the two resting states pause the loop only.
+        than snapping, and the tracker's aim, if any, composed into it — and the two
+        resting states pause it.
         """
         robot = self.robot
         if state == "enabled":
@@ -594,8 +497,6 @@ class ReachyMiniApi:
             )
         if state == "enabled":
             self._require_motion().resume()
-            if self._tracking_wanted and self._tracking_weight is None:
-                await self._start_tracking_now()
         else:
             self._require_motion().pause()
 
@@ -646,10 +547,11 @@ class ReachyMiniApi:
         plays it for its duration; **completes when the trajectory has played** — the
         return to neutral that follows is the idle behaviour's, not the verb's.
 
-        Around the move, face tracking (weight 0) and wobbling are paused and restored
-        on every exit path — completion, cancel, or failure — because at full tracking
-        weight the daemon discards the head target, and because the emotion's own
-        sound would otherwise sway the head on top of the choreography.
+        Around the move, wobbling is paused and restored on every exit path —
+        completion, cancel, or failure — because the emotion's own sound would otherwise
+        sway the head on top of the choreography. The motion loop leaves the gaze layer
+        out of the move and fades it back in afterwards, so an emotion plays as recorded
+        whether or not a face is tracked.
 
         Cancelling the task stops the emotion — motion and sound — and leaves the head
         where the cancel caught it, with the session still open; the same stop runs
@@ -666,46 +568,27 @@ class ReachyMiniApi:
         motion = self._require_motion()
         robot = self.robot
         sound_path = getattr(move, "sound_path", None)
-        # Pause the two daemon-side layers for the move; restored below on every exit
-        # path, to their *current* record (specs/motion.md "Emotions through the loop").
-        self._moves_in_flight += 1  # the attention loop holds its transitions meanwhile
+        # Pause wobbling for the move; restored below on every exit path, to its
+        # *current* record (specs/motion.md "Emotions through the loop").
+        if self._wobbling:
+            await asyncio.to_thread(robot.disable_wobbling)
+        future = motion.submit(move, None if sound_path is None else Path(sound_path))
         try:
-            async with self._tracking_lock:
-                if self._tracking_weight is not None:
-                    await asyncio.to_thread(robot.start_head_tracking, 0.0)
-            if self._wobbling:
-                await asyncio.to_thread(robot.disable_wobbling)
-            future = motion.submit(
-                move, None if sound_path is None else Path(sound_path)
-            )
-            try:
-                await asyncio.wrap_future(future)
-            except BaseException:
-                future.cancel()  # idempotent; wrap_future already propagated a cancel
-                if sound_path is not None:
-                    media.stop_sound()
-                raise
-            finally:
-                await self._restore_layers_after_move()
+            await asyncio.wrap_future(future)
+        except BaseException:
+            future.cancel()  # idempotent; wrap_future already propagated a cancel
+            if sound_path is not None:
+                media.stop_sound()
+            raise
         finally:
-            self._moves_in_flight -= 1
+            await self._restore_layers_after_move()
 
     async def _restore_layers_after_move(self) -> None:
-        robot = self.robot
         if self._wobbling:
             try:
-                await asyncio.to_thread(robot.enable_wobbling)
+                await asyncio.to_thread(self.robot.enable_wobbling)
             except Exception as e:  # noqa: BLE001 - never mask the verb's own outcome
                 _logger.warning("could not restore wobbling after the emotion: %s", e)
-        async with self._tracking_lock:
-            weight = self._daemon_tracking_weight()
-            if weight is not None:
-                try:
-                    await asyncio.to_thread(robot.start_head_tracking, weight)
-                except Exception as e:  # noqa: BLE001 - never mask the verb's outcome
-                    _logger.warning(
-                        "could not restore head tracking after the emotion: %s", e
-                    )
 
     async def _get_recorded_moves(self) -> Any:
         # One load per connection, shielded: a cancelled first caller does not
@@ -734,51 +617,66 @@ class ReachyMiniApi:
 
         return RecordedMoves(DEFAULT_EMOTIONS_DATASET)
 
-    # --- attention / gaze (autonomous, daemon-side) ---
+    # --- attention / gaze (autonomous: the bridge's own head tracker) ---
 
-    async def start_head_tracking(self, weight: float = 1.0) -> None:
-        """Have the robot autonomously keep a detected face centered.
+    def _require_tracker(self) -> HeadTracker:
+        if self._tracker is None:
+            raise BridgeError(
+                "head tracking is only available inside `async with ReachyMiniApi(...)`"
+            )
+        return self._tracker
 
-        Moves the robot, so it requires motors ``enabled`` (raises
-        :class:`MotorsNotEnabledError` otherwise). The bridge keeps the weight last
-        requested (its own record, as for wobbling) so :meth:`play_emotion` can dip it
-        to ``0`` for a move and restore it afterwards. Starts the detection loop if it
-        is not already running (tracking implies detection).
+    async def start_head_tracking(self, *, focus: bool = False) -> None:
+        """Have the robot autonomously keep the tracked face in view
+        (specs/head_tracking.md): the bridge's tracker aims the face the detection loop
+        reports, and the motion loop composes that aim into the idle move — the head
+        looks at the face and keeps breathing around it. With ``focus`` the head holds
+        exactly on the face instead, the idle move's head motion left out (its antennas
+        kept); calling it again switches between the two.
+
+        A mode, not a move: it holds until changed and needs no motors (the motion loop
+        is paused without them, so the aim shows once they are enabled). Starts the
+        detection loop if it is not already running.
         """
-        await self._require_motors_enabled("start_head_tracking")
-        await self._start_tracking_now(weight)
+        tracker = self._require_tracker()
+        tracker.focus = focus
+        self._tracking_wanted = True
+        await self._sync_detection()
 
     async def stop_head_tracking(self) -> None:
-        """Stop the autonomous face tracker (and the attention loop with it).
-
-        The detection loop keeps running when :attr:`face_detection` is on (it re-arms
-        the daemon's detector at its own negligible weight), and stops otherwise.
-        """
-        await self._cancel_attention()
-        async with self._tracking_lock:
-            await asyncio.to_thread(self.robot.stop_head_tracking)
-            self._tracking_weight = None
-            self._tracking_wanted = False
-            detection = self._detection
-            if detection is not None and self._face_detection_wanted:
-                await detection.set_owns_daemon_arming(True)
-            await self._sync_detection()
+        """Stop the head tracker: the aim is withdrawn and the head eases back onto the
+        idle move. The detection loop keeps running while :attr:`face_detection` is on,
+        and stops otherwise."""
+        tracker = self._require_tracker()
+        self._tracking_wanted = False
+        tracker.stop()
+        await self._sync_detection()
 
     @property
     def tracking(self) -> bool:
-        """Whether the bridge wants tracking on — its own record (upstream has no
-        getter), mirroring :attr:`wobbling`. On by default (the config's
-        ``motion.tracking`` flag); outside a session reads the config's value.
+        """Whether the bridge's tracker is on — its own record. On by default (the
+        config's ``motion.tracking`` flag); outside a session reads the config's value.
         """
         return self._tracking_wanted
 
     @property
+    def tracking_focus(self) -> bool:
+        """Whether tracking holds the head exactly on the face (``focus``) rather than
+        composing it with the idle move — ``False`` while tracking is off and outside a
+        session."""
+        tracker = self._tracker
+        return tracker is not None and self._tracking_wanted and tracker.focus
+
+    @property
     def attention(self) -> str | None:
-        """The attention loop's state while tracking is active — ``"engaged"`` (a
-        face was seen within the grace period; the requested weight is on the daemon)
-        or ``"watching"`` (nobody for a while; the head is handed back to the idle
-        move) — else ``None`` (specs/api.md "Attention")."""
-        return self._attention
+        """Derived from the tracker (specs/api.md "Attention"): ``"engaged"`` while it
+        holds an aim (a face seen within ``TRACKING_LOST_S``), ``"watching"`` while
+        tracking is on and nobody has been seen for longer, ``None`` when tracking is
+        off or outside a session."""
+        tracker = self._tracker
+        if tracker is None or not self._tracking_wanted:
+            return None
+        return "engaged" if tracker.engaged else "watching"
 
     # --- faces (perception) ---
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures as cf
+import math
 import time
 from collections.abc import AsyncIterator, Callable
 
@@ -145,16 +146,19 @@ def test_snapshot_reflects_the_modes_and_the_camera_is_rgb() -> None:
         controller.set_presence(False)
         controller.set_idle("hold")
         controller.set_wobbling(False)
-        controller.set_motors_state("enabled")
-        controller.start_head_tracking(0.5)
+        controller.set_head_tracking(True, focus=True)  # a mode: no motors needed
         state = controller.snapshot()
         assert (state.presence, state.idle, state.wobbling) == (False, "hold", False)
         assert state.tracking is True
-        assert state.attention == "engaged"
-        assert ("start_head_tracking", {"weight": 0.5}) in _fake(controller).commands
+        assert state.attention == "watching"  # nobody there yet
+        _fake(controller).show_face(0.2, 0.0)
+        _wait_until(lambda: controller.snapshot().attention == "engaged")
+        _fake(controller).hide_face()
+        assert controller.api.tracking_focus is True
 
-        controller.stop_head_tracking()
+        controller.set_head_tracking(False, focus=True)  # the Tracking box unticked
         state = controller.snapshot()
+        assert controller.api.tracking_focus is False
         assert state.tracking is False
         assert state.attention is None
 
@@ -309,6 +313,34 @@ def test_snapshot_reports_face_positions_and_the_update_rate() -> None:
         assert (state.faces, state.face_positions, state.face_rate) == (-1, [], None)
 
 
+def test_the_faces_line_shows_each_faces_roll_in_degrees() -> None:
+    pytest.importorskip("gradio")
+    from examples.control_panel.app import faces_line
+
+    line = faces_line([(0.25, -0.1), (-0.5, 0.2)], 10.0, [math.radians(-12.4), None])
+    assert "2 at (+0.25, -0.10, roll -12°), (-0.50, +0.20)" in line
+    assert faces_line([(0.25, -0.1)], None) == (
+        "**Faces:** 1 at (+0.25, -0.10) · **updates:** —"
+    )
+
+
+def test_draw_faces_tilts_the_square_with_the_faces_roll() -> None:
+    frame = np.zeros((100, 200, 3), dtype=np.uint8)
+    upright = (draw_faces(frame, [(0.0, 0.0)], [0.0]) == FACE_MARKER_RGB).all(axis=2)
+    tilted = draw_faces(frame, [(0.0, 0.0)], [math.radians(45.0)])
+    green = (tilted == FACE_MARKER_RGB).all(axis=2)
+
+    # centre pixel (100, 50), half-side 8 px: upright, the top edge's middle is marked
+    # and the square's corner too; tilted 45 deg, the corner turns to straight above
+    # the centre (8 * sqrt(2) ~ 11 px), and the upright edge falls inside the square
+    assert upright[42, 100] and upright[42, 108]
+    assert green[39, 100] and green[61, 100] and green[50, 89] and green[50, 111]
+    assert not green[42, 100] and not green[42, 108]
+    # an unknown roll draws it upright
+    unknown = (draw_faces(frame, [(0.0, 0.0)], [None]) == FACE_MARKER_RGB).all(axis=2)
+    assert np.array_equal(unknown, upright)
+
+
 def test_draw_faces_outlines_each_face_where_it_is() -> None:
     frame = np.zeros((100, 200, 3), dtype=np.uint8)
     marked = draw_faces(frame, [(0.0, 0.0), (1.0, -1.0)])
@@ -319,7 +351,8 @@ def test_draw_faces_outlines_each_face_where_it_is() -> None:
     # (100, 50) — its outline is marked, its middle is not
     assert green[42, 100] and green[58, 100] and green[50, 92] and green[50, 108]
     assert not green[50, 100]
-    # a face at the top-right corner is clipped to the frame, not dropped
-    assert green[0, 199] or green[7, 199]
+    # a face at the top-right corner is clipped to the frame, not dropped: the part of
+    # its outline inside the frame shows (here its bottom edge)
+    assert green[8, 191:200].all()
     # nothing far from either face
     assert not green[90, 20:60].any()

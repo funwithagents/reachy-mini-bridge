@@ -45,7 +45,7 @@ class _Loop:
 
 
 @asynccontextmanager
-async def _running(*, owns_daemon_arming: bool = True) -> AsyncIterator[_Loop]:
+async def _running() -> AsyncIterator[_Loop]:
     robot = FakeReachyMini()
     faces: Observable[FaceReport] = Observable(FaceReport.inactive("daemon"))
     loop = _Loop(robot, faces)
@@ -53,7 +53,6 @@ async def _running(*, owns_daemon_arming: bool = True) -> AsyncIterator[_Loop]:
         robot,
         source="daemon",
         faces=faces,
-        owns_daemon_arming=owns_daemon_arming,
         on_observation=loop.observed.append,
     )
 
@@ -170,33 +169,16 @@ def test_stop_publishes_the_inactive_report() -> None:
     assert woken[-1] == FaceReport.inactive("daemon")
 
 
-def test_the_loop_arms_and_disarms_the_daemon_when_it_owns_the_arming() -> None:
-    async def run(owns: bool) -> list[tuple[str, dict[str, Any]]]:
-        async with _running(owns_daemon_arming=owns) as loop:
+def test_the_loop_arms_the_daemons_detector_and_disarms_it() -> None:
+    async def run() -> list[tuple[str, dict[str, Any]]]:
+        async with _running() as loop:
             pass
         return [c for c in loop.robot.commands if "head_tracking" in c[0]]
 
-    assert _run(lambda: run(True)) == [
+    assert _run(run) == [
         ("start_head_tracking", {"weight": DAEMON_DETECT_WEIGHT}),
         ("stop_head_tracking", {}),
     ]
-    assert _run(lambda: run(False)) == []
-
-
-def test_handing_the_arming_back_arms_at_once_and_away_skips_the_disarm() -> None:
-    async def run() -> list[tuple[str, dict[str, Any]]]:
-        robot = FakeReachyMini()
-        faces: Observable[FaceReport] = Observable(FaceReport.inactive("daemon"))
-        detection = FaceDetection(
-            robot, source="daemon", faces=faces, owns_daemon_arming=False
-        )
-        await detection.start()
-        await detection.set_owns_daemon_arming(True)  # the tracker stopped
-        await detection.set_owns_daemon_arming(False)  # the tracker started again
-        await detection.stop()
-        return [c for c in robot.commands if "head_tracking" in c[0]]
-
-    assert _run(run) == [("start_head_tracking", {"weight": DAEMON_DETECT_WEIGHT})]
 
 
 def test_a_failing_source_reads_inactive_then_active_on_recovery(
@@ -247,9 +229,7 @@ def test_the_custom_source_is_not_available_yet() -> None:
     async def run() -> None:
         robot = FakeReachyMini()
         faces: Observable[FaceReport] = Observable(FaceReport.inactive("custom"))
-        detection = FaceDetection(
-            robot, source="custom", faces=faces, owns_daemon_arming=True
-        )
+        detection = FaceDetection(robot, source="custom", faces=faces)
         with pytest.raises(ValueError, match="not available yet"):
             await detection.start()
         assert robot.commands == []

@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures as cf
 import logging
+import math
 import threading
 import time
 from collections import deque
@@ -409,6 +410,12 @@ class ControlPanelController:
         report = self._api.faces.value
         return [(f.x, f.y) for f in report.faces] if report.active else []
 
+    def face_rolls(self) -> list[float | None]:
+        """The reported faces' roll in radians (``None`` when unknown), in the order of
+        :meth:`face_positions`."""
+        report = self._api.faces.value
+        return [f.roll for f in report.faces] if report.active else []
+
     def camera_frame_rgb(self) -> npt.NDArray[np.uint8] | None:
         """The latest camera frame as RGB (the api's BGR flipped), or ``None``."""
         frame = self._call(self._api.get_camera_frame())
@@ -425,8 +432,15 @@ class ControlPanelController:
     def play_sound(self, sound_file: str) -> None:
         self._call(self._api.play_sound(sound_file))
 
-    def start_head_tracking(self, weight: float = 1.0) -> None:
-        self._call(self._api.start_head_tracking(weight))
+    def start_head_tracking(self, focus: bool = False) -> None:
+        self._call(self._api.start_head_tracking(focus=focus))
+
+    def set_head_tracking(self, enabled: bool, focus: bool = False) -> None:
+        """The Gaze checkboxes: tracking on (with or without focus) or off."""
+        if enabled:
+            self.start_head_tracking(focus)
+        else:
+            self.stop_head_tracking()
 
     def stop_head_tracking(self) -> None:
         self._call(self._api.stop_head_tracking())
@@ -471,26 +485,36 @@ class ControlPanelController:
 
 
 def draw_faces(
-    frame: npt.NDArray[np.uint8], positions: Sequence[tuple[float, float]]
+    frame: npt.NDArray[np.uint8],
+    positions: Sequence[tuple[float, float]],
+    rolls: Sequence[float | None] = (),
 ) -> npt.NDArray[np.uint8]:
     """A copy of the RGB ``frame`` with a square outline on each face.
 
     ``positions`` are normalised image coordinates (``[-1, 1]``, x right, y down), as
     ``api.faces`` reports them; the first — the target face — is drawn thicker.
+    ``rolls`` (radians, per face, ``None`` when unknown) tilt each square with the
+    face's eye line, in the frame's own coordinates.
     """
     out = frame.copy()
     height, width = out.shape[:2]
     half = max(2, round(FACE_MARKER_SIZE * height / 2))
     for i, (x, y) in enumerate(positions):
+        roll = rolls[i] if i < len(rolls) else None
         cx = round((x + 1.0) * 0.5 * (width - 1))
         cy = round((y + 1.0) * 0.5 * (height - 1))
         thick = max(1, height // (120 if i == 0 else 240))
-        x0, x1 = max(cx - half, 0), min(cx + half, width - 1)
-        y0, y1 = max(cy - half, 0), min(cy + half, height - 1)
+        reach = math.ceil(half * math.sqrt(2)) + 1  # the tilted square's bounding box
+        x0, x1 = max(cx - reach, 0), min(cx + reach, width - 1)
+        y0, y1 = max(cy - reach, 0), min(cy + reach, height - 1)
         if x0 > x1 or y0 > y1:
             continue  # off the frame
-        out[y0 : min(y0 + thick, y1 + 1), x0 : x1 + 1] = FACE_MARKER_RGB
-        out[max(y1 - thick + 1, y0) : y1 + 1, x0 : x1 + 1] = FACE_MARKER_RGB
-        out[y0 : y1 + 1, x0 : min(x0 + thick, x1 + 1)] = FACE_MARKER_RGB
-        out[y0 : y1 + 1, max(x1 - thick + 1, x0) : x1 + 1] = FACE_MARKER_RGB
+        ys, xs = np.mgrid[y0 : y1 + 1, x0 : x1 + 1]
+        dx, dy = xs - cx, ys - cy
+        c, s = math.cos(roll or 0.0), math.sin(roll or 0.0)
+        # each pixel in the square's own axes: u along the eye line, v across it
+        u, v = dx * c + dy * s, -dx * s + dy * c
+        edge = np.maximum(np.abs(u), np.abs(v))
+        mask = (edge <= half + 0.5) & (edge > half + 0.5 - thick)
+        out[y0 : y1 + 1, x0 : x1 + 1][mask] = FACE_MARKER_RGB
     return out

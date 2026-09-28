@@ -10,8 +10,9 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import logging
+import math
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -65,12 +66,23 @@ def state_table(state: PanelState) -> str:
     return "\n".join(lines)
 
 
-def faces_line(positions: list[tuple[float, float]] | None, rate: float | None) -> str:
-    """The line under the camera: the faces and their update rate. ``positions`` is
-    ``None`` while no detector is looking."""
+def faces_line(
+    positions: list[tuple[float, float]] | None,
+    rate: float | None,
+    rolls: Sequence[float | None] = (),
+) -> str:
+    """The line under the camera: the faces — their position and, when known, their
+    roll in degrees — and their update rate. ``positions`` is ``None`` while no
+    detector is looking."""
     if positions is None:
         return "**Faces:** — (no detector is looking)"
-    where = ", ".join(f"({x:+.2f}, {y:+.2f})" for x, y in positions)
+
+    def face(i: int, x: float, y: float) -> str:
+        roll = rolls[i] if i < len(rolls) else None
+        tilt = "" if roll is None else f", roll {math.degrees(roll):+.0f}°"
+        return f"({x:+.2f}, {y:+.2f}{tilt})"
+
+    where = ", ".join(face(i, x, y) for i, (x, y) in enumerate(positions))
     faces = f"{len(positions)} at {where}" if where else "0"
     updates = "—" if rate is None else f"{rate:.1f}/s"
     return f"**Faces:** {faces} · **updates:** {updates}"
@@ -89,7 +101,8 @@ def refresh_camera(
     ``MIRROR_CAMERA``), and the faces line under it."""
     active = controller.api.faces.value.active
     positions = controller.face_positions()
-    text = faces_line(positions if active else None, controller.face_rate)
+    rolls = controller.face_rolls()
+    text = faces_line(positions if active else None, controller.face_rate, rolls)
     try:
         frame = controller.camera_frame_rgb()
     except BridgeError as exc:
@@ -97,7 +110,7 @@ def refresh_camera(
         return None, text
     if frame is None:
         return None, text
-    marked = draw_faces(frame, positions)
+    marked = draw_faces(frame, positions, rolls)
     if MIRROR_CAMERA:
         marked = np.ascontiguousarray(marked[:, ::-1])
     return marked, text
@@ -181,11 +194,10 @@ def build_app(controller: ControlPanelController) -> gr.Blocks:
 
                 gr.Markdown("## Gaze")
                 with gr.Row():
-                    weight = gr.Slider(
-                        0, 1, value=1.0, step=0.05, label="Tracking weight", scale=3
+                    tracking = gr.Checkbox(config.motion.tracking, label="Tracking")
+                    focus = gr.Checkbox(
+                        False, label="Focus (head held on the face, no idle motion)"
                     )
-                    start_tracking = gr.Button("Start tracking")
-                    stop_tracking = gr.Button("Stop tracking")
 
                 gr.Markdown("## Modes")
                 with gr.Row():
@@ -230,13 +242,13 @@ def build_app(controller: ControlPanelController) -> gr.Blocks:
         bind(say.click, "say", controller.say, text)
         bind(stop_say.click, "stop_saying", controller.stop_saying)
         bind(play_sound.click, "play_sound", controller.play_sound, sound_file)
-        bind(
-            start_tracking.click,
-            "start_head_tracking",
-            controller.start_head_tracking,
-            weight,
-        )
-        bind(stop_tracking.click, "stop_head_tracking", controller.stop_head_tracking)
+        for box in (tracking, focus):
+            bind(
+                box.input,
+                "set_head_tracking",
+                controller.set_head_tracking,
+                [tracking, focus],
+            )
         bind(wobbling.input, "set_wobbling", controller.set_wobbling, wobbling)
         bind(presence.input, "set_presence", controller.set_presence, presence)
         bind(idle.input, "set_idle", controller.set_idle, idle)

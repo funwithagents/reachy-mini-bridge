@@ -24,6 +24,7 @@ import pytest
 
 from reachy_mini_bridge import api as api_module
 from reachy_mini_bridge import face_detection as face_detection_module
+from reachy_mini_bridge import head_tracking as head_tracking_module
 from reachy_mini_bridge import robot as robot_module
 from reachy_mini_bridge.api import ReachyMiniApi
 from reachy_mini_bridge.config import (
@@ -69,14 +70,14 @@ def _command_names(api: ReachyMiniApi) -> list[str]:
     return [name for name, _ in _fake(api).commands]
 
 
-def _tracking_weights(api: ReachyMiniApi) -> list[float]:
-    """Every weight sent to the daemon's tracker: the detection loop's ε arming
-    (DAEMON_DETECT_WEIGHT, while nobody tracks) and the attention loop's weights."""
-    return [
-        args["weight"]
-        for name, args in _fake(api).commands
-        if name == "start_head_tracking"
-    ]
+def _daemon_tracking(robot: FakeReachyMini) -> list[tuple[str, dict[str, Any]]]:
+    """Every call to the daemon's own tracker: the detection loop arming its detector
+    at DAEMON_DETECT_WEIGHT, and disarming it."""
+    return [c for c in robot.commands if c[0].endswith("head_tracking")]
+
+
+def _yaw_deg(head: npt.NDArray[np.float64]) -> float:
+    return float(np.degrees(np.arctan2(head[1, 0], head[0, 0])))
 
 
 EPS = DAEMON_DETECT_WEIGHT
@@ -600,16 +601,17 @@ def test_play_emotion_requires_motors_enabled() -> None:
     asyncio.run(run())
 
 
-def test_start_head_tracking_requires_motors_enabled() -> None:
-    async def run() -> None:
-        async with ReachyMiniApi("fake") as api:
+def test_start_head_tracking_needs_no_motors() -> None:
+    async def run() -> tuple[bool, list[tuple[str, dict[str, Any]]]]:
+        async with ReachyMiniApi(_NO_TRACKING) as api:
             await api.set_motors_state("gravity_compensation")
-            with pytest.raises(MotorsNotEnabledError):
-                await api.start_head_tracking()
-            # only the detection loop's arming: nothing from the refused verb
-            assert _tracking_weights(api) == [EPS]
+            await api.start_head_tracking()
+            return api.tracking, _daemon_tracking(_fake(api))
 
-    asyncio.run(run())
+    tracking, daemon = asyncio.run(run())
+    assert tracking is True
+    # the detection loop's arming only: the tracker steers through the motion loop
+    assert daemon == [("start_head_tracking", {"weight": EPS})]
 
 
 def test_movement_verbs_run_once_motors_enabled() -> None:
@@ -617,29 +619,32 @@ def test_movement_verbs_run_once_motors_enabled() -> None:
         async with ReachyMiniApi("fake") as api:
             await api.set_motors_state("enabled")
             await api.play_emotion("happy")
-            await api.start_head_tracking(weight=0.5)
-            await api.stop_head_tracking()
             return _command_names(api)
 
     names = asyncio.run(run())
     assert "media.play_sound" in names  # the move played through the motion loop
-    assert "start_head_tracking" in names
-    assert "stop_head_tracking" in names
 
 
-def test_start_head_tracking_forwards_weight() -> None:
-    config = ReachyMiniConfig(backend="fake", motion=MotionSettings(tracking=False))
-
-    async def run() -> float:
-        async with ReachyMiniApi(config) as api:
+def test_focus_holds_the_head_on_the_face_without_the_breath(
+    fast_attention: None,
+) -> None:
+    async def run(focus: bool) -> tuple[bool, float]:
+        async with ReachyMiniApi("fake") as api:  # breathing by default
             await api.set_motors_state("enabled")
-            await api.start_head_tracking(weight=0.25)
-            return _tracking_weights(api)[-1]
+            await api.start_head_tracking(focus=focus)
+            _fake(api).show_face(0.1, 0.0)
+            await asyncio.sleep(BLEND_S + 0.5)
+            marker = len(_fake(api).targets)
+            await asyncio.sleep(2.0)  # the first breath rises over these seconds
+            zs = _head_z(api)[marker:]
+            return api.tracking_focus, max(zs) - min(zs)
 
-    assert asyncio.run(run()) == 0.25
-
-
-# --- expression --------------------------------------------------------------------
+    focused, z_range = asyncio.run(run(True))
+    assert focused is True
+    assert z_range < 1e-4  # the head holds on the face
+    composed, z_range = asyncio.run(run(False))
+    assert composed is False
+    assert z_range > 0.002  # it breathes around the face
 
 
 def test_list_emotions_returns_the_offline_library() -> None:
@@ -763,35 +768,40 @@ def test_completed_play_emotion_does_not_stop_the_sound() -> None:
     assert "media.stop_sound" not in asyncio.run(run())
 
 
-def test_play_emotion_pauses_tracking_and_restores_it() -> None:
-    config = ReachyMiniConfig(backend="fake", motion=MotionSettings(tracking=False))
+def test_play_emotion_under_a_tracked_face_plays_as_recorded(
+    fast_attention: None,
+) -> None:
+    config = ReachyMiniConfig(backend="fake", motion=MotionSettings(idle="hold"))
 
-    async def run() -> list[float]:
-        async with ReachyMiniApi(
-            config
-        ) as api:  # tracking off by config, set explicitly
-            await api.set_motors_state("enabled")
-            await api.start_head_tracking(0.7)
-            await api.play_emotion("sad")
-            return [
-                args["weight"]
-                for name, args in _fake(api).commands
-                if name == "start_head_tracking"
-            ]
-
-    assert asyncio.run(run()) == [EPS, 0.7, 0.0, 0.7]
-
-
-def test_play_emotion_leaves_tracking_alone_when_off() -> None:
-    config = ReachyMiniConfig(backend="fake", motion=MotionSettings(tracking=False))
-
-    async def run() -> list[float]:
+    async def run() -> tuple[str | None, list[tuple[float, float]], list[str]]:
         async with ReachyMiniApi(config) as api:
             await api.set_motors_state("enabled")
+            robot = _fake(api)
+            robot.show_face(0.5, 0.0)
+            await asyncio.sleep(1.0)  # the head has turned toward the face
+            engaged = api.attention
+            before = len(robot.commands)
+            marker = len(robot.targets)
             await api.play_emotion("sad")
-            return _tracking_weights(api)
+            heads = [h for h, _, _ in robot.targets[marker:] if h is not None]
+            return (
+                engaged,
+                [(_yaw_deg(h), float(h[2, 3])) for h in heads],
+                [n for n, _ in robot.commands[before:]],
+            )
 
-    assert asyncio.run(run()) == [EPS]  # the detector's arming, never dipped
+    engaged, poses, names = asyncio.run(run())
+    assert engaged == "engaged"
+    assert not any(n.endswith("head_tracking") for n in names)
+    # the trajectory itself, after the entry blend: the recorded nod, straight ahead
+    move = api_module._FakeRecordedMove("sad")
+    played = poses[-int(0.2 * 60) :]
+    assert all(abs(yaw) < 1e-6 for yaw, _ in played)
+    assert max(z for _, z in played) <= 0.01 + 1e-9
+    start = next(i for i, (yaw, _) in enumerate(poses) if abs(yaw) < 1e-6)
+    head, _a, _y = move.evaluate(0.0)
+    assert head is not None
+    assert poses[start][1] == pytest.approx(float(head[2, 3]), abs=0.002)
 
 
 def test_play_emotion_pauses_wobbling_and_restores_it() -> None:
@@ -812,7 +822,6 @@ def test_play_emotion_restores_layers_after_a_cancel() -> None:
     async def run() -> list[tuple[str, dict[str, Any]]]:
         async with ReachyMiniApi("fake") as api:
             await api.set_motors_state("enabled")
-            await api.start_head_tracking(0.7)
             task = asyncio.create_task(api.play_emotion("happy"))
             while "media.play_sound" not in _command_names(api):
                 await asyncio.sleep(0)
@@ -822,8 +831,6 @@ def test_play_emotion_restores_layers_after_a_cancel() -> None:
             return list(_fake(api).commands)
 
     commands = asyncio.run(run())
-    tracking_weights = [a["weight"] for n, a in commands if n == "start_head_tracking"]
-    assert tracking_weights[-1] == 0.7
     wobbling_calls = [
         n for n, _ in commands if n in ("enable_wobbling", "disable_wobbling")
     ]
@@ -831,27 +838,19 @@ def test_play_emotion_restores_layers_after_a_cancel() -> None:
 
 
 def test_play_emotion_restores_to_the_current_record() -> None:
-    async def run() -> list[tuple[str, dict[str, Any]]]:
+    async def run() -> list[str]:
         async with ReachyMiniApi("fake") as api:
             await api.set_motors_state("enabled")
-            await api.start_head_tracking(0.7)
             task = asyncio.create_task(api.play_emotion("sad"))
-            await asyncio.sleep(0)  # let play_emotion dip tracking before we change it
-            await api.stop_head_tracking()
+            await asyncio.sleep(0.1)  # wobbling paused for the move
+            await api.set_wobbling(False)  # the caller turns it off meanwhile
             await task
-            return list(_fake(api).commands)
+            return _command_names(api)
 
-    commands = asyncio.run(run())
-    tracking_calls = [
-        (n, a)
-        for n, a in commands
-        if n in ("start_head_tracking", "stop_head_tracking")
-    ]
-    # no restore of the stopped 0.7: the stop, then the detector re-armed at ε
-    assert tracking_calls[-2:] == [
-        ("stop_head_tracking", {}),
-        ("start_head_tracking", {"weight": EPS}),
-    ]
+    names = asyncio.run(run())
+    wobbling_calls = [n for n in names if n in ("enable_wobbling", "disable_wobbling")]
+    # no restore of the wobbling the caller turned off
+    assert wobbling_calls[-1] == "disable_wobbling"
 
 
 def test_cancelled_library_load_is_reused_by_the_next_call(
@@ -1104,194 +1103,127 @@ def test_tracking_property_reads_the_config() -> None:
     assert ReachyMiniApi(config).tracking is False
 
 
-def test_tracking_is_armed_once_motors_are_enabled_at_full_weight() -> None:
-    async def run() -> list[float]:
-        async with ReachyMiniApi("fake") as api:  # tracking on by default
-            await api.set_motors_state("enabled")
-            return _tracking_weights(api)
-
-    # motors off at entry: the detection loop arms ε; enabling them hands over to 1.0
-    assert asyncio.run(run()) == [EPS, 1.0]
-
-
-def test_tracking_starts_at_entry_when_motors_already_enabled(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("tracking", "detection"), [(True, False), (False, True), (True, True)]
+)
+def test_the_daemon_is_armed_as_a_detector_only(
+    tracking: bool, detection: bool
 ) -> None:
-    robot = FakeReachyMini()
-    robot.client.motor_control_mode = "enabled"  # a daemon that woke up on its own
-    monkeypatch.setattr(api_module, "build_robot", lambda backend, **kw: robot)
+    config = ReachyMiniConfig(
+        backend="fake",
+        motion=MotionSettings(tracking=tracking),
+        faces=FaceSettings(detection=detection),
+    )
 
-    async def run() -> list[str]:
-        async with ReachyMiniApi("fake") as api:
-            assert api.tracking is True
-            return _command_names(api)
-
-    assert "start_head_tracking" in asyncio.run(run())
-
-
-def test_stop_head_tracking_suppresses_the_config_default() -> None:
-    async def run() -> list[float]:
-        async with ReachyMiniApi("fake") as api:  # motors start disabled on the fake
-            await api.stop_head_tracking()
-            assert api.tracking is False
-            await api.set_motors_state("enabled")
-            return _tracking_weights(api)
-
-    assert asyncio.run(run()) == [
-        EPS,
-        EPS,
-    ]  # only the detector, re-armed after the stop
-
-
-def test_tracking_off_in_the_config_is_never_touched() -> None:
-    config = ReachyMiniConfig(backend="fake", motion=MotionSettings(tracking=False))
-
-    async def run() -> tuple[list[float], list[str]]:
+    async def run() -> tuple[list[tuple[str, dict[str, Any]]], FakeReachyMini]:
         async with ReachyMiniApi(config) as api:
             await api.set_motors_state("enabled")
-            return _tracking_weights(api), _command_names(api)
+            _fake(api).show_face(0.3, 0.0)
+            await asyncio.sleep(0.3)
+            _fake(api).hide_face()
+            return _daemon_tracking(_fake(api)), _fake(api)
 
-    weights, names = asyncio.run(run())
-    assert weights == [EPS]  # the detection loop's arming only
-    assert "stop_head_tracking" not in names
-
-
-def test_tracking_left_on_is_stopped_at_exit() -> None:
-    api = ReachyMiniApi("fake")
-
-    async def run() -> FakeReachyMini:
-        async with api:
-            await api.set_motors_state("enabled")
-            return _fake(api)
-
-    robot = asyncio.run(run())  # asyncio.run blocks until __aexit__ has completed too
-    names = [name for name, _ in robot.commands]
-    assert (
-        names.index("start_head_tracking")
-        < names.index("stop_head_tracking")
-        < names.index("__exit__")
-    )
-    assert api.tracking is True  # reset to the config's value after exit
+    at_entry, robot = asyncio.run(run())
+    assert at_entry == [("start_head_tracking", {"weight": EPS})]
+    assert _daemon_tracking(robot)[1:] == [("stop_head_tracking", {})]  # at exit
+    names = [n for n, _ in robot.commands]
+    assert names.index("stop_head_tracking") < names.index("__exit__")
 
 
-# --- attention (specs/api.md "Attention") -------------------------------------------
+# --- attention (specs/api.md "Attention"), derived from the tracker -----------------
 
 
 @pytest.fixture
 def fast_attention(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(api_module, "ATTENTION_GRACE_S", 0.3)
-    monkeypatch.setattr(api_module, "ATTENTION_POLL_S", 0.05)
+    monkeypatch.setattr(head_tracking_module, "TRACKING_LOST_S", 0.3)
     monkeypatch.setattr(face_detection_module, "FACE_POLL_HZ", 20.0)
 
 
-def test_attention_starts_engaged_and_watches_when_nobody_is_there(
-    fast_attention: None,
-) -> None:
-    async def run() -> tuple[str | None, str | None, list[float]]:
-        async with ReachyMiniApi("fake") as api:  # tracking on by default
-            await api.set_motors_state("enabled")
-            at_start = api.attention
-            await asyncio.sleep(0.6)  # > grace + a poll
-            return at_start, api.attention, _tracking_weights(api)
-
-    at_start, later, weights = asyncio.run(run())
-    assert at_start == "engaged"
-    assert later == "watching"
-    # requested weight, then the hand-back: through 0, then the watch weight
-    assert weights == [EPS, 1.0, 0.0, api_module.ATTENTION_WATCH_WEIGHT]
-
-
-def test_attention_reengages_when_a_face_appears(fast_attention: None) -> None:
-    async def run() -> tuple[str | None, list[float]]:
-        async with ReachyMiniApi("fake") as api:
-            await api.set_motors_state("enabled")
-            await asyncio.sleep(0.6)
-            assert api.attention == "watching"
+def test_attention_follows_the_face(fast_attention: None) -> None:
+    async def run() -> list[str | None]:
+        async with ReachyMiniApi("fake") as api:  # tracking on by default, no motors
+            await asyncio.sleep(0.15)
+            seen = [api.attention]
             _fake(api).show_face()
-            await asyncio.sleep(0.2)  # a few polls
-            return api.attention, _tracking_weights(api)
-
-    state, weights = asyncio.run(run())
-    assert state == "engaged"
-    assert weights == [EPS, 1.0, 0.0, api_module.ATTENTION_WATCH_WEIGHT, 1.0]
-
-
-def test_attention_stays_engaged_while_a_face_is_seen(fast_attention: None) -> None:
-    async def run() -> tuple[str | None, list[float]]:
-        async with ReachyMiniApi("fake") as api:
-            await api.set_motors_state("enabled")
-            _fake(api).show_face()
-            await asyncio.sleep(0.6)
-            return api.attention, _tracking_weights(api)
-
-    state, weights = asyncio.run(run())
-    assert state == "engaged"
-    assert weights == [EPS, 1.0]
-
-
-def test_emotion_restores_the_watch_weight_while_watching(
-    fast_attention: None,
-) -> None:
-    async def run() -> list[float]:
-        async with ReachyMiniApi("fake") as api:
-            await api.set_motors_state("enabled")
-            await asyncio.sleep(0.6)
-            assert api.attention == "watching"
-            await api.play_emotion("sad")
-            return _tracking_weights(api)
-
-    weights = asyncio.run(run())
-    watch = api_module.ATTENTION_WATCH_WEIGHT
-    assert weights == [EPS, 1.0, 0.0, watch, 0.0, watch]
-
-
-def test_attention_makes_no_transition_during_an_emotion(
-    fast_attention: None,
-) -> None:
-    async def run() -> list[float]:
-        async with ReachyMiniApi("fake") as api:
-            await api.set_motors_state("enabled")
-            # Engaged; the grace period (0.3 s) elapses *during* the emotion (blend in
-            # plus the fake's 0.3 s move) — the transition must wait for the restore,
-            # so the dip and the restore bracket nothing else.
-            await asyncio.sleep(0.25)
-            await api.play_emotion("sad")
-            return _tracking_weights(api)
-
-    weights = asyncio.run(run())
-    assert weights[:4] == [EPS, 1.0, 0.0, 1.0]
-
-
-def test_restarting_tracking_while_watching_reengages_for_a_full_grace_period(
-    fast_attention: None,
-) -> None:
-    async def run() -> tuple[str | None, list[float]]:
-        async with ReachyMiniApi("fake") as api:
-            await api.set_motors_state("enabled")
-            await asyncio.sleep(0.6)
-            assert api.attention == "watching"
-            await api.start_head_tracking(0.5)
-            await asyncio.sleep(0.15)  # several polls, well inside the 0.3 s grace
-            return api.attention, _tracking_weights(api)
-
-    state, weights = asyncio.run(run())
-    assert state == "engaged"
-    assert weights == [EPS, 1.0, 0.0, api_module.ATTENTION_WATCH_WEIGHT, 0.5]
-
-
-def test_stop_head_tracking_stops_the_attention_loop(fast_attention: None) -> None:
-    async def run() -> tuple[str | None, int, int]:
-        async with ReachyMiniApi("fake") as api:
-            await api.set_motors_state("enabled")
+            await asyncio.sleep(0.5)
+            seen.append(api.attention)
+            _fake(api).hide_face()
+            await asyncio.sleep(0.3 + 0.2)  # TRACKING_LOST_S, and a few polls
+            seen.append(api.attention)
             await api.stop_head_tracking()
-            state = api.attention
-            before = len(_fake(api).commands)
-            await asyncio.sleep(0.6)
-            return state, before, len(_fake(api).commands)
+            seen.append(api.attention)
+            return seen
 
-    state, before, after = asyncio.run(run())
-    assert state is None
-    assert after == before  # no tracking sends after the stop
+    assert asyncio.run(run()) == ["watching", "engaged", "watching", None]
+
+
+def test_attention_is_none_outside_a_session() -> None:
+    assert ReachyMiniApi("fake").attention is None
+
+
+def test_the_head_turns_toward_a_face_and_back_once_it_is_gone(
+    fast_attention: None,
+) -> None:
+    config = ReachyMiniConfig(backend="fake", motion=MotionSettings(idle="hold"))
+
+    async def run() -> tuple[float, float]:
+        async with ReachyMiniApi(config) as api:
+            await api.set_motors_state("enabled")
+            robot = _fake(api)
+            robot.show_face(0.5, 0.0)  # to the robot's right
+            await asyncio.sleep(1.5)
+            turned = _yaw_deg(robot.last_target[0])
+            robot.hide_face()
+            await asyncio.sleep(0.3 + BLEND_S + 0.3)  # the loss, then the fade-out
+            return turned, _yaw_deg(robot.last_target[0])
+
+    turned, back = asyncio.run(run())
+    assert turned < -5.0  # toward the face's side (negative yaw is to the right)
+    assert abs(back) < 1.0
+
+
+def test_stopping_tracking_hands_the_head_back_and_ignores_faces(
+    fast_attention: None,
+) -> None:
+    config = ReachyMiniConfig(backend="fake", motion=MotionSettings(idle="hold"))
+
+    async def run() -> tuple[float, float]:
+        async with ReachyMiniApi(config) as api:
+            await api.set_motors_state("enabled")
+            robot = _fake(api)
+            robot.show_face(0.5, 0.0)
+            await asyncio.sleep(1.0)
+            turned = _yaw_deg(robot.last_target[0])
+            await api.stop_head_tracking()
+            await asyncio.sleep(BLEND_S + 0.3)  # the face still shown
+            return turned, _yaw_deg(robot.last_target[0])
+
+    turned, after = asyncio.run(run())
+    assert turned < -5.0
+    assert abs(after) < 1e-6
+
+
+def test_tracking_started_without_motors_aims_once_they_are_enabled(
+    fast_attention: None,
+) -> None:
+    config = ReachyMiniConfig(
+        backend="fake", motion=MotionSettings(idle="hold", tracking=False)
+    )
+
+    async def run() -> tuple[int, float]:
+        async with ReachyMiniApi(config) as api:
+            await api.start_head_tracking()  # motors disabled on the fake
+            robot = _fake(api)
+            robot.show_face(0.5, 0.0)
+            await asyncio.sleep(0.3)
+            sent = len(robot.targets)  # the loop is paused: nothing moves
+            await api.set_motors_state("enabled")
+            await asyncio.sleep(1.0)
+            return sent, _yaw_deg(robot.last_target[0])
+
+    sent, yaw = asyncio.run(run())
+    assert sent == 0
+    assert yaw < -5.0
 
 
 # --- faces (specs/user_perception.md) -----------------------------------------------
@@ -1391,23 +1323,6 @@ def test_detection_without_tracking_arms_the_daemon_at_the_detect_weight() -> No
         ("start_head_tracking", {"weight": DAEMON_DETECT_WEIGHT}),
         ("stop_head_tracking", {}),  # disarmed at exit
     ]
-
-
-def test_tracking_at_entry_owns_the_daemon_weight_without_the_detect_weight(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    robot = FakeReachyMini()
-    robot.client.motor_control_mode = "enabled"  # a daemon that woke up on its own
-    monkeypatch.setattr(api_module, "build_robot", lambda backend, **kw: robot)
-
-    async def run() -> tuple[list[float], bool]:
-        async with ReachyMiniApi("fake") as api:
-            await asyncio.sleep(0.15)
-            return _tracking_weights(api), api.faces.value.active
-
-    weights, active = asyncio.run(run())
-    assert weights == [1.0]
-    assert active is True  # detection runs on tracking's arming
 
 
 def test_set_face_detection_off_without_tracking_stops_the_loop(

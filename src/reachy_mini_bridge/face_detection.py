@@ -15,7 +15,7 @@ import asyncio
 import logging
 import time
 from contextlib import suppress
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Protocol
 
 from . import robot as _robot
@@ -82,6 +82,9 @@ class FaceReport:
     ts: float  # when the observation was made (the source's monotonic clock)
     source: str  # "daemon" | "custom"
     active: bool  # a detector is running; False means "unknown", not "nobody"
+    # The head pose the frame was captured from, when the source knows it (a custom
+    # detector's frame); None from the daemon, whose report says only when it detected.
+    head_pose: npt.NDArray[np.float64] | None = field(default=None, compare=False)
 
     @classmethod
     def inactive(cls, source: str) -> FaceReport:
@@ -142,8 +145,10 @@ class FaceDetection:
     """The detection loop (specs/user_perception.md "The detection loop"): one asyncio
     task polling the source and publishing on ``faces``, restartable.
 
-    ``on_observation`` receives every poll's report, undebounced (the attention loop's
-    feed). Only the ``daemon`` source exists yet; ``custom`` fails :meth:`start`.
+    ``on_observation`` receives every poll's report, undebounced (the head tracker's
+    feed). In ``daemon`` mode the loop arms the daemon's detector at
+    ``DAEMON_DETECT_WEIGHT`` when it starts and disarms it when it stops. Only the
+    ``daemon`` source exists yet; ``custom`` fails :meth:`start`.
     """
 
     def __init__(
@@ -152,13 +157,11 @@ class FaceDetection:
         *,
         source: str,
         faces: Observable[FaceReport],
-        owns_daemon_arming: bool,
         on_observation: Callable[[FaceReport], None] | None = None,
     ) -> None:
         self._robot = robot
         self._source = source
         self._faces = faces
-        self._owns_arming = owns_daemon_arming
         self._on_observation = on_observation
         self._task: asyncio.Task[None] | None = None
         # Whether this loop sent the daemon its detect weight (and so owes the disarm).
@@ -170,7 +173,7 @@ class FaceDetection:
         return self._task is not None and not self._task.done()
 
     async def start(self) -> None:
-        """Arm the daemon's detector (when this loop owns the arming) and start polling.
+        """Arm the daemon's detector and start polling.
 
         Raises ``ValueError`` for a source this loop cannot run.
         """
@@ -180,8 +183,7 @@ class FaceDetection:
             raise ValueError(
                 f"the {self._source} detection source is not available yet"
             )
-        if self._owns_arming:
-            await self._arm()
+        await self._arm()
         self._task = asyncio.create_task(self._run(), name="face-detection")
 
     async def stop(self) -> None:
@@ -198,29 +200,6 @@ class FaceDetection:
             await asyncio.to_thread(self._robot.stop_head_tracking)
         if task is not None or self._faces.value.active:
             self._faces.set(FaceReport.inactive(self._source))
-
-    async def set_owns_daemon_arming(self, owns: bool) -> None:
-        """Hand the daemon's tracking weight to this loop (``True``) or away from it
-        (``False``). **Transitional** — deleted by the next plan, when the bridge's own
-        tracker replaces the daemon's steering.
-
-        Until then two parties send ``start_head_tracking`` to the daemon: the
-        attention loop, with its own weights while tracking is on (the caller's weight,
-        then ``0`` and the watching weight on a hand-back), and this loop, which only
-        needs the daemon's detector running and would arm it at
-        ``DAEMON_DETECT_WEIGHT``. The last weight sent wins, so they must never both
-        talk to the daemon — ``ε`` would undo the attention loop's full weight, and the
-        attention loop's ``0`` would pause the detector this loop relies on. This switch
-        says who owns that call: ``True`` — nobody is tracking, this loop arms the
-        daemon at ``ε`` (at once when running) and disarms it when it stops;
-        ``False`` — the attention loop owns the daemon's weight, and this loop only
-        polls the face target that arming keeps alive.
-        """
-        self._owns_arming = owns
-        if not owns:
-            self._armed = False  # the attention loop's weight replaces ours
-        elif self.running:
-            await self._arm()
 
     async def _arm(self) -> None:
         self._armed = True  # set first: a cancelled arm still completes in its thread

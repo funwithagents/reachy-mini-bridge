@@ -1,16 +1,15 @@
 """Fast-tier tests for `reachy_mini_bridge.sim_daemon` (specs/sim_daemon.md).
 
-Daemon-free, camera-free and offline. The tracking corrections are exercised in closed
-loop on the real upstream `MujocoBackend` (physics, IK/FK, `step_head_tracking`), with the
-face tracker replaced by a stand-in whose observations are the true pixel of the test
-scene's face, projected through the MuJoCo eye camera — no render, no detector, no
-network. Tests that need `mujoco` skip where the sim extra is absent.
+Daemon-free, camera-free and offline. The correction is exercised on the real upstream
+`MujocoBackend`, with the face tracker's detector replaced by a stand-in queueing one
+observation — no render, no detector, no network. Tests that need `mujoco` skip where the
+sim extra is absent. The head's convergence on a face is the bridge tracker's, pinned in
+tests/test_head_tracking.py.
 """
 
 from __future__ import annotations
 
 import logging
-import math
 import sys
 import threading
 import time
@@ -24,18 +23,17 @@ import numpy as np
 import pytest
 
 from reachy_mini_bridge import sim_daemon
+from reachy_mini_bridge.face_detection import DAEMON_DETECT_WEIGHT
+from reachy_mini_bridge.head_tracking import pinhole_intrinsics
 from reachy_mini_bridge.sim_daemon import (
     SimDaemonExtension,
     ViewerOverlay,
     WebcamRelay,
     corrected_backend,
-    cropped_hfov_deg,
     overlay_rect,
-    pinhole_intrinsics,
     relay_pipeline_candidates,
     relay_pipeline_description,
     resample_nearest,
-    sim_hfov_deg,
     webcam_source,
 )
 
@@ -46,63 +44,18 @@ FRAME = (320, 180)  # the face tracker's downscaled frame
 def restore_upstream_globals(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """The launcher patches process globals (in the daemon, that is the point); undo
     them after each test."""
-    monkeypatch.setattr(sim_daemon._TrackerCamera, "hfov_deg", None)
     try:
         from reachy_mini.daemon import daemon as upstream_daemon
         from reachy_mini.daemon.app import main as upstream_main
-        from reachy_mini.vision import face_tracking
     except ImportError:
         yield
         return
     monkeypatch.setattr(upstream_daemon, "MujocoBackend", upstream_daemon.MujocoBackend)
     monkeypatch.setattr(upstream_main, "create_app", upstream_main.create_app)
-    monkeypatch.setattr(
-        face_tracking, "intrinsics_for_size", face_tracking.intrinsics_for_size
-    )
     yield
 
 
-# --- intrinsics -------------------------------------------------------------------------
-
-
-def test_pinhole_intrinsics_and_the_sim_eye_camera_field_of_view() -> None:
-    # MuJoCo's fovy is vertical: 80° at 16:9 is ~112° horizontally, and both give the
-    # same focal length in pixels (square pixels).
-    hfov = sim_hfov_deg(80.0, 1280, 720)
-    assert hfov == pytest.approx(112.3, abs=0.1)
-    K = pinhole_intrinsics(hfov, FRAME)
-    f_vertical = (FRAME[1] / 2) / math.tan(math.radians(40.0))
-    np.testing.assert_allclose(
-        K, [[f_vertical, 0, 160], [0, f_vertical, 90], [0, 0, 1]], rtol=1e-9
-    )
-    assert pinhole_intrinsics(hfov, (1280, 720))[0, 0] == pytest.approx(429.0, abs=0.1)
-
-
-def test_the_tracker_gets_the_eye_camera_intrinsics_and_nothing_else_changes(
-    scene_name: str,
-) -> None:
-    """Installed, the face tracker's `intrinsics_for_size` is the pinhole of the scene's
-    eye camera at any frame size; upstream's function is left alone for everyone else
-    (and is the mis-scaled matrix this corrects)."""
-    from reachy_mini.daemon.backend.mujoco.backend import MujocoBackend
-    from reachy_mini.media import camera_utils
-    from reachy_mini.media.camera_constants import MujocoCameraSpecs
-    from reachy_mini.vision import face_tracking
-
-    sim_daemon.install_tracker_intrinsics()
-    corrected_backend(MujocoBackend)(scene=scene_name, headless=True, use_audio=False)
-    K = MujocoCameraSpecs.K
-    hfov = sim_hfov_deg(80.0, 1280, 720)
-    for size in (FRAME, (1280, 720)):
-        np.testing.assert_allclose(
-            face_tracking.intrinsics_for_size(K, 1.0, size),
-            pinhole_intrinsics(hfov, size),
-        )
-    upstream = camera_utils.intrinsics_for_size(K, 1.0, FRAME)
-    assert upstream[0, 2] == pytest.approx(53.33, abs=0.01)  # the bug: cx far off 160
-
-
-# --- closed-loop tracking in the sim ------------------------------------------------------
+# --- the correction: tracking stepped each control tick ----------------------------------
 
 
 @pytest.fixture
@@ -122,204 +75,43 @@ def scene_name(tmp_path: Path, mujoco: Any) -> str:
     return upstream_scene_name(path)
 
 
-class _Loop:
-    """The MuJoCo daemon's control tick, driven by hand: 10 physics steps, the kinematics
-    update (which the corrected backend follows with a tracking step), then IK."""
-
-    def __init__(self, mujoco: Any, backend: Any, observe: Callable[[], Any]) -> None:
-        self.mujoco = mujoco
-        self.b = backend
-        m, d = backend.model, backend.data
-        # settle at neutral with collisions on, as upstream's run() does before its loop
-        for i in backend.col_inds:
-            m.geom_contype[i] = 1
-            m.geom_conaffinity[i] = 1
-        joints = backend.head_kinematics.ik(np.eye(4), no_iterations=20)
-        d.qpos[backend.joint_qpos_addr[:7]] = np.asarray(joints).reshape(-1, 1)
-        d.ctrl[:7] = joints
-        mujoco.mj_forward(m, d)
-        for _ in range(300):
-            mujoco.mj_step(m, d)
-        backend.head_kinematics.fk(
-            backend.get_present_head_joint_positions(), no_iterations=20
-        )
-        backend.target_head_pose = np.eye(4)
-        backend.target_body_yaw = 0.0
-        backend.ik_required = True
-        backend._tracking_enabled = True
-        backend._tracking_requested_weight = 1.0
-        ticks = iter(range(10**9))
-        # a detector delivers an observation every other 50 Hz tick (25 fps)
-        backend._tracker = SimpleNamespace(
-            latest=lambda: observe() if next(ticks) % 2 == 0 else None
-        )
-        self.cam = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_CAMERA, "eye_camera")
-        self.face = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "face")
-
-    def run(self, seconds: float) -> list[float]:
-        """Tick for ``seconds`` of sim time; the head yaw (degrees) after each tick."""
-        b, d = self.b, self.b.data
-        yaws: list[float] = []
-        for _ in range(int(seconds * 50)):
-            for _ in range(10):
-                self.mujoco.mj_step(b.model, d)
-            b.update_head_kinematics_model(
-                b.get_present_head_joint_positions(),
-                b.get_present_antenna_joint_positions(),
-            )
-            b.current_head_pose = b.get_mj_present_head_pose()
-            if b.ik_required:
-                try:
-                    b.update_target_head_joints_from_ik(
-                        b.target_head_pose, b.target_body_yaw
-                    )
-                except ValueError:
-                    pass  # upstream logs and keeps the last targets
-            if b.target_head_joint_positions is not None:
-                d.ctrl[:7] = b.target_head_joint_positions
-            pose = b.get_mj_present_head_pose()
-            yaws.append(math.degrees(math.atan2(pose[1, 0], pose[0, 0])))
-        return yaws
-
-    def face_pixel(self) -> tuple[float, float]:
-        """The face's centre as the rendered eye camera sees it, normalised to [-1, 1]
-        the way upstream's tracker reports it (MuJoCo cameras look along -z, y up)."""
-        d = self.b.data
-        R = d.cam_xmat[self.cam].reshape(3, 3)
-        p = R.T @ (d.xpos[self.face] - d.cam_xpos[self.cam])
-        w, h = FRAME
-        f = (h / 2) / math.tan(math.radians(40.0))
-        u = w / 2 + f * p[0] / -p[2]
-        v = h / 2 - f * p[1] / -p[2]
-        return (u / (w - 1) * 2 - 1, v / (h - 1) * 2 - 1)
-
-    def error_to_face_deg(self) -> float:
-        d = self.b.data
-        axis = -d.cam_xmat[self.cam].reshape(3, 3)[:, 2]
-        to_face = d.xpos[self.face] - d.cam_xpos[self.cam]
-        to_face /= np.linalg.norm(to_face)
-        return math.degrees(math.acos(float(np.clip(axis @ to_face, -1.0, 1.0))))
-
-
-def _observation(center: tuple[float, float], K: np.ndarray) -> Any:
-    return SimpleNamespace(
-        center=center,
-        roll=0.0,
-        width=FRAME[0],
-        height=FRAME[1],
-        camera_matrix=K,
-        distortion=np.zeros(5),
-        timestamp=time.monotonic(),
-    )
-
-
-def _place_face(backend: Any, mujoco: Any, pos: tuple[float, float, float]) -> None:
-    backend.data.mocap_pos[0] = pos
-    mujoco.mj_forward(backend.model, backend.data)
-
-
-@pytest.mark.parametrize("lateral", [0.0, 0.15, -0.15])
-def test_sim_tracking_converges_on_the_face(
-    mujoco: Any, scene_name: str, lateral: float
-) -> None:
-    """Correction 2: with the eye camera's true intrinsics the head turns until the camera
-    looks straight at the face — ahead, and 0.15 m to either side (~20° of yaw)."""
-    from reachy_mini.daemon.backend.mujoco.backend import MujocoBackend
-    from reachy_mini.media.camera_constants import MujocoCameraSpecs
-    from reachy_mini.vision import face_tracking
-
-    sim_daemon.install_tracker_intrinsics()
-    backend = corrected_backend(MujocoBackend)(
-        scene=scene_name, headless=True, use_audio=False
-    )
-    _place_face(backend, mujoco, (0.45, lateral, 0.20))
-    K = face_tracking.intrinsics_for_size(MujocoCameraSpecs.K, 1.0, FRAME)
-    holder: dict[str, _Loop] = {}
-    loop = _Loop(mujoco, backend, lambda: _observation(holder["loop"].face_pixel(), K))
-    holder["loop"] = loop
-    yaws = loop.run(4.0)
-
-    assert loop.error_to_face_deg() < 3.0
-    # the eye camera is on the head's forward axis: it looks at the face when the
-    # head's heading from its pivot (the world origin) does
-    expected_yaw = math.degrees(math.atan2(lateral, 0.45))
-    assert yaws[-1] == pytest.approx(expected_yaw, abs=1.5)
-    assert max(yaws[-50:]) - min(yaws[-50:]) < 1.0, "the head did not settle"
-
-
-def test_sim_tracking_with_upstream_intrinsics_ends_far_off_the_face(
-    mujoco: Any, scene_name: str
-) -> None:
-    """The bug correction 2 fixes, reproduced by the same loop: upstream's mis-scaled
-    matrix settles the head tens of degrees away from a face dead ahead."""
-    from reachy_mini.daemon.backend.mujoco.backend import MujocoBackend
-    from reachy_mini.media import camera_utils
-    from reachy_mini.media.camera_constants import MujocoCameraSpecs
-
-    backend = corrected_backend(MujocoBackend)(
-        scene=scene_name, headless=True, use_audio=False
-    )
-    K = camera_utils.intrinsics_for_size(MujocoCameraSpecs.K, 1.0, FRAME)
-    holder: dict[str, _Loop] = {}
-    loop = _Loop(mujoco, backend, lambda: _observation(holder["loop"].face_pixel(), K))
-    holder["loop"] = loop
-    loop.run(4.0)
-    assert loop.error_to_face_deg() > 30.0
-
-
-def test_a_fixed_webcam_neither_drifts_nor_runs_away(
-    mujoco: Any, scene_name: str
-) -> None:
-    """Correction 3: a webcam does not turn with the head, so a still person stays at the
-    same pixel. Aimed from the rest pose, the head settles at the angle that pixel implies
-    and holds; aimed through the present head pose (head-mounted geometry), each
-    observation adds the same offset again and the head runs past it."""
-    from reachy_mini.daemon.backend.mujoco.backend import MujocoBackend
-    from reachy_mini.vision.look_at import look_at_image_pose
-
-    center = (0.5, 0.0)
-    K = pinhole_intrinsics(70.0, FRAME)
-    u = (center[0] + 1) / 2 * (FRAME[0] - 1)
-    v = (center[1] + 1) / 2 * (FRAME[1] - 1)
-    aim = look_at_image_pose(u, v, K, np.zeros(5), np.eye(4))
-    expected_yaw = math.degrees(math.atan2(aim[1, 0], aim[0, 0]))
-    assert abs(expected_yaw) > 10.0
-
-    webcam = sim_daemon._Camera(source="webcam", hfov_deg=70.0)
-    fixed = corrected_backend(MujocoBackend, camera=webcam)(
-        scene=scene_name, headless=True, use_audio=False
-    )
-    yaws = _Loop(mujoco, fixed, lambda: _observation(center, K)).run(4.0)
-    assert yaws[-1] == pytest.approx(expected_yaw, abs=2.0)
-    assert max(yaws[-50:]) - min(yaws[-50:]) < 1.0, "the head drifts"
-
-    mounted = corrected_backend(MujocoBackend)(
-        scene=scene_name, headless=True, use_audio=False
-    )
-    yaws = _Loop(mujoco, mounted, lambda: _observation(center, K)).run(4.0)
-    assert abs(yaws[-1]) > abs(expected_yaw) + 15.0
-
-
 def test_a_control_tick_steps_head_tracking(mujoco: Any, scene_name: str) -> None:
-    """Correction 1: upstream's MuJoCo loop never steps daemon-side tracking; the corrected
-    backend steps it right after the kinematics update of each control tick. Observable:
-    the tracker's observation lands in `get_tracked_face()` after one such update."""
+    """The correction: upstream's MuJoCo loop never steps daemon-side tracking; the
+    corrected backend steps it right after the kinematics update of each control tick,
+    so an observation the detector queued becomes the backend's face target — what the
+    daemon publishes and the bridge's `daemon` detection source reads — within a tick,
+    at the negligible weight the bridge arms it at. Upstream's own loop leaves it
+    undetected."""
     from reachy_mini.daemon.backend.mujoco.backend import MujocoBackend
+    from reachy_mini.vision.face_tracking import FaceObservation
 
-    backend = corrected_backend(MujocoBackend)(
-        scene=scene_name, headless=True, use_audio=False
-    )
-    observations = [_observation((0.0, 0.0), pinhole_intrinsics(112.3, FRAME))]
-    backend._tracking_enabled = True
-    backend._tracking_requested_weight = 1.0
-    backend._tracker = SimpleNamespace(
-        latest=lambda: observations.pop() if observations else None
-    )
-    assert not backend.get_tracked_face().detected
-    backend.update_head_kinematics_model(np.zeros(7), np.zeros(2))
-    face = backend.get_tracked_face()
-    assert face.detected and face.x == 0.0 and face.y == 0.0
-    assert backend._tracking_target_pose is not None, "no aim latched from the face"
+    def backend_with_a_queued_face(backend_class: type) -> Any:
+        backend = backend_class(scene=scene_name, headless=True, use_audio=False)
+        observations = [
+            FaceObservation(
+                center=(0.25, -0.1),
+                roll=0.0,
+                width=FRAME[0],
+                height=FRAME[1],
+                camera_matrix=pinhole_intrinsics(112.3, FRAME),
+                distortion=np.zeros(5),
+                timestamp=time.monotonic(),
+            )
+        ]
+        backend._tracking_enabled = True
+        backend._tracking_requested_weight = DAEMON_DETECT_WEIGHT
+        backend._tracker = SimpleNamespace(
+            latest=lambda: observations.pop() if observations else None
+        )
+        assert not backend.get_tracked_face().detected
+        backend.update_head_kinematics_model(np.zeros(7), np.zeros(2))
+        return backend
+
+    face = backend_with_a_queued_face(
+        corrected_backend(MujocoBackend)
+    ).get_tracked_face()
+    assert face.detected and (face.x, face.y) == pytest.approx((0.25, -0.1))
+    assert not backend_with_a_queued_face(MujocoBackend).get_tracked_face().detected
 
 
 def test_on_backend_runs_once_the_model_exists(mujoco: Any, scene_name: str) -> None:
@@ -366,17 +158,11 @@ class _StubBackend:
         pass
 
 
-def test_webcam_mode_relays_instead_of_rendering_and_aims_from_rest() -> None:
+def test_webcam_mode_relays_instead_of_rendering() -> None:
     events: list[str] = []
 
     class _Relay:
-        def __init__(
-            self,
-            device: Any,
-            *,
-            on_source_size: Callable[[tuple[int, int]], None],
-            overlay: Any = None,
-        ) -> None:
+        def __init__(self, device: Any, *, overlay: Any = None) -> None:
             events.append(f"relay {device!r}")
 
         def start(self) -> None:
@@ -387,57 +173,12 @@ def test_webcam_mode_relays_instead_of_rendering_and_aims_from_rest() -> None:
 
     webcam = sim_daemon._Camera(source="webcam", device=2, hfov_deg=65.0)
     backend = corrected_backend(_StubBackend, camera=webcam, relay_factory=_Relay)()
-    assert sim_daemon._TrackerCamera.hfov_deg == 65.0
     assert backend.rendering_loop("eye_camera", 5005) is None
     backend.run()
     assert backend.ran and events == ["relay 2", "start", "stop"]
+    # the daemon's aim is upstream's: the head pose it reads is the real one
     backend.set_tracking_face((0.0, 0.0), 0.0, 320, 180, np.eye(3), np.zeros(5), 0.0)
-    np.testing.assert_array_equal(backend.seen_in_aim, np.eye(4))
-    assert backend.get_current_head_pose()[0, 3] == 0.5  # every other reader: real pose
-
-
-def test_the_tracker_follows_the_camera_the_relay_negotiated() -> None:
-    """End to end: the relay reports the resolution its camera negotiated, and the matrix
-    the tracker resolves becomes the pinhole of what the crop leaves of that camera."""
-    from reachy_mini.vision import face_tracking
-
-    reports: list[Callable[[tuple[int, int]], None]] = []
-
-    class _Relay:
-        def __init__(
-            self,
-            device: Any,
-            *,
-            on_source_size: Callable[[tuple[int, int]], None],
-            overlay: Any = None,
-        ) -> None:
-            reports.append(on_source_size)
-
-        def start(self) -> None:
-            pass
-
-        def stop(self) -> None:
-            pass
-
-    sim_daemon.install_tracker_intrinsics()
-    webcam = sim_daemon._Camera(source="webcam", device=None, hfov_deg=100.0)
-    backend = corrected_backend(_StubBackend, camera=webcam, relay_factory=_Relay)()
-    K = np.eye(3)  # upstream's specs matrix: unused, the pinhole replaces it
-    # Before any frame, the configured field of view stands.
-    np.testing.assert_allclose(
-        face_tracking.intrinsics_for_size(K, 1.0, FRAME),
-        pinhole_intrinsics(100.0, FRAME),
-    )
-    backend.run()
-    assert len(reports) == 1
-    reports[0]((2560, 1080))  # an ultrawide camera: the crop takes width off it
-    np.testing.assert_allclose(
-        face_tracking.intrinsics_for_size(K, 1.0, FRAME),
-        pinhole_intrinsics(cropped_hfov_deg(100.0, (2560, 1080)), FRAME),
-    )
-    assert sim_daemon._TrackerCamera.hfov_deg == pytest.approx(
-        cropped_hfov_deg(100.0, (2560, 1080))
-    )
+    assert backend.seen_in_aim[0, 3] == 0.5
 
 
 def test_webcam_source_per_platform() -> None:
@@ -495,24 +236,6 @@ def test_the_relay_asks_for_the_streams_size_before_settling_for_a_crop() -> Non
     )
 
 
-def test_cropped_hfov_follows_the_width_the_crop_keeps() -> None:
-    """The crop takes nothing off the width of a camera at or narrower than 16:9 — its
-    field of view is the one configured — and narrows a wider one to what it keeps."""
-    for source in ((1280, 720), (1920, 1080), (640, 480), (3840, 2592), (1080, 1920)):
-        assert cropped_hfov_deg(70.0, source) == pytest.approx(70.0)
-
-    ultrawide = cropped_hfov_deg(100.0, (2560, 1080))  # 21:9, wider than the frame
-    kept = (16 / 9) / (2560 / 1080)
-    expected = math.degrees(2 * math.atan(math.tan(math.radians(50.0)) * kept))
-    assert ultrawide == pytest.approx(expected) and ultrawide < 100.0
-    # and the pinhole that follows is longer-focus by exactly what the crop took
-    K = pinhole_intrinsics(ultrawide, FRAME)
-    assert K[0, 0] == pytest.approx(
-        (FRAME[0] / 2) / (kept * math.tan(math.radians(50.0)))
-    )
-    assert K[0, 0] == pytest.approx(pinhole_intrinsics(100.0, FRAME)[0, 0] / kept)
-
-
 class _FakePipeline:
     def __init__(
         self,
@@ -552,19 +275,17 @@ def _wait(predicate: Callable[[], bool], timeout: float = 5.0) -> bool:
     return False
 
 
-def test_the_relay_reports_its_camera_resolution_once_frames_flow(
+def test_the_relay_names_its_camera_and_resolution_once_frames_flow(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """The size goes out with the first frame of a run, once — and a pipeline that cannot
-    report one leaves the configured field of view standing rather than guessing. Either
-    way the camera that is actually feeding the stream is named in the log: which one the
-    platform default turned out to be is not otherwise visible."""
-    sizes: list[tuple[int, int]] = []
+    """The camera that is actually feeding the stream is named in the log with the
+    resolution it negotiated, once per run — which one the platform default turned out
+    to be is not otherwise visible — and a pipeline that cannot report a size is still
+    named."""
 
     def relay_for(size: tuple[int, int] | None) -> WebcamRelay:
         return WebcamRelay(
             None,
-            on_source_size=sizes.append,
             frame_timeout=5.0,
             retry=0.05,
             open_pipeline=lambda description, on_frame, on_overlay_frame=None: (
@@ -577,11 +298,11 @@ def test_the_relay_reports_its_camera_resolution_once_frames_flow(
         relay = relay_for((3840, 2592))
         relay.start()
         try:
-            assert _wait(lambda: sizes == [(3840, 2592)])
+            assert _wait(lambda: "Fake Camera open at 3840x2592" in caplog.text)
+            time.sleep(0.3)  # more frames flow
         finally:
             relay.stop()
-        assert sizes == [(3840, 2592)]  # one report for the run, not one per frame
-        assert "Fake Camera open at 3840x2592" in caplog.text
+        assert caplog.text.count("Fake Camera open") == 1  # once for the run
 
         silent = relay_for(None)
         silent.start()
@@ -589,15 +310,15 @@ def test_the_relay_reports_its_camera_resolution_once_frames_flow(
             assert _wait(lambda: caplog.text.count("Fake Camera open") >= 2)
         finally:
             silent.stop()
-    assert sizes == [(3840, 2592)]  # no size: the configured field of view stands
 
 
-def test_the_relay_falls_back_when_the_camera_lacks_the_streams_size() -> None:
+def test_the_relay_falls_back_when_the_camera_lacks_the_streams_size(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """The camera that cannot give 1280x720 (the Reachy Mini's own sensor is one) fails
     the preferred pipeline — that is what the fallback is for, so it is not an error the
     person running the sim should see, and the fallback's frames flow."""
     tried: list[str] = []
-    sizes: list[tuple[int, int]] = []
 
     def open_pipeline(
         description: str,
@@ -611,16 +332,18 @@ def test_the_relay_falls_back_when_the_camera_lacks_the_streams_size() -> None:
 
     relay = WebcamRelay(
         None,
-        on_source_size=sizes.append,
         frame_timeout=5.0,
         retry=0.05,
         open_pipeline=open_pipeline,
         system="Linux",
     )
-    with caplog_errors() as errors:
+    with (
+        caplog.at_level(logging.INFO, logger="reachy_mini_bridge.sim_daemon"),
+        caplog_errors() as errors,
+    ):
         relay.start()
         try:
-            assert _wait(lambda: sizes == [(3840, 2592)])
+            assert _wait(lambda: "open at 3840x2592" in caplog.text)
         finally:
             relay.stop()
     assert len(tried) == 2 and "width=1280,height=720" in tried[0]
@@ -977,13 +700,7 @@ def test_webcam_mode_with_the_overlay_hands_it_to_the_relay() -> None:
     events: list[str] = []
 
     class _Relay:
-        def __init__(
-            self,
-            device: Any,
-            *,
-            on_source_size: Callable[[tuple[int, int]], None],
-            overlay: Any = None,
-        ) -> None:
+        def __init__(self, device: Any, *, overlay: Any = None) -> None:
             relays.append(overlay)
 
         def start(self) -> None:
@@ -1085,6 +802,7 @@ def test_run_sim_daemon_rewrites_argv_and_installs_the_corrections(
     fastapi = pytest.importorskip("fastapi")
     from reachy_mini.daemon import daemon as upstream_daemon
     from reachy_mini.daemon.app import main as upstream_main
+    from reachy_mini.media import camera_utils
     from reachy_mini.vision import face_tracking
 
     original_backend = upstream_daemon.MujocoBackend
@@ -1115,7 +833,8 @@ def test_run_sim_daemon_rewrites_argv_and_installs_the_corrections(
     ]
     assert issubclass(upstream_daemon.MujocoBackend, original_backend)
     assert upstream_daemon.MujocoBackend is not original_backend
-    assert face_tracking.intrinsics_for_size is sim_daemon._tracker_intrinsics
+    # the daemon's aim is left as upstream has it: the bridge's tracker aims the head
+    assert face_tracking.intrinsics_for_size is camera_utils.intrinsics_for_size
     upstream_args: Any = SimpleNamespace()
     app = upstream_main.create_app(upstream_args, None)
     assert apps == [app] and app.title == "upstream"

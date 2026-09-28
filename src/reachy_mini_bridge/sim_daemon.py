@@ -2,25 +2,22 @@
 
 ``python -m reachy_mini_bridge.sim_daemon [--scene NAME] [--headless]
 [--[no-]preload-datasets] [--camera sim|webcam] [--webcam-device D] [--webcam-hfov DEG]
-[--sim-display NAME]... [upstream flags...]`` runs upstream's daemon with three corrections
-that make daemon-side face tracking work in the sim, a choice of camera source, and the
-viewer displays:
+[--sim-display NAME]... [upstream flags...]`` runs upstream's daemon with the one
+correction that makes its face detection work in the sim, a choice of camera source, and
+the viewer displays.
 
-1. **Tracking is stepped** on every control tick — upstream's MuJoCo loop never calls
-   ``step_head_tracking()`` (only the real-robot loop does), so the head never follows.
-2. **The tracker's intrinsics** are an ideal pinhole of the active camera. Upstream's
-   ``intrinsics_for_size`` rescales ``MujocoCameraSpecs.K`` (a 1280x720 matrix) as if it
-   were calibrated on the robot's 3840x2592 sensor, which puts the principal point near
-   the frame's top-left corner and the head ~45° off the face.
-3. **A webcam is a fixed camera**: with ``--camera webcam`` the aim is computed from the
-   neutral head pose, not the present one, so a camera that does not turn with the head
-   does not feed the head's own motion back into the aim.
+**Tracking is stepped** on every control tick — upstream's MuJoCo loop never calls
+``step_head_tracking()`` (only the real-robot loop does), so the daemon never publishes
+the faces its detector sees. The bridge reads those faces and aims the head with its own
+tracker (specs/head_tracking.md), so the daemon's aim — computed with mis-scaled
+intrinsics in the sim, and head-mounted geometry for a webcam — is left as upstream has
+it: the bridge arms it at a negligible weight.
 
 ``--camera webcam`` relays a host camera into the stream the MuJoCo daemon's media server
-reads (RTP raw video on UDP 5005) instead of the eye-camera render, so the tracker and
+reads (RTP raw video on UDP 5005) instead of the eye-camera render, so the detector and
 every client see the person in front of the computer. The capture pipeline constrains
 nothing about the source — a camera offers the modes it has — and centre-crops whatever it
-negotiates into the stream's 1280x720; the tracker's field of view follows the crop.
+negotiates into the stream's 1280x720.
 
 ``--sim-display camera_overlay`` draws the camera stream — the webcam, or the rendered eye
 camera — as a picture in the top-right corner of the MuJoCo viewer window, through the
@@ -59,26 +56,21 @@ __all__ = [
     "ViewerOverlay",
     "WebcamRelay",
     "corrected_backend",
-    "cropped_hfov_deg",
-    "install_tracker_intrinsics",
     "overlay_rect",
-    "pinhole_intrinsics",
     "relay_pipeline_candidates",
     "resample_nearest",
     "run_sim_daemon",
-    "sim_hfov_deg",
     "webcam_source",
 ]
 
 _logger = logging.getLogger(__name__)
 
-# The MJCF camera the MuJoCo daemon renders (upstream's CAMERA_REACHY) and the stream it
-# renders into: upstream's render thread sends 1280x720 RGB as RTP raw video to this port,
-# and the media server's sim source reads it (GStreamerUDPCamera / _build_sim_source).
-EYE_CAMERA = "eye_camera"
 # The capture pipeline's source element, named so the relay can read back which of its own
 # modes the camera negotiated.
 _SOURCE_NAME = "camera"
+# The stream the MuJoCo daemon renders its eye camera into: upstream's render thread sends
+# 1280x720 RGB as RTP raw video to this port, and the media server's sim source reads it
+# (GStreamerUDPCamera / _build_sim_source).
 STREAM_SIZE = (1280, 720)
 STREAM_PORT = 5005
 _STREAM_FPS = 25
@@ -104,71 +96,6 @@ _OVERLAY_MIN_SIDE = 32
 _OVERLAY_BORDER_PX = 2
 _OVERLAY_BORDER_VALUE = 230
 _OVERLAY_SINK_NAME = "overlay"
-
-
-# --- intrinsics (correction 2) ----------------------------------------------------------
-
-
-def pinhole_intrinsics(hfov_deg: float, size: tuple[int, int]) -> np.ndarray:
-    """The camera matrix of an ideal pinhole with horizontal field of view ``hfov_deg``
-    at ``size`` = (width, height): square pixels, principal point at the frame centre."""
-    width, height = size
-    f = (width / 2.0) / math.tan(math.radians(hfov_deg) / 2.0)
-    return np.array([[f, 0.0, width / 2.0], [0.0, f, height / 2.0], [0.0, 0.0, 1.0]])
-
-
-def sim_hfov_deg(fovy_deg: float, width: int, height: int) -> float:
-    """The horizontal field of view of a MuJoCo camera (``fovy`` is vertical) rendered at
-    ``width`` x ``height`` with square pixels."""
-    half = math.atan(math.tan(math.radians(fovy_deg) / 2.0) * width / height)
-    return math.degrees(2.0 * half)
-
-
-def cropped_hfov_deg(
-    hfov_deg: float,
-    source_size: tuple[int, int],
-    frame_size: tuple[int, int] = STREAM_SIZE,
-) -> float:
-    """The horizontal field of view of the frame a camera of ``source_size`` fills once it
-    is centre-cropped to ``frame_size``'s aspect.
-
-    The crop keeps the fraction ``min(1, frame_aspect / source_aspect)`` of the source's
-    width: all of it for every camera at or narrower than the frame (16:9, 3:2, 4:3, the
-    3840x2592 sensors), so only a wider one sees its field of view narrowed.
-    """
-    source_width, source_height = source_size
-    frame_width, frame_height = frame_size
-    kept = min(1.0, (frame_width * source_height) / (frame_height * source_width))
-    return math.degrees(2.0 * math.atan(math.tan(math.radians(hfov_deg) / 2.0) * kept))
-
-
-class _TrackerCamera:
-    """The active camera's horizontal field of view, as the tracker's intrinsics read it.
-
-    Set by the launcher (``webcam``) or by the backend once its model exists (``sim``);
-    read when the tracker thread computes its matrix — after both.
-    """
-
-    hfov_deg: float | None = None
-
-
-def _tracker_intrinsics(
-    K: np.ndarray, crop_scale: float, target_size: tuple[int, int]
-) -> np.ndarray:
-    hfov = _TrackerCamera.hfov_deg
-    if hfov is None:  # not launched through this module: leave upstream's behaviour
-        from reachy_mini.media import camera_utils
-
-        return camera_utils.intrinsics_for_size(K, crop_scale, target_size)
-    return pinhole_intrinsics(hfov, (int(target_size[0]), int(target_size[1])))
-
-
-def install_tracker_intrinsics() -> None:
-    """Replace the ``intrinsics_for_size`` the face tracker resolves (and only that one:
-    ``reachy_mini.media.camera_utils`` and every other caller keep upstream's)."""
-    from reachy_mini.vision import face_tracking
-
-    face_tracking.intrinsics_for_size = _tracker_intrinsics  # type: ignore[assignment]
 
 
 # --- the webcam relay (camera source "webcam") ------------------------------------------
@@ -440,16 +367,15 @@ class WebcamRelay:
     permission hint) and retried every ``retry`` seconds; a recovery is logged at
     ``INFO``. The daemon never stops on a camera problem.
 
-    ``on_source_size`` is called with the resolution the camera negotiated, once frames are
-    flowing — what the crop, and so the tracker's field of view, follows. With an
-    ``overlay``, the pipeline grows its overlay branch, whose frames go to
-    ``overlay.show``, and the camera's name and size become the overlay's label."""
+    Once frames flow, the camera feeding the stream is named in the log with the
+    resolution it negotiated. With an ``overlay``, the pipeline grows its overlay branch,
+    whose frames go to ``overlay.show``, and the camera's name and size become the
+    overlay's label."""
 
     def __init__(
         self,
         device: str | int | None = None,
         *,
-        on_source_size: Callable[[tuple[int, int]], None] | None = None,
         overlay: _Overlay | None = None,
         frame_timeout: float = _FRAME_TIMEOUT_S,
         retry: float = _RETRY_S,
@@ -458,7 +384,6 @@ class WebcamRelay:
         system: str | None = None,
     ) -> None:
         self._device = device
-        self._on_source_size = on_source_size
         self._overlay = overlay
         self._system = platform.system() if system is None else system
         # Built here so a device this platform cannot express is an error up front.
@@ -544,8 +469,9 @@ class WebcamRelay:
             pipeline.stop()
 
     def _report_camera(self, pipeline: _Pipeline) -> None:
-        """Name the camera that is actually feeding the stream, and hand its resolution
-        to whoever needs it (the tracker's field of view)."""
+        """Name the camera that is actually feeding the stream, and the resolution it
+        negotiated — which one the platform default turned out to be is not otherwise
+        visible."""
         size = pipeline.source_size()
         name = pipeline.device_name()
         camera = name or (
@@ -560,10 +486,6 @@ class WebcamRelay:
             self._overlay.label(
                 f"webcam: {camera}" + ("" if size is None else f" {size[0]}x{size[1]}")
             )
-        if size is None:  # frames without readable caps: the configured hfov stands
-            return
-        if self._on_source_size is not None:
-            self._on_source_size(size)
 
     def _report(self, problem: str) -> None:
         if self._failing:
@@ -852,7 +774,7 @@ def _capture_viewer(overlay: _Overlay, viewer_module: Any | None) -> Iterator[No
         module.launch_passive = original
 
 
-# --- the backend subclass (corrections 1 and 3, camera source wiring) --------------------
+# --- the backend subclass (the correction, camera source wiring) --------------------
 
 
 @dataclass(frozen=True)
@@ -869,11 +791,7 @@ class _RelayFactory(Protocol):
     """How ``corrected_backend`` builds the webcam relay (tests substitute their own)."""
 
     def __call__(
-        self,
-        device: str | int | None,
-        *,
-        on_source_size: Callable[[tuple[int, int]], None],
-        overlay: _Overlay | None = None,
+        self, device: str | int | None, *, overlay: _Overlay | None = None
     ) -> Any: ...
 
 
@@ -901,17 +819,14 @@ def corrected_backend(
     overlay_factory: Callable[[], _Overlay] = ViewerOverlay,
     viewer_module: Any | None = None,
 ) -> type:
-    """A subclass of upstream's ``MujocoBackend`` carrying the corrections.
+    """A subclass of upstream's ``MujocoBackend`` carrying the correction.
 
     - ``update_head_kinematics_model`` — which the MuJoCo loop calls once per control
-      tick, where the robot loop calls it — steps tracking right after it (correction 1).
-    - ``__init__`` records the camera's field of view for the tracker's intrinsics
-      (correction 2): the scene's eye camera for ``sim``, the configured one for
-      ``webcam``; then runs each extension's ``on_backend``.
-    - With a ``webcam`` camera: ``set_tracking_face`` computes the aim from the neutral
-      head pose (correction 3) — every other reader of the head pose sees the real one;
-      the eye-camera render thread does nothing; the webcam relay runs with the loop and
-      narrows the tracker's field of view to what the crop of its camera leaves.
+      tick, where the robot loop calls it — steps tracking right after it, so the daemon
+      publishes the faces its detector sees.
+    - ``__init__`` runs each extension's ``on_backend`` once the model exists.
+    - With a ``webcam`` camera: the eye-camera render thread does nothing, and the webcam
+      relay runs with the loop.
     - With ``displays.camera_overlay``: a ``ViewerOverlay`` (from ``overlay_factory``)
       is fed by the relay's overlay branch (webcam) or a tap on the eye-camera renderer
       (sim); ``run()`` hands it the viewer upstream launches (``viewer_module``, the
@@ -921,38 +836,12 @@ def corrected_backend(
     displays = _Displays() if displays is None else displays
     webcam = camera.source == "webcam"
 
-    def use_camera_size(size: tuple[int, int]) -> None:
-        """The relay negotiated a camera: the frame the tracker reads is that camera
-        centre-cropped, so its field of view is the configured one minus what the crop
-        takes (nothing, for a camera at or narrower than the stream's aspect)."""
-        hfov = cropped_hfov_deg(camera.hfov_deg, size)
-        _TrackerCamera.hfov_deg = hfov
-        _logger.info(
-            "webcam relay: camera %dx%d cropped to %dx%d — %.1f deg of its %.1f deg "
-            "horizontal field of view",
-            *size,
-            *STREAM_SIZE,
-            hfov,
-            camera.hfov_deg,
-        )
-
     class CorrectedMujocoBackend(backend_class):  # type: ignore[misc, valid-type]
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             super().__init__(*args, **kwargs)
-            self._aim_from_rest = threading.local()
             self._viewer_overlay: _Overlay | None = (
                 overlay_factory() if displays.camera_overlay else None
             )
-            if webcam:
-                _TrackerCamera.hfov_deg = camera.hfov_deg
-            else:
-                mujoco: Any = importlib.import_module("mujoco")
-                cam_id = mujoco.mj_name2id(
-                    self.model, mujoco.mjtObj.mjOBJ_CAMERA, EYE_CAMERA
-                )
-                _TrackerCamera.hfov_deg = sim_hfov_deg(
-                    float(self.model.cam_fovy[cam_id]), *STREAM_SIZE
-                )
             for extension in extensions:
                 if extension.on_backend is not None:
                     extension.on_backend(self)
@@ -962,18 +851,6 @@ def corrected_backend(
             self.step_head_tracking()
 
         if webcam:
-
-            def set_tracking_face(self, *args: Any, **kwargs: Any) -> None:
-                self._aim_from_rest.active = True
-                try:
-                    super().set_tracking_face(*args, **kwargs)
-                finally:
-                    self._aim_from_rest.active = False
-
-            def get_current_head_pose(self) -> Any:
-                if getattr(self._aim_from_rest, "active", False):
-                    return np.array(self.INIT_HEAD_POSE, dtype=np.float64)
-                return super().get_current_head_pose()
 
             def rendering_loop(self, *args: Any, **kwargs: Any) -> None:
                 return None  # the webcam relay feeds the camera stream
@@ -990,13 +867,7 @@ def corrected_backend(
 
         def run(self) -> None:
             overlay = self._viewer_overlay
-            relay = (
-                relay_factory(
-                    camera.device, on_source_size=use_camera_size, overlay=overlay
-                )
-                if webcam
-                else None
-            )
+            relay = relay_factory(camera.device, overlay=overlay) if webcam else None
             if relay is not None:
                 relay.start()
             try:
@@ -1037,8 +908,8 @@ def _hfov(value: str) -> float:
 def _parser(prog: str) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=prog,
-        description="Run the Reachy Mini MuJoCo daemon with the bridge's face-tracking "
-        "corrections and camera source (specs/sim_daemon.md). Unrecognised flags go to "
+        description="Run the Reachy Mini MuJoCo daemon with the bridge's face-detection "
+        "correction and camera source (specs/sim_daemon.md). Unrecognised flags go to "
         "upstream's daemon.",
     )
     parser.add_argument("--scene", help="an upstream scene name (empty, minimal)")
@@ -1085,12 +956,12 @@ def run_sim_daemon(
     extensions: Sequence[SimDaemonExtension] = (),
     prog: str = "python -m reachy_mini_bridge.sim_daemon",
 ) -> None:
-    """Run upstream's MuJoCo daemon with the corrections and ``extensions`` installed.
+    """Run upstream's MuJoCo daemon with the correction and ``extensions`` installed.
 
     Upstream's ``main()`` parses ``sys.argv``; this rewrites it to ``--sim [--scene S]
     [--headless] --[no-]preload-datasets`` plus anything unrecognised, substitutes the
     backend class the daemon constructs, wraps ``create_app`` for the extensions'
-    ``on_app``, installs the tracker's intrinsics, and calls ``main()``.
+    ``on_app``, and calls ``main()``.
     """
     parser = _parser(prog)
     args, passthrough = parser.parse_known_args(argv)
@@ -1135,7 +1006,6 @@ def run_sim_daemon(
         return app
 
     upstream_main.create_app = create_app
-    install_tracker_intrinsics()
     sys.argv = [
         "reachy-mini-daemon",
         "--sim",

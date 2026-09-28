@@ -21,6 +21,7 @@ import numpy as np
 import pytest
 import websockets.exceptions
 from reachy_mini.motion.move import Move
+from scipy.spatial.transform import Rotation
 
 from reachy_mini_bridge.errors import BridgeError
 from reachy_mini_bridge.fake_reachy_mini import FakeReachyMini
@@ -33,7 +34,9 @@ from reachy_mini_bridge.motion import (
     BREATH_REST_S,
     BREATH_S,
     BREATH_Z_M,
+    BREATHING_GAZE_ROTATION_SCALE,
     CONTROL_HZ,
+    GAZE_HISTORY_S,
     HEAD_PITCH_RAD,
     HEAD_ROLL_RAD,
     HEAD_YAW_RAD,
@@ -54,6 +57,8 @@ from reachy_mini_bridge.motion import (
 
 if TYPE_CHECKING:
     import numpy.typing as npt
+
+    from reachy_mini_bridge.motion import IdleMoveFactory
 
 
 def test_hold_is_neutral_at_any_time() -> None:
@@ -599,64 +604,6 @@ def test_close_is_immediate_when_quiet() -> None:
     assert count == 0
 
 
-def _head_held_elsewhere(
-    robot: FakeReachyMini, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Another writer (daemon-side tracking) holds the head 2 cm up: the pose readers
-    report it whatever the loop commands. (The fake's readers otherwise return the last
-    set_target, which the loop's next tick would overwrite.)"""
-    head = np.eye(4)
-    head[2, 3] = 0.02
-    monkeypatch.setattr(robot, "get_current_head_pose", lambda: head)
-
-
-def test_reanchor_resumes_idle_from_the_present_pose(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def run() -> list[float]:
-        robot = FakeReachyMini()
-        async with MotionSession(robot, presence=True, idle="breathing") as session:
-            session.resume()
-            await asyncio.sleep(BLEND_S + 0.2)
-            _head_held_elsewhere(robot, monkeypatch)
-            before = len(robot.targets)
-            await asyncio.wrap_future(session.reanchor())
-            await asyncio.sleep(BLEND_S + 0.2)
-            return _head_zs(robot)[before:]
-
-    zs = asyncio.run(run())
-    # at most a tick or two of the old idle move before the command is taken, then the
-    # blend starts from the present pose…
-    start = next(i for i, z in enumerate(zs) if z > 0.015)
-    assert start <= 2
-    assert zs[start] == pytest.approx(0.02, abs=0.003)
-    assert abs(zs[-1]) < BREATH_Z_M + 0.002  # …back into the idle move
-    assert max(abs(b - a) for a, b in itertools.pairwise(zs[start:])) < 0.002
-
-
-def test_reanchor_is_a_noop_during_a_primary(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def run() -> tuple[bool, list[float]]:
-        robot = FakeReachyMini()
-        async with MotionSession(robot, presence=True, idle="breathing") as session:
-            session.resume()
-            await asyncio.sleep(BLEND_S + 0.1)
-            future = session.submit(_TestPrimary(duration=0.6, z=0.01), None)
-            await asyncio.sleep(BLEND_S + 0.1)  # the primary's trajectory is playing
-            _head_held_elsewhere(robot, monkeypatch)
-            before = len(robot.targets)
-            done = session.reanchor()
-            await asyncio.sleep(0.1)
-            resolved = done.done()
-            zs = _head_zs(robot)[before:]
-            await asyncio.wrap_future(future)
-            return resolved, zs
-
-    resolved, zs = asyncio.run(run())
-    assert resolved
-    # the primary kept playing: no re-blend from the 0.02 present pose
-    assert zs and all(z < 0.015 for z in zs)
-
-
 def test_a_failing_tick_fails_the_primary_and_keeps_the_loop_alive() -> None:
     async def run() -> tuple[BaseException | None, int, int]:
         robot = FakeReachyMini()
@@ -994,3 +941,304 @@ def test_clearing_the_idle_move_returns_custom_mode_to_the_hold() -> None:
 
     zs = asyncio.run(run())
     assert all(z == pytest.approx(0.0, abs=1e-6) for z in zs[-5:])
+
+
+# --- the gaze layer (specs/motion.md "The gaze layer") ----------------------------------
+
+
+AIM_YAW_DEG = 30.0
+# The largest per-tick yaw step a gaze fade may take: the minjerk's peak is ~1.9 deg a
+# tick onto a 30 deg aim, with room for a tick that runs late under load.
+MAX_GAZE_STEP_DEG = 5.0
+
+
+def _yaw_pose(yaw_deg: float) -> npt.NDArray[np.float64]:
+    """A head pose turned ``yaw_deg`` about the vertical — an aim, as the tracker would
+    hand it over."""
+    return IdleOffsets(yaw_deg=yaw_deg).pose()[0]
+
+
+def _yaw_pitch_deg(head: npt.NDArray[np.float64]) -> tuple[float, float]:
+    yaw, pitch, _roll = Rotation.from_matrix(head[:3, :3]).as_euler("ZYX", degrees=True)
+    return float(yaw), float(pitch)
+
+
+def _yaws(robot: FakeReachyMini, since: int = 0) -> list[float]:
+    return [_yaw_pitch_deg(h)[0] for h, _, _ in robot.targets[since:] if h is not None]
+
+
+def test_an_aim_eases_the_head_onto_it_and_withdrawing_it_eases_it_back() -> None:
+    async def run() -> tuple[list[float], list[float], list[float]]:
+        robot = FakeReachyMini()
+        async with MotionSession(robot, presence=True, idle="hold") as session:
+            session.resume()
+            await asyncio.sleep(BLEND_S + 0.1)  # holding neutral
+            before = len(robot.targets)
+            session.set_gaze(_yaw_pose(AIM_YAW_DEG))
+            await asyncio.sleep(1.5)
+            onto = _yaws(robot, before)
+            pitches = [
+                _yaw_pitch_deg(h)[1]
+                for h, _, _ in robot.targets[before:]
+                if h is not None
+            ]
+            before = len(robot.targets)
+            session.set_gaze(None)
+            await asyncio.sleep(BLEND_S + 0.2)
+            return onto, pitches, _yaws(robot, before)
+
+    onto, pitches, back = asyncio.run(run())
+    assert onto[0] == pytest.approx(0.0, abs=0.5)
+    assert all(b >= a - 1e-6 for a, b in itertools.pairwise(onto))  # only ever toward
+    assert onto[-1] == pytest.approx(AIM_YAW_DEG, abs=2.0)
+    assert all(abs(p) < 0.5 for p in pitches)
+    assert back[-1] == pytest.approx(0.0, abs=0.5)
+    # a fade, not a step: the minjerk's peak speed over BLEND_S is ~1.9 deg a tick (more
+    # on a tick that runs late under load), where a snap would be the whole 30
+    assert max(abs(b - a) for a, b in itertools.pairwise(back)) < MAX_GAZE_STEP_DEG
+
+
+def test_breathing_keeps_breathing_on_the_aim_with_its_roaming_toned_down() -> None:
+    async def run() -> list[npt.NDArray[np.float64]]:
+        robot = FakeReachyMini()
+        seeded = lambda: BreathingMove(random.Random(3))
+        async with MotionSession(
+            robot, presence=True, idle="custom", idle_move=seeded
+        ) as session:
+            session.set_gaze(_yaw_pose(AIM_YAW_DEG))  # before the loop runs
+            session.resume()
+            await asyncio.sleep(BLEND_S + 0.5)  # entered, faded in, eased on
+            before = len(robot.targets)
+            await asyncio.sleep(2.5)  # the first breath peaks 2.5 s in
+            return [h for h, _, _ in robot.targets[before:] if h is not None]
+
+    heads = asyncio.run(run())
+    zs = [float(h[2, 3]) for h in heads]
+    yaws = [_yaw_pitch_deg(h)[0] for h in heads]
+    assert max(zs) - min(zs) >= 0.004  # still breathing
+    assert sum(yaws) / len(yaws) == pytest.approx(AIM_YAW_DEG, abs=3.0)
+    roam = math.degrees(HEAD_YAW_RAD) * BREATHING_GAZE_ROTATION_SCALE
+    assert max(abs(y - AIM_YAW_DEG) for y in yaws) <= roam + 1.0
+
+
+def test_focus_holds_the_head_on_the_aim_and_keeps_the_antennas_alive() -> None:
+    async def run() -> tuple[
+        list[npt.NDArray[np.float64]], list[npt.NDArray[np.float64]]
+    ]:
+        robot = FakeReachyMini()
+        seeded = lambda: BreathingMove(random.Random(3))
+        async with MotionSession(
+            robot, presence=True, idle="custom", idle_move=seeded
+        ) as session:
+            session.set_gaze(_yaw_pose(AIM_YAW_DEG), focus=True)
+            session.resume()
+            await asyncio.sleep(BLEND_S + 0.5)
+            before = len(robot.targets)
+            await asyncio.sleep(2.5)  # the breath would peak here
+            heads = [h for h, _, _ in robot.targets[before:] if h is not None]
+            antennas = [a for _, a, _ in robot.targets[before:] if a is not None]
+            return heads, antennas
+
+    heads, antennas = asyncio.run(run())
+    assert all(
+        _yaw_pitch_deg(h)[0] == pytest.approx(AIM_YAW_DEG, abs=0.3) for h in heads
+    )
+    assert max(float(h[2, 3]) for h in heads) < 1e-4  # no breath, no roaming
+    spread = np.ptp(np.degrees(np.array(antennas)), axis=0)
+    assert spread.max() > 2.0  # the antennas still roam
+
+
+class _Nod(IdleMove):
+    """A custom idle move lifting the head ``LIFT_MM`` while nobody is tracked, and
+    nodding in pitch around the aim while someone is."""
+
+    def offsets(self, t: float) -> IdleOffsets:
+        return IdleOffsets(z_mm=LIFT_MM)
+
+    def gaze_offsets(self, t: float) -> IdleOffsets:
+        return IdleOffsets(pitch_deg=4.0 * (1.0 - math.cos(2.0 * math.pi * t)) / 2.0)
+
+
+def test_a_custom_idle_move_sits_still_on_the_aim_unless_it_says_otherwise() -> None:
+    async def run(
+        factory: IdleMoveFactory,
+    ) -> tuple[list[tuple[float, float, float]], list[npt.NDArray[np.float64]], float]:
+        robot = FakeReachyMini()
+        async with MotionSession(
+            robot, presence=True, idle="custom", idle_move=factory
+        ) as session:
+            session.set_gaze(_yaw_pose(AIM_YAW_DEG))
+            session.resume()
+            await asyncio.sleep(BLEND_S + 0.8)
+            before = len(robot.targets)
+            await asyncio.sleep(1.0)
+            held = [
+                (*_yaw_pitch_deg(h), float(h[2, 3]))
+                for h, _, _ in robot.targets[before:]
+                if h is not None
+            ]
+            antennas = [a for _, a, _ in robot.targets[before:] if a is not None]
+            session.set_gaze(None)
+            await asyncio.sleep(BLEND_S + 0.3)
+            return held, antennas, float(robot.last_target[0][2, 3])
+
+    held, antennas, released_z = asyncio.run(run(_Lift))
+    # no gaze_offsets: the head is the aim, the antennas rest, the lift is gone…
+    assert all(y == pytest.approx(AIM_YAW_DEG, abs=0.5) for y, _, _ in held)
+    assert all(abs(p) < 0.5 and abs(z) < 1e-4 for _, p, z in held)
+    assert all(np.allclose(a, NEUTRAL_ANTENNAS) for a in antennas)
+    # …and shows in full once nobody is tracked
+    assert released_z == pytest.approx(LIFT_MM / 1000.0, abs=1e-5)
+
+    held, _antennas, _z = asyncio.run(run(_Nod))
+    pitches = [p for _, p, _ in held]
+    assert all(y == pytest.approx(AIM_YAW_DEG, abs=0.5) for y, _, _ in held)
+    assert max(pitches) - min(pitches) > 3.0  # the nod, around the aim
+
+
+def test_idle_offsets_scaled_multiplies_each_group_by_its_factor() -> None:
+    offsets = IdleOffsets(
+        z_mm=4.0,
+        roll_deg=1.0,
+        pitch_deg=-2.0,
+        yaw_deg=8.0,
+        antenna_right_deg=10.0,
+        antenna_left_deg=-6.0,
+    )
+    assert offsets.scaled(translation=0.5, rotation=0.25, antennas=2.0) == IdleOffsets(
+        z_mm=2.0,
+        roll_deg=0.25,
+        pitch_deg=-0.5,
+        yaw_deg=2.0,
+        antenna_right_deg=20.0,
+        antenna_left_deg=-12.0,
+    )
+    assert offsets.scaled() == offsets
+    assert BreathingMove(random.Random(1)).gaze_offsets(7.0) == BreathingMove(
+        random.Random(1)
+    ).offsets(7.0).scaled(rotation=BREATHING_GAZE_ROTATION_SCALE)
+
+
+class _NanGaze(IdleMove):
+    def offsets(self, t: float) -> IdleOffsets:
+        return IdleOffsets()
+
+    def gaze_offsets(self, t: float) -> IdleOffsets:
+        return IdleOffsets(yaw_deg=math.inf)
+
+
+class _GazeBreaksAfter(IdleMove):
+    def offsets(self, t: float) -> IdleOffsets:
+        return IdleOffsets()
+
+    def gaze_offsets(self, t: float) -> IdleOffsets:
+        if t > 0.1:
+            raise RuntimeError("boom")
+        return IdleOffsets()
+
+
+def test_a_bad_gaze_offsets_is_rejected_at_registration() -> None:
+    with pytest.raises(ValueError, match="gaze_offsets"):
+        MotionSession(
+            FakeReachyMini(), presence=True, idle="custom", idle_move=_NanGaze
+        )
+
+
+def test_a_gaze_offsets_raising_while_playing_falls_back_to_the_hold(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def run() -> list[float]:
+        robot = FakeReachyMini()
+        async with MotionSession(
+            robot, presence=True, idle="custom", idle_move=_GazeBreaksAfter
+        ) as session:
+            session.set_gaze(_yaw_pose(AIM_YAW_DEG))
+            session.resume()
+            await asyncio.sleep(2 * BLEND_S + 1.0)  # breaks, then holds on the aim
+            return _yaws(robot)
+
+    with caplog.at_level(logging.WARNING, logger="reachy_mini_bridge.motion"):
+        yaws = asyncio.run(run())
+    warnings = [r for r in caplog.records if "custom idle move failed" in r.message]
+    assert len(warnings) == 1
+    assert yaws[-1] == pytest.approx(AIM_YAW_DEG, abs=1.0)  # the hold, aimed
+
+
+def test_a_primary_plays_as_recorded_under_an_aim_then_the_head_returns_to_it() -> None:
+    async def run() -> tuple[list[tuple[float, float]], list[float]]:
+        robot = FakeReachyMini()
+        async with MotionSession(robot, presence=True, idle="hold") as session:
+            session.set_gaze(_yaw_pose(AIM_YAW_DEG))
+            session.resume()
+            await asyncio.sleep(BLEND_S + 0.8)
+            future = session.submit(_TestPrimary(duration=0.6, z=0.01), None)
+            await asyncio.sleep(BLEND_S + 0.1)  # the trajectory is playing
+            before = len(robot.targets)
+            await asyncio.sleep(0.3)
+            during = [
+                (_yaw_pitch_deg(h)[0], float(h[2, 3]))
+                for h, _, _ in robot.targets[before:]
+                if h is not None
+            ]
+            await asyncio.wrap_future(future)
+            before = len(robot.targets)
+            await asyncio.sleep(2 * BLEND_S + 0.5)
+            return during, _yaws(robot, before)
+
+    during, after = asyncio.run(run())
+    assert during
+    assert all(abs(y) < 1e-6 and z == pytest.approx(0.01) for y, z in during)
+    assert after[-1] == pytest.approx(AIM_YAW_DEG, abs=1.0)
+    assert max(abs(b - a) for a, b in itertools.pairwise(after)) < MAX_GAZE_STEP_DEG
+
+
+def test_with_presence_off_an_aim_moves_nothing() -> None:
+    async def run() -> int:
+        robot = FakeReachyMini()
+        async with MotionSession(robot, presence=False, idle="hold") as session:
+            session.resume()
+            session.set_gaze(_yaw_pose(AIM_YAW_DEG))
+            await asyncio.sleep(0.4)
+            return len(robot.targets)
+
+    assert asyncio.run(run()) == 0
+
+
+def test_the_history_records_the_head_pose_the_robot_reports(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The actual head, not the commanded one — recorded whether or not the loop
+    commands: here a paused loop, while another writer turns the head at 20 deg/s."""
+    robot = FakeReachyMini()
+    t0 = time.monotonic()
+    monkeypatch.setattr(
+        robot,
+        "get_current_head_pose",
+        lambda: _yaw_pose(20.0 * (time.monotonic() - t0)),
+    )
+
+    async def run() -> tuple[float, float, float, float]:
+        async with MotionSession(robot, presence=True, idle="hold") as session:
+            await asyncio.sleep(1.5)
+            now = time.monotonic()
+            return (
+                now - t0,
+                _yaw_pitch_deg(session.head_pose_at(now - 0.5))[0],
+                _yaw_pitch_deg(session.head_pose_at(now - 10.0))[0],
+                _yaw_pitch_deg(session.head_pose_at(now + 1.0))[0],
+            )
+
+    elapsed, half_ago, oldest, latest = asyncio.run(run())
+    assert robot.targets == []  # paused: nothing commanded
+    assert half_ago == pytest.approx(20.0 * (elapsed - 0.5), abs=1.0)
+    assert oldest == pytest.approx(0.0, abs=1.0)  # the first recorded
+    assert latest == pytest.approx(20.0 * elapsed, abs=1.0)
+    assert GAZE_HISTORY_S > 1.5  # all of it kept
+
+
+def test_head_pose_at_reads_the_robot_before_anything_is_recorded() -> None:
+    robot = FakeReachyMini()
+    elsewhere = _yaw_pose(12.0)
+    robot.set_target(head=elsewhere)
+    session = MotionSession(robot, presence=True, idle="hold")  # not started
+    np.testing.assert_allclose(session.head_pose_at(time.monotonic() - 0.3), elsewhere)
