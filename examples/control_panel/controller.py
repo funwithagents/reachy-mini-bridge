@@ -16,7 +16,9 @@ import asyncio
 import concurrent.futures as cf
 import logging
 import threading
-from collections.abc import Coroutine
+import time
+from collections import deque
+from collections.abc import Coroutine, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, Literal, Self
@@ -41,6 +43,13 @@ _SLOTS: tuple[Slot, ...] = ("say", "emotion")
 MIC_LEVEL_DECAY = 0.97
 # How long a stop waits for the cancelled verbs to return before giving up on them.
 STOP_TIMEOUT_S = 5.0
+# The face meter: how often it samples `api.faces.value`, and the window its rate of new
+# observations is averaged over.
+FACE_METER_HZ = 50.0
+FACE_RATE_WINDOW_S = 2.0
+# `draw_faces`: the marker's side as a fraction of the frame height, and its colour (RGB).
+FACE_MARKER_SIZE = 0.15
+FACE_MARKER_RGB = (0, 255, 0)
 
 
 @dataclass
@@ -54,6 +63,13 @@ class PanelState:
     wobbling: bool
     tracking: bool
     attention: str | None
+    face_detection: bool
+    # the number of faces the detection loop reports; -1 while no detector is looking
+    faces: int
+    # each face's normalised (x, y), the target first; empty while no detector is looking
+    face_positions: list[tuple[float, float]]
+    # new face observations per second; None while no detector is looking
+    face_rate: float | None
     voice: str
     mic_level: float
     mic_sample_rate: int | None
@@ -98,6 +114,7 @@ class ControlPanelController:
         self._in_flight_lock = threading.Lock()
         self._mic_level = 0.0
         self._emotions: list[str] = []
+        self._face_rate: float | None = None
 
     # --- lifecycle -----------------------------------------------------------------
 
@@ -193,14 +210,19 @@ class ControlPanelController:
                 except Exception as exc:  # noqa: BLE001 - the panel works without the list
                     _logger.warning("could not list the emotions library: %s", exc)
                     self._emotions = []
-                meter = asyncio.create_task(self._mic_meter(api))
+                meters = [
+                    asyncio.create_task(self._mic_meter(api)),
+                    asyncio.create_task(self._face_meter(api)),
+                ]
                 ready.set_result(None)
                 try:
                     await self._stop_event.wait()
                 finally:
-                    meter.cancel()
-                    with suppress(BaseException):
-                        await meter
+                    for meter in meters:
+                        meter.cancel()
+                    for meter in meters:
+                        with suppress(BaseException):
+                            await meter
         except BaseException as exc:
             if not ready.done():
                 ready.set_exception(exc)
@@ -208,6 +230,7 @@ class ControlPanelController:
             _logger.exception("the robot session ended with an error")
         finally:
             self._mic_level = 0.0
+            self._face_rate = None
 
     async def _mic_meter(self, api: ReachyMiniApi) -> None:
         """Keep :attr:`mic_level` from the echo-cancelled mic (specs/control_panel.md)."""
@@ -225,6 +248,28 @@ class ControlPanelController:
         except Exception as exc:  # noqa: BLE001 - a dead meter must not end the panel
             _logger.warning("the mic meter stopped: %s", exc)
             self._mic_level = 0.0
+
+    async def _face_meter(self, api: ReachyMiniApi) -> None:
+        """Keep :attr:`face_rate` — new face observations per second, from the report's
+        timestamps (specs/control_panel.md "The face meter")."""
+        arrivals: deque[float] = deque()
+        last_ts: float | None = None
+        while True:
+            report = api.faces.value
+            now = time.monotonic()
+            if not report.active:
+                arrivals.clear()
+                last_ts = None
+                self._face_rate = None
+            else:
+                if report.ts != last_ts:
+                    if last_ts is not None:  # the first sample is not an arrival
+                        arrivals.append(now)
+                    last_ts = report.ts
+                while arrivals and now - arrivals[0] > FACE_RATE_WINDOW_S:
+                    arrivals.popleft()
+                self._face_rate = len(arrivals) / FACE_RATE_WINDOW_S
+            await asyncio.sleep(1.0 / FACE_METER_HZ)
 
     # --- submitting to the loop ------------------------------------------------------
 
@@ -333,6 +378,8 @@ class ControlPanelController:
             rate: int | None = api.mic_sample_rate
         except BridgeError:
             rate = None
+        report = api.faces.value
+        positions = [(f.x, f.y) for f in report.faces] if report.active else []
         return PanelState(
             backend=api.config.backend,
             motors=motors,
@@ -341,12 +388,26 @@ class ControlPanelController:
             wobbling=api.wobbling,
             tracking=api.tracking,
             attention=api.attention,
+            face_detection=api.face_detection,
+            faces=len(report.faces) if report.active else -1,
+            face_positions=positions,
+            face_rate=self._face_rate if report.active else None,
             voice=self._voice(),
             mic_level=self._mic_level,
             mic_sample_rate=rate,
             busy=self.busy,
             emotions=self.emotions,
         )
+
+    @property
+    def face_rate(self) -> float | None:
+        """New face observations per second, ``None`` while no detector is looking."""
+        return self._face_rate if self._api.faces.value.active else None
+
+    def face_positions(self) -> list[tuple[float, float]]:
+        """The reported faces' normalised ``(x, y)`` right now (no robot round trip)."""
+        report = self._api.faces.value
+        return [(f.x, f.y) for f in report.faces] if report.active else []
 
     def camera_frame_rgb(self) -> npt.NDArray[np.uint8] | None:
         """The latest camera frame as RGB (the api's BGR flipped), or ``None``."""
@@ -379,6 +440,9 @@ class ControlPanelController:
     def set_idle(self, mode: str) -> None:
         self._call(self._api.set_idle(mode))
 
+    def set_face_detection(self, enabled: bool) -> None:
+        self._call(self._api.set_face_detection(enabled))
+
     # --- spanning verbs ---------------------------------------------------------------
 
     def say(self, text: str) -> bool:
@@ -404,3 +468,29 @@ class ControlPanelController:
     def stop_emotion(self) -> int:
         """Stop the playing emotion and every queued one; how many stopped."""
         return self._stop_slot("emotion")
+
+
+def draw_faces(
+    frame: npt.NDArray[np.uint8], positions: Sequence[tuple[float, float]]
+) -> npt.NDArray[np.uint8]:
+    """A copy of the RGB ``frame`` with a square outline on each face.
+
+    ``positions`` are normalised image coordinates (``[-1, 1]``, x right, y down), as
+    ``api.faces`` reports them; the first — the target face — is drawn thicker.
+    """
+    out = frame.copy()
+    height, width = out.shape[:2]
+    half = max(2, round(FACE_MARKER_SIZE * height / 2))
+    for i, (x, y) in enumerate(positions):
+        cx = round((x + 1.0) * 0.5 * (width - 1))
+        cy = round((y + 1.0) * 0.5 * (height - 1))
+        thick = max(1, height // (120 if i == 0 else 240))
+        x0, x1 = max(cx - half, 0), min(cx + half, width - 1)
+        y0, y1 = max(cy - half, 0), min(cy + half, height - 1)
+        if x0 > x1 or y0 > y1:
+            continue  # off the frame
+        out[y0 : min(y0 + thick, y1 + 1), x0 : x1 + 1] = FACE_MARKER_RGB
+        out[max(y1 - thick + 1, y0) : y1 + 1, x0 : x1 + 1] = FACE_MARKER_RGB
+        out[y0 : y1 + 1, x0 : min(x0 + thick, x1 + 1)] = FACE_MARKER_RGB
+        out[y0 : y1 + 1, max(x1 - thick + 1, x0) : x1 + 1] = FACE_MARKER_RGB
+    return out

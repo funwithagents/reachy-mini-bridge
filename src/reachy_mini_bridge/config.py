@@ -3,9 +3,10 @@
 One declarative object describing everything needed to bring up a ``ReachyMiniApi``:
 the backend, the upstream ``ReachyMini`` connection kwargs (forwarded verbatim), how the
 bridge manages the daemon, the tts-engine ``engine`` block for the default synthesizer,
-and the XVF3800 audio profile. Buildable from a dict, a JSON string, or a JSON file
-through the same ``from_dict`` / ``from_json`` / ``from_json_file`` trio as tts-engine's
-``TTSEngineConfig``, all validating through ``from_dict``.
+the XVF3800 audio profile, face detection, and the behaviour at rest. Buildable from a
+dict, a JSON string, or a JSON file through the same ``from_dict`` / ``from_json`` /
+``from_json_file`` trio as tts-engine's ``TTSEngineConfig``, all validating through
+``from_dict``.
 
 This module imports neither ``tts_engine`` nor ``reachy_mini`` at load time: the raw
 ``tts`` and ``robot`` blocks are consumed by the layers that need them. The one upstream
@@ -25,11 +26,13 @@ from .errors import ConfigError
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from .face_detection import FaceDetector
     from .motion import IdleMove
 
 __all__ = [
     "AudioSettings",
     "DaemonConfig",
+    "FaceSettings",
     "MotionSettings",
     "ReachyMiniConfig",
     "SimCameraSettings",
@@ -50,6 +53,8 @@ SIM_DISPLAYS = ("camera_overlay",)
 # The idle modes (specs/motion.md "Presence and the idle mode"); motion.IdleMode is the
 # same three values as a type.
 IDLE_MODES = ("breathing", "hold", "custom")
+# The face detection sources (specs/user_perception.md "Detection sources").
+FACE_DETECTORS = ("daemon", "custom")
 
 # Upstream kwargs the bridge owns; each maps to the config field that replaces it.
 _RESERVED_ROBOT_KEYS = {
@@ -310,6 +315,50 @@ class AudioSettings:
         return cls.from_dict(_load_file(path))
 
 
+# --- `faces` block ------------------------------------------------------------------
+
+
+@dataclass
+class FaceSettings:
+    """Face detection (specs/user_perception.md): where the faces come from and whether
+    the detection loop runs from session entry."""
+
+    # The detection source: "daemon" (the daemon's own detector, over its HTTP API) or
+    # "custom" (the caller's detector on the camera frames).
+    detector: str = "daemon"
+    # Run the detection loop from session entry, so `api.faces` reports who is there.
+    detection: bool = True
+    # Python only: the custom detector's factory, used when detector is "custom".
+    face_detector: Callable[[], FaceDetector] | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> FaceSettings:
+        block = _require_object(data, "faces")
+        if "face_detector" in block:
+            raise ConfigError(
+                "'faces.face_detector' is set from code, not from a dict / JSON config: "
+                "build FaceSettings(face_detector=...) or call set_face_detector(...)"
+            )
+        _reject_unknown_keys(block, "faces", {"detector", "detection"})
+        detector = block.get("detector", "daemon")
+        detection = block.get("detection", True)
+        if detector not in FACE_DETECTORS:
+            raise ConfigError(
+                f"'faces.detector' must be one of {FACE_DETECTORS}, got {detector!r}"
+            )
+        if not isinstance(detection, bool):
+            raise ConfigError("'faces.detection' must be a boolean")
+        return cls(detector=detector, detection=detection)
+
+    @classmethod
+    def from_json(cls, text: str) -> FaceSettings:
+        return cls.from_dict(_loads(text))
+
+    @classmethod
+    def from_json_file(cls, path: str | Path) -> FaceSettings:
+        return cls.from_dict(_load_file(path))
+
+
 # --- `motion` block -----------------------------------------------------------------
 
 
@@ -384,6 +433,8 @@ class ReachyMiniConfig:
     # a tts-engine ``engine`` block, verbatim
     tts: dict[str, Any] | None = None
     audio: AudioSettings = field(default_factory=AudioSettings)
+    # face detection: the source (daemon / custom) and whether it runs from entry
+    faces: FaceSettings = field(default_factory=FaceSettings)
     # everything that shapes the robot's behaviour at rest (specs/config.md "motion block")
     motion: MotionSettings = field(default_factory=MotionSettings)
 
@@ -394,7 +445,7 @@ class ReachyMiniConfig:
         _reject_unknown_keys(
             top,
             "config",
-            {"backend", "robot", "daemon", "tts", "audio", "motion"},
+            {"backend", "robot", "daemon", "tts", "audio", "faces", "motion"},
         )
 
         backend = top.get("backend", "real")
@@ -432,6 +483,8 @@ class ReachyMiniConfig:
 
         audio = AudioSettings.from_dict(top.get("audio", {}))
 
+        faces = FaceSettings.from_dict(top.get("faces", {}))
+
         motion = MotionSettings.from_dict(top.get("motion", {}))
 
         return cls(
@@ -440,6 +493,7 @@ class ReachyMiniConfig:
             daemon=daemon,
             tts=tts,
             audio=audio,
+            faces=faces,
             motion=motion,
         )
 

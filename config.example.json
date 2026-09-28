@@ -32,6 +32,10 @@
   "audio": {
     "xvf3800": null
   },
+  "faces": {
+    "detector": "daemon",
+    "detection": true
+  },
   "motion": {
     "presence": true,
     "idle": "breathing",

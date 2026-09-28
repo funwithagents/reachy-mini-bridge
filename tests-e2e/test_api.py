@@ -30,6 +30,7 @@ from reachy_mini import ReachyMini
 from reachy_mini_bridge.api import ATTENTION_GRACE_S, ReachyMiniApi
 from reachy_mini_bridge.audio import TTSEngineSynthesizer
 from reachy_mini_bridge.errors import GravityCompensationUnsupportedError
+from reachy_mini_bridge.face_detection import FACE_ABSENT_S, FaceReport
 from reachy_mini_bridge.motion import (
     BLEND_S,
     BREATH_REST_S,
@@ -898,6 +899,49 @@ def face_scene(
     yield sim_scene
     sim_scene.hide(FACE)
     sim_scene.place(FACE, DEFAULT_FACE_POS)
+
+
+def test_faces_report_someone_appearing_and_leaving(
+    live_api: tuple[ReachyMiniApi, frozenset[str]], face_scene: SimSceneClient
+) -> None:
+    """specs/user_perception.md "The report is an observable": a subscriber of
+    `api.faces.changes()` is woken with one face when the portrait is shown, and with
+    none once it has been hidden past the absence window. Tracking is stopped for the
+    test, so the detection loop arms the daemon's detector itself at
+    DAEMON_DETECT_WEIGHT — this pins the daemon detecting at that negligible weight
+    ("Detection sources")."""
+    api, _caps = live_api
+
+    async def next_count(changes: AsyncIterator[FaceReport], count: int) -> FaceReport:
+        async for report in changes:  # skips e.g. the `active` flip of a loop start
+            if report.active and len(report.faces) == count:
+                return report
+        raise AssertionError("the faces subscription ended")
+
+    async def scenario() -> tuple[FaceReport, FaceReport]:
+        await api.set_motors_state("enabled")
+        await api.set_face_detection(True)
+        await api.stop_head_tracking()  # the detection loop now arms the daemon
+        changes = api.faces.changes()
+        try:
+            appeared = asyncio.ensure_future(next_count(changes, 1))
+            await asyncio.sleep(0)  # subscribed before the face shows
+            face_scene.show(FACE)
+            first = await asyncio.wait_for(appeared, 3.0)
+            face_scene.hide(FACE)
+            left = await asyncio.wait_for(next_count(changes, 0), FACE_ABSENT_S + 3.0)
+        finally:
+            await changes.aclose()  # type: ignore[attr-defined]
+            await (
+                api.start_head_tracking()
+            )  # the module's default state for what follows
+        return first, left
+
+    appeared, left = asyncio.run(scenario())
+    print(f"\n[e2e] appeared: {appeared}\n[e2e] left: {left}")
+    assert appeared.source == "daemon"
+    assert all(-1.0 <= v <= 1.0 for v in (appeared.faces[0].x, appeared.faces[0].y))
+    assert left.faces == ()
 
 
 def test_head_tracking_turns_onto_a_face_and_follows_it(

@@ -17,7 +17,12 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
-from examples.control_panel.controller import ControlPanelController, PanelState
+from examples.control_panel.controller import (
+    FACE_MARKER_RGB,
+    ControlPanelController,
+    PanelState,
+    draw_faces,
+)
 from reachy_mini_bridge import BridgeError, MotorsNotEnabledError, ReachyMiniConfig
 from reachy_mini_bridge.config import MotionSettings
 from reachy_mini_bridge.fake_reachy_mini import FakeReachyMini
@@ -153,6 +158,14 @@ def test_snapshot_reflects_the_modes_and_the_camera_is_rgb() -> None:
         assert state.tracking is False
         assert state.attention is None
 
+        assert state.face_detection is True
+        _wait_until(lambda: controller.snapshot().faces == 0)  # active, nobody there
+        _fake(controller).show_face()
+        _wait_until(lambda: controller.snapshot().faces == 1)
+        controller.set_face_detection(False)
+        state = controller.snapshot()
+        assert (state.face_detection, state.faces) == (False, -1)  # nobody looking
+
         frame = controller.camera_frame_rgb()
         assert frame is not None
         assert frame.shape == (48, 64, 3)
@@ -246,13 +259,67 @@ def test_stop_cancels_the_verbs_in_flight() -> None:
 
 def test_build_app_constructs_the_blocks_and_refresh_reads_the_state() -> None:
     gr = pytest.importorskip("gradio")
-    from examples.control_panel.app import build_app, refresh
+    from examples.control_panel.app import build_app, refresh, refresh_camera
 
     with ControlPanelController("fake") as controller:
         demo = build_app(controller)
         assert isinstance(demo, gr.Blocks)
-        table, mic_level, frame, log_text = refresh(controller, [])
+        _fake(controller).show_face(0.5, -0.5)
+        _wait_until(lambda: controller.snapshot().faces == 1)
+        table, mic_level, log_text = refresh(controller, [])
         assert "fake" in table and "presence" in table
+        assert "faces" not in table  # under the camera instead
         assert mic_level == 0.0
-        assert frame is not None and frame.shape == (48, 64, 3)
         assert log_text == ""
+        frame, faces_text = refresh_camera(controller, [])
+        assert "1 at (+0.50, -0.50)" in faces_text and "updates" in faces_text
+        assert frame is not None and frame.shape == (48, 64, 3)
+        # Mirrored for display: the fake's left-to-right ramp (RGB channel 2) now falls,
+        # and the face on the right of the image (x=+0.5) is marked on the left.
+        assert frame[40, 0, 2] > frame[40, -1, 2]
+        marked_cols = np.nonzero((frame == FACE_MARKER_RGB).all(axis=2))[1]
+        assert marked_cols.size and marked_cols.max() < 32
+
+
+# --- faces ----------------------------------------------------------------------------
+
+
+def test_snapshot_reports_face_positions_and_the_update_rate() -> None:
+    with ControlPanelController("fake") as controller:
+        _wait_until(lambda: controller.snapshot().face_rate is not None)
+        fake = _fake(controller)
+        # A detector reporting at ~20 Hz: each show_face is a new observation (new ts).
+        # The detection loop polls at 30 Hz, so the bridge sees about 20 a second.
+        deadline = time.monotonic() + 2.5
+        while time.monotonic() < deadline:
+            fake.show_face(0.25, -0.1)
+            time.sleep(0.05)
+        state = controller.snapshot()
+        assert state.faces == 1
+        assert state.face_positions == [(0.25, -0.1)]
+        assert state.face_rate is not None and 12.0 <= state.face_rate <= 21.0
+
+        fake.hide_face()  # one last observation, then nothing new
+        time.sleep(2.5)
+        assert controller.snapshot().face_rate == 0.0
+
+        controller.stop_head_tracking()
+        controller.set_face_detection(False)
+        state = controller.snapshot()
+        assert (state.faces, state.face_positions, state.face_rate) == (-1, [], None)
+
+
+def test_draw_faces_outlines_each_face_where_it_is() -> None:
+    frame = np.zeros((100, 200, 3), dtype=np.uint8)
+    marked = draw_faces(frame, [(0.0, 0.0), (1.0, -1.0)])
+    green = (marked == FACE_MARKER_RGB).all(axis=2)
+
+    assert not frame.any()  # the input is left alone
+    # centre face: a square of half-side 8 px (15 % of 100 px, rounded) around pixel
+    # (100, 50) — its outline is marked, its middle is not
+    assert green[42, 100] and green[58, 100] and green[50, 92] and green[50, 108]
+    assert not green[50, 100]
+    # a face at the top-right corner is clipped to the frame, not dropped
+    assert green[0, 199] or green[7, 199]
+    # nothing far from either face
+    assert not green[90, 20:60].any()

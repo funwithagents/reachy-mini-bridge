@@ -16,8 +16,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from reachy_mini_bridge import api as api_module
 from reachy_mini_bridge import daemon, testing
+from reachy_mini_bridge import robot as robot_module
 from reachy_mini_bridge.config import DaemonConfig
 from reachy_mini_bridge.errors import DaemonError, SimSceneError
 from reachy_mini_bridge.testing import _daemon, fixtures, require_env, requires_caps
@@ -273,18 +273,18 @@ def _probe(robot: object) -> bool:
 def _serve_engine(monkeypatch: pytest.MonkeyPatch, engine: str) -> list[str]:
     fetched: list[str] = []
 
-    def fetch(url: str) -> object:
-        fetched.append(url)
+    def fetch(robot: object, path: str) -> object:
+        fetched.append(path)
         return {"info": {"engine": engine, "collision check": False}}
 
-    monkeypatch.setattr(api_module, "_fetch_json", fetch)
+    monkeypatch.setattr(robot_module, "fetch_daemon_json", fetch)
     return fetched
 
 
 def test_gravity_compensation_needs_hardware_on_placo(monkeypatch: pytest.MonkeyPatch):
     fetched = _serve_engine(monkeypatch, "Placo")
     assert _probe(_StatusRobot()) is True
-    assert fetched == ["http://127.0.0.1:8000/api/kinematics/info"]
+    assert fetched == ["/api/kinematics/info"]
 
 
 def test_gravity_compensation_absent_on_the_default_engine(
@@ -304,10 +304,10 @@ def test_gravity_compensation_absent_on_a_simulation(monkeypatch: pytest.MonkeyP
 def test_gravity_compensation_absent_when_the_daemon_does_not_answer(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    def fail(url: str) -> object:
+    def fail(robot: object, path: str) -> object:
         raise OSError("connection refused")
 
-    monkeypatch.setattr(api_module, "_fetch_json", fail)
+    monkeypatch.setattr(robot_module, "fetch_daemon_json", fail)
     assert _probe(_StatusRobot()) is False
 
 

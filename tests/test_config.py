@@ -16,6 +16,7 @@ from reachy_mini_bridge.config import (
     SIM_DISPLAYS,
     AudioSettings,
     DaemonConfig,
+    FaceSettings,
     MotionSettings,
     ReachyMiniConfig,
     SimCameraSettings,
@@ -34,6 +35,7 @@ def test_defaults() -> None:
     assert cfg.daemon.spawn == "never"
     assert cfg.tts is None
     assert cfg.audio.xvf3800 is None
+    assert cfg.faces == FaceSettings(detector="daemon", detection=True)
     assert cfg.motion == MotionSettings()
     assert ReachyMiniConfig.from_dict({}) == cfg
 
@@ -63,6 +65,7 @@ def test_from_json_file_round_trips_the_repo_example() -> None:
     assert cfg.tts["module"]["type"] == "pocket"
     assert cfg.tts["module"]["voice"] == "george"
     assert cfg.audio == AudioSettings(xvf3800=None)
+    assert cfg.faces == FaceSettings(detector="daemon", detection=True)
     assert cfg.motion == MotionSettings()
 
 
@@ -356,6 +359,38 @@ def test_daemon_sim_displays_reject_bad_values(displays: object) -> None:
         ReachyMiniConfig.from_dict(
             {"backend": "sim", "daemon": {"headless": False, "sim_displays": displays}}
         )
+
+
+def test_faces_block_sets_the_source_and_the_switch(tmp_path: Path) -> None:
+    text = '{"faces": {"detector": "custom", "detection": false}}'
+    expected = FaceSettings(detector="custom", detection=False)
+    assert ReachyMiniConfig.from_json(text).faces == expected
+    block = '{"detector": "custom", "detection": false}'
+    path = tmp_path / "faces.json"
+    path.write_text(block)
+    assert FaceSettings.from_json(block) == expected
+    assert FaceSettings.from_json_file(path) == expected
+
+
+@pytest.mark.parametrize(
+    ("faces", "field"),
+    [
+        ({"detector": "local"}, r"faces\.detector"),
+        ({"detector": None}, r"faces\.detector"),
+        ({"detection": "yes"}, r"faces\.detection"),
+        ({"detection": 1}, r"faces\.detection"),
+        ({"detecter": "daemon"}, "detecter"),
+        ({"face_detector": "my.module:Yunet"}, r"faces\.face_detector"),
+    ],
+)
+def test_faces_block_rejects_bad_values(faces: dict[str, object], field: str) -> None:
+    with pytest.raises(ConfigError, match=field):
+        ReachyMiniConfig.from_dict({"faces": faces})
+
+
+def test_faces_must_be_an_object() -> None:
+    with pytest.raises(ConfigError, match="faces"):
+        ReachyMiniConfig.from_dict({"faces": []})
 
 
 def test_motion_defaults_are_on() -> None:

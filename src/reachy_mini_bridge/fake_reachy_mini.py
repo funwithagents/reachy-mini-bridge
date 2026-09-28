@@ -55,14 +55,26 @@ class _FakeStatus:
 
 
 class _FakeFaceTarget:
-    """Stand-in for upstream's ``FaceTarget`` (the fields the api reads)."""
+    """Stand-in for upstream's ``FaceTarget``, built from the REST payload's dict."""
 
-    def __init__(self, detected: bool) -> None:
-        self.detected = detected
-        self.x: float | None = 0.0 if detected else None
-        self.y: float | None = 0.0 if detected else None
-        self.roll: float | None = None
-        self.ts: float | None = time.time() if detected else None
+    def __init__(self, target: dict[str, Any]) -> None:
+        self.detected: bool = bool(target["detected"])
+        self.x: float | None = target["x"]
+        self.y: float | None = target["y"]
+        self.roll: float | None = target["roll"]
+        self.ts: float | None = target["ts"]
+
+
+def _face_target(
+    *,
+    detected: bool,
+    x: float | None = None,
+    y: float | None = None,
+    roll: float | None = None,
+    ts: float | None = None,
+) -> dict[str, Any]:
+    """The ``face_target`` dict of the daemon's ``GET /api/media/tracking/face``."""
+    return {"detected": detected, "x": x, "y": y, "roll": roll, "ts": ts}
 
 
 class _FakeDaemonClient:
@@ -79,6 +91,10 @@ class _FakeDaemonClient:
         self.kinematics_engine = "Placo"
         self.simulation_enabled = False
         self.mockup_sim_enabled = False
+        # The daemon's current face target, as its REST endpoint serves it
+        # (specs/user_perception.md "Detection sources"); driven by the fake's
+        # show_face / hide_face.
+        self.face_target: dict[str, Any] = _face_target(detected=False)
 
     def get_status(self) -> _FakeStatus:
         return _FakeStatus(
@@ -202,9 +218,6 @@ class FakeReachyMini:
 
     def __init__(self) -> None:
         self.commands: list[tuple[str, dict[str, Any]]] = []
-        # Whether the daemon-side tracker currently sees a face: tests flip it to
-        # simulate a person arriving or leaving (specs/robot.md, api.md "Attention").
-        self.face_detected = False
         self.client = _FakeDaemonClient()
         self.media = _FakeMedia(self.commands)
         # The motion loop's stream (specs/motion.md): recorded here, not on `commands`
@@ -279,7 +292,21 @@ class FakeReachyMini:
     def get_tracked_face(
         self, wait: bool = True, timeout: float = 5.0
     ) -> _FakeFaceTarget:
-        return _FakeFaceTarget(self.face_detected)
+        return _FakeFaceTarget(self.client.face_target)
+
+    # --- the scene in front of the camera (fake-only: a test's stand-in for a person) ---
+    def show_face(
+        self, x: float = 0.0, y: float = 0.0, roll: float | None = None
+    ) -> None:
+        """A face in view of the daemon's detector at normalised ``(x, y)`` (``[-1, 1]``,
+        x right, y down), reported on ``client.face_target`` from now on."""
+        self.client.face_target = _face_target(
+            detected=True, x=x, y=y, roll=roll, ts=time.monotonic()
+        )
+
+    def hide_face(self) -> None:
+        """Nobody in view any more: the face target reads undetected."""
+        self.client.face_target = _face_target(detected=False, ts=time.monotonic())
 
     # --- audio-reactive head wobbling (a mode; moves nothing on the fake) ---
     def enable_wobbling(self) -> None:

@@ -17,7 +17,7 @@ The upstream `reachy_mini` SDK gives full, low-level access to the robot. The br
 | **The daemon** | Start `reachy-mini-daemon` yourself. Spawning it from a Python process that has already imported `reachy_mini` can crash it | Optionally started for you (sim, or a robot plugged in over USB), or an already running one is reused. A daemon the bridge started is stopped on exit, and the robot goes to sleep |
 | **Clean shutdown** | Up to the app | Leaving `async with` turns head wobbling back off (the setting is shared by every app on the daemon), then closes the audio, the connection and the daemon in order, even when a step fails. Cancelling during start-up leaks nothing |
 | **Configuration** | Constructor arguments in code | One JSON config for the backend, connection, daemon, voice, mic profile and wobbling. The same file switches between the real robot, the simulator and the fake |
-| **Following a face** | `start_head_tracking()` makes the daemon aim the head at a detected face. Once the face is lost, the head recentres and then stays frozen at neutral, ignoring your targets, until tracking is re-armed | Tracking is on by default. When nobody has been seen for a few seconds the bridge hands the head back to the idle motion (the robot breathes again) and re-engages as soon as a face returns |
+| **Following a face** | `start_head_tracking()` makes the daemon aim the head at a detected face. Once the face is lost, the head recentres and then stays frozen at neutral, ignoring your targets, until tracking is re-armed | Tracking is on by default. When nobody has been seen for a few seconds the bridge hands the head back to the idle motion (the robot breathes again) and re-engages as soon as a face returns. Who is there is `api.faces`: read its value, or `async for report in api.faces.changes()` to be told when someone appears or leaves (the daemon's detections, 10 a second, each picked up within ~33 ms — not the SDK's once-a-second status) |
 | **The simulator** | In the MuJoCo sim, face tracking does not work: the loop never runs the tracking step, and even when it does, the tracker's camera matrix is wrong for the sim camera, so the head settles ~45° away from the face. The sim camera can only show the rendered scene | Every sim the bridge starts runs through its own launcher, which fixes both: the head turns onto a face and settles on it as on a robot. The sim can also use your **webcam** as the robot's camera, so the simulated robot sees and follows you (see [The simulator](#the-simulator)) |
 | **Testing** | Needs a daemon: the sim or the robot, and a person in front of the camera to test face tracking | An offline `fake` backend that records every command, for fast unit tests. A pytest plugin for live tests that checks what the target can actually do (motion, audio, camera, gravity compensation, faces) and skips a test instead of failing it. Its sim includes a portrait a test can show, move and hide, so face tracking is tested without a person |
 
@@ -107,12 +107,13 @@ All verbs are `async`; units are human (degrees, seconds, named emotions). The u
 |---|---|
 | Motors | `get_motors_state()`, `set_motors_state("enabled" \| "disabled" \| "gravity_compensation")` |
 | Expression | `list_emotions()`, `play_emotion(name)` — the upstream recorded-moves library |
-| Gaze | `start_head_tracking(weight=1.0)`, `stop_head_tracking()`, `tracking` — the daemon keeps a detected face centered; on by default (the config's `motion.tracking` flag), armed once motors are `enabled` |
+| Gaze | `start_head_tracking(weight=1.0)`, `stop_head_tracking()`, `tracking` — the daemon keeps a detected face centered; on by default (the config's `motion.tracking` flag), armed once motors are `enabled`; `attention` says whether a face owns the head. Tracking runs the detection loop behind `faces` |
 | Speech out | `say(text, synth=None)`, `play_sound(file)` |
 | Motion while talking | `set_wobbling(enabled)`, `wobbling` — upstream's audio-reactive head sway; on by default, set by the config's `motion.wobbling` flag |
 | Staying alive | `set_presence(enabled)` / `presence`, `set_idle("breathing" | "hold" | "custom")` / `idle`, `set_idle_move(factory)` / `idle_move` — the idle behaviour between verbs; set by the config's `motion` block |
 | Mic in | `audio_input(mono=True)` async iterator of int16 PCM bytes, plus `mic_sample_rate` / `mic_channels` |
 | Camera | `get_camera_frame()` — raw BGR `ndarray`, `None` when no frame is available |
+| Faces | `faces` — an observable report of the faces in front of the robot: `faces.value`, `faces.changes()` (wakes when the number of faces changes, never when one moves), `faces.wait_for(predicate)`; `set_face_detection(enabled)` / `face_detection` — on by default (the config's `faces` block), and running whenever tracking is |
 
 Verbs that move the robot require motors `enabled` and raise `MotorsNotEnabledError` otherwise. The errors a caller catches — `BridgeError` (the base), `MotorsNotEnabledError`, `GravityCompensationUnsupportedError`, `ConfigError` — import from `reachy_mini_bridge`, next to `ReachyMiniApi`, `ReachyMiniConfig`, `SpeechSynthesizer` and `TTSEngineSynthesizer`; `DaemonError` lives in `reachy_mini_bridge.errors`.
 
@@ -177,6 +178,11 @@ A sim started by hand with upstream's `reachy-mini-daemon --sim` works for motio
       "type": "pocket",
       "voice": "george"
     }
+  },
+
+  "faces": {
+    "detector": "daemon",
+    "detection": true
   },
 
   "motion": {
@@ -281,6 +287,13 @@ Omit the block and `say` raises unless you pass your own `SpeechSynthesizer`. A 
 | Field | Default | What it does |
 |---|---|---|
 | `xvf3800` | `null` | The XVF3800 audio-processor profile applied when the media session starts, as a list of `[name, [values…]]` pairs. `null` keeps the firmware defaults |
+
+### `faces` — who is in front of the robot
+
+| Field | Default | What it does | Runtime verb |
+|---|---|---|---|
+| `detector` | `"daemon"` | Where faces come from: `daemon` reads the daemon's own face detector over its HTTP API. (`custom`, your own detector on the camera frames, is not available yet) | — |
+| `detection` | `true` | Runs the detection loop from session entry, so `api.faces` reports who is there. Needs no motors. The loop also runs whenever `motion.tracking` is on, whatever this says | `set_face_detection` |
 
 ### `motion` — what the robot does at rest
 

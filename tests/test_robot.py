@@ -10,7 +10,11 @@ checked against upstream here (that file stays ``reachy_mini``-free).
 from __future__ import annotations
 
 import inspect
+import json
+import threading
 from collections.abc import Callable
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 
 import pytest
 from reachy_mini import ReachyMini
@@ -18,7 +22,7 @@ from reachy_mini.media.audio_base import AudioBase
 from reachy_mini.media.media_manager import MediaManager
 
 from reachy_mini_bridge.fake_reachy_mini import FakeReachyMini
-from reachy_mini_bridge.robot import build_robot
+from reachy_mini_bridge.robot import build_robot, fetch_daemon_json
 
 
 def test_build_robot_fake_returns_fake() -> None:
@@ -29,6 +33,36 @@ def test_build_robot_fake_returns_fake() -> None:
 def test_build_robot_unknown_backend_raises() -> None:
     with pytest.raises(ValueError, match="unknown backend"):
         build_robot("bogus")
+
+
+def test_fetch_daemon_json_gets_the_path_from_the_client_host_and_port() -> None:
+    requested: list[str] = []
+
+    class _Daemon(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            requested.append(self.path)
+            body = json.dumps({"status": "ok", "face_target": {"detected": False}})
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body.encode())
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Daemon)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        robot = SimpleNamespace(
+            client=SimpleNamespace(host="127.0.0.1", port=server.server_address[1])
+        )
+        payload = fetch_daemon_json(robot, "/api/media/tracking/face")  # pyright: ignore[reportArgumentType]
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert requested == ["/api/media/tracking/face"]
+    assert payload == {"status": "ok", "face_target": {"detected": False}}
 
 
 def test_context_manager_records_teardown() -> None:

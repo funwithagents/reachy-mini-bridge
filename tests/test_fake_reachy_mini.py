@@ -44,6 +44,29 @@ def test_motion_commands_are_recorded() -> None:
     assert tracking_args["weight"] == 0.5
 
 
+def test_show_face_and_hide_face_drive_the_daemon_face_target() -> None:
+    robot = FakeReachyMini()
+    assert robot.client.face_target["detected"] is False
+    assert not robot.get_tracked_face().detected
+
+    robot.show_face(0.5, -0.25, roll=0.1)
+    target = robot.client.face_target
+    assert (target["detected"], target["x"], target["y"], target["roll"]) == (
+        True,
+        0.5,
+        -0.25,
+        0.1,
+    )
+    assert target["ts"] is not None
+    face = robot.get_tracked_face()
+    assert (face.detected, face.x, face.y) == (True, 0.5, -0.25)
+
+    robot.hide_face()
+    assert robot.client.face_target["detected"] is False
+    assert robot.client.face_target["x"] is None
+    assert not robot.get_tracked_face().detected
+
+
 def test_wobbling_toggles_are_recorded() -> None:
     robot = FakeReachyMini()
     robot.enable_wobbling()

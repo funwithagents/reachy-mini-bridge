@@ -19,11 +19,20 @@ import gradio as gr
 import numpy as np
 import numpy.typing as npt
 
-from examples.control_panel.controller import ControlPanelController, PanelState
+from examples.control_panel.controller import (
+    ControlPanelController,
+    PanelState,
+    draw_faces,
+)
 from reachy_mini_bridge import BridgeError, ReachyMiniConfig
 from reachy_mini_bridge.config import IDLE_MODES
 
 REFRESH_S = 0.5
+# The camera has its own, faster timer so the face markers follow a moving face.
+CAMERA_REFRESH_S = 0.2
+# Show the camera as a mirror (like a selfie view): someone stepping to their right moves
+# right on screen. Display only — the faces line keeps the api's image coordinates.
+MIRROR_CAMERA = True
 LOG_LINES = 50
 MOTOR_STATES = ("enabled", "disabled", "gravity_compensation")
 
@@ -47,6 +56,7 @@ def state_table(state: PanelState) -> str:
         ("idle", state.idle),
         ("wobbling", "on" if state.wobbling else "off"),
         ("tracking", "on" if state.tracking else "off"),
+        ("detection", "on" if state.face_detection else "off"),
         ("busy", ", ".join(state.busy) or "—"),
         ("mic", f"{state.mic_sample_rate} Hz" if state.mic_sample_rate else "—"),
     ]
@@ -55,17 +65,42 @@ def state_table(state: PanelState) -> str:
     return "\n".join(lines)
 
 
-def refresh(
-    controller: ControlPanelController, log: Log
-) -> tuple[str, float, npt.NDArray[np.uint8] | None, str]:
-    """One timer tick: the state table, the mic level, the camera frame, the log."""
+def faces_line(positions: list[tuple[float, float]] | None, rate: float | None) -> str:
+    """The line under the camera: the faces and their update rate. ``positions`` is
+    ``None`` while no detector is looking."""
+    if positions is None:
+        return "**Faces:** — (no detector is looking)"
+    where = ", ".join(f"({x:+.2f}, {y:+.2f})" for x, y in positions)
+    faces = f"{len(positions)} at {where}" if where else "0"
+    updates = "—" if rate is None else f"{rate:.1f}/s"
+    return f"**Faces:** {faces} · **updates:** {updates}"
+
+
+def refresh(controller: ControlPanelController, log: Log) -> tuple[str, float, str]:
+    """One state tick: the state table, the mic level, the log."""
     state = controller.snapshot()
+    return state_table(state), round(state.mic_level, 3), "\n".join(log)
+
+
+def refresh_camera(
+    controller: ControlPanelController, log: Log
+) -> tuple[npt.NDArray[np.uint8] | None, str]:
+    """One camera tick: the frame with a marker on each reported face (mirrored when
+    ``MIRROR_CAMERA``), and the faces line under it."""
+    active = controller.api.faces.value.active
+    positions = controller.face_positions()
+    text = faces_line(positions if active else None, controller.face_rate)
     try:
         frame = controller.camera_frame_rgb()
     except BridgeError as exc:
         log_line(log, f"camera: error: {exc}")
-        frame = None
-    return state_table(state), round(state.mic_level, 3), frame, "\n".join(log)
+        return None, text
+    if frame is None:
+        return None, text
+    marked = draw_faces(frame, positions)
+    if MIRROR_CAMERA:
+        marked = np.ascontiguousarray(marked[:, ::-1])
+    return marked, text
 
 
 def build_app(controller: ControlPanelController) -> gr.Blocks:
@@ -112,6 +147,7 @@ def build_app(controller: ControlPanelController) -> gr.Blocks:
                     0, 1, value=0, step=0.001, label="Mic level", interactive=False
                 )
                 camera = gr.Image(label="Camera", interactive=False, height=240)
+                faces_md = gr.Markdown()
                 log_box = gr.Textbox(label="Log", lines=10, interactive=False)
 
             with gr.Column():
@@ -155,6 +191,7 @@ def build_app(controller: ControlPanelController) -> gr.Blocks:
                 with gr.Row():
                     wobbling = gr.Checkbox(config.motion.wobbling, label="Wobbling")
                     presence = gr.Checkbox(config.motion.presence, label="Presence")
+                    detection = gr.Checkbox(config.faces.detection, label="Detection")
                     idle = gr.Radio(
                         list(IDLE_MODES), value=config.motion.idle, label="Idle"
                     )
@@ -162,9 +199,16 @@ def build_app(controller: ControlPanelController) -> gr.Blocks:
         timer = gr.Timer(REFRESH_S)
         timer.tick(
             lambda: refresh(controller, log),
-            outputs=[state_md, mic_level, camera, log_box],
+            outputs=[state_md, mic_level, log_box],
             show_progress="hidden",
             api_name="refresh",
+        )
+        camera_timer = gr.Timer(CAMERA_REFRESH_S)
+        camera_timer.tick(
+            lambda: refresh_camera(controller, log),
+            outputs=[camera, faces_md],
+            show_progress="hidden",
+            api_name="refresh_camera",
         )
 
         def bind(
@@ -196,6 +240,12 @@ def build_app(controller: ControlPanelController) -> gr.Blocks:
         bind(wobbling.input, "set_wobbling", controller.set_wobbling, wobbling)
         bind(presence.input, "set_presence", controller.set_presence, presence)
         bind(idle.input, "set_idle", controller.set_idle, idle)
+        bind(
+            detection.input,
+            "set_face_detection",
+            controller.set_face_detection,
+            detection,
+        )
 
     return demo
 

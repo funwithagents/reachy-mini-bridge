@@ -23,15 +23,20 @@ from .errors import (
     GravityCompensationUnsupportedError,
     MotorsNotEnabledError,
 )
+from .face_detection import Face, FaceReport
 from .motion import IdleMove, IdleOffsets
+from .observable import Observable
 
 __all__ = [
     "BridgeError",
     "ConfigError",
+    "Face",
+    "FaceReport",
     "GravityCompensationUnsupportedError",
     "IdleMove",
     "IdleOffsets",
     "MotorsNotEnabledError",
+    "Observable",
     "ReachyMiniApi",
     "ReachyMiniConfig",
     "SpeechSynthesizer",
