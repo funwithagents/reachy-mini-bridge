@@ -18,6 +18,15 @@ tests:
 
 It is the layer a human, service, or agent runtime codes against directly. **Action verbs** take and return plain, JSON-friendly Python values, so a caller can wrap them as agent/LLM tools as they stand. **Perception verbs return the natural rich object** instead — a camera frame is a `CameraFrame` holding the numpy BGR array ([camera.md](../vision/camera.md)), the mic is a raw-PCM stream ([audio.md](../audio/audio.md)) — because that's what a Python caller wants to work with; encoding one for a model (e.g. a frame as base64 JPEG) is the caller's job, done at its own boundary.
 
+### Driving the robot from an agent
+
+An agent runtime uses the api the way any caller does, through tools its own code defines: each tool is a typed, docstring'd function that calls one verb (or reads one perception value) on a `ReachyMiniApi` the agent holds open for its session. What makes the api fit for that:
+
+- **Action verbs forward as they stand.** Their parameters and returns are JSON-friendly and in human units, so a tool's schema is the verb's signature: `play_emotion(name)` with `list_emotions()` as its menu, `say(text)`, `set_motors_state(state)`, `start_head_tracking()` / `stop_head_tracking()`.
+- **Perception is read, then encoded by the tool.** `api.camera.latest()` hands over the newest frame and `api.faces.value` the current face report; the tool turns them into what its model takes (a JPEG, a count, a sentence).
+- **Errors are named.** A refused verb raises a `BridgeError` subclass (e.g. `MotorsNotEnabledError`) whose message a tool can return to the agent as the reason.
+- **A tool call is cancellable.** Cancelling the task running a tool stops the robot's action and leaves the session ready for the next call (see "Cancellation" below), so an agent's interruption is the api's interruption.
+
 ### Async-native
 
 `ReachyMiniApi` is **async-native**. Audio forces it (see [audio.md](../audio/audio.md)): speech synthesis is `async`, and a **live microphone stream** runs concurrently with playback and with the robot moving — full-duplex interaction (a caller's ASR consuming the mic while `say` speaks, plus barge-in) keeps both audio paths on one event loop.

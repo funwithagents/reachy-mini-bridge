@@ -141,6 +141,41 @@ async with ReachyMiniApi("fake") as api:
 
 Routing both directions through the bridge is what keeps the robot's hardware echo cancellation working while it speaks and listens at once.
 
+## Using it from an agent
+
+An LLM agent drives the robot through the same `ReachyMiniApi`: its tools are plain functions you write, each calling one verb. The verbs take and return JSON-friendly values in human terms, so most tools are a docstring and one line; perception is read from the api and encoded for your model inside the tool (a camera frame as base64 JPEG with the image library of your choice). Register them with the agent runtime you use:
+
+```python
+from reachy_mini_bridge import BridgeError, ReachyMiniApi
+
+
+def make_tools(api: ReachyMiniApi):
+    async def play_emotion(name: str) -> str:
+        """Play a recorded emotion on the robot, e.g. "happy". Call list_emotions for the names."""
+        try:
+            await api.play_emotion(name)
+        except BridgeError as e:  # e.g. motors not enabled
+            return f"could not play {name}: {e}"
+        return f"played {name}"
+
+    async def list_emotions() -> list[str]:
+        """List the emotions the robot can play."""
+        return await api.list_emotions()
+
+    async def say(text: str) -> str:
+        """Speak the text out loud through the robot's speaker."""
+        await api.say(text)
+        return "done"
+
+    async def who_is_there() -> int:
+        """Count the faces the robot currently sees."""
+        return len(api.faces.value.faces)
+
+    return [play_emotion, list_emotions, say, who_is_there]
+```
+
+Cancelling the task that runs a tool stops the action on the robot (speech flushed, the move stopped) and leaves the session ready for the next call. A runtime that calls tools synchronously can run the api on a background event loop and submit each call to it, as the [control panel](examples/control_panel/) does.
+
 ## Backends
 
 | Backend | What it drives | Needs |
