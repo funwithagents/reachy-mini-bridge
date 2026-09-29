@@ -159,7 +159,6 @@ The fake has no detector of its own and needs none: the default config runs no l
 - **[robot.md](../core/robot.md):** the consumed slice reaches the camera through the feed alone (`media.get_frame`) and the daemon's tracking not at all.
 - **[sim_daemon.md](../daemon/sim_daemon.md):** the sim's faces are detected by the bridge from the camera stream the launcher feeds — the rendered eye camera under the viewer, or a host webcam headless or not; a headless sim without a webcam has no camera and its detector reads inactive.
 - **[sim_scene.md](../testing/sim_scene.md) / [testing.md](../testing/testing.md):** a show / hide of the portrait on the viewer sim asserts *appeared* / *left* on `faces.changes()`; the live harness configures `yunet`.
-- **[tools.md](../core/tools.md):** nothing yet — an agent cannot subscribe; a snapshot or wait-for-a-face tool is deferred with the rest of that layer.
 
 ## Open questions
 

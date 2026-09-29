@@ -16,7 +16,7 @@ tests:
 
 A Gradio web app for driving a robot by hand through [api.md](../core/api.md)'s `ReachyMiniApi`: every verb has a button, and the api's readable state is on screen and kept fresh. It is a **manual test and demo tool**, not part of the shipped package — it lives in `examples/`, installs through the `demo` dependency group, and is started from a [config.md](../core/config.md) file so the same panel drives the real robot, the simulator, or the offline fake by pointing it at a different config.
 
-Besides being the quickest way to exercise a verb without writing code, it is the first consumer of the sync↔async bridging that [tools.md](../core/tools.md) plans (a background event loop that sync callables submit to), and it makes the "Cancellation" contract of [api.md](../core/api.md) something a person can press: a Stop button next to `say` and `play_emotion`.
+Besides being the quickest way to exercise a verb without writing code, it is the worked example of calling the async api from sync code (a background event loop that sync callables submit to), and it makes the "Cancellation" contract of [api.md](../core/api.md) something a person can press: a Stop button next to `say` and `play_emotion`.
 
 ## Core concepts / Decided
 

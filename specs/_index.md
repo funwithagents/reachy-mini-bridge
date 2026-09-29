@@ -18,7 +18,7 @@ The project's own structure and tooling — conventions for the whole repo rathe
 
 ### core/
 
-The layers and what they share: the connection seam, the interaction api, the config it's built from, the one event mechanism, and the agent tools layer.
+The layers and what they share: the connection seam, the interaction api, the config it's built from, and the one event mechanism.
 
 | Spec | Description | Status |
 |---|---|---|
@@ -26,7 +26,6 @@ The layers and what they share: the connection seam, the interaction api, the co
 | [api.md](core/api.md) | `ReachyMiniApi` — high-level interaction verbs in human units (motors, expression, gaze through the bridge's own head tracker, perception — the camera feed `api.camera` and the observable `faces` report — audio, head wobbling, presence & the idle move — breathing, hold, or a caller's custom one) over the robot seam; constructed from a `ReachyMiniConfig`; detection and tracking opt-in, needing a configured detector | Implemented |
 | [config.md](core/config.md) | `ReachyMiniConfig` — one declarative config (backend, upstream `robot` kwargs, `daemon` management — including the sim's `camera` source, rendered or a host webcam — tts-engine `tts` block, `audio` profile, the `faces` block — the detector (`null` / `yunet` / `custom`, with a Python-only `face_detector`; none by default) and the detection switch — and the `motion` block — presence, the idle mode (`breathing` / `hold` / `custom`) with its Python-only `idle_move`, wobbling, tracking (off by default, needing a detector)) buildable from a dict / JSON string / JSON file, mirroring tts-engine's `TTSEngineConfig` | Implemented |
 | [observable.md](core/observable.md) | `Observable[T]` (`observable.py`) — a value a caller reads directly and subscribes to: `value`, `changes()` (an async iterator under the cancellation contract, latest-wins for a slow subscriber), `wait_for`, and the owner-defined notion of a change (`set` publishes, `update` is silent); the bridge's one event mechanism, first used by `api.faces` | Implemented |
-| [tools.md](core/tools.md) | `ReachyMiniTools` — the API exposed as plain typed, docstring'd functions for agent/LLM runtimes | Draft |
 
 ### motion/
 

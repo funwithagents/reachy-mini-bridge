@@ -88,7 +88,6 @@ Detectors follow the same principle: a detector written against the bridge's `Fa
 - **[robot.md](../core/robot.md):** `media.get_frame` is consumed by the feed alone; the fake's paced frames.
 - **[control_panel.md](../examples/control_panel.md):** the panel's camera image is the feed's latest frame.
 - **[testing.md](../testing/testing.md):** the `camera` capability probe reads `robot.media.get_frame` directly, before the api's session exists; the live camera test reads the feed.
-- **[tools.md](../core/tools.md):** the picture an agent tool returns is the feed's latest image, base64-encoded at that boundary.
 
 ## Open questions
 

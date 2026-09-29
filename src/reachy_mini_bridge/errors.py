@@ -1,11 +1,11 @@
 """Exception types the bridge raises (specs/core/api.md, specs/core/robot.md, specs/core/config.md,
 specs/daemon/daemon.md).
 
-One small hierarchy so callers and the tools layer catch a single named base rather
-than guessing at ad-hoc types. State errors (e.g. a movement verb called while motors
-are off) are distinct from ``ValueError``, which the api reserves for out-of-range
-input validation — and which ``ConfigError`` extends, since a malformed config is
-invalid input data.
+One small hierarchy so callers catch a single named base rather than guessing at
+ad-hoc types. State errors (e.g. a movement verb called while motors are off) are
+distinct from ``ValueError``, which the api reserves for out-of-range input
+validation — and which ``ConfigError`` extends, since a malformed config is invalid
+input data.
 """
 
 from __future__ import annotations

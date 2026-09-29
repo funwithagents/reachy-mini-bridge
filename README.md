@@ -25,7 +25,7 @@ The upstream `reachy_mini` SDK gives full, low-level access to the robot. The br
 
 | Path | What it is |
 |---|---|
-| [src/reachy_mini_bridge/](src/reachy_mini_bridge/) | The library: `api.py` (the verbs), `config.py`, `audio.py` (speech out, mic in), `motion.py` (the motion loop: presence, breathing, emotions), `daemon.py` (daemon lifecycle), `head_tracking.py` (the head tracker: a face to a look-at aim), `face_detection.py` (the detection loop behind `faces`), `yunet.py` (the shipped face detector), `sim_daemon.py` (the sim launcher: webcam camera, viewer overlay), `robot.py` + `fake_reachy_mini.py` (the backend seam), `testing/` (a pytest harness for your own e2e tests), `tools.py` (placeholder) |
+| [src/reachy_mini_bridge/](src/reachy_mini_bridge/) | The library: `api.py` (the verbs), `config.py`, `audio.py` (speech out, mic in), `motion.py` (the motion loop: presence, breathing, emotions), `daemon.py` (daemon lifecycle), `head_tracking.py` (the head tracker: a face to a look-at aim), `face_detection.py` (the detection loop behind `faces`), `yunet.py` (the shipped face detector), `sim_daemon.py` (the sim launcher: webcam camera, viewer overlay), `robot.py` + `fake_reachy_mini.py` (the backend seam), `testing/` (a pytest harness for your own e2e tests) |
 | [config.example.json](config.example.json) | Every config field with placeholder values |
 | [specs/](specs/) | Design docs, one per concept in folders named after the subsystem (`core/`, `motion/`, `vision/`, `audio/`, `daemon/`, `testing/`, `examples/`), each with a status — the source of truth for how things are meant to work |
 | [plans/](plans/) | Implementation plans that turned those specs into code |

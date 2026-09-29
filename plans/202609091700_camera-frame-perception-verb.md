@@ -7,7 +7,7 @@ Implements a small extension to the settled `specs/core/api.md` ("v1 scope") and
 ## Design decisions (settled with the user)
 
 - **Verb name:** `get_camera_frame` (not `get_view`).
-- **Return type:** the raw camera frame as a numpy **BGR `ndarray`** or `None` (`npt.NDArray[np.uint8] | None`, `HxWx3`) — a *perception-oriented* return. This establishes the convention that **perception verbs return rich objects** (like the mic path, which yields raw PCM), while **action verbs stay JSON-friendly**; the JSON/base64 encoding of frames is the [tools.md](../specs/core/tools.md) layer's job (already stated there).
+- **Return type:** the raw camera frame as a numpy **BGR `ndarray`** or `None` (`npt.NDArray[np.uint8] | None`, `HxWx3`) — a *perception-oriented* return. This establishes the convention that **perception verbs return rich objects** (like the mic path, which yields raw PCM), while **action verbs stay JSON-friendly**; the JSON/base64 encoding of frames is the caller's job.
 - **No-frame handling:** `get_camera_frame` grabs one frame off the event loop (`asyncio.to_thread(self._robot.media.get_frame)`) and **mirrors upstream exactly** — upstream `get_frame()` returns `None` until a frame is ready / when there is no GL context (see [docs/running-the-sim-daemon.md](../docs/running-the-sim-daemon.md)), so the verb returns `None` in that case rather than raising. It is a thin pass-through (like `play_sound`). No motors precondition (read-only). No internal poll loop — a caller that wants to wait polls in a short loop, and the e2e test only runs where the `camera` capability already probed a frame.
 
 ## Scope

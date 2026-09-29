@@ -1,6 +1,6 @@
 # Upstream `reachy_mini` API — reference notes
 
-Reference notes on the upstream [`pollen-robotics/reachy_mini`](https://github.com/pollen-robotics/reachy_mini) SDK — the package this project bridges. It's background for designing [`robot.md`](../specs/core/robot.md) / [`api.md`](../specs/core/api.md) / [`tools.md`](../specs/core/tools.md), **not** a spec: nothing here is a commitment about *our* code, and it can lag upstream. Verify against the installed version before relying on a detail — this reflects `main` as read on 2026-09-04.
+Reference notes on the upstream [`pollen-robotics/reachy_mini`](https://github.com/pollen-robotics/reachy_mini) SDK — the package this project bridges. It's background for designing [`robot.md`](../specs/core/robot.md) / [`api.md`](../specs/core/api.md), **not** a spec: nothing here is a commitment about *our* code, and it can lag upstream. Verify against the installed version before relying on a detail — this reflects `main` as read on 2026-09-04.
 
 ## The shape of it
 
@@ -124,7 +124,7 @@ The upstream repo ships agent-oriented skill docs under [`skills/`](https://gith
 
 | Skill | Why read it |
 |---|---|
-| [`ai-integration.md`](https://github.com/pollen-robotics/reachy_mini/blob/main/skills/ai-integration.md) | LLM-agent control of the robot — most directly relevant to [`tools.md`](../specs/core/tools.md). |
+| [`ai-integration.md`](https://github.com/pollen-robotics/reachy_mini/blob/main/skills/ai-integration.md) | LLM-agent control of the robot — how an agent runtime drives it. |
 | [`interaction-patterns.md`](https://github.com/pollen-robotics/reachy_mini/blob/main/skills/interaction-patterns.md) | Designing how users interact with the robot — informs [`api.md`](../specs/core/api.md)'s verbs. |
 | [`motion-philosophy.md`](https://github.com/pollen-robotics/reachy_mini/blob/main/skills/motion-philosophy.md) | `goto_target` vs `set_target` — the decision behind our movement verbs. |
 | [`symbolic-motion.md`](https://github.com/pollen-robotics/reachy_mini/blob/main/skills/symbolic-motion.md) | Rhythmic/repetitive motion (nod, sway, dance) — reference for composed gestures. |
