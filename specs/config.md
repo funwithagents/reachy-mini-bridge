@@ -171,7 +171,7 @@ Face detection ([user_perception.md](user_perception.md)): where the faces come 
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `detector` | `"daemon"` \| `"custom"` | `"daemon"` | The detection source. `daemon`: the daemon's own face detector, read over its HTTP API (the daemon's tracking is armed at a negligible weight so it keeps detecting; it does not steer the head). `custom`: the caller's detector, run by the bridge on the camera frames; needs `face_detector`. |
+| `detector` | `"daemon"` \| `"custom"` | `"daemon"` | The detection source. `daemon`: the daemon's own face detector, read over its HTTP API (the daemon's tracking is armed at a negligible weight so it keeps detecting; it does not steer the head). `custom`: the caller's detector, run by the bridge on the camera feed's frames ([camera.md](camera.md)); needs `face_detector`. A shipped detector's name joins the values with the bridge's `faces-<name>` extra that installs it, a name whose extra is missing raising `ConfigError` naming the extra, as a `tts` provider's does ([user_perception.md](user_perception.md) "Named detectors"). |
 | `detection` | bool | `true` | Run the detection loop from session entry, so `api.faces` reports who is there. Needs no motors. The loop also runs whenever head tracking is on ([user_perception.md](user_perception.md) "Configuration"), whatever this says. |
 | `face_detector` | a zero-argument callable returning a `FaceDetector`, or `None` — **Python only** | `None` | The custom detector's factory, used when `detector` is `"custom"` (set on the dataclass, as `motion.idle_move` is; a JSON file names the source and code supplies the detector). Checked at session entry: `"custom"` with none registered fails bring-up with `ValueError`. |
 

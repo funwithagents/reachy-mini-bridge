@@ -188,6 +188,7 @@ The loop is a **`MotionSession`**, entered by `ReachyMiniApi.__aenter__` after t
 
 - **[api.md](api.md):** `play_emotion` runs through this loop (and pauses wobbling around the move); `set_presence` / `set_idle` / `set_idle_move` and their properties are the modes' verbs; `set_motors_state` pauses / resumes the loop; the session enters last and exits first.
 - **[head_tracking.md](head_tracking.md):** the head tracker hands the loop its aim and focus (`set_gaze`) and reads the head-pose history (`head_pose_history`); the loop composes, eases and fades ("The gaze layer").
+- **[camera.md](camera.md):** the camera feed stamps each frame with `head_pose_at(ts)` — the session object is constructed before the feed starts, and answers with the robot's reported pose until the loop's thread records its own.
 - **[config.md](config.md):** the `motion` block (`presence`, `idle`, and the Python-only `idle_move`) sets the modes' initial values.
 - **[robot.md](robot.md):** the consumed slice grows `set_target` and the two pose readers, and drops `async_play_move`; the fake records targets.
 - **[audio.md](audio.md):** the move's sound starts through `media.play_sound` and stops through `MediaSession.stop_sound()`; wobbling is paused around an emotion.
