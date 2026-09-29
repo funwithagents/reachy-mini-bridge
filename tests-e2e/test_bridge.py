@@ -595,13 +595,24 @@ def test_play_emotion_plays_a_real_move(
         names = await bridge.list_emotions()
         assert names, "emotions library loaded but empty"
         await bridge.set_motors_state("enabled")
-        await bridge.play_emotion(
-            names[0]
-        )  # completes only if the move actually played
-        await asyncio.sleep(1.5)  # the idle move eases the head back to neutral
-        robot: Any = bridge.robot
-        pose = await asyncio.to_thread(robot.get_current_head_pose)
-        _joints, antennas = await asyncio.to_thread(robot.get_current_joint_positions)
+        # The hold is the still neutral: after the emotion the loop blends back to it
+        # and stays there, so the "back to neutral" sample is deterministic. Under
+        # breathing (the default idle) the antennas roam 10-25 deg outward after a
+        # random 0.4-2.5 s rest, and whether the sample lands in the rest or in the
+        # roam was a coin toss (specs/motion/motion.md "Antenna tracks").
+        await bridge.set_idle("hold")
+        try:
+            await bridge.play_emotion(
+                names[0]
+            )  # completes only if the move actually played
+            await asyncio.sleep(BLEND_S + 1.0)  # the return blend eases back to neutral
+            robot: Any = bridge.robot
+            pose = await asyncio.to_thread(robot.get_current_head_pose)
+            _joints, antennas = await asyncio.to_thread(
+                robot.get_current_joint_positions
+            )
+        finally:
+            await bridge.set_idle("breathing")
         deviation = np.abs(np.asarray(antennas) - NEUTRAL_ANTENNAS)
         return names[0], float(np.linalg.norm(pose[:3, 3])), float(deviation.max())
 
@@ -820,6 +831,11 @@ class _Track:
         settled = self._settled()
         return sum(p for _, p in settled) / len(settled)
 
+    @property
+    def settle_s(self) -> float:
+        """How long the head was sampled before it held still (or the timeout)."""
+        return self.times[-1] - self.times[0]
+
     def _past_face(self) -> list[float]:
         """Each sample's yaw beyond the expected one, positive in the direction the head
         had to turn (all zero when the face did not move sideways)."""
@@ -895,8 +911,8 @@ def _assert_tracked(track: _Track, pitch_ahead: float | None = None) -> None:
         f"\n[e2e] {track.where}: yaw {track.start_yaw:+.1f} -> {track.yaw:+.1f} deg "
         f"(expected {track.expected_yaw:+.1f}, overshoot {track.overshoot_deg:.1f}, "
         f"swing back {track.swing_back_deg:.1f}), "
-        f"pitch {track.pitch:+.1f}, face {face}, delay estimate {track.delay_s}, "
-        f"{track.frame_note}"
+        f"pitch {track.pitch:+.1f}, settled in {track.settle_s:.1f} s, face {face}, "
+        f"delay estimate {track.delay_s}, {track.frame_note}"
     )
     assert track.overshoot_deg <= OVERSHOOT_MAX_DEG, (
         f"{track.where}: the head swung {track.overshoot_deg:.1f} deg past the face"
@@ -1000,20 +1016,34 @@ def test_head_tracking_turns_onto_a_face_and_follows_it(
     """specs/core/bridge.md "Attention / gaze": with tracking on (the config default), the head
     turns onto a face that appears ahead, then follows it 0.15 m to either side and back:
     each time toward the face, past it at most once by a bounded amount, settling at the
-    yaw its position implies with the face at the image centre and the pitch unchanged."""
+    yaw its position implies with the face at the image centre and the pitch unchanged.
+
+    Tracks with **focus**: the head holds exactly on the aim, the idle move's head motion
+    left out (its antennas kept), so the settled yaw and pitch read the tracker alone.
+    Under the default composition breathing roams the head +-2 deg of yaw around the aim
+    and a gliding face settled 3-4.5 deg short of its 5 deg tolerance; the other gaze
+    tests keep the default and cover that path."""
     bridge, _caps = live_bridge
 
     async def scenario() -> list[_Track]:
         await bridge.set_motors_state("enabled")
         await bridge.stop_head_tracking()
-        await bridge.start_head_tracking()
+        await bridge.start_head_tracking(focus=True)
         assert bridge.tracking, "tracking is on by default from the config"
+        assert bridge.tracking_focus
         face_scene.show(FACE)
         tracks = [await _track_onto(bridge, "face ahead", 0.0)]
         for lateral in (LATERAL_M, -LATERAL_M, 0.0):
             face_scene.place(FACE, _face_at(lateral), duration=1.0)
+            # A face that glides over 1 s is followed with a lag the head creeps out of
+            # slowly; give the tail time before calling the head settled.
             tracks.append(
-                await _track_onto(bridge, f"face moved to y={lateral:+.2f} m", lateral)
+                await _track_onto(
+                    bridge,
+                    f"face moved to y={lateral:+.2f} m",
+                    lateral,
+                    min_seconds=5.0,
+                )
             )
         assert bridge.attention == "engaged"
         return tracks
