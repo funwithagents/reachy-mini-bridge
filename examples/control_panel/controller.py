@@ -417,9 +417,13 @@ class ControlPanelController:
         return [f.roll for f in report.faces] if report.active else []
 
     def camera_frame_rgb(self) -> npt.NDArray[np.uint8] | None:
-        """The latest camera frame as RGB (the api's BGR flipped), or ``None``."""
-        frame = self._call(self._api.get_camera_frame())
-        return None if frame is None else np.ascontiguousarray(frame[:, :, ::-1])
+        """The camera feed's newest frame as RGB, or ``None`` while there is none.
+
+        ``api.camera.latest()`` is a thread-safe sample, so no round trip to the loop;
+        the feed's image is shared and read-only, so the flip to RGB is into a copy.
+        """
+        frame = self._api.camera.latest()
+        return None if frame is None else np.ascontiguousarray(frame.image[:, :, ::-1])
 
     # --- instant verbs ------------------------------------------------------------
 

@@ -16,6 +16,7 @@ See specs/_overview.md for the architecture and specs/_index.md for each concept
 
 from .api import ReachyMiniApi
 from .audio import SpeechSynthesizer, TTSEngineSynthesizer
+from .camera import CameraFrame
 from .config import ReachyMiniConfig
 from .errors import (
     BridgeError,
@@ -23,20 +24,23 @@ from .errors import (
     GravityCompensationUnsupportedError,
     MotorsNotEnabledError,
 )
-from .face_detection import Face, FaceReport
+from .face_detection import Face, FaceDetector, FaceReport, PixelFace
 from .motion import IdleMove, IdleOffsets
 from .observable import Observable
 
 __all__ = [
     "BridgeError",
+    "CameraFrame",
     "ConfigError",
     "Face",
+    "FaceDetector",
     "FaceReport",
     "GravityCompensationUnsupportedError",
     "IdleMove",
     "IdleOffsets",
     "MotorsNotEnabledError",
     "Observable",
+    "PixelFace",
     "ReachyMiniApi",
     "ReachyMiniConfig",
     "SpeechSynthesizer",

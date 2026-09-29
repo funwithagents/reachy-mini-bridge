@@ -8,11 +8,12 @@ tests:
   - tests/test_face_detection.py
   - tests/test_api.py
   - tests-e2e/test_api.py
+  - tests-e2e/test_custom_faces.py
 ---
 
 # User perception — detecting the people in front of the robot (`face_detection.py`)
 
-**Status:** Stable
+**Status:** Implemented
 
 ## Purpose
 
@@ -153,4 +154,4 @@ Three fields, in two blocks ([config.md](config.md)):
 3. **The daemon's ε-weight lean.** An upstream "detect without steering" mode would remove `DAEMON_DETECT_WEIGHT`; to be filed with the draft in [../docs/upstream-head-tracking-after-face-loss.md](../docs/upstream-head-tracking-after-face-loss.md).
 4. **Debounce numbers.** `FACE_ABSENT_S` is a starting value, to be tuned on the viewer sim against the flicker rate of upstream's detector. The poll rate is settled by measurement: on the viewer sim (rendered camera and webcam, weight 1.0 and 0.001 alike) the daemon's detector produced 10.0–10.2 observations/s — the `IPC_FPS` cap, not the detector's speed — and a poll took 0.4 ms (p99 1.1 ms) on loopback, hence 30 Hz. Still to measure: the wireless robot's detector rate on its Raspberry Pi, and the cost of 30 polls/s over Wi-Fi.
 5. **Other cues of a user.** The direction a voice comes from (the daemon's DoA snapshot, [api.md](api.md) deferred perception) and a recognised identity would enrich the report — a `Face` gaining a `voice` or `name` field, or the report gaining `voices` beside `faces`. Deferred until a caller needs more than faces; the shape above is designed to take them additively.
-6. **The frame's capture time** is the camera feed's question now ([camera.md](camera.md) open question 1): whether the feed can read the capture timestamp decides whether a `custom` report carries a pose (exact aim) or none (the tracker's estimate). Nothing in this spec changes with the answer.
+6. **The frame's capture time** is the camera feed's question ([camera.md](camera.md) "The frame's time and the head pose", open question 1): today only the `fake` stamps a capture time, so a `custom` report carries a pose there and none on the sim or a robot, where the tracker estimates the delay. Nothing in this spec changes with the answer.

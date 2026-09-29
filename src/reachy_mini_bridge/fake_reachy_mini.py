@@ -19,7 +19,7 @@ from typing import Any, Self
 import numpy as np
 import numpy.typing as npt
 
-__all__ = ["FakeReachyMini"]
+__all__ = ["FAKE_FRAME_HZ", "FakeReachyMini"]
 
 # The XVF3800 voice pipeline: 16 kHz float32 stereo capture in 10 ms blocks, as the
 # sim and a real Reachy Mini Lite report (see specs/audio.md). The fake reports these
@@ -31,6 +31,9 @@ _CHUNK_FRAMES = 160  # 10 ms at 16 kHz
 # Synthetic camera frame size (small; just enough for tests to assert real HxWx3 shape).
 _FRAME_WIDTH = 64
 _FRAME_HEIGHT = 48
+# The fake camera's frame rate (specs/camera.md "`fake` backend support"): upstream's local
+# feed is capped at 10 fps, and the fake's `get_frame` paces itself the same way.
+FAKE_FRAME_HZ = 10.0
 
 # The camera calibration a client reads (``media.camera.camera_specs``): a Lite-like
 # 3840x2592 sensor of ~88° horizontal field of view, streamed uncropped, no distortion —
@@ -167,6 +170,7 @@ class _FakeMedia:
         self.camera = _FakeCamera()
         self._recording = False
         self._playing = False
+        self._last_frame_at: float | None = None
 
     # --- input (mic) ---
     def start_recording(self) -> None:
@@ -225,9 +229,21 @@ class _FakeMedia:
 
         A deterministic horizontal gradient (not a flat constant) so tests assert real
         structure. Mirrors the upstream ``media.get_frame`` shape; the fake always has a
-        frame ready, so unlike the real daemon it never returns ``None``. Not recorded
-        as a command — a perception getter, like ``get_audio_sample``.
+        frame ready, so unlike the real daemon it never returns ``None``. Paced like the
+        real backend's (specs/camera.md): the first call returns at once, each later call
+        blocks until ``1 / FAKE_FRAME_HZ`` has elapsed since the previous frame — the real
+        ``get_frame()`` blocks up to 20 ms for the next frame, the fake up to a frame
+        period, on the camera feed's thread where it costs nothing. Not recorded as a
+        command — a perception getter, like ``get_audio_sample``.
         """
+        period = 1.0 / FAKE_FRAME_HZ
+        now = time.monotonic()
+        if self._last_frame_at is not None:
+            due = self._last_frame_at + period
+            if due > now:
+                time.sleep(due - now)
+                now = due
+        self._last_frame_at = now
         frame = np.zeros((_FRAME_HEIGHT, _FRAME_WIDTH, 3), dtype=np.uint8)
         ramp = np.linspace(0, 255, _FRAME_WIDTH, dtype=np.uint8)
         frame[:, :, 0] = ramp  # B channel ramps left→right

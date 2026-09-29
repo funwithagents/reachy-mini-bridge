@@ -52,7 +52,7 @@ The launcher does not touch readiness, which is the bridge's side of the same fa
 
 - **[daemon.md](daemon.md):** the `real` launch recipe runs this launcher; the readiness probe is side-effect-free for the reason above.
 - **[sim_daemon.md](sim_daemon.md):** the same pattern — a module of ours that patches upstream in-process and calls its `main()` — for the MuJoCo daemon; the two launchers share nothing but the shape, because their corrections do not overlap.
-- **[api.md](api.md):** `get_camera_frame()` on a real robot depends on the daemon having opened the robot's camera; with the check it does.
+- **[api.md](api.md):** the camera feed (`api.camera`, [camera.md](camera.md)) on a real robot depends on the daemon having opened the robot's camera; with the check it does.
 
 ## Open questions
 

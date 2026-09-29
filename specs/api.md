@@ -10,7 +10,7 @@ tests:
 
 # Interaction API (`ReachyMiniApi`)
 
-**Status:** Updated
+**Status:** Implemented
 
 ## Purpose
 

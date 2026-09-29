@@ -4,13 +4,14 @@ code:
   - src/reachy_mini_bridge/api.py
   - src/reachy_mini_bridge/fake_reachy_mini.py
 tests:
+  - tests/test_camera.py
   - tests/test_api.py
   - tests-e2e/test_api.py
 ---
 
 # Camera feed — the one reader of the robot's camera (`camera.py`)
 
-**Status:** Stable
+**Status:** Implemented
 
 ## Purpose
 
@@ -56,8 +57,8 @@ CameraFeed(read_frame, pose_at)
 
 The one rule: **a head pose is attached only to a capture time.** A face reported on a frame is aimed against `head_pose` directly, with no delay to estimate ([head_tracking.md](head_tracking.md) "Observations that carry their own pose"); a pose taken at the wrong instant would be trusted just the same, and while the head turns toward a face — exactly when the pose matters — the pose at arrival differs from the pose at capture by the pipeline's latency (0.2 s in the sim). An exact-looking wrong pose is worse than none, so the feed never attaches one to an arrival time.
 
-- **Capture time, when the feed can read it.** The appsink's samples carry the buffer's `pts` on the pipeline clock, which GStreamer derives from the monotonic clock plus the pipeline's base time — one offset, read at start, maps it to `time.monotonic()`. Reading it means pulling the sample from the client camera's appsink (`camera._appsink_video`, a pinned SDK internal, as `MediaSession.stop_sound()` pins `_playbin`) instead of calling `get_frame()`, or an upstream accessor to propose (`get_frame_with_timestamp`). Whether the daemon's IPC relay preserves the camera's timestamp or restamps at the relay decides how exact "capture" is; a restamp at the daemon is still upstream of the client-side latency. Which path the live daemon takes is measured within the implementation plan and recorded here; the design holds either way.
-- **Arrival time, otherwise.** `ts` is `time.monotonic()` taken when `get_frame()` returned the frame, and `head_pose` is `None`. The tracker then estimates the delay from its pose history, as it does for the `daemon` source — correct, not exact.
+- **Capture time, when the backend gives one.** The reader the feed loops (`frame_reader(robot)`, the bridge's one call site of `get_frame`) returns each frame with its capture time when the backend knows it, or with none. The `fake` knows it: it synthesises the frame inside the call, so the instant `get_frame()` returns is the capture, and every fake frame carries `head_pose`. **Upstream's live backends give none — measured on the sim and on a robot.** The appsink's samples would carry the buffer's `pts` on the pipeline clock (one offset from `time.monotonic()`, read at start), but every buffer the client appsink delivers has `pts = 0` — on the viewer sim (rendered eye camera and webcam relay) and on a Reachy Mini Lite over USB, head still or turning (SDK 1.10). The cause is the daemon's, not the transport's: its media pipeline holds the microphone and speaker, so GStreamer selects the **audio device's clock** for it (base time 0), `unixfdsink` sends timestamps in that clock's domain, and the client's `unixfdsrc`, on the system clock, converts them to a negative running time and clamps them to zero. Reproduced in isolation: the same sender chain with an audio source zeroes every `pts`; forced onto `GstSystemClock` it delivers increasing `pts` 3–24 ms behind arrival. So no live backend reads a capture time today, and the bridge does not pull the pinned appsink internal (`camera._appsink_video`) for a timestamp that is not there. The fix and the ask — the daemon's sender pipeline on the system clock (one line), then `get_frame_with_timestamp()` — are drafted in [../docs/upstream-camera-frame-timestamp.md](../docs/upstream-camera-frame-timestamp.md); once frames carry a `pts`, the reader returns the capture time and every rule below applies unchanged.
+- **Arrival time, otherwise.** `ts` is `time.monotonic()` taken when `get_frame()` returned the frame, and `head_pose` is `None`. This is the live backends' path today (`sim` and `real`): the tracker estimates the delay from its pose history, as it does for the `daemon` source — correct, not exact.
 - **Never the middle:** an arrival time with a pose looked up at it.
 
 The pose comes from the motion session's `head_pose_at`, which is why the api constructs the `MotionSession` object before the feed (construction starts no thread; the reader's first frames get the pose read from the robot until the loop's thread records its own, [motion.md](motion.md)). A feed built without a `pose_at` (no motion session) publishes `head_pose=None` throughout.
@@ -91,6 +92,6 @@ Detectors follow the same principle: a detector written against the bridge's `Fa
 
 ## Open questions
 
-1. **The capture time on the live daemon.** Whether the client appsink's `pts` is the camera's timestamp, the relay's, or neither useful — measured on the viewer sim and a robot within the plan, and recorded above with the path taken.
+1. **The capture time waits for upstream.** The client's appsink `pts` is zero on every frame, sim and robot alike, because the daemon's media pipeline runs on its audio clock ("The frame's time and the head pose" above). The fix belongs in the daemon's media server (the ask in [../docs/upstream-camera-frame-timestamp.md](../docs/upstream-camera-frame-timestamp.md)), **not** in the bridge's launchers: the bridge must behave the same on a daemon it did not start — a borrowed one, and the wireless robot's own, where it only ever borrows — so a correction that lives in the launchers would make the feed's frames carry a pose on some daemons and not others. Once upstream stamps frames, `frame_reader` gains a guarded appsink path (pull the sample, map `pts + base_time` onto `time.monotonic()`, fall back to `get_frame()` and arrival time when the `pts` is zero or the attribute is missing) and live frames over the local IPC carry their pose. The wireless robot's client reads the camera over WebRTC (`webrtc_client_gstreamer`, RTP timestamps), a separate path to measure then.
 2. **The camera model on the feed.** The head tracker holds the active camera's model (size, intrinsics, and for a webcam the fixed mount, [head_tracking.md](head_tracking.md)); a consumer projecting the feed's frames wants it too. A read-only `api.camera.model` is the natural place, once a consumer outside the tracker needs it.
 3. **A subscription.** The feed is sampled, not subscribed to: an `Observable` publishing every frame would wake an async consumer 10 times a second for a value it can read at will. An awaitable "next frame" (`await api.camera.next_frame()`) is cheap to add when a caller wants to react to frames rather than poll; deferred until one does.

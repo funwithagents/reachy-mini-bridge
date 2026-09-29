@@ -12,7 +12,7 @@ import itertools
 import json
 import threading
 import time
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -39,8 +39,12 @@ from reachy_mini_bridge.errors import (
     GravityCompensationUnsupportedError,
     MotorsNotEnabledError,
 )
-from reachy_mini_bridge.face_detection import DAEMON_DETECT_WEIGHT, FaceReport
-from reachy_mini_bridge.fake_reachy_mini import FakeReachyMini
+from reachy_mini_bridge.face_detection import (
+    DAEMON_DETECT_WEIGHT,
+    FaceReport,
+    PixelFace,
+)
+from reachy_mini_bridge.fake_reachy_mini import FAKE_FRAME_HZ, FakeReachyMini
 from reachy_mini_bridge.motion import (
     ANTENNA_MIN_RAD,
     ANTENNA_OUTWARD,
@@ -154,14 +158,17 @@ def test_package_front_door_drives_the_fake() -> None:
 
     assert set(rmb.__all__) == {
         "BridgeError",
+        "CameraFrame",
         "ConfigError",
         "Face",
+        "FaceDetector",
         "FaceReport",
         "GravityCompensationUnsupportedError",
         "IdleMove",
         "IdleOffsets",
         "MotorsNotEnabledError",
         "Observable",
+        "PixelFace",
         "ReachyMiniApi",
         "ReachyMiniConfig",
         "SpeechSynthesizer",
@@ -1400,26 +1407,32 @@ def test_set_face_detection_requires_entry() -> None:
         asyncio.run(ReachyMiniApi("fake").set_face_detection(True))
 
 
-def test_a_custom_detection_source_fails_bring_up_and_unwinds() -> None:
-    config = ReachyMiniConfig(backend="fake", faces=FaceSettings(detector="custom"))
+def test_a_custom_source_without_a_detector_fails_before_anything_is_entered() -> None:
+    """specs/user_perception.md "Custom detectors": `custom` with nothing registered
+    (or a bad factory) is refused at the top of bring-up — no daemon, no robot."""
     robots: list[FakeReachyMini] = []
 
     def build(backend: str, **kw: object) -> FakeReachyMini:
         robots.append(FakeReachyMini())
         return robots[-1]
 
-    api = ReachyMiniApi(config)
-
-    async def run() -> None:
-        async with api:
-            pass
-
+    api = ReachyMiniApi(
+        ReachyMiniConfig(backend="fake", faces=FaceSettings(detector="custom"))
+    )
+    not_callable: Any = 42
+    bad = ReachyMiniApi(
+        ReachyMiniConfig(
+            backend="fake",
+            faces=FaceSettings(detector="custom", face_detector=not_callable),
+        )
+    )
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(api_module, "build_robot", build)
-        with pytest.raises(ValueError, match="custom"):
-            asyncio.run(run())
-    assert robots[0].commands[-1][0] == "__exit__"
-    assert "disable_wobbling" in [n for n, _ in robots[0].commands]
+        with pytest.raises(ValueError, match="no face detector is registered"):
+            asyncio.run(api.__aenter__())
+        with pytest.raises(ValueError, match="zero-argument callable"):
+            asyncio.run(bad.__aenter__())
+    assert robots == []  # nothing was built, nothing to unwind
     with pytest.raises(BridgeError):
         _ = api.robot
     assert api.faces.value == FaceReport.inactive("custom")
@@ -1653,18 +1666,191 @@ def test_exit_leaves_the_head_at_neutral() -> None:
     assert antennas == pytest.approx(NEUTRAL_ANTENNAS, abs=1e-3)
 
 
-# --- perception (camera) -----------------------------------------------------------
+# --- perception (camera): the feed (specs/camera.md) ---------------------------------
 
 
-def test_get_camera_frame_returns_a_bgr_frame() -> None:
-    async def run() -> npt.NDArray[np.uint8] | None:
-        async with ReachyMiniApi("fake") as api:
-            return await api.get_camera_frame()
+async def _first_frame(api: ReachyMiniApi, timeout: float = 0.5) -> Any:
+    deadline = time.monotonic() + timeout
+    while api.camera.latest() is None:
+        assert time.monotonic() < deadline, "no frame within the wait"
+        await asyncio.sleep(0.005)
+    return api.camera.latest()
 
-    frame = asyncio.run(run())
-    assert frame is not None  # the fake always has a frame ready
-    assert frame.ndim == 3 and frame.shape[2] == 3  # HxWx3 BGR
-    assert frame.dtype == np.uint8
-    assert frame.size > 0
-    # The synthetic frame carries real structure (a gradient), not a flat constant.
-    assert frame.min() != frame.max()
+
+def test_camera_publishes_the_fakes_frames_while_entered() -> None:
+    api = ReachyMiniApi("fake")
+    camera = api.camera  # exists from construction: a consumer wires to it before entry
+    assert camera.latest() is None
+
+    async def run() -> tuple[Any, int]:
+        async with api:
+            assert api.camera is camera  # the same object inside
+            frame = await _first_frame(api, timeout=1.5 / FAKE_FRAME_HZ)
+            before = camera.published_count
+            await asyncio.sleep(1.0)
+            return frame, camera.published_count - before
+
+    frame, per_second = asyncio.run(run())
+    assert camera.latest() is None  # after exit: no frame from a camera that is gone
+    assert frame.frame_id >= 1
+    assert frame.image.shape == (48, 64, 3) and frame.image.dtype == np.uint8
+    assert frame.image.min() != frame.image.max()  # real structure, not a constant
+    assert 7 <= per_second <= 13  # the fake's 10 fps, the feed does not pace itself
+
+
+def test_camera_frames_carry_the_head_pose_at_their_time() -> None:
+    config = ReachyMiniConfig(
+        backend="fake", motion=MotionSettings(tracking=False, presence=False)
+    )
+    turned = np.eye(4)
+    turned[:3, :3] = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]  # 90° yaw
+
+    async def run() -> tuple[Any, Any]:
+        async with ReachyMiniApi(config) as api:
+            first = await _first_frame(api)
+            robot = _fake(api)
+            robot.set_target(head=turned)  # the fake's head is now at this pose
+            await asyncio.sleep(3.0 / FAKE_FRAME_HZ)
+            return first, api.camera.latest()
+
+    first, later = asyncio.run(run())
+    assert first.head_pose is not None and _yaw_deg(first.head_pose) == 0.0
+    assert later.head_pose is not None
+    assert _yaw_deg(later.head_pose) == pytest.approx(90.0)
+    assert later.ts > first.ts
+
+
+def test_camera_frame_ids_count_on_across_sessions() -> None:
+    api = ReachyMiniApi("fake")
+
+    async def run() -> int:
+        async with api:
+            await _first_frame(api)
+        async with api:
+            frame = await _first_frame(api)
+            return frame.frame_id
+
+    assert asyncio.run(run()) >= 2
+
+
+# --- faces: the custom detection source (specs/user_perception.md) --------------------
+
+
+class _Scene:
+    """What a stub detector sees: pixel faces on the fake's 64x48 frame."""
+
+    def __init__(self, faces: list[PixelFace]) -> None:
+        self.faces = faces
+        self.calls = 0
+        # The factory: one object, so identity checks on `api.face_detector` hold.
+        self.detector: Callable[[], _StubDetector] = lambda: _StubDetector(self)
+
+
+class _StubDetector:
+    def __init__(self, scene: _Scene) -> None:
+        self._scene = scene
+
+    def detect(self, frame_bgr: npt.NDArray[np.uint8], ts: float) -> list[PixelFace]:
+        self._scene.calls += 1
+        return list(self._scene.faces)
+
+
+def _pixel_face(x_norm: float, y_norm: float = 0.0) -> PixelFace:
+    """A face whose nose sits at the normalised (x, y) of the fake's frame."""
+    u = (x_norm + 1.0) / 2.0 * 63
+    v = (y_norm + 1.0) / 2.0 * 47
+    return PixelFace(bbox=(u - 5, v - 8, 10, 16), nose=(u, v))
+
+
+def _custom_config(scene: _Scene | None, **motion: Any) -> ReachyMiniConfig:
+    return ReachyMiniConfig(
+        backend="fake",
+        faces=FaceSettings(
+            detector="custom",
+            face_detector=None if scene is None else scene.detector,
+        ),
+        motion=MotionSettings(**motion),
+    )
+
+
+async def _wait_for_face_x(api: ReachyMiniApi, x: float, timeout: float = 1.0) -> None:
+    deadline = time.monotonic() + timeout
+    while True:
+        faces = api.faces.value.faces
+        if faces and abs(faces[0].x - x) < 0.02:
+            return
+        assert time.monotonic() < deadline, f"no face at x={x}: {api.faces.value}"
+        await asyncio.sleep(0.01)
+
+
+def test_a_custom_config_enters_and_reports_the_stubs_faces() -> None:
+    scene = _Scene([_pixel_face(0.5, -0.25)])
+
+    async def run() -> tuple[FaceReport, list[str], int]:
+        async with ReachyMiniApi(_custom_config(scene, tracking=False)) as api:
+            assert api.face_detector is scene.detector
+            await _wait_for_face_x(api, 0.5)
+            await asyncio.sleep(0.5)
+            return api.faces.value, _command_names(api), scene.calls
+
+    report, commands, calls = asyncio.run(run())
+    face = report.faces[0]
+    assert (report.source, report.active) == ("custom", True)
+    assert face.y == pytest.approx(-0.25) and face.size == pytest.approx(16 / 48)
+    assert report.head_pose is not None  # the frame's, on the fake
+    assert not any(c.endswith("head_tracking") for c in commands)
+    assert calls >= 4  # once per frame at 10 fps, over at least half a second
+
+
+def test_set_face_detector_swaps_detectors_mid_session() -> None:
+    left, right = _Scene([_pixel_face(-0.5)]), _Scene([_pixel_face(0.5)])
+
+    async def run() -> tuple[int, Any]:
+        async with ReachyMiniApi(_custom_config(left, tracking=False)) as api:
+            await _wait_for_face_x(api, -0.5)
+            await api.set_face_detector(right.detector)
+            await _wait_for_face_x(api, 0.5, timeout=2.5 / FAKE_FRAME_HZ)
+            bad: Any = object
+            with pytest.raises(ValueError, match="no callable"):
+                await api.set_face_detector(bad)
+            assert api.face_detector is right.detector  # the bad one left it alone
+            calls_left = left.calls
+            await asyncio.sleep(3.0 / FAKE_FRAME_HZ)
+            assert left.calls == calls_left  # the old detector is never called again
+            await api.set_face_detector(None)  # cleared: nothing looks any more
+            await asyncio.sleep(0.05)
+            return left.calls, api.faces.value
+
+    _calls, value = asyncio.run(run())
+    assert value.active is False
+
+
+def test_face_detector_reads_the_config_outside_a_session_and_resets() -> None:
+    scene, other = _Scene([]), _Scene([])
+    api = ReachyMiniApi(_custom_config(scene, tracking=False))
+    assert api.face_detector is scene.detector
+
+    async def run() -> None:
+        async with api:
+            await api.set_face_detector(other.detector)
+            assert api.face_detector is other.detector
+
+    asyncio.run(run())
+    assert api.face_detector is scene.detector
+    assert ReachyMiniApi("fake").face_detector is None
+
+
+def test_the_head_turns_toward_a_custom_detectors_face() -> None:
+    """The whole pipeline on the fake: feed → stub detector → selection → report with
+    the frame's pose → the tracker's aim → the motion loop's gaze layer."""
+    scene = _Scene([_pixel_face(0.5, 0.0)])  # to the robot's right
+
+    async def run() -> tuple[float, str | None]:
+        async with ReachyMiniApi(_custom_config(scene, idle="hold")) as api:
+            await api.set_motors_state("enabled")
+            await asyncio.sleep(1.5)
+            return _yaw_deg(_fake(api).last_target[0]), api.attention
+
+    yaw, attention = asyncio.run(run())
+    assert yaw < -5.0  # negative yaw is to the right
+    assert attention == "engaged"

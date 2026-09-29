@@ -128,6 +128,7 @@ The `live_api` fixture reads the same knobs the bridge's own tier uses:
 | `REACHY_MINI_HOST` | `127.0.0.1` | daemon host (borrow one already running, or your robot; loopback lets the harness start a USB robot's daemon) |
 | `REACHY_MINI_PORT` | `8000` | daemon port |
 | `REACHY_MINI_E2E_SIM_VIEWER` | unset | `1` to launch the headfull MuJoCo viewer (local; needs a GUI/GL context) |
+| `REACHY_MINI_E2E_FACE_DETECTOR` | unset | `yunet` runs the bridge's opt-in custom-detector test (`tests-e2e/test_custom_faces.py`): upstream's YuNet as a custom `FaceDetector` on the viewer sim's camera, in a session of its own; the model downloads into the Hugging Face cache on first use ([custom-face-detector.md](custom-face-detector.md)) |
 
 **Testing tracking without a person.** Every sim the harness spawns runs the bridge's test
 scene: upstream's empty scene plus a portrait that stays hidden until a test shows it, so

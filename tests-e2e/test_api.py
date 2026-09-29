@@ -671,7 +671,8 @@ def test_cancelled_emotion_stops_motion_and_sound(
 def test_camera_frame_delivers_a_frame(
     live_api: tuple[ReachyMiniApi, frozenset[str]],
 ) -> None:
-    """A live camera frame comes back from `get_camera_frame` as a BGR image.
+    """The camera feed publishes a live frame: `api.camera.latest()` is a `CameraFrame`
+    whose image is BGR `HxWx3` uint8 (specs/camera.md).
 
     Gated on `camera`, which the fixture probes true only where a GL context is
     available — the headfull sim viewer (`REACHY_MINI_E2E_SIM_VIEWER=1`) or a real
@@ -680,12 +681,21 @@ def test_camera_frame_delivers_a_frame(
     """
     requires_caps(live_api, "camera")
     api, _caps = live_api
-    frame = asyncio.run(api.get_camera_frame())
-    assert frame is not None, "camera probed but get_camera_frame() returned None"
-    assert frame.ndim == 3 and frame.shape[2] == 3, (
-        f"expected HxWx3 BGR, got {frame.shape}"
+    deadline = time.monotonic() + 2.0  # the first frame follows the session's entry
+    while api.camera.latest() is None and time.monotonic() < deadline:
+        time.sleep(0.05)
+    frame = api.camera.latest()
+    assert frame is not None, "camera probed but api.camera.latest() stayed None"
+    assert frame.image.ndim == 3 and frame.image.shape[2] == 3, (
+        f"expected HxWx3 BGR, got {frame.image.shape}"
     )
-    assert frame.size > 0
+    assert frame.image.dtype == np.uint8
+    assert frame.frame_id >= 1 and frame.ts > 0.0
+    before = api.camera.published_count
+    time.sleep(1.0)
+    rate = api.camera.published_count - before
+    print(f"\n[e2e] camera feed: {rate} frames/s, first frame {frame.image.shape}")
+    assert rate >= 5, f"the feed published {rate} frames in a second"
 
 
 # --- attention / gaze: tracking a face in the sim ---------------------------------------

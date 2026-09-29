@@ -72,7 +72,7 @@ async def main() -> None:
         print(await api.list_emotions())  # ['happy', 'sad', 'curious'] on the fake
         await api.play_emotion("happy")
         await api.start_head_tracking()
-        frame = await api.get_camera_frame()  # numpy BGR HxWx3, or None
+        frame = api.camera.latest()  # the newest CameraFrame (BGR image, time, head pose), or None
         await api.stop_head_tracking()
 
 
@@ -112,14 +112,22 @@ All verbs are `async`; units are human (degrees, seconds, named emotions). The u
 | Motion while talking | `set_wobbling(enabled)`, `wobbling` — upstream's audio-reactive head sway; on by default, set by the config's `motion.wobbling` flag |
 | Staying alive | `set_presence(enabled)` / `presence`, `set_idle("breathing" | "hold" | "custom")` / `idle`, `set_idle_move(factory)` / `idle_move` — the idle behaviour between verbs; set by the config's `motion` block |
 | Mic in | `audio_input(mono=True)` async iterator of int16 PCM bytes, plus `mic_sample_rate` / `mic_channels` |
-| Camera | `get_camera_frame()` — raw BGR `ndarray`, `None` when no frame is available |
-| Faces | `faces` — an observable report of the faces in front of the robot: `faces.value`, `faces.changes()` (wakes when the number of faces changes, never when one moves), `faces.wait_for(predicate)`; `set_face_detection(enabled)` / `face_detection` — on by default (the config's `faces` block), and running whenever tracking is |
+| Camera | `camera` — the camera feed, the one reader of the robot's camera: `camera.latest()` is the newest `CameraFrame` (`frame_id`, `ts`, `image` as a raw BGR `ndarray`, `head_pose`) or `None` when no frame is available; a property any number of consumers sample without taking frames from one another |
+| Faces | `faces` — an observable report of the faces in front of the robot: `faces.value`, `faces.changes()` (wakes when the number of faces changes, never when one moves), `faces.wait_for(predicate)`; `set_face_detection(enabled)` / `face_detection` — on by default (the config's `faces` block), and running whenever tracking is; `set_face_detector(factory)` / `face_detector` — your own detector for the `custom` source |
 
 Verbs that move the robot require motors `enabled` and raise `MotorsNotEnabledError` otherwise. The errors a caller catches — `BridgeError` (the base), `MotorsNotEnabledError`, `GravityCompensationUnsupportedError`, `ConfigError` — import from `reachy_mini_bridge`, next to `ReachyMiniApi`, `ReachyMiniConfig`, `SpeechSynthesizer` and `TTSEngineSynthesizer`; `DaemonError` lives in `reachy_mini_bridge.errors`.
 
 **Talking.** `say` streams text-to-speech to the robot speaker through a `SpeechSynthesizer` — a small protocol (`sample_rate` + `stream(text)` yielding float32 mono chunks) importable from `reachy_mini_bridge`. Bring your own, or configure the default `tts-engine` adapter through the config's `tts` block. Without either, `say` raises `BridgeError`; a `tts` block that fails to build (a provider whose extra isn't installed, a missing API key) leaves the robot usable and exposes the cause on `api.synthesizer_error`. `say` returns once the utterance has finished playing; cancel the task to stop it (queued audio is flushed). Cancelling the task is how you interrupt any verb: `play_emotion` stops the motion and the emotion's sound the same way, and the session stays usable for the next verb (see [specs/api.md](specs/api.md) "Cancellation").
 
 **Your own idle move.** Subclass `IdleMove` and return the pose as offsets from neutral in human units: `IdleOffsets(z_mm=…, roll_deg=…, pitch_deg=…, yaw_deg=…, antenna_right_deg=…, antenna_left_deg=…)`. Register the class (a factory: the loop builds a fresh move at every idle entry, with `t` starting at 0) and select the `custom` mode, in either order: `await api.set_idle_move(SlowNod)` then `await api.set_idle("custom")`, or `MotionSettings(idle="custom", idle_move=SlowNod)` in the config. `offsets(t)` runs at 60 Hz on the motion thread, so keep it fast and start it at rest. See [specs/motion.md](specs/motion.md) "Custom idle moves".
+
+**Seeing.** `api.camera` is the one reader of the robot's camera: a thread pulls upstream's one-shot `get_frame()` and publishes the newest frame, stamped with its time (and the head pose at that time when the backend gives a capture time), for any number of consumers to sample — a display, an agent tool, the face detector, a vision graph. Upstream hands each frame out once, so two readers would silently steal frames from each other; the feed is why they don't. Its frames are shared and read-only (copy before drawing on one). A vision library built on latest-value sampling plugs onto it directly, no adapter and no second reader:
+
+```python
+hands = HandStage(api.camera, target_fps=30)  # any latest-value graph whose upstream has latest() → frame_id, ts, image
+```
+
+**Your own face detector.** The bridge ships no vision code: `faces.detector: "daemon"` (the default) reads the daemon's own detector, and `"custom"` runs yours on the camera feed — an object with `detect(frame_bgr, ts)` returning `PixelFace`s, registered as a factory with `FaceSettings(face_detector=MyDetector)` or `set_face_detector(MyDetector)`. The bridge runs it once per new frame off the event loop, selects the target face and aims the head at it. Upstream's own YuNet detector is a valid custom detector in a few lines: [docs/custom-face-detector.md](docs/custom-face-detector.md).
 
 **Listening.** The bridge does no speech recognition. It exposes the robot's echo-cancelled microphone as a stream and you feed it to the ASR of your choice:
 
@@ -146,7 +154,7 @@ Routing both directions through the bridge is what keeps the robot's hardware ec
 The `sim` backend is upstream's MuJoCo simulation, started through the bridge's own launcher, `python -m reachy_mini_bridge.sim_daemon` (a config with `"daemon": {"spawn": "auto"}` does it for you). The launcher runs upstream's daemon unchanged apart from these additions ([specs/sim_daemon.md](specs/sim_daemon.md)):
 
 - **Face tracking works.** Upstream's sim never runs its tracking step, so the daemon never reports the faces its detector sees; the launcher fixes that (a bug in the upstream simulator). The aim is the bridge's own tracker's, with a pinhole of the sim's eye camera — upstream's camera matrix for the sim is scaled for the real robot's sensor and would put the head about 45° off the face. With the viewer open, the head turns onto a face and settles on it, breathing. The tracker's convergence is pinned by fast offline tests that project the test scene's portrait through the sim camera, and by the live tests below.
-- **Your webcam as the robot's camera.** With `"daemon": {"camera": {"source": "webcam"}}`, the sim's camera shows your computer's webcam instead of the rendered scene. Face tracking, `get_camera_frame()` and the control panel then see you, with or without the viewer window. The bridge's tracker treats the webcam as fixed where the robot's eye rests, so the head follows you without drifting. On macOS, the terminal or editor that starts the daemon needs camera permission.
+- **Your webcam as the robot's camera.** With `"daemon": {"camera": {"source": "webcam"}}`, the sim's camera shows your computer's webcam instead of the rendered scene. Face tracking, `api.camera` and the control panel then see you, with or without the viewer window. The bridge's tracker treats the webcam as fixed where the robot's eye rests, so the head follows you without drifting. On macOS, the terminal or editor that starts the daemon needs camera permission.
 - **See what it sees.** With `"daemon": {"headless": false, "sim_displays": {"camera_overlay": true}}`, the viewer window shows the camera stream in its top-right corner — your webcam, or the rendered eye camera. The example config has it on.
 - **A face to test with.** The testing package can write a scene with a portrait that a test shows, moves and hides while the daemon runs ([specs/sim_scene.md](specs/sim_scene.md)). The pytest plugin's sim always runs on it.
 
@@ -292,7 +300,7 @@ Omit the block and `say` raises unless you pass your own `SpeechSynthesizer`. A 
 
 | Field | Default | What it does | Runtime verb |
 |---|---|---|---|
-| `detector` | `"daemon"` | Where faces come from: `daemon` reads the daemon's own face detector over its HTTP API. (`custom`, your own detector on the camera frames, is not available yet) | — |
+| `detector` | `"daemon"` | Where faces come from: `daemon` reads the daemon's own face detector over its HTTP API; `custom` runs your own detector on the camera feed's frames — registered from code, `FaceSettings(face_detector=...)` or `set_face_detector(...)` (see [docs/custom-face-detector.md](docs/custom-face-detector.md)); session entry refuses `custom` with none registered | `set_face_detector` |
 | `detection` | `true` | Runs the detection loop from session entry, so `api.faces` reports who is there. Needs no motors. The loop also runs whenever `motion.tracking` is on, whatever this says | `set_face_detection` |
 
 ### `motion` — what the robot does at rest
@@ -338,6 +346,7 @@ uv run pyright
 uv run pytest            # fast offline tier only
 uv run pytest tests-e2e -rs                                  # live tier, headless sim: motion + audio
 REACHY_MINI_E2E_SIM_VIEWER=1 uv run pytest tests-e2e -rs     # + camera and face tracking (unlocked GUI session)
+REACHY_MINI_E2E_SIM_VIEWER=1 REACHY_MINI_E2E_FACE_DETECTOR=yunet uv run pytest tests-e2e -rs -k custom  # + your-own-detector path, on upstream's YuNet
 REACHY_MINI_E2E_TARGET=real uv run pytest tests-e2e -rs      # a robot plugged in over USB
 ```
 

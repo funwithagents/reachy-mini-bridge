@@ -1,0 +1,260 @@
+"""Functional tests for the camera feed (specs/camera.md) on a scripted reader.
+
+The feed runs its real thread over a stub `read_frame` that returns scripted frames,
+`None`s, or raises, and a stub `pose_at`; tests observe what `latest()` publishes.
+"""
+
+from __future__ import annotations
+
+import threading
+import time
+from collections.abc import Callable, Iterator
+from typing import Protocol, runtime_checkable
+
+import numpy as np
+import numpy.typing as npt
+import pytest
+
+from reachy_mini_bridge import camera as camera_module
+from reachy_mini_bridge.camera import CameraFeed, CameraFrame
+from reachy_mini_bridge.errors import BridgeError
+
+Read = tuple[npt.NDArray[np.uint8], float | None] | None
+
+
+def _image(value: int) -> npt.NDArray[np.uint8]:
+    return np.full((4, 6, 3), value, dtype=np.uint8)
+
+
+def _pose(yaw: float) -> npt.NDArray[np.float64]:
+    pose = np.eye(4)
+    pose[0, 3] = yaw
+    return pose
+
+
+class _Reader:
+    """A scripted `read_frame`: each entry is a frame tuple, `None`, or an exception to
+    raise; once the script is spent it blocks (returning `None` every 5 ms) until told
+    to stop, like a camera with nothing new."""
+
+    def __init__(self, script: list[Read | Exception], pace_s: float = 0.0) -> None:
+        self._script = list(script)
+        self._pace_s = pace_s  # a wait before each frame, like a camera's period
+        self._lock = threading.Lock()
+        self.reads = 0
+
+    def extend(self, more: list[Read | Exception]) -> None:
+        with self._lock:
+            self._script.extend(more)
+
+    def __call__(self) -> Read:
+        with self._lock:
+            self.reads += 1
+            item = self._script.pop(0) if self._script else "idle"
+        if item == "idle":
+            time.sleep(0.005)
+            return None
+        if isinstance(item, Exception):
+            raise item
+        if item is not None and self._pace_s:
+            time.sleep(self._pace_s)
+        return item
+
+
+def _wait_until(predicate: Callable[[], bool], timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        if time.monotonic() > deadline:
+            raise AssertionError("condition not met in time")
+        time.sleep(0.005)
+
+
+@pytest.fixture
+def running() -> Iterator[
+    Callable[[_Reader, Callable[[float], npt.NDArray[np.float64]] | None], CameraFeed]
+]:
+    feeds: list[CameraFeed] = []
+
+    def start(
+        reader: _Reader, pose_at: Callable[[float], npt.NDArray[np.float64]] | None
+    ) -> CameraFeed:
+        feed = CameraFeed(reader, pose_at)
+        feed.start()
+        feeds.append(feed)
+        return feed
+
+    yield start
+    for feed in feeds:
+        feed.stop()
+
+
+def test_frames_are_published_in_order_and_nones_publish_nothing(
+    running: Callable[..., CameraFeed],
+) -> None:
+    reader = _Reader([(_image(1), 10.0), None, None, (_image(2), 11.0), None])
+    feed = running(reader, None)
+    _wait_until(lambda: feed.published_count == 2)
+    latest = feed.latest()
+    assert latest is not None
+    assert (latest.frame_id, latest.ts) == (2, 11.0)
+    assert latest.image[0, 0, 0] == 2
+    # While the reader keeps returning None the last frame stays published.
+    _wait_until(lambda: reader.reads >= 8)
+    assert feed.latest() is latest
+    assert feed.published_count == 2
+
+
+def test_latest_is_none_before_start_and_after_stop() -> None:
+    reader = _Reader([(_image(1), 1.0)])
+    feed = CameraFeed(reader, None)
+    assert feed.latest() is None
+    feed.start()
+    _wait_until(lambda: feed.latest() is not None)
+    feed.stop()
+    assert feed.latest() is None
+    assert feed.published_count == 1
+    # frame_id counts on across start / stop, so an old result is never mistaken for new.
+    reader.extend([(_image(2), 2.0)])
+    feed.start()
+    _wait_until(lambda: feed.published_count == 2)
+    latest = feed.latest()
+    assert latest is not None and latest.frame_id == 2
+    feed.stop()
+
+
+def test_a_raising_reader_keeps_the_last_frame_and_recovers(
+    monkeypatch: pytest.MonkeyPatch, running: Callable[..., CameraFeed]
+) -> None:
+    monkeypatch.setattr(camera_module, "CAMERA_RETRY_S", 0.01)
+    reader = _Reader([(_image(1), 1.0), OSError("no camera"), OSError("still none")])
+    feed = running(reader, None)
+    _wait_until(lambda: reader.reads >= 4)
+    latest = feed.latest()
+    assert latest is not None and latest.frame_id == 1
+    reader.extend([(_image(2), 2.0)])
+    _wait_until(lambda: feed.published_count == 2)
+    latest = feed.latest()
+    assert latest is not None and latest.image[0, 0, 0] == 2
+
+
+def test_a_reader_failing_for_long_warns_once(
+    monkeypatch: pytest.MonkeyPatch,
+    running: Callable[..., CameraFeed],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(camera_module, "CAMERA_RETRY_S", 0.005)
+    monkeypatch.setattr(camera_module, "CAMERA_DOWN_S", 0.05)
+    reader = _Reader([OSError(f"down {i}") for i in range(200)])
+    with caplog.at_level("INFO", logger="reachy_mini_bridge.camera"):
+        feed = running(reader, None)
+        _wait_until(lambda: reader.reads >= 40)
+        reader.extend([(_image(1), 1.0)])
+        _wait_until(lambda: feed.published_count == 1)
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "has failed for" in warnings[0].getMessage()
+    assert [r.getMessage() for r in caplog.records if r.levelname == "INFO"] == [
+        "camera feed: frames are back"
+    ]
+
+
+def test_head_pose_is_the_pose_at_the_capture_time_or_none(
+    running: Callable[..., CameraFeed],
+) -> None:
+    asked: list[float] = []
+
+    def pose_at(t: float) -> npt.NDArray[np.float64]:
+        asked.append(t)
+        return _pose(t)
+
+    # A capture time known: the pose at that time. Unknown (arrival time): no pose,
+    # even with a pose source at hand — a pose is attached only to a capture time.
+    reader = _Reader([(_image(1), 5.0), (_image(2), None)])
+    feed = running(reader, pose_at)
+    _wait_until(lambda: feed.published_count == 2)
+    latest = feed.latest()
+    assert latest is not None
+    assert latest.head_pose is None
+    assert asked == [5.0]
+    assert latest.ts >= 5.0  # the arrival on the monotonic clock, not 5.0
+    without = CameraFeed(_Reader([(_image(3), 7.0)]), None)
+    without.start()
+    _wait_until(lambda: without.published_count == 1)
+    frame = without.latest()
+    without.stop()
+    assert frame is not None and frame.ts == 7.0 and frame.head_pose is None
+
+
+def test_a_frame_with_a_capture_time_carries_its_pose(
+    running: Callable[..., CameraFeed],
+) -> None:
+    feed = running(_Reader([(_image(1), 3.0)]), lambda t: _pose(t * 2))
+    _wait_until(lambda: feed.published_count == 1)
+    latest = feed.latest()
+    assert latest is not None
+    assert latest.head_pose is not None
+    assert latest.head_pose[0, 3] == 6.0
+
+
+def test_two_consumers_both_see_every_frame(
+    running: Callable[..., CameraFeed],
+) -> None:
+    """The single-reader property: sampling the feed takes nothing from another
+    consumer, unlike two callers of upstream's one-shot `get_frame()`."""
+    reader = _Reader([(_image(i), float(i)) for i in range(1, 21)], pace_s=0.03)
+    feed = running(reader, None)
+    seen: dict[str, set[int]] = {"a": set(), "b": set()}
+
+    def consume(name: str) -> None:
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and len(seen[name]) < 20:
+            frame = feed.latest()
+            if frame is not None:
+                seen[name].add(frame.frame_id)
+            time.sleep(0.002)  # a display's pace; also hands the GIL over
+
+    threads = [threading.Thread(target=consume, args=(n,)) for n in seen]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert seen["a"] == seen["b"] == set(range(1, 21))
+
+
+def test_start_needs_a_reader_and_bind_gives_one() -> None:
+    feed = CameraFeed()
+    with pytest.raises(BridgeError, match="no reader"):
+        feed.start()
+    feed.bind(_Reader([(_image(1), 1.0)]), None)
+    feed.start()
+    _wait_until(lambda: feed.published_count == 1)
+    with pytest.raises(BridgeError, match="while it runs"):
+        feed.bind(_Reader([]), None)
+    feed.stop()
+
+
+# --- the shape a vision graph plugs onto (specs/camera.md "A valid upstream") --------
+
+
+@runtime_checkable
+class FrameLike(Protocol):
+    """The three-member frame protocol of a latest-value vision runtime, written out
+    locally: a rename on the bridge's side fails this file."""
+
+    @property
+    def frame_id(self) -> int: ...
+    @property
+    def ts(self) -> float: ...
+    @property
+    def image(self) -> npt.NDArray[np.uint8]: ...
+
+
+class Upstream[T](Protocol):
+    def latest(self) -> T | None: ...
+
+
+def test_the_feed_and_its_frames_have_the_upstream_shape() -> None:
+    frame_like: FrameLike = CameraFrame(1, 0.5, _image(1))
+    upstream: Upstream[FrameLike] = CameraFeed(_Reader([]), None)
+    assert isinstance(frame_like, FrameLike)
+    assert upstream.latest() is None

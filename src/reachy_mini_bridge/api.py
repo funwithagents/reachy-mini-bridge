@@ -9,7 +9,8 @@ SDK's blocking calls run under ``asyncio.to_thread``.
 
 Constructed from a [``ReachyMiniConfig``](config.py) (or a backend-string shorthand for
 one); ``async with`` brings up the managed daemon (when configured), the robot, the
-media session, the detection loop with the head tracker ([head_tracking](head_tracking.py)),
+media session, the camera feed ([camera](camera.py) — the one reader of the robot's
+camera), the detection loop with the head tracker ([head_tracking](head_tracking.py)),
 and the motion session ([motion](motion.py) — the one ``set_target`` writer, playing
 emotions and the idle behaviour, with the tracker's aim composed in) in that order on an
 ``AsyncExitStack`` — see "Lifecycle" in the spec.
@@ -34,13 +35,14 @@ from reachy_mini.motion.move import Move
 from . import daemon as _daemon
 from . import robot as _robot
 from .audio import MediaSession, TTSEngineSynthesizer, cancel_safe_step
+from .camera import CameraFeed, frame_reader
 from .config import IDLE_MODES, LOOPBACK_HOSTS, ReachyMiniConfig
 from .errors import (
     BridgeError,
     GravityCompensationUnsupportedError,
     MotorsNotEnabledError,
 )
-from .face_detection import FaceDetection, FaceReport
+from .face_detection import FaceDetection, FaceReport, check_face_detector_factory
 from .fake_reachy_mini import FakeReachyMini
 from .head_tracking import CameraModel, HeadTracker
 from .motion import NEUTRAL_ANTENNAS, NEUTRAL_BODY_YAW, NEUTRAL_HEAD, MotionSession
@@ -54,6 +56,7 @@ if TYPE_CHECKING:
     import numpy.typing as npt
 
     from .audio import SpeechSynthesizer
+    from .face_detection import FaceDetectorFactory
     from .motion import IdleMode, IdleMoveFactory
     from .robot import AnyReachyMini
 
@@ -209,6 +212,14 @@ class ReachyMiniApi:
         )
         self._face_detection_wanted = self._config.faces.detection
         self._detection: FaceDetection | None = None
+        # The custom detector's factory (config default, reset on exit); set_face_detector
+        # changes it while entered.
+        self._face_detector: FaceDetectorFactory | None = (
+            self._config.faces.face_detector
+        )
+        # The camera feed (specs/camera.md): the object exists from construction so a
+        # consumer wires to it before entry; bound to the robot and started at entry.
+        self._camera = CameraFeed()
 
     # --- config-based constructors (mirroring ReachyMiniConfig's trio) ---
 
@@ -290,6 +301,10 @@ class ReachyMiniApi:
         if self._exit_stack is not None:
             raise BridgeError("ReachyMiniApi is already entered")
         cfg = self._config
+        if cfg.faces.detector == "custom":
+            # Checked before anything is entered (specs/user_perception.md "Custom
+            # detectors"): a bad or missing detector fails bring-up with nothing to undo.
+            self._check_face_detector(self._face_detector)
         stack = AsyncExitStack()
         try:
             if cfg.manages_daemon:
@@ -325,6 +340,24 @@ class ReachyMiniApi:
             media = MediaSession(robot, audio_config=cfg.audio.xvf3800)
             await stack.enter_async_context(media)
             self._media = media
+            # Constructed here, before the camera feed, the detection loop and the
+            # tracker: the feed stamps frames through its head_pose_at, the tracker is
+            # wired to its set_gaze / head_pose_history. Construction starts no thread;
+            # its thread starts below (specs/api.md "Lifecycle") — an aim handed over
+            # meanwhile waits in its command queue.
+            motion = MotionSession(
+                robot,
+                presence=self._presence,
+                idle=self._idle,
+                idle_move=self._idle_move,
+            )
+            # The camera feed (specs/camera.md "Lifecycle"): the one reader of the
+            # camera, started right after the media session and stopped right before it
+            # is torn down; `latest()` reads None again from then on.
+            camera = self._camera
+            camera.bind(frame_reader(robot), motion.head_pose_at)
+            camera.start()
+            stack.push_async_callback(asyncio.to_thread, camera.stop)
             # Registered before the enable, so a failing enable still unwinds cleanly
             # (the mode is still off, so the callback is a no-op). It holds the robot
             # itself: __aexit__ clears `self._robot` before the stack closes.
@@ -332,15 +365,6 @@ class ReachyMiniApi:
             if cfg.motion.wobbling:
                 await self.set_wobbling(True)
             motors_enabled = await self.get_motors_state() == "enabled"
-            # Constructed before the detection loop and the tracker, which is wired to
-            # its set_gaze / head_pose_history; its thread starts below (specs/api.md
-            # "Lifecycle") — an aim handed over meanwhile waits in its command queue.
-            motion = MotionSession(
-                robot,
-                presence=self._presence,
-                idle=self._idle,
-                idle_move=self._idle_move,
-            )
             self._tracker = HeadTracker(
                 self._camera_model(robot),
                 history=motion.head_pose_history,
@@ -349,12 +373,14 @@ class ReachyMiniApi:
             )
             # The detection loop (specs/user_perception.md "Lifecycle"), feeding the
             # tracker while tracking is on; in `daemon` mode it arms the daemon's
-            # detector.
+            # detector, in `custom` mode it samples the camera feed for the detector.
             detection = FaceDetection(
                 robot,
                 source=cfg.faces.detector,
                 faces=self._faces,
                 on_observation=self._on_face_observation,
+                feed=camera,
+                detector_factory=self._face_detector,
             )
             self._detection = detection
             # Exits after the motion session, before wobbling's cleanup.
@@ -403,6 +429,7 @@ class ReachyMiniApi:
             self._idle = _idle_mode(self._config.motion.idle)
             self._idle_move = self._config.motion.idle_move
             self._face_detection_wanted = self._config.faces.detection
+            self._face_detector = self._config.faces.face_detector
             self._detection = None
             if self._faces.value.active:  # the loop never stopped cleanly
                 self._faces.set(FaceReport.inactive(self._config.faces.detector))
@@ -713,6 +740,60 @@ class ReachyMiniApi:
         session."""
         return self._face_detection_wanted
 
+    @staticmethod
+    def _check_face_detector(factory: object) -> None:
+        if factory is None:
+            raise ValueError(
+                "faces.detector is 'custom' but no face detector is registered: set "
+                "FaceSettings.face_detector or call set_face_detector(...)"
+            )
+        check_face_detector_factory(factory)
+
+    async def set_face_detector(self, factory: FaceDetectorFactory | None) -> None:
+        """Register the custom detector for the ``custom`` detection source
+        (specs/user_perception.md "Custom detectors"): a zero-argument callable
+        returning an object with ``detect(frame_bgr, ts) -> Sequence[PixelFace]`` — a
+        class is one — or ``None`` to clear it.
+
+        Checked before it is stored: ``ValueError`` for a factory that is not callable,
+        raises, or builds something without a callable ``detect`` — the registered one
+        then stays. Stored whatever the source is; with the source ``custom`` and the
+        loop running, the loop swaps to the new detector between two polls (clearing it
+        stops the loop, which the next start will refuse until one is registered).
+        """
+        if factory is not None:
+            check_face_detector_factory(factory)
+        self._face_detector = factory
+        detection = self._detection
+        if detection is None or self._config.faces.detector != "custom":
+            return
+        detection.restart(factory)
+        if factory is None:
+            if detection.running:
+                await detection.stop()
+        else:
+            await self._sync_detection()
+
+    @property
+    def face_detector(self) -> FaceDetectorFactory | None:
+        """The registered custom detector factory — the config's outside a session."""
+        return self._face_detector
+
+    # --- perception (camera) ---
+
+    @property
+    def camera(self) -> CameraFeed:
+        """The camera feed (specs/camera.md): the one reader of the robot's camera.
+        ``camera.latest()`` is the newest :class:`~reachy_mini_bridge.camera.CameraFrame`
+        — ``frame_id``, ``ts``, ``image`` (BGR ``HxWx3`` ``uint8``, shared and
+        read-only: copy before drawing), ``head_pose`` — or ``None`` while no frame is
+        available: before the session, after it, and wherever the daemon has no frame
+        (the headless sim on macOS). A property, not a verb: an instant, thread-safe
+        sample any number of consumers take without stealing frames from one another.
+        The feed exists from construction, so a consumer wires to it before entry.
+        """
+        return self._camera
+
     # --- audio out ---
 
     async def say(self, text: str, synth: SpeechSynthesizer | None = None) -> None:
@@ -843,18 +924,6 @@ class ReachyMiniApi:
     def mic_channels(self) -> int:
         """Raw capture channel count (the ``mono=False`` layout)."""
         return self._require_media().mic_channels
-
-    # --- perception (camera) ---
-
-    async def get_camera_frame(self) -> npt.NDArray[np.uint8] | None:
-        """Grab the latest camera frame as a numpy BGR array (``HxWx3``, uint8).
-
-        A perception verb: it returns the raw frame object, not a JSON-friendly value
-        (the base64/JPEG encoding for a model is the tools layer's job). Mirrors the
-        upstream ``media.get_frame`` exactly — returns ``None`` when no frame is
-        available yet (e.g. the headless sim has no GL context). Needs no motors.
-        """
-        return await asyncio.to_thread(self.robot.media.get_frame)
 
 
 def _default_synthesizer(
