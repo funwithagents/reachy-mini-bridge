@@ -2,7 +2,7 @@
 
 These drive ``build_robot`` on the ``fake`` backend only — no daemon, no hardware.
 The real/sim construction path is exercised end-to-end by the opt-in
-``tests-e2e/test_api.py`` (which builds the api over a live daemon); the fake's own
+``tests-e2e/test_bridge.py`` (which builds the bridge over a live daemon); the fake's own
 behavior is covered by ``tests/test_fake_reachy_mini.py``, and its signatures are
 checked against upstream here (that file stays ``reachy_mini``-free).
 """

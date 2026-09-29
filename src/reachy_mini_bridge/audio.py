@@ -26,7 +26,7 @@ import logging
 import time
 import urllib.request
 from contextlib import AsyncExitStack
-from typing import TYPE_CHECKING, Any, Protocol, Self, cast, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
 
 import numpy as np
 import numpy.typing as npt
@@ -154,7 +154,10 @@ class MediaSession:
         # The stops to run at close; the session is open exactly while this is set.
         self._exit_stack: AsyncExitStack | None = None
 
-    async def __aenter__(self) -> Self:
+    async def start(self) -> None:
+        """Open the session: start recording and playback, apply the audio profile.
+        ``BridgeError`` on a session already open; a failure partway unwinds what
+        started."""
         if self._exit_stack is not None:
             raise BridgeError("MediaSession is already open")
         media = self._robot.media
@@ -176,9 +179,10 @@ class MediaSession:
             await stack.aclose()
             raise
         self._exit_stack = stack.pop_all()
-        return self
 
-    async def __aexit__(self, *exc: object) -> None:
+    async def stop(self) -> None:
+        """Close the session: every stop runs, even when one raises. A no-op on a
+        session that is not open."""
         stack = self._exit_stack
         # Read as closed even if a stop raises; the stack still runs every stop.
         self._exit_stack = None
@@ -189,7 +193,8 @@ class MediaSession:
         if self._exit_stack is None:
             raise BridgeError(
                 f"{verb} requires an open media session "
-                "(inside `async with ReachyMiniApi(...)`)"
+                "(the bridge opens it: `await bridge.start()`, "
+                "or `async with ReachyMiniBridge(...)`)"
             )
 
     # --- mic in ---
@@ -280,7 +285,7 @@ class MediaSession:
 
         See specs/audio/audio.md.
         """
-        audio: Any = self._robot.media.audio  # see note in __aenter__ on media.audio
+        audio: Any = self._robot.media.audio  # see note in start() on media.audio
         audio.clear_player()
 
     def stop_sound(self) -> None:
@@ -346,10 +351,10 @@ async def cancel_safe_step[T](enter: Callable[[], T], undo: Callable[[T], object
     cancelled while ``enter`` runs, this waits for ``enter`` to finish, runs ``undo`` on
     its result (also off the loop), and then re-raises the ``CancelledError`` — so a
     daemon spawn, a robot connect, or a media ``start_*`` is never leaked by an
-    ``asyncio.timeout`` around the api's ``async with``. If ``enter`` itself fails
+    ``asyncio.timeout`` around the bridge's ``async with``. If ``enter`` itself fails
     during that wait there is nothing to undo and the cancel still propagates. A
     second cancel during the wait abandons the step (accepted, documented in
-    specs/core/api.md "Lifecycle").
+    specs/core/bridge.md "Lifecycle").
     """
     step = asyncio.ensure_future(asyncio.to_thread(enter))
     try:

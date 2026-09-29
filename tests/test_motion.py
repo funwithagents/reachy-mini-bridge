@@ -14,6 +14,8 @@ import logging
 import math
 import random
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -59,6 +61,16 @@ if TYPE_CHECKING:
     import numpy.typing as npt
 
     from reachy_mini_bridge.motion import IdleMoveFactory
+
+
+@asynccontextmanager
+async def _running(session: MotionSession) -> AsyncIterator[MotionSession]:
+    """``start()`` / ``stop()`` around a block — what the bridge does with the session."""
+    await session.start()
+    try:
+        yield session
+    finally:
+        await session.stop()
 
 
 def test_hold_is_neutral_at_any_time() -> None:
@@ -395,7 +407,7 @@ def _head_zs(robot: FakeReachyMini) -> list[float]:
 def test_paused_session_sends_nothing() -> None:
     async def run() -> FakeReachyMini:
         robot = FakeReachyMini()
-        async with MotionSession(robot, presence=True, idle="breathing"):
+        async with _running(MotionSession(robot, presence=True, idle="breathing")):
             await asyncio.sleep(0.2)
         return robot
 
@@ -410,7 +422,9 @@ def test_resume_blends_from_the_present_pose_into_breathing() -> None:
         head[2, 3] = 0.02
         robot.set_target(head=head)  # simulate another writer, before the loop starts
         robot.targets.clear()  # isolate the loop's own stream
-        async with MotionSession(robot, presence=True, idle="breathing") as session:
+        async with _running(
+            MotionSession(robot, presence=True, idle="breathing")
+        ) as session:
             session.resume()
             await asyncio.sleep(BLEND_S + 0.2)
             # captured before exit, whose own easing blend would otherwise be counted
@@ -428,7 +442,9 @@ def test_resume_blends_from_the_present_pose_into_breathing() -> None:
 def test_breathing_off_holds_neutral() -> None:
     async def run() -> list[float]:
         robot = FakeReachyMini()
-        async with MotionSession(robot, presence=True, idle="hold") as session:
+        async with _running(
+            MotionSession(robot, presence=True, idle="hold")
+        ) as session:
             session.resume()
             await asyncio.sleep(BLEND_S + 0.2)
             return _head_zs(robot)
@@ -441,7 +457,9 @@ def test_breathing_off_holds_neutral() -> None:
 def test_presence_off_goes_quiet_when_idle() -> None:
     async def run() -> tuple[int, int, int]:
         robot = FakeReachyMini()
-        async with MotionSession(robot, presence=False, idle="breathing") as session:
+        async with _running(
+            MotionSession(robot, presence=False, idle="breathing")
+        ) as session:
             session.resume()
             await asyncio.sleep(0.3)
             idle_count = len(robot.targets)
@@ -461,7 +479,9 @@ def test_presence_off_goes_quiet_when_idle() -> None:
 def test_primary_plays_after_a_blend_then_idle_resumes() -> None:
     async def run() -> tuple[float, list[float], list[float]]:
         robot = FakeReachyMini()
-        async with MotionSession(robot, presence=True, idle="breathing") as session:
+        async with _running(
+            MotionSession(robot, presence=True, idle="breathing")
+        ) as session:
             session.resume()
             t0 = time.monotonic()
             future = session.submit(_TestPrimary(0.3, 0.03), None)
@@ -481,7 +501,9 @@ def test_primary_plays_after_a_blend_then_idle_resumes() -> None:
 def test_sound_starts_with_the_trajectory_not_the_blend() -> None:
     async def run() -> float:
         robot = FakeReachyMini()
-        async with MotionSession(robot, presence=True, idle="breathing") as session:
+        async with _running(
+            MotionSession(robot, presence=True, idle="breathing")
+        ) as session:
             session.resume()
             t0 = time.monotonic()
             future = session.submit(_TestPrimary(0.2, 0.02), Path("x.ogg"))
@@ -498,7 +520,9 @@ def test_sound_starts_with_the_trajectory_not_the_blend() -> None:
 def test_primaries_are_fifo_and_exclusive() -> None:
     async def run() -> tuple[int, int]:
         robot = FakeReachyMini()
-        async with MotionSession(robot, presence=True, idle="breathing") as session:
+        async with _running(
+            MotionSession(robot, presence=True, idle="breathing")
+        ) as session:
             session.resume()
             f1 = session.submit(_TestPrimary(0.15, 0.02), Path("one.ogg"))
             f2 = session.submit(_TestPrimary(0.15, 0.03), Path("two.ogg"))
@@ -519,7 +543,9 @@ def test_primaries_are_fifo_and_exclusive() -> None:
 def test_cancelled_future_drops_the_primary_within_a_tick() -> None:
     async def run() -> tuple[list[float], int, int]:
         robot = FakeReachyMini()
-        async with MotionSession(robot, presence=True, idle="breathing") as session:
+        async with _running(
+            MotionSession(robot, presence=True, idle="breathing")
+        ) as session:
             session.resume()
             future = session.submit(_TestPrimary(2.0, 0.05), None)
             await asyncio.sleep(BLEND_S + 0.15)
@@ -539,7 +565,9 @@ def test_cancelled_future_drops_the_primary_within_a_tick() -> None:
 def test_toggle_during_a_primary_is_deferred() -> None:
     async def run() -> tuple[list[float], list[float]]:
         robot = FakeReachyMini()
-        async with MotionSession(robot, presence=True, idle="breathing") as session:
+        async with _running(
+            MotionSession(robot, presence=True, idle="breathing")
+        ) as session:
             session.resume()
             future = session.submit(_TestPrimary(0.35, 0.02), None)
             await asyncio.sleep(0.15)
@@ -558,7 +586,9 @@ def test_toggle_during_a_primary_is_deferred() -> None:
 def test_pause_fails_in_flight_primaries() -> None:
     async def run() -> tuple[concurrent.futures.Future[None], int, int]:
         robot = FakeReachyMini()
-        async with MotionSession(robot, presence=True, idle="breathing") as session:
+        async with _running(
+            MotionSession(robot, presence=True, idle="breathing")
+        ) as session:
             session.resume()
             future = session.submit(_TestPrimary(2.0, 0.02), None)
             await asyncio.sleep(0.2)
@@ -578,7 +608,9 @@ def test_pause_fails_in_flight_primaries() -> None:
 def test_close_eases_to_neutral_when_commanding() -> None:
     async def run() -> FakeReachyMini:
         robot = FakeReachyMini()
-        async with MotionSession(robot, presence=True, idle="breathing") as session:
+        async with _running(
+            MotionSession(robot, presence=True, idle="breathing")
+        ) as session:
             session.resume()
             await asyncio.sleep(0.6)
         return robot
@@ -595,7 +627,7 @@ def test_close_is_immediate_when_quiet() -> None:
     async def run() -> tuple[float, int]:
         robot = FakeReachyMini()
         t0 = time.monotonic()
-        async with MotionSession(robot, presence=False, idle="breathing"):
+        async with _running(MotionSession(robot, presence=False, idle="breathing")):
             pass
         return time.monotonic() - t0, len(robot.targets)
 
@@ -607,7 +639,9 @@ def test_close_is_immediate_when_quiet() -> None:
 def test_a_failing_tick_fails_the_primary_and_keeps_the_loop_alive() -> None:
     async def run() -> tuple[BaseException | None, int, int]:
         robot = FakeReachyMini()
-        async with MotionSession(robot, presence=True, idle="breathing") as session:
+        async with _running(
+            MotionSession(robot, presence=True, idle="breathing")
+        ) as session:
             session.resume()
             future = session.submit(_TestPrimary(1.0, 0.02, fail_after=0.1), None)
             exc: BaseException | None = None
@@ -659,7 +693,7 @@ def test_lost_connection_logs_once_and_pauses_for_good(
         daemon_gone = False
         monkeypatch.setattr(robot, "set_target", set_target)
         session = MotionSession(robot, presence=True, idle="breathing")
-        async with session:
+        async with _running(session):
             session.resume()
             in_flight = session.submit(_TestPrimary(2.0, 0.02), None)
             await asyncio.sleep(BLEND_S + 0.15)  # the trajectory is playing
@@ -740,8 +774,8 @@ class _BreaksAfter(IdleMove):
 def test_custom_idle_move_plays_in_custom_mode() -> None:
     async def run() -> tuple[list[float], FakeReachyMini]:
         robot = FakeReachyMini()
-        async with MotionSession(
-            robot, presence=True, idle="custom", idle_move=_Lift
+        async with _running(
+            MotionSession(robot, presence=True, idle="custom", idle_move=_Lift)
         ) as session:
             session.resume()
             await asyncio.sleep(BLEND_S + 0.3)
@@ -761,7 +795,9 @@ def test_custom_idle_move_plays_in_custom_mode() -> None:
 def test_custom_mode_without_a_move_holds_neutral() -> None:
     async def run() -> list[float]:
         robot = FakeReachyMini()
-        async with MotionSession(robot, presence=True, idle="custom") as session:
+        async with _running(
+            MotionSession(robot, presence=True, idle="custom")
+        ) as session:
             session.resume()
             await asyncio.sleep(BLEND_S + 0.2)
             return _head_zs(robot)
@@ -774,7 +810,9 @@ def test_custom_mode_without_a_move_holds_neutral() -> None:
 def test_set_idle_move_in_custom_mode_takes_effect_at_once() -> None:
     async def run() -> list[float]:
         robot = FakeReachyMini()
-        async with MotionSession(robot, presence=True, idle="custom") as session:
+        async with _running(
+            MotionSession(robot, presence=True, idle="custom")
+        ) as session:
             session.resume()
             await asyncio.sleep(0.2)
             session.set_idle_move(_Lift)
@@ -788,7 +826,9 @@ def test_set_idle_move_in_custom_mode_takes_effect_at_once() -> None:
 def test_idle_move_is_stored_in_another_mode_and_plays_once_custom() -> None:
     async def run() -> tuple[list[float], list[float]]:
         robot = FakeReachyMini()
-        async with MotionSession(robot, presence=True, idle="hold") as session:
+        async with _running(
+            MotionSession(robot, presence=True, idle="hold")
+        ) as session:
             session.resume()
             session.set_idle_move(_Lift)
             await asyncio.sleep(BLEND_S + 0.2)
@@ -805,8 +845,8 @@ def test_idle_move_is_stored_in_another_mode_and_plays_once_custom() -> None:
 def test_leaving_a_custom_idle_move_fades_it_out_to_neutral() -> None:
     async def run() -> list[float]:
         robot = FakeReachyMini()
-        async with MotionSession(
-            robot, presence=True, idle="custom", idle_move=_Lift
+        async with _running(
+            MotionSession(robot, presence=True, idle="custom", idle_move=_Lift)
         ) as session:
             session.resume()
             await asyncio.sleep(BLEND_S + 0.2)
@@ -833,8 +873,8 @@ def test_each_idle_entry_builds_a_fresh_custom_move() -> None:
 
     async def run() -> int:
         robot = FakeReachyMini()
-        async with MotionSession(
-            robot, presence=True, idle="custom", idle_move=factory
+        async with _running(
+            MotionSession(robot, presence=True, idle="custom", idle_move=factory)
         ) as session:
             session.resume()
             await asyncio.sleep(BLEND_S + 0.2)
@@ -856,8 +896,8 @@ def test_failing_custom_idle_move_falls_back_to_the_hold_with_one_warning(
 ) -> None:
     async def run() -> tuple[list[float], int, int, list[float]]:
         robot = FakeReachyMini()
-        async with MotionSession(
-            robot, presence=True, idle="custom", idle_move=_BreaksAfter
+        async with _running(
+            MotionSession(robot, presence=True, idle="custom", idle_move=_BreaksAfter)
         ) as session:
             session.resume()
             await asyncio.sleep(BLEND_S + 0.1 + BLEND_S + 0.3)  # breaks, then holds
@@ -913,8 +953,8 @@ def test_a_bad_idle_move_factory_is_rejected_and_changes_nothing(bad: object) ->
 
     async def run() -> tuple[object, list[float]]:
         robot = FakeReachyMini()
-        async with MotionSession(
-            robot, presence=True, idle="custom", idle_move=_Lift
+        async with _running(
+            MotionSession(robot, presence=True, idle="custom", idle_move=_Lift)
         ) as session:
             session.resume()
             with pytest.raises(ValueError, match="idle move"):
@@ -930,8 +970,8 @@ def test_a_bad_idle_move_factory_is_rejected_and_changes_nothing(bad: object) ->
 def test_clearing_the_idle_move_returns_custom_mode_to_the_hold() -> None:
     async def run() -> list[float]:
         robot = FakeReachyMini()
-        async with MotionSession(
-            robot, presence=True, idle="custom", idle_move=_Lift
+        async with _running(
+            MotionSession(robot, presence=True, idle="custom", idle_move=_Lift)
         ) as session:
             session.resume()
             await asyncio.sleep(BLEND_S + 0.2)
@@ -970,7 +1010,9 @@ def _yaws(robot: FakeReachyMini, since: int = 0) -> list[float]:
 def test_an_aim_eases_the_head_onto_it_and_withdrawing_it_eases_it_back() -> None:
     async def run() -> tuple[list[float], list[float], list[float]]:
         robot = FakeReachyMini()
-        async with MotionSession(robot, presence=True, idle="hold") as session:
+        async with _running(
+            MotionSession(robot, presence=True, idle="hold")
+        ) as session:
             session.resume()
             await asyncio.sleep(BLEND_S + 0.1)  # holding neutral
             before = len(robot.targets)
@@ -1002,8 +1044,8 @@ def test_breathing_keeps_breathing_on_the_aim_with_its_roaming_toned_down() -> N
     async def run() -> list[npt.NDArray[np.float64]]:
         robot = FakeReachyMini()
         seeded = lambda: BreathingMove(random.Random(3))
-        async with MotionSession(
-            robot, presence=True, idle="custom", idle_move=seeded
+        async with _running(
+            MotionSession(robot, presence=True, idle="custom", idle_move=seeded)
         ) as session:
             session.set_gaze(_yaw_pose(AIM_YAW_DEG))  # before the loop runs
             session.resume()
@@ -1027,8 +1069,8 @@ def test_focus_holds_the_head_on_the_aim_and_keeps_the_antennas_alive() -> None:
     ]:
         robot = FakeReachyMini()
         seeded = lambda: BreathingMove(random.Random(3))
-        async with MotionSession(
-            robot, presence=True, idle="custom", idle_move=seeded
+        async with _running(
+            MotionSession(robot, presence=True, idle="custom", idle_move=seeded)
         ) as session:
             session.set_gaze(_yaw_pose(AIM_YAW_DEG), focus=True)
             session.resume()
@@ -1064,8 +1106,8 @@ def test_a_custom_idle_move_sits_still_on_the_aim_unless_it_says_otherwise() -> 
         factory: IdleMoveFactory,
     ) -> tuple[list[tuple[float, float, float]], list[npt.NDArray[np.float64]], float]:
         robot = FakeReachyMini()
-        async with MotionSession(
-            robot, presence=True, idle="custom", idle_move=factory
+        async with _running(
+            MotionSession(robot, presence=True, idle="custom", idle_move=factory)
         ) as session:
             session.set_gaze(_yaw_pose(AIM_YAW_DEG))
             session.resume()
@@ -1149,8 +1191,10 @@ def test_a_gaze_offsets_raising_while_playing_falls_back_to_the_hold(
 ) -> None:
     async def run() -> list[float]:
         robot = FakeReachyMini()
-        async with MotionSession(
-            robot, presence=True, idle="custom", idle_move=_GazeBreaksAfter
+        async with _running(
+            MotionSession(
+                robot, presence=True, idle="custom", idle_move=_GazeBreaksAfter
+            )
         ) as session:
             session.set_gaze(_yaw_pose(AIM_YAW_DEG))
             session.resume()
@@ -1167,7 +1211,9 @@ def test_a_gaze_offsets_raising_while_playing_falls_back_to_the_hold(
 def test_a_primary_plays_as_recorded_under_an_aim_then_the_head_returns_to_it() -> None:
     async def run() -> tuple[list[tuple[float, float]], list[float]]:
         robot = FakeReachyMini()
-        async with MotionSession(robot, presence=True, idle="hold") as session:
+        async with _running(
+            MotionSession(robot, presence=True, idle="hold")
+        ) as session:
             session.set_gaze(_yaw_pose(AIM_YAW_DEG))
             session.resume()
             await asyncio.sleep(BLEND_S + 0.8)
@@ -1195,7 +1241,9 @@ def test_a_primary_plays_as_recorded_under_an_aim_then_the_head_returns_to_it() 
 def test_with_presence_off_an_aim_moves_nothing() -> None:
     async def run() -> int:
         robot = FakeReachyMini()
-        async with MotionSession(robot, presence=False, idle="hold") as session:
+        async with _running(
+            MotionSession(robot, presence=False, idle="hold")
+        ) as session:
             session.resume()
             session.set_gaze(_yaw_pose(AIM_YAW_DEG))
             await asyncio.sleep(0.4)
@@ -1218,7 +1266,9 @@ def test_the_history_records_the_head_pose_the_robot_reports(
     )
 
     async def run() -> tuple[float, float, float, float]:
-        async with MotionSession(robot, presence=True, idle="hold") as session:
+        async with _running(
+            MotionSession(robot, presence=True, idle="hold")
+        ) as session:
             await asyncio.sleep(1.5)
             now = time.monotonic()
             return (
@@ -1242,3 +1292,19 @@ def test_head_pose_at_reads_the_robot_before_anything_is_recorded() -> None:
     robot.set_target(head=elsewhere)
     session = MotionSession(robot, presence=True, idle="hold")  # not started
     np.testing.assert_allclose(session.head_pose_at(time.monotonic() - 0.3), elsewhere)
+
+
+def test_start_twice_raises_and_stop_is_idempotent() -> None:
+    async def run() -> FakeReachyMini:
+        robot = FakeReachyMini()
+        session = MotionSession(robot, presence=False, idle="hold")
+        await session.stop()  # never started: a no-op
+        await session.start()
+        with pytest.raises(BridgeError):
+            await session.start()
+        await session.stop()
+        await session.stop()  # already stopped: a no-op
+        return robot
+
+    robot = asyncio.run(run())
+    assert robot.targets == []

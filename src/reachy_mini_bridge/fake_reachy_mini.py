@@ -4,7 +4,7 @@ Specified by [specs/core/robot.md](../../specs/core/robot.md). ``FakeReachyMini`
 v1 consumed slice the layers above call, imports no ``reachy_mini`` itself, records
 every command it receives (so tests assert on them), and returns synthetic
 perception/audio. It is the backbone of the deterministic ``tests/`` tier — no daemon,
-hardware, or network — and runs the full api/audio stack offline for dev and demos.
+hardware, or network — and runs the full bridge/audio stack offline for dev and demos.
 
 The union alias and backend factory that select between this fake and the real robot
 live in [robot.py](robot.py).
@@ -50,7 +50,7 @@ class _FakeBackendStatus:
 
 
 class _FakeStatus:
-    """Stand-in for the upstream ``DaemonStatus`` (only the fields the api reads)."""
+    """Stand-in for the upstream ``DaemonStatus`` (only the fields the bridge reads)."""
 
     def __init__(
         self,
@@ -68,7 +68,7 @@ class _FakeDaemonClient:
     """Stand-in for ``ReachyMini.client`` (the daemon client).
 
     The public ``ReachyMini`` exposes no motor-mode getter; the SDK reads state via
-    ``robot.client.get_status()``, so the api does the same and the fake mirrors it.
+    ``robot.client.get_status()``, so the bridge does the same and the fake mirrors it.
     """
 
     def __init__(self) -> None:

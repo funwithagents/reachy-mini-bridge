@@ -10,7 +10,7 @@ props — today a **face** (a portrait plane), room for more later — that star
 and that a test shows, places, moves and hides over HTTP while the daemon runs. Showing
 the face exercises the real daemon-side pipeline (offscreen render → GStreamer → YuNet
 face detector → tracking aim → head IK) and, on top of it, the bridge's attention
-hand-back (specs/core/api.md "Attention"); hiding it again leaves the scene exactly as a test
+hand-back (specs/core/bridge.md "Attention"); hiding it again leaves the scene exactly as a test
 that needs no face found it.
 
 Three pieces, one process boundary:

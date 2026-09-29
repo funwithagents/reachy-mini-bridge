@@ -12,6 +12,8 @@ from __future__ import annotations
 import asyncio
 import math
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
@@ -39,6 +41,16 @@ if TYPE_CHECKING:
 
 DETECT_HZ = 10.0  # upstream's detector sees the camera feed at 10 fps
 POLL_HZ = 30.0  # the detection loop's poll rate
+
+
+@asynccontextmanager
+async def _running(session: MotionSession) -> AsyncIterator[MotionSession]:
+    """``start()`` / ``stop()`` around a block — what the bridge does with the session."""
+    await session.start()
+    try:
+        yield session
+    finally:
+        await session.stop()
 
 
 def _yaw_deg(head: npt.NDArray[np.float64]) -> float:
@@ -85,7 +97,7 @@ async def _closed_loop(
     tracker's delay estimate."""
     robot = FakeReachyMini()
     camera = CameraModel.for_sim(SimCameraSettings(source="sim"))
-    async with MotionSession(robot, presence=True, idle="hold") as session:
+    async with _running(MotionSession(robot, presence=True, idle="hold")) as session:
         tracker = HeadTracker(
             camera,
             history=session.head_pose_history,
@@ -223,7 +235,7 @@ def test_a_report_carrying_its_frame_pose_is_aimed_against_it() -> None:
 async def _constant_observation(camera: CameraModel, seconds: float) -> list[float]:
     """A person standing still in front of a camera: the same pixel every poll."""
     robot = FakeReachyMini()
-    async with MotionSession(robot, presence=True, idle="hold") as session:
+    async with _running(MotionSession(robot, presence=True, idle="hold")) as session:
         tracker = HeadTracker(
             camera,
             history=session.head_pose_history,

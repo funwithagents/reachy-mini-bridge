@@ -30,8 +30,8 @@ A consumer's two tiers map onto the bridge's three backends exactly as the bridg
 | Live / e2e | `sim` | `sim` (`reachy-mini[mujoco]`) | MuJoCo, harness-managed |
 | Live / e2e | `real` | none (base only) | robot at host/port — harness-managed for a USB robot on this machine |
 
-- **Unit tests use `fake`.** The public `ReachyMiniApi("fake")` ([api.md](../core/api.md)) already needs no daemon, no network, and no extra — a consumer constructs it directly and asserts through the `api.robot` escape hatch on recorded commands / synthetic perception. Importing the package pulls in `reachy_mini` (the base dependency), which needs its native libs installed, **not** a live daemon.
-- **E2E tests use `sim` or `real`** through the shipped `live_api` fixture below.
+- **Unit tests use `fake`.** The public `ReachyMiniBridge("fake")` ([bridge.md](../core/bridge.md)) already needs no daemon, no network, and no extra — a consumer constructs it directly and asserts through the `bridge.robot` escape hatch on recorded commands / synthetic perception. Importing the package pulls in `reachy_mini` (the base dependency), which needs its native libs installed, **not** a live daemon.
+- **E2E tests use `sim` or `real`** through the shipped `live_bridge` fixture below.
 
 ### Shipped as `reachy_mini_bridge.testing`, behind a `test` extra
 
@@ -39,7 +39,7 @@ The harness ships as the `reachy_mini_bridge.testing` package, pulled in by the 
 
 ### Opt-in as a pytest plugin — no auto-registration
 
-The `live_api` fixture and its helpers live in `reachy_mini_bridge.testing.fixtures`, a module shaped as a **pytest plugin**. It is **not** auto-registered (no `pytest11` entry point): a consumer opts in explicitly from their own `conftest.py`:
+The `live_bridge` fixture and its helpers live in `reachy_mini_bridge.testing.fixtures`, a module shaped as a **pytest plugin**. It is **not** auto-registered (no `pytest11` entry point): a consumer opts in explicitly from their own `conftest.py`:
 
 ```python
 # their conftest.py
@@ -52,19 +52,19 @@ Explicit opt-in keeps installation side-effect-free — merely depending on the 
 
 Four modules, with the daemon machinery kept private behind the plugin:
 
-- `reachy_mini_bridge/testing/__init__.py` — re-exports the two skip gates (`requires_caps`, `require_env`) from `support.py`. The `live_api` fixture is deliberately *not* re-exported here: a fixture only registers through the plugin module a consumer names in `pytest_plugins`.
-- `testing/fixtures.py` — the pytest-plugin module a consumer names in `pytest_plugins`: the `live_api` fixture and the capability probing it yields.
-- `testing/_daemon.py` — **private** glue between the environment and the bridge's daemon lifecycle: target/backend/address resolution from the env vars below, and a thin wrapper over [daemon.md](../daemon/daemon.md)'s `managed_daemon` / `is_daemon_ready` that turns a `DaemonError` into a `pytest.skip`. The own-it-or-borrow-it decision, the readiness poll, the launch recipes, and the GStreamer-bundle env scrub live in the library module `daemon.py`, so the harness and `ReachyMiniApi` share one implementation. Kept out of `fixtures.py` so the plugin module reads as the fixture surface.
+- `reachy_mini_bridge/testing/__init__.py` — re-exports the two skip gates (`requires_caps`, `require_env`) from `support.py`. The `live_bridge` fixture is deliberately *not* re-exported here: a fixture only registers through the plugin module a consumer names in `pytest_plugins`.
+- `testing/fixtures.py` — the pytest-plugin module a consumer names in `pytest_plugins`: the `live_bridge` fixture and the capability probing it yields.
+- `testing/_daemon.py` — **private** glue between the environment and the bridge's daemon lifecycle: target/backend/address resolution from the env vars below, and a thin wrapper over [daemon.md](../daemon/daemon.md)'s `managed_daemon` / `is_daemon_ready` that turns a `DaemonError` into a `pytest.skip`. The own-it-or-borrow-it decision, the readiness poll, the launch recipes, and the GStreamer-bundle env scrub live in the library module `daemon.py`, so the harness and `ReachyMiniBridge` share one implementation. Kept out of `fixtures.py` so the plugin module reads as the fixture surface.
 - `testing/support.py` — `requires_caps` and `require_env`.
 
 ### Public surface
 
-The package exposes exactly the names the bridge's own live tier uses — the `live_api` and `sim_scene` fixtures through the `reachy_mini_bridge.testing.fixtures` plugin module, and the two skip gates re-exported from `reachy_mini_bridge.testing`:
+The package exposes exactly the names the bridge's own live tier uses — the `live_bridge` and `sim_scene` fixtures through the `reachy_mini_bridge.testing.fixtures` plugin module, and the two skip gates re-exported from `reachy_mini_bridge.testing`:
 
-- **`live_api`** — a **module-scoped** pytest fixture yielding `(api, capabilities)`: a connected `ReachyMiniApi` over the resolved target and the `frozenset` of capabilities probed against that live daemon. It brings the daemon up under own-it-or-borrow-it (reuse one already reachable, else spawn one and own its teardown — a MuJoCo daemon for `sim`, the hardware daemon for `real` when the address is loopback, i.e. a USB robot on this machine; a non-loopback `real` address is borrow-or-skip), builds the api from a `ReachyMiniConfig` ([config.md](../core/config.md)) whose `robot` block carries the harness's connection options (`connection_mode="network"`, the resolved host/port, `media_backend="local"`) whose `faces` block names the shipped `yunet` detector with `detection` on and whose `motion.tracking` is on (the live tier's attention and gaze tests need the robot that follows a face; the defaults run no detector), and whose `daemon.spawn` is `"never"` — the fixture, not the api, owns the daemon so one daemon serves a whole test module — with media on, probes, and tears down what it spawned.
-- **`requires_caps(live, *caps)`** — the skip gate: given the `live_api` value, `pytest.skip(...)` unless every named capability (`motion` / `audio` / `camera` / `gravity_compensation` / …, table in [testing.md](testing.md)) was probed on the current target. A test written once runs wherever its needs are met.
+- **`live_bridge`** — a **module-scoped** pytest fixture yielding `(bridge, capabilities)`: a running `ReachyMiniBridge` over the resolved target and the `frozenset` of capabilities probed against that live daemon. It brings the daemon up under own-it-or-borrow-it (reuse one already reachable, else spawn one and own its teardown — a MuJoCo daemon for `sim`, the hardware daemon for `real` when the address is loopback, i.e. a USB robot on this machine; a non-loopback `real` address is borrow-or-skip), builds the bridge from a `ReachyMiniConfig` ([config.md](../core/config.md)) whose `robot` block carries the harness's connection options (`connection_mode="network"`, the resolved host/port, `media_backend="local"`) whose `faces` block names the shipped `yunet` detector with `detection` on and whose `motion.tracking` is on (the live tier's attention and gaze tests need the robot that follows a face; the defaults run no detector), and whose `daemon.spawn` is `"never"` — the fixture, not the bridge, owns the daemon so one daemon serves a whole test module — with media on, probes, and tears down what it spawned. It drives the bridge through the `start()` / `stop()` pair, each under its own `asyncio.run` (the bridge binds to no loop): a synchronous module-scoped fixture cannot hold an `async with` open across the module's tests, which is what the pair is for ([bridge.md](../core/bridge.md) "Lifecycle").
+- **`requires_caps(live, *caps)`** — the skip gate: given the `live_bridge` value, `pytest.skip(...)` unless every named capability (`motion` / `audio` / `camera` / `gravity_compensation` / …, table in [testing.md](testing.md)) was probed on the current target. A test written once runs wherever its needs are met.
 - **`require_env(name)`** — return an env var or skip when it's absent, so a live test skips (never fails) without its credentials.
-- **`sim_scene`** — a second **module-scoped** fixture in the plugin module: a `SimSceneClient` ([sim_scene.md](sim_scene.md)) on the fixture-managed daemon, to show, place, move and hide the face(s) of the bridge's generated scene. Meaningful only where `live_api` probed `faces`; gate with `requires_caps(live_api, "camera", "faces")`.
+- **`sim_scene`** — a second **module-scoped** fixture in the plugin module: a `SimSceneClient` ([sim_scene.md](sim_scene.md)) on the fixture-managed daemon, to show, place, move and hide the face(s) of the bridge's generated scene. Meaningful only where `live_bridge` probed `faces`; gate with `requires_caps(live_bridge, "camera", "faces")`.
 
 A consumer's e2e test then reads:
 
@@ -72,9 +72,9 @@ A consumer's e2e test then reads:
 from reachy_mini_bridge.testing import requires_caps
 
 
-def test_my_greeting_speaks(live_api):
-    requires_caps(live_api, "audio")
-    api, _ = live_api
+def test_my_greeting_speaks(live_bridge):
+    requires_caps(live_bridge, "audio")
+    bridge, _ = live_bridge
     ...
 ```
 
@@ -90,9 +90,9 @@ A spawned `sim` daemon always runs the bridge's **test scene** ([sim_scene.md](s
 
 ### The gotchas move into the shipped code
 
-The hard-won details a consumer would otherwise have to rediscover are the whole reason to ship this rather than document it: the **GStreamer-bundle env scrub** before spawning a daemon from a process that has imported `reachy_mini` (else a doubled plugin path segfaults the child), **probing** capabilities against the live daemon rather than inferring them from the backend type, and **probing without restarting the audio pipeline**. The scrub and the spawn live in the library's `daemon.py` ([daemon.md](../daemon/daemon.md)), the probes behind `live_api`; a consumer inherits all three for free.
+The hard-won details a consumer would otherwise have to rediscover are the whole reason to ship this rather than document it: the **GStreamer-bundle env scrub** before spawning a daemon from a process that has imported `reachy_mini` (else a doubled plugin path segfaults the child), **probing** capabilities against the live daemon rather than inferring them from the backend type, and **probing without restarting the audio pipeline**. The scrub and the spawn live in the library's `daemon.py` ([daemon.md](../daemon/daemon.md)), the probes behind `live_bridge`; a consumer inherits all three for free.
 
-The probes run after the api has opened its media session, so the pipeline is already recording and playing. The audio probe only waits for a mic sample from it; it never calls `start_recording()` / `stop_recording()`. Upstream's GStreamer audio binds the robot's speaker and mic by device name once, when it builds that single shared pipeline, and on macOS a stop-then-start reopens both on the system defaults — the Mac's own speaker and microphone — for the rest of the test module ([../docs/reachy-mini-api.md](../../docs/reachy-mini-api.md)). A consumer's own tests should likewise leave the session's pipeline running.
+The probes run after the bridge has opened its media session, so the pipeline is already recording and playing. The audio probe only waits for a mic sample from it; it never calls `start_recording()` / `stop_recording()`. Upstream's GStreamer audio binds the robot's speaker and mic by device name once, when it builds that single shared pipeline, and on macOS a stop-then-start reopens both on the system defaults — the Mac's own speaker and microphone — for the rest of the test module ([../docs/reachy-mini-api.md](../../docs/reachy-mini-api.md)). A consumer's own tests should likewise leave the session's pipeline running.
 
 ### A documented guide accompanies the code
 

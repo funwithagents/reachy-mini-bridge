@@ -55,7 +55,7 @@ class Observable[T]:
         """Yield each value published from the moment the iterator is first driven.
 
         Cancelling the task blocked in ``async for`` ends the iteration and detaches the
-        subscriber (specs/core/api.md "Cancellation").
+        subscriber (specs/core/bridge.md "Cancellation").
         """
         return self._subscribe()
 

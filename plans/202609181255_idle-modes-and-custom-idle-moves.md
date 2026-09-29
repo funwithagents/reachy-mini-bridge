@@ -2,7 +2,7 @@
 
 **Status:** Done
 
-Implements the `idle` mode and custom idle moves of [specs/motion/motion.md](../specs/motion/motion.md) ("Presence and the idle mode", "The moves", "Custom idle moves"), [specs/core/config.md](../specs/core/config.md) ("`motion` block") and [specs/core/api.md](../specs/core/api.md) ("Presence & the idle move"), plus the control panel's Idle radio ([specs/examples/control_panel.md](../specs/examples/control_panel.md)). The `breathing` on/off switch becomes an `idle` mode with three values — `"breathing"`, `"hold"`, `"custom"` — and a caller can register their own idle move (an `IdleMove` subclass, built by a factory) that plays in the `"custom"` mode.
+Implements the `idle` mode and custom idle moves of [specs/motion/motion.md](../specs/motion/motion.md) ("Presence and the idle mode", "The moves", "Custom idle moves"), [specs/core/config.md](../specs/core/config.md) ("`motion` block") and [specs/core/bridge.md](../specs/core/bridge.md) ("Presence & the idle move"), plus the control panel's Idle radio ([specs/examples/control_panel.md](../specs/examples/control_panel.md)). The `breathing` on/off switch becomes an `idle` mode with three values — `"breathing"`, `"hold"`, `"custom"` — and a caller can register their own idle move (an `IdleMove` subclass, built by a factory) that plays in the `"custom"` mode.
 
 Deliberately leaves out: naming a custom move from a JSON file by import path, and a bridge-side amplitude clamp on custom offsets (both are open questions in `specs/motion/motion.md`); any change to `BreathingMove`'s animation; a backward-compatible `breathing` alias (the old key and verbs are removed, not deprecated).
 
@@ -44,7 +44,7 @@ Deliberately leaves out: naming a custom move from a JSON file by import path, a
 7. **Setting the same idle mode is a no-op. Registering an idle move always re-enters the custom idle** (even the same factory) and clears the failed mark.
 8. **An emotion is never interrupted**: with a primary playing, `_reenter_idle()` does nothing; the change applies when the queue drains.
 9. **`config.py` must still import without `reachy_mini`**: `IdleMove` is imported there under `TYPE_CHECKING` only.
-10. **Bad input is `ValueError`** (specs/core/api.md "Errors"), a malformed config is `ConfigError` (a `ValueError` subclass).
+10. **Bad input is `ValueError`** (specs/core/bridge.md "Errors"), a malformed config is `ConfigError` (a `ValueError` subclass).
 
 ## Scope
 
@@ -246,7 +246,7 @@ def check_idle_move_factory(factory: object) -> None:
     unless ``factory`` is a callable building an ``IdleMove`` whose ``offsets(0.0)`` is
     an ``IdleOffsets`` of finite numbers. Runs on the caller's thread."""
     if not callable(factory):
-        # ValueError, not TypeError: the api's one error for bad input (specs/core/api.md)
+        # ValueError, not TypeError: the api's one error for bad input (specs/core/bridge.md)
         raise ValueError(  # noqa: TRY004
             "an idle move factory must be a zero-argument callable returning an "
             f"IdleMove (an IdleMove subclass is one), got {type(factory).__name__}"
@@ -757,7 +757,7 @@ All of this lands in one step because the `breathing` → `idle` rename crosses 
 @dataclass
 class MotionSettings:
     """Everything that shapes the robot's behaviour at rest, applied when the session
-    starts (specs/motion/motion.md, specs/core/api.md): the loop's own idle modes (``presence``,
+    starts (specs/motion/motion.md, specs/core/bridge.md): the loop's own idle modes (``presence``,
     ``idle``, ``idle_move``) and the daemon-side modes the api arms around them (``wobbling``,
     ``tracking``)."""
 
@@ -1095,7 +1095,7 @@ def test_a_bad_idle_move_in_the_config_fails_bring_up() -> None:
         asyncio.run(run())
 ```
 
-  `set_idle` and `set_idle_move` are **instant verbs** (specs/core/api.md "Cancellation"): they hand one command to the loop and return, so they need no mid-flight cancellation test.
+  `set_idle` and `set_idle_move` are **instant verbs** (specs/core/bridge.md "Cancellation"): they hand one command to the loop and return, so they need no mid-flight cancellation test.
 
 **2h. `tests-e2e/test_api.py` — renames.** Replace all 4 `api.set_breathing(False)` with `api.set_idle("hold")` and all 4 `api.set_breathing(True)` with `api.set_idle("breathing")`; in the breathing test's docstring `` `set_breathing(False)` holds`` → `` `set_idle("hold")` holds``.
 
@@ -1200,7 +1200,7 @@ Every motion test must **pass**. Read the skips (`-rs`): camera / faces tests sk
 ### Step 5 — Statuses
 
 - `specs/examples/control_panel.md`: `**Status:** Updated` → `**Status:** Implemented`, and the same in its `specs/_index.md` row.
-- **Leave** `specs/motion/motion.md` at `Stable` and `specs/core/api.md` / `specs/core/config.md` / `specs/core/robot.md` at `Updated`: they wait on the on-robot checklist of [202609162000_motion-loop-presence-and-breathing.md](202609162000_motion-loop-presence-and-breathing.md), not on this plan.
+- **Leave** `specs/motion/motion.md` at `Stable` and `specs/core/bridge.md` / `specs/core/config.md` / `specs/core/robot.md` at `Updated`: they wait on the on-robot checklist of [202609162000_motion-loop-presence-and-breathing.md](202609162000_motion-loop-presence-and-breathing.md), not on this plan.
 - In `specs/_overview.md`, "Roadmap": delete item 4 (the **Todo** item that links this plan) and renumber the two items after it (5 → 4, 6 → 5).
 - This plan: `**Status:** Done`, and its row in [_index.md](_index.md).
 

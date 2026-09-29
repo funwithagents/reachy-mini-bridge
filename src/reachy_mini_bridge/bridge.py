@@ -1,6 +1,6 @@
-"""High-level interaction API (specs/core/api.md).
+"""High-level interaction API (specs/core/bridge.md).
 
-``ReachyMiniApi`` is the intention-level surface for driving the robot in **human
+``ReachyMiniBridge`` is the intention-level surface for driving the robot in **human
 units** (degrees, seconds, named emotions), orchestrating the lower-level
 [robot](robot.py) primitives into single semantic verbs. It is **async-native**
 because audio forces it (see [audio](audio.py)): synthesis is async and a live mic
@@ -8,8 +8,8 @@ stream runs concurrently with playback and motion on one event loop, so the upst
 SDK's blocking calls run under ``asyncio.to_thread``.
 
 Constructed from a [``ReachyMiniConfig``](config.py) (or a backend-string shorthand for
-one); ``async with`` brings up the managed daemon (when configured), the robot, the
-media session, the camera feed ([camera](camera.py) — the one reader of the robot's
+one); ``start()`` — or ``async with``, sugar over ``start()`` / ``stop()`` — brings up
+the managed daemon (when configured), the robot, the media session, the camera feed ([camera](camera.py) — the one reader of the robot's
 camera), the detection loop with the head tracker ([head_tracking](head_tracking.py)),
 and the motion session ([motion](motion.py) — the one ``set_target`` writer, playing
 emotions and the idle behaviour, with the tracker's aim composed in) in that order on an
@@ -18,7 +18,7 @@ emotions and the idle behaviour, with the tracker's aim composed in) in that ord
 v1 is the smallest verb set that makes the robot a conversational, face-following
 presence — talk, listen, express, follow a face, manage motors, and stay visibly alive
 in between. Manual movement/gaze and rich perception are deferred to post-v1 (see
-specs/core/api.md).
+specs/core/bridge.md).
 """
 
 from __future__ import annotations
@@ -60,7 +60,7 @@ if TYPE_CHECKING:
     from .motion import IdleMode, IdleMoveFactory
     from .robot import AnyReachyMini
 
-__all__ = ["ReachyMiniApi"]
+__all__ = ["ReachyMiniBridge"]
 
 _logger = logging.getLogger(__name__)
 
@@ -149,22 +149,24 @@ def _idle_mode(value: str) -> IdleMode:
     return cast("IdleMode", value)
 
 
-class ReachyMiniApi:
+class ReachyMiniBridge:
     """Async-native, intention-level API over a robot backend.
 
     Construct from a :class:`ReachyMiniConfig` — or a bare backend string (``"real"`` |
     ``"sim"`` | ``"fake"``), shorthand for ``ReachyMiniConfig(backend=...)``. Nothing
-    connects at construction; use it as an async context manager to bring up the daemon
-    (when the config manages one), the robot, and the shared media session, and to tear
-    them down::
+    connects at construction: ``await bridge.start()`` brings up the daemon (when the
+    config manages one), the robot, the media session and every worker, and ``await
+    bridge.stop()`` tears them down — the pair for a host with lifecycle hooks of its
+    own. ``async with`` is sugar over the pair, and the recommended form wherever the
+    session fits in one block (it stops on every way out, a cancel included)::
 
-        async with ReachyMiniApi("fake") as api:
-            await api.say("hello", synth)
+        async with ReachyMiniBridge("fake") as bridge:
+            await bridge.say("hello", synth)
 
-        async with ReachyMiniApi.from_json_file("robot.json") as api:
-            await api.say("hello")  # default synthesizer from the config's `tts` block
+        async with ReachyMiniBridge.from_json_file("robot.json") as bridge:
+            await bridge.say("hello")  # default synthesizer from the config's `tts` block
 
-    While entered, the underlying robot stays reachable as :attr:`robot` (a.k.a.
+    While running, the underlying robot stays reachable as :attr:`robot` (a.k.a.
     :attr:`raw`) — the escape hatch to the full native API, and how tests assert on
     the fake.
     """
@@ -234,27 +236,27 @@ class ReachyMiniApi:
     @classmethod
     def from_dict(
         cls, data: dict[str, Any], *, synthesizer: SpeechSynthesizer | None = None
-    ) -> ReachyMiniApi:
-        """Build the api from a parsed config dict (see :meth:`ReachyMiniConfig.from_dict`)."""
+    ) -> ReachyMiniBridge:
+        """Build the bridge from a parsed config dict (see :meth:`ReachyMiniConfig.from_dict`)."""
         return cls(ReachyMiniConfig.from_dict(data), synthesizer=synthesizer)
 
     @classmethod
     def from_json(
         cls, text: str, *, synthesizer: SpeechSynthesizer | None = None
-    ) -> ReachyMiniApi:
-        """Build the api from a JSON config string."""
+    ) -> ReachyMiniBridge:
+        """Build the bridge from a JSON config string."""
         return cls(ReachyMiniConfig.from_json(text), synthesizer=synthesizer)
 
     @classmethod
     def from_json_file(
         cls, path: str | Path, *, synthesizer: SpeechSynthesizer | None = None
-    ) -> ReachyMiniApi:
-        """Build the api from a JSON config file."""
+    ) -> ReachyMiniBridge:
+        """Build the bridge from a JSON config file."""
         return cls(ReachyMiniConfig.from_json_file(path), synthesizer=synthesizer)
 
     @property
     def config(self) -> ReachyMiniConfig:
-        """The config this api was built from."""
+        """The config this bridge was built from."""
         return self._config
 
     @property
@@ -263,7 +265,7 @@ class ReachyMiniApi:
 
         ``None`` when the voice built successfully, when an explicit ``synthesizer=``
         was passed (the block is then not consumed), or when there is no `tts` block.
-        The api still comes up with no voice; `say` raises :class:`BridgeError`
+        The bridge still comes up with no voice; `say` raises :class:`BridgeError`
         chained to this cause. A host that wants hard failure checks this after
         construction and raises.
         """
@@ -276,11 +278,11 @@ class ReachyMiniApi:
         """The underlying robot object — full native ``ReachyMini`` on real/sim.
 
         Available only while entered (the robot is built and connected on
-        ``__aenter__``); raises :class:`BridgeError` otherwise.
+        ``start()``); raises :class:`BridgeError` otherwise.
         """
         if self._robot is None:
             raise BridgeError(
-                "the robot is only available inside `async with ReachyMiniApi(...)`"
+                "the robot is only available while the bridge runs (`await bridge.start()`, or `async with ReachyMiniBridge(...)`)"
             )
         return self._robot
 
@@ -292,22 +294,27 @@ class ReachyMiniApi:
     def _require_media(self) -> MediaSession:
         if self._media is None:
             raise BridgeError(
-                "the media session is only available inside `async with ReachyMiniApi(...)`"
+                "the media session is only available while the bridge runs (`await bridge.start()`, or `async with ReachyMiniBridge(...)`)"
             )
         return self._media
 
     def _require_motion(self) -> MotionSession:
         if self._motion is None:
             raise BridgeError(
-                "the motion loop is only available inside `async with ReachyMiniApi(...)`"
+                "the motion loop is only available while the bridge runs (`await bridge.start()`, or `async with ReachyMiniBridge(...)`)"
             )
         return self._motion
 
     # --- lifecycle ---
 
-    async def __aenter__(self) -> Self:
+    async def start(self) -> None:
+        """Bring the session up, in order: the managed daemon (when configured), the
+        robot, the media session, the camera feed, wobbling, the detection loop with
+        the head tracker, the motion session (specs/core/bridge.md "Lifecycle"). A
+        failure — or a cancel — at any step unwinds what already started, and
+        ``BridgeError`` is raised on a bridge already running."""
         if self._exit_stack is not None:
-            raise BridgeError("ReachyMiniApi is already entered")
+            raise BridgeError("ReachyMiniBridge is already running")
         cfg = self._config
         if cfg.faces.detector is None and (
             self._face_detection_wanted or self._tracking_wanted
@@ -323,19 +330,16 @@ class ReachyMiniApi:
         try:
             if cfg.manages_daemon:
                 opts = cfg.effective_robot_options()
-                daemon_cm = _daemon.managed_daemon(
-                    cfg.daemon,
-                    host=opts["host"],
-                    port=opts["port"],
-                    backend=cfg.backend,
+                handle = await cancel_safe_step(
+                    lambda: _daemon.start_daemon(
+                        cfg.daemon,
+                        host=opts["host"],
+                        port=opts["port"],
+                        backend=cfg.backend,
+                    ),
+                    lambda h: h.stop(),
                 )
-                await cancel_safe_step(
-                    daemon_cm.__enter__,
-                    lambda _: daemon_cm.__exit__(None, None, None),
-                )
-                stack.push_async_callback(
-                    asyncio.to_thread, daemon_cm.__exit__, None, None, None
-                )
+                stack.push_async_callback(asyncio.to_thread, handle.stop)
 
             # Build and enter are one step: upstream's `ReachyMini` connects in its
             # constructor, so a built-but-dropped robot is already a leaked connection.
@@ -352,12 +356,13 @@ class ReachyMiniApi:
             )
             self._robot = robot
             media = MediaSession(robot, audio_config=cfg.audio.xvf3800)
-            await stack.enter_async_context(media)
+            await media.start()
+            stack.push_async_callback(media.stop)
             self._media = media
             # Constructed here, before the camera feed, the detection loop and the
             # tracker: the feed stamps frames through its head_pose_at, the tracker is
             # wired to its set_gaze / head_pose_history. Construction starts no thread;
-            # its thread starts below (specs/core/api.md "Lifecycle") — an aim handed over
+            # its thread starts below (specs/core/bridge.md "Lifecycle") — an aim handed over
             # meanwhile waits in its command queue.
             motion = MotionSession(
                 robot,
@@ -370,11 +375,11 @@ class ReachyMiniApi:
             # is torn down; `latest()` reads None again from then on.
             camera = self._camera
             camera.bind(frame_reader(robot), motion.head_pose_at)
-            camera.start()
-            stack.push_async_callback(asyncio.to_thread, camera.stop)
+            await camera.start()
+            stack.push_async_callback(camera.stop)
             # Registered before the enable, so a failing enable still unwinds cleanly
             # (the mode is still off, so the callback is a no-op). It holds the robot
-            # itself: __aexit__ clears `self._robot` before the stack closes.
+            # itself: stop() clears `self._robot` before the stack closes.
             stack.push_async_callback(self._disable_wobbling_if_on, robot)
             if cfg.motion.wobbling:
                 await self.set_wobbling(True)
@@ -402,7 +407,8 @@ class ReachyMiniApi:
             # Entered after wobbling, exits first (specs/motion/motion.md "Lifecycle"): the
             # stack unwinds in reverse, so the loop eases to neutral before wobbling
             # (and everything else) tears down.
-            await stack.enter_async_context(motion)
+            await motion.start()
+            stack.push_async_callback(motion.stop)
             self._motion = motion
             if motors_enabled:
                 motion.resume()
@@ -420,11 +426,17 @@ class ReachyMiniApi:
                 self._detection = None
             raise
         self._exit_stack = stack.pop_all()
-        return self
 
-    async def __aexit__(self, *exc: object) -> None:
+    async def stop(self) -> None:
+        """Tear the session down in reverse — the motion session first (easing to
+        neutral), the detection loop, wobbling, the camera feed, the media session, the
+        robot, an owned daemon — each even when another fails, and reset the modes to
+        the config's values so ``start()`` may follow. A no-op on a bridge that is not
+        running."""
         stack = self._exit_stack
-        # Read as closed even if a teardown step raises.
+        if stack is None:
+            return
+        # Read as not running even if a teardown step raises.
         self._exit_stack = None
         self._robot = None
         self._media = None
@@ -432,8 +444,7 @@ class ReachyMiniApi:
         self._tracker = None
         self._recorded_moves_future = None
         try:
-            if stack is not None:
-                await stack.aclose()
+            await stack.aclose()
         finally:
             self._wobbling = False
             self._tracking_wanted = self._config.motion.tracking
@@ -445,6 +456,18 @@ class ReachyMiniApi:
             self._detection = None
             if self._faces.value.active:  # the loop never stopped cleanly
                 self._faces.set(FaceReport.inactive(self._config.faces.detector))
+
+    @property
+    def running(self) -> bool:
+        """Whether the session is up: between a ``start()`` that returned and ``stop()``."""
+        return self._exit_stack is not None
+
+    async def __aenter__(self) -> Self:
+        await self.start()
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.stop()
 
     async def _disable_wobbling_if_on(self, robot: AnyReachyMini) -> None:
         # The daemon-side switch is shared across clients: never leave it armed.
@@ -607,7 +630,7 @@ class ReachyMiniApi:
 
         Cancelling the task stops the emotion — motion and sound — and leaves the head
         where the cancel caught it, with the session still open; the same stop runs
-        when the move fails. See specs/core/api.md "Cancellation".
+        when the move fails. See specs/core/bridge.md "Cancellation".
 
         Moves the robot, so it requires motors ``enabled`` (raises
         :class:`MotorsNotEnabledError` otherwise). Raises ``ValueError`` for an unknown
@@ -674,7 +697,7 @@ class ReachyMiniApi:
     def _require_tracker(self) -> HeadTracker:
         if self._tracker is None:
             raise BridgeError(
-                "head tracking is only available inside `async with ReachyMiniApi(...)`"
+                "head tracking is only available while the bridge runs (`await bridge.start()`, or `async with ReachyMiniBridge(...)`)"
             )
         return self._tracker
 
@@ -729,7 +752,7 @@ class ReachyMiniApi:
 
     @property
     def attention(self) -> str | None:
-        """Derived from the tracker (specs/core/api.md "Attention"): ``"engaged"`` while it
+        """Derived from the tracker (specs/core/bridge.md "Attention"): ``"engaged"`` while it
         holds an aim (a face seen within ``TRACKING_LOST_S``), ``"watching"`` while
         tracking is on and nobody has been seen for longer, ``None`` when tracking is
         off or outside a session."""
@@ -765,7 +788,7 @@ class ReachyMiniApi:
         """
         if self._detection is None:
             raise BridgeError(
-                "face detection is only available inside `async with ReachyMiniApi(...)`"
+                "face detection is only available while the bridge runs (`await bridge.start()`, or `async with ReachyMiniBridge(...)`)"
             )
         if enabled:
             self._require_detector()

@@ -4,11 +4,11 @@
 live sim tier); step 8 (the on-robot checklist) needs actual hardware and has not been
 walked, so the plan and `specs/motion/motion.md` stay short of `Done`/`Implemented`.
 
-Implements [specs/motion/motion.md](../specs/motion/motion.md) in full, and the `Updated` gaps it opened in [specs/core/api.md](../specs/core/api.md) ("Presence & breathing", `play_emotion` through the loop, tracking / wobbling paused around a move, `set_motors_state` pausing the loop, lifecycle order), [specs/core/config.md](../specs/core/config.md) (the `motion` block) and [specs/core/robot.md](../specs/core/robot.md) (the consumed slice: `set_target` + pose readers in, `async_play_move` out). Delivers a 60 Hz `MotionSession` thread that is the only `set_target` writer, breathing / hold idle moves with blended transitions, `play_emotion` re-based on it, and the `presence` / `breathing` switches. Deliberately leaves out the manual movement verbs (they queue into the same loop later) and any listening cue.
+Implements [specs/motion/motion.md](../specs/motion/motion.md) in full, and the `Updated` gaps it opened in [specs/core/bridge.md](../specs/core/bridge.md) ("Presence & breathing", `play_emotion` through the loop, tracking / wobbling paused around a move, `set_motors_state` pausing the loop, lifecycle order), [specs/core/config.md](../specs/core/config.md) (the `motion` block) and [specs/core/robot.md](../specs/core/robot.md) (the consumed slice: `set_target` + pose readers in, `async_play_move` out). Delivers a 60 Hz `MotionSession` thread that is the only `set_target` writer, breathing / hold idle moves with blended transitions, `play_emotion` re-based on it, and the `presence` / `breathing` switches. Deliberately leaves out the manual movement verbs (they queue into the same loop later) and any listening cue.
 
 ## How to work this plan
 
-- **Read first, in this order:** [AGENTS.md](../AGENTS.md) (commands, status discipline), [specs/motion/motion.md](../specs/motion/motion.md) (the design you are building — do not redesign it), then the "Emotions through the loop" / "Motors" / "Lifecycle" sections again while doing steps 4–5. Skim [specs/core/api.md](../specs/core/api.md) "Cancellation" and "Lifecycle".
+- **Read first, in this order:** [AGENTS.md](../AGENTS.md) (commands, status discipline), [specs/motion/motion.md](../specs/motion/motion.md) (the design you are building — do not redesign it), then the "Emotions through the loop" / "Motors" / "Lifecycle" sections again while doing steps 4–5. Skim [specs/core/bridge.md](../specs/core/bridge.md) "Cancellation" and "Lifecycle".
 - **Do the steps in order.** Each step ends with a runnable check. Run `uv run ruff check . && uv run ruff format . && uv run pyright && uv run pytest` after every step and fix what breaks before moving on. Never leave a step with red tests.
 - **Copy existing patterns**, named in each step, rather than inventing new ones. The codebase is small and consistent; matching it is the goal.
 - **Code style:** async-native api, `from __future__ import annotations`, full type hints (pyright `standard` mode type-checks `tests/` and `tests-e2e/` too), module docstrings that point at the spec (see `src/reachy_mini_bridge/audio.py`'s header). Comments explain *why*, never restate the code.
@@ -405,7 +405,7 @@ def _drain_commands(self) -> None:
 
 ```python
 async def set_presence(self, enabled: bool) -> None:
-    """..."""  # docstring from specs/core/api.md "Presence & breathing"
+    """..."""  # docstring from specs/core/bridge.md "Presence & breathing"
     self._presence = enabled
     self._require_motion().set_presence(enabled)
 
@@ -456,7 +456,7 @@ async def _restore_layers_after_move(self) -> None:
 ```
    (Write it as two plain `if` blocks if the tuple-of-lambdas reads badly; pyright must be happy.) Note the `await` inside `finally` after a cancel: the task's `CancelledError` has already been delivered, so these awaits run; a *second* cancel during the restore is acceptable (the mode is then left off, and a warning is logged where possible).
 7. **The offline library:** turn `_FakeRecordedMove` into a `Move` subclass (a plain class, since `sound_path` is a property on `Move`): `__init__(self, name, sound_path=None)`, `duration` `0.3`, `sound_path` returning the ctor value, `evaluate(t)`: neutral with `head[2, 3] = 0.01 * math.sin(math.pi * t / self.duration)` (a small rise-and-fall so tests can spot it), neutral antennas, yaw `0.0`. Keep `_FakeRecordedMoves.get` raising `ValueError` on an unknown name and `"sad"` soundless.
-8. Update the module docstring (the api now has two sessions) and the `play_emotion` docstring from `specs/core/api.md`.
+8. Update the module docstring (the api now has two sessions) and the `play_emotion` docstring from `specs/core/bridge.md`.
 
 **Done when:** `uv run pyright` is clean and `uv run pytest tests/test_api.py` runs (failures in the old emotion tests are expected until step 6).
 

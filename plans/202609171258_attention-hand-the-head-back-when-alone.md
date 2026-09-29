@@ -2,13 +2,13 @@
 
 **Status:** Done
 
-Implements [specs/core/api.md](../specs/core/api.md) "Attention — the head is handed back when nobody is there" and [specs/motion/motion.md](../specs/motion/motion.md) "Re-anchor on request", with the consumed-slice addition in [specs/core/robot.md](../specs/core/robot.md) (`get_tracked_face`, the fake's `face_detected`). Delivers an attention loop in `ReachyMiniApi` that, while tracking is active, polls the daemon's face target and re-arms tracking at a small watching weight after a grace period without a face (so the head breathes when the robot is alone), re-engaging the requested weight when a face reappears; a `MotionSession.reanchor()` command the hand-back uses to avoid a jump; an `attention` property. Deliberately leaves out any config knob (three module constants), a perception verb exposing the face target (still deferred), and the upstream fix.
+Implements [specs/core/bridge.md](../specs/core/bridge.md) "Attention — the head is handed back when nobody is there" and [specs/motion/motion.md](../specs/motion/motion.md) "Re-anchor on request", with the consumed-slice addition in [specs/core/robot.md](../specs/core/robot.md) (`get_tracked_face`, the fake's `face_detected`). Delivers an attention loop in `ReachyMiniApi` that, while tracking is active, polls the daemon's face target and re-arms tracking at a small watching weight after a grace period without a face (so the head breathes when the robot is alone), re-engaging the requested weight when a face reappears; a `MotionSession.reanchor()` command the hand-back uses to avoid a jump; an `attention` property. Deliberately leaves out any config knob (three module constants), a perception verb exposing the face target (still deferred), and the upstream fix.
 
 Independent of plan [202609171234](202609171234_organic-breathing-rests-and-independent-antennas.md) (organic breathing): either can land first; both touch `motion.py`, in different places.
 
 ## How to work this plan
 
-- **Read first:** [AGENTS.md](../AGENTS.md); [specs/core/api.md](../specs/core/api.md) "Attention / gaze (autonomous)" in full (the design — do not redesign it) and the `play_emotion` bullet; [specs/motion/motion.md](../specs/motion/motion.md) "Re-anchor on request" and "Motors"; [docs/reachy-mini-api.md](../docs/reachy-mini-api.md) "Face tracking" for the daemon facts the design rests on.
+- **Read first:** [AGENTS.md](../AGENTS.md); [specs/core/bridge.md](../specs/core/bridge.md) "Attention / gaze (autonomous)" in full (the design — do not redesign it) and the `play_emotion` bullet; [specs/motion/motion.md](../specs/motion/motion.md) "Re-anchor on request" and "Motors"; [docs/reachy-mini-api.md](../docs/reachy-mini-api.md) "Face tracking" for the daemon facts the design rests on.
 - **Do the steps in order.** Each ends with the same check; fix everything red before the next step:
 
   ```
@@ -183,7 +183,7 @@ def test_reanchor_is_a_noop_during_a_primary() -> None:
 **3b. Constants.** Find the module-level line that starts `_MOTOR_STATES` (search `_MOTOR_STATES =`) and insert **before** it:
 
 ```python
-# Attention (specs/core/api.md "Attention"): the head is handed back to the motion loop when
+# Attention (specs/core/bridge.md "Attention"): the head is handed back to the motion loop when
 # nobody has been tracked for the grace period. Module constants, not config.
 ATTENTION_GRACE_S = 3.0  # longer than the daemon's own 2 s recentre on face loss
 ATTENTION_WATCH_WEIGHT = 0.05  # keeps the detector running (weight 0 would pause it)
@@ -201,7 +201,7 @@ ATTENTION_POLL_S = 0.2
 and insert **after** it:
 
 ```python
-        # The attention loop (specs/core/api.md "Attention"): its state while tracking is
+        # The attention loop (specs/core/bridge.md "Attention"): its state while tracking is
         # active ("engaged" / "watching", None otherwise), the task running it, the
         # lock every tracker send goes through, and the in-flight play_emotion count
         # during which the loop makes no transition.
@@ -225,7 +225,7 @@ and insert **after** it:
         """Start tracking without re-checking motor state: the caller (__aenter__ or
         set_motors_state) has just confirmed motors are enabled, and a second read
         risks the daemon's ~0.2s status lag reporting the pre-change state. Starts
-        the attention loop engaged (specs/core/api.md "Attention")."""
+        the attention loop engaged (specs/core/bridge.md "Attention")."""
         async with self._tracking_lock:
             await asyncio.to_thread(self.robot.start_head_tracking, weight)
             self._tracking_weight = weight
@@ -253,7 +253,7 @@ and insert **after** it:
         return self._tracking_weight
 
     async def _run_attention(self) -> None:
-        """The attention loop (specs/core/api.md "Attention"): one task per tracking start,
+        """The attention loop (specs/core/bridge.md "Attention"): one task per tracking start,
         cancelled by stop_head_tracking and at exit."""
         last_seen = time.monotonic()  # engaged at start: a full grace period first
         while True:
@@ -329,7 +329,7 @@ Replace with:
         """The attention loop's state while tracking is active — ``"engaged"`` (a
         face was seen within the grace period; the requested weight is on the daemon)
         or ``"watching"`` (nobody for a while; the head is handed back to the idle
-        move) — else ``None`` (specs/core/api.md "Attention")."""
+        move) — else ``None`` (specs/core/bridge.md "Attention")."""
         return self._attention
 ```
 
@@ -436,7 +436,7 @@ and replace with:
 **File:** `tests/test_api.py`. The file already imports `api_module`, `asyncio`, `pytest`, `MotionSettings`, `ReachyMiniConfig`, `_fake`, `_command_names`. Add after `test_tracking_left_on_is_stopped_at_exit`:
 
 ```python
-# --- attention (specs/core/api.md "Attention") -------------------------------------------
+# --- attention (specs/core/bridge.md "Attention") -------------------------------------------
 
 
 def _tracking_weights(api: ReachyMiniApi) -> list[float]:
@@ -554,7 +554,7 @@ For `test_attention_makes_no_transition_during_an_emotion`: the fake emotion is 
 ### Step 5 — Live tier and statuses
 
 - Run `uv run pytest tests-e2e -rs` once on the headless sim. The sim has no camera, so tracking never sees a face and every session goes `watching` after 3 s; nothing should fail. Record the outcome below.
-- Set this plan's `**Status:**` to `Done` and change its row in [_index.md](_index.md). `specs/core/api.md` and `specs/core/robot.md` stay `Updated` (their promotion to `Implemented` is gated by plan 202609162000's on-robot checklist); `specs/motion/motion.md` stays `Stable`.
+- Set this plan's `**Status:**` to `Done` and change its row in [_index.md](_index.md). `specs/core/bridge.md` and `specs/core/robot.md` stay `Updated` (their promotion to `Implemented` is gated by plan 202609162000's on-robot checklist); `specs/motion/motion.md` stays `Stable`.
 - Append to plan [202609162000](202609162000_motion-loop-presence-and-breathing.md) step 8 checklist: `- [ ] Face tracking: stand in front of the robot (it follows), leave the frame — after ~3 s the head breathes again; come back — it follows again with no jump either way.` (do it in this plan's change, one line).
 
 ## Verification

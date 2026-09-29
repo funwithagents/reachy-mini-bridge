@@ -1,17 +1,17 @@
-"""E2E tier: ReachyMiniApi over a live daemon (specs/core/api.md, specs/audio/audio.md).
+"""E2E tier: ReachyMiniBridge over a live daemon (specs/core/bridge.md, specs/audio/audio.md).
 
-Target-agnostic: the shipped `live_api` fixture (reachy_mini_bridge.testing.fixtures,
+Target-agnostic: the shipped `live_bridge` fixture (reachy_mini_bridge.testing.fixtures,
 wired in via conftest.py) resolves the target
 (`REACHY_MINI_E2E_TARGET`, default `sim`), so the same tests run on the headless sim,
 the headfull viewer, and a real robot — each test gated by `requires_caps(...)` on the
 capability it needs and skipping cleanly where absent.
 
 Run explicitly:
-    uv run pytest tests-e2e/test_api.py
-    REACHY_MINI_E2E_SIM_VIEWER=1 uv run pytest tests-e2e/test_api.py  # + camera, tracking
-    REACHY_MINI_E2E_TARGET=real uv run pytest tests-e2e/test_api.py
+    uv run pytest tests-e2e/test_bridge.py
+    REACHY_MINI_E2E_SIM_VIEWER=1 uv run pytest tests-e2e/test_bridge.py  # + camera, tracking
+    REACHY_MINI_E2E_TARGET=real uv run pytest tests-e2e/test_bridge.py
 
-The api's methods are async; each test drives them with `asyncio.run`.
+The bridge's methods are async; each test drives them with `asyncio.run`.
 """
 
 from __future__ import annotations
@@ -27,8 +27,8 @@ import numpy.typing as npt
 import pytest
 from reachy_mini import ReachyMini
 
-from reachy_mini_bridge.api import ReachyMiniApi
 from reachy_mini_bridge.audio import TTSEngineSynthesizer
+from reachy_mini_bridge.bridge import ReachyMiniBridge
 from reachy_mini_bridge.errors import GravityCompensationUnsupportedError
 from reachy_mini_bridge.face_detection import FACE_ABSENT_S, FaceReport
 from reachy_mini_bridge.head_tracking import TRACKING_LOST_S
@@ -60,15 +60,15 @@ class _ToneSynth:
             yield np.full(1600, self._amplitude, dtype=np.float32)
 
 
-async def _motors_state_after_set(api: ReachyMiniApi, state: str) -> str:
+async def _motors_state_after_set(bridge: ReachyMiniBridge, state: str) -> str:
     """Set a motor state, then read it back once the daemon status reflects it.
 
     The daemon's status lags a switch by a fraction of a second, so the read polls for up
     to a second; a target that ignores the state (the sim) reads back its old one.
     """
-    await api.set_motors_state(state)
+    await bridge.set_motors_state(state)
     deadline = time.monotonic() + 1.0
-    while (mode := await api.get_motors_state()) != state:
+    while (mode := await bridge.get_motors_state()) != state:
         if time.monotonic() > deadline:
             break
         await asyncio.sleep(0.1)
@@ -76,7 +76,7 @@ async def _motors_state_after_set(api: ReachyMiniApi, state: str) -> str:
 
 
 def test_motor_state_reads_and_dispatches_over_the_live_path(
-    live_api: tuple[ReachyMiniApi, frozenset[str]],
+    live_bridge: tuple[ReachyMiniBridge, frozenset[str]],
 ) -> None:
     """`get_motors_state` reads a valid mode and each `set_motors_state` reaches the daemon.
 
@@ -100,38 +100,38 @@ def test_motor_state_reads_and_dispatches_over_the_live_path(
         SLEEP_HEAD_POSE,
     )
 
-    requires_caps(live_api, "motion")
-    api, _caps = live_api
+    requires_caps(live_bridge, "motion")
+    bridge, _caps = live_bridge
     # goto_target is upstream-only (not on the fake); this tier is live-only.
-    robot: Any = api.robot
+    robot: Any = bridge.robot
     valid = {"enabled", "disabled", "gravity_compensation"}
 
     async def scenario() -> tuple[str, dict[str, str]]:
-        original = await api.get_motors_state()
+        original = await bridge.get_motors_state()
         # The motion loop would otherwise blend back to neutral the moment each
         # goto_target ends (specs/motion/motion.md): a caller driving the head directly needs
         # presence off for its own moves to hold.
-        await api.set_presence(False)
+        await bridge.set_presence(False)
         try:
             results: dict[str, str] = {}
-            results["enabled"] = await _motors_state_after_set(api, "enabled")
+            results["enabled"] = await _motors_state_after_set(bridge, "enabled")
             await asyncio.to_thread(
                 robot.goto_target,
                 head=SLEEP_HEAD_POSE,
                 antennas=SLEEP_ANTENNAS_JOINT_POSITIONS,
                 duration=2.0,
             )
-            results["disabled"] = await _motors_state_after_set(api, "disabled")
-            await api.set_motors_state("enabled")
+            results["disabled"] = await _motors_state_after_set(bridge, "disabled")
+            await bridge.set_motors_state("enabled")
             await asyncio.to_thread(
                 robot.goto_target,
                 head=INIT_HEAD_POSE,
                 antennas=INIT_ANTENNAS_JOINT_POSITIONS,
                 duration=1.0,
             )
-            await api.set_motors_state(original)  # restore
+            await bridge.set_motors_state(original)  # restore
         finally:
-            await api.set_presence(True)
+            await bridge.set_presence(True)
         return original, results
 
     original, results = asyncio.run(scenario())
@@ -141,7 +141,7 @@ def test_motor_state_reads_and_dispatches_over_the_live_path(
 
 
 def test_real_audio_format_matches_the_fake_assumptions(
-    live_api: tuple[ReachyMiniApi, frozenset[str]],
+    live_bridge: tuple[ReachyMiniBridge, frozenset[str]],
 ) -> None:
     """The live daemon reports the float32 / channel / 16 kHz facts the fake hardcodes.
 
@@ -149,12 +149,12 @@ def test_real_audio_format_matches_the_fake_assumptions(
     the `fake` backend bakes in are what a real daemon actually reports (specs/audio/audio.md
     "Background": 2 channels, float32, 16 kHz on sim and hardware).
     """
-    requires_caps(live_api, "audio")
-    api, _caps = live_api
-    media: Any = api.robot.media
+    requires_caps(live_bridge, "audio")
+    bridge, _caps = live_bridge
+    media: Any = bridge.robot.media
 
-    assert api.mic_sample_rate == 16000
-    assert api.mic_channels == media.get_input_channels()
+    assert bridge.mic_sample_rate == 16000
+    assert bridge.mic_channels == media.get_input_channels()
     assert media.get_output_audio_samplerate() == 16000
 
     # get_audio_sample() returns None until a frame is ready, so poll briefly (the mic
@@ -172,21 +172,21 @@ def test_real_audio_format_matches_the_fake_assumptions(
     assert arr.dtype == np.float32  # the fake's assumed capture dtype, confirmed live
     # The capture's channel layout is self-consistent with the getter (interleaved).
     if arr.ndim == 1:
-        assert arr.size % api.mic_channels == 0
+        assert arr.size % bridge.mic_channels == 0
     else:
-        assert arr.shape[1] == api.mic_channels
+        assert arr.shape[1] == bridge.mic_channels
 
 
 def test_mic_tap_yields_int16_mono_frames(
-    live_api: tuple[ReachyMiniApi, frozenset[str]],
+    live_bridge: tuple[ReachyMiniBridge, frozenset[str]],
 ) -> None:
     """Draining the mic tap gives non-empty int16 mono PCM; `break` stops it."""
-    requires_caps(live_api, "audio")
-    api, _caps = live_api
+    requires_caps(live_bridge, "audio")
+    bridge, _caps = live_bridge
 
     async def take(n: int) -> list[bytes]:
         out: list[bytes] = []
-        async for chunk in api.audio_input():
+        async for chunk in bridge.audio_input():
             out.append(chunk)
             if len(out) == n:
                 break
@@ -200,30 +200,30 @@ def test_mic_tap_yields_int16_mono_frames(
 
 
 def test_say_pipeline_runs_to_the_speaker(
-    live_api: tuple[ReachyMiniApi, frozenset[str]],
+    live_bridge: tuple[ReachyMiniBridge, frozenset[str]],
 ) -> None:
     """A tone routed through `say` completes without error (daemon accepted the audio).
 
     Credential-free (in-test tone synth), so it runs on sim without any TTS keys.
     """
-    requires_caps(live_api, "audio")
-    api, _caps = live_api
-    asyncio.run(api.say("ignored", _ToneSynth()))
+    requires_caps(live_bridge, "audio")
+    bridge, _caps = live_bridge
+    asyncio.run(bridge.say("ignored", _ToneSynth()))
 
 
 def test_say_completes_after_the_utterance_has_played(
-    live_api: tuple[ReachyMiniApi, frozenset[str]],
+    live_bridge: tuple[ReachyMiniBridge, frozenset[str]],
 ) -> None:
     """`say` spans the playback, not the (near-instant) queueing of the audio.
 
     The tone synthesizes in microseconds and the daemon's `appsrc` queues it without
     pacing, so only the bridge's completion wait can make a 1 s utterance take 1 s.
     """
-    requires_caps(live_api, "audio")
-    api, _caps = live_api
+    requires_caps(live_bridge, "audio")
+    bridge, _caps = live_bridge
 
     start = time.monotonic()
-    asyncio.run(api.say("ignored", _ToneSynth(seconds=1.0)))
+    asyncio.run(bridge.say("ignored", _ToneSynth(seconds=1.0)))
     assert time.monotonic() - start >= 1.0
 
 
@@ -236,9 +236,9 @@ def _head_deviation_deg(
     return float(np.degrees(delta_angle_between_mat_rot(start[:3, :3], pose[:3, :3])))
 
 
-async def _still_head_pose(api: ReachyMiniApi) -> npt.NDArray[np.float64]:
+async def _still_head_pose(bridge: ReachyMiniBridge) -> npt.NDArray[np.float64]:
     """The head pose once the head has stopped moving (a previous sway may be decaying)."""
-    robot: Any = api.robot
+    robot: Any = bridge.robot
     pose = await asyncio.to_thread(robot.get_current_head_pose)
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline:
@@ -250,7 +250,7 @@ async def _still_head_pose(api: ReachyMiniApi) -> npt.NDArray[np.float64]:
 
 
 async def _peak_deviation_during_loud_say(
-    api: ReachyMiniApi, start: npt.NDArray[np.float64]
+    bridge: ReachyMiniBridge, start: npt.NDArray[np.float64]
 ) -> float:
     """Play a loud 1.5 s tone through `say`, sampling the head; return the peak deviation.
 
@@ -258,9 +258,9 @@ async def _peak_deviation_during_loud_say(
     voice-on threshold. On the sim the motors are always enabled, so any composed sway
     shows in the reported head pose.
     """
-    robot: Any = api.robot
+    robot: Any = bridge.robot
     say = asyncio.create_task(
-        api.say("ignored", _ToneSynth(seconds=1.5, amplitude=0.25))
+        bridge.say("ignored", _ToneSynth(seconds=1.5, amplitude=0.25))
     )
     peak = 0.0
     while not say.done():
@@ -272,14 +272,14 @@ async def _peak_deviation_during_loud_say(
 
 
 def test_breathing_moves_the_head_and_breathing_off_holds_it(
-    live_api: tuple[ReachyMiniApi, frozenset[str]],
+    live_bridge: tuple[ReachyMiniBridge, frozenset[str]],
 ) -> None:
     """specs/motion/motion.md: with presence and breathing on, the idle move visibly breathes
     (slow breaths on the z axis, with random rests between them); `set_idle("hold")`
     holds the head still afterwards."""
-    requires_caps(live_api, "motion")
-    api, _caps = live_api
-    robot: Any = api.robot
+    requires_caps(live_bridge, "motion")
+    bridge, _caps = live_bridge
+    robot: Any = bridge.robot
 
     async def sample_z(seconds: float) -> float:
         zs: list[float] = []
@@ -291,14 +291,14 @@ def test_breathing_moves_the_head_and_breathing_off_holds_it(
         return max(zs) - min(zs)
 
     async def scenario() -> tuple[float, float]:
-        await api.set_motors_state("enabled")
+        await bridge.set_motors_state("enabled")
         await asyncio.sleep(1.0)
         # long enough to always contain a whole breath, wherever the sample starts
         breathing_range = await sample_z(BREATH_S + BREATH_REST_S[1] + 1.0)
-        await api.set_idle("hold")
+        await bridge.set_idle("hold")
         await asyncio.sleep(BLEND_S + 0.5)
         still_range = await sample_z(3.0)
-        await api.set_idle("breathing")
+        await bridge.set_idle("breathing")
         return breathing_range, still_range
 
     breathing_range, still_range = asyncio.run(scenario())
@@ -317,35 +317,35 @@ class _Lift(IdleMove):
 
 
 def test_custom_idle_move_drives_the_head(
-    live_api: tuple[ReachyMiniApi, frozenset[str]],
+    live_bridge: tuple[ReachyMiniBridge, frozenset[str]],
 ) -> None:
     """specs/motion/motion.md "Custom idle moves": a registered `IdleMove` plays in the
     `custom` idle mode — the head rises to its offset — and leaving the mode brings the
     head back to neutral."""
-    requires_caps(live_api, "motion")
-    api, _caps = live_api
-    robot: Any = api.robot
+    requires_caps(live_bridge, "motion")
+    bridge, _caps = live_bridge
+    robot: Any = bridge.robot
 
     async def head_z() -> float:
         pose = await asyncio.to_thread(robot.get_current_head_pose)
         return float(pose[2, 3])
 
     async def scenario() -> tuple[float, float, float]:
-        await api.set_motors_state("enabled")
-        await api.set_idle("hold")
+        await bridge.set_motors_state("enabled")
+        await bridge.set_idle("hold")
         await asyncio.sleep(2 * BLEND_S + 1.0)
         neutral_z = await head_z()
         try:
-            await api.set_idle_move(_Lift)
-            await api.set_idle("custom")
+            await bridge.set_idle_move(_Lift)
+            await bridge.set_idle("custom")
             await asyncio.sleep(BLEND_S + 1.5)
             lifted_z = await head_z()
-            await api.set_idle("hold")
+            await bridge.set_idle("hold")
             await asyncio.sleep(2 * BLEND_S + 1.0)
             back_z = await head_z()
         finally:
-            await api.set_idle_move(None)
-            await api.set_idle("breathing")
+            await bridge.set_idle_move(None)
+            await bridge.set_idle("breathing")
         return neutral_z, lifted_z, back_z
 
     neutral_z, lifted_z, back_z = asyncio.run(scenario())
@@ -358,27 +358,27 @@ def test_custom_idle_move_drives_the_head(
 
 
 def test_wobbling_is_on_by_default_and_sways_the_head(
-    live_api: tuple[ReachyMiniApi, frozenset[str]],
+    live_bridge: tuple[ReachyMiniBridge, frozenset[str]],
 ) -> None:
     """Out of the box, speech sways the head, which then returns to rest on its own.
 
-    The fixture's api uses the default config, so wobbling is on without any toggle —
+    The fixture's bridge uses the default config, so wobbling is on without any toggle —
     the same for this tone as for real TTS. With wobbling still on, the head comes back
     near its starting orientation once the audio ends (the motors' own dynamics: about a
     second on the sim, hence the polled deadline). "Near" is 3 deg: the check is that the
     sway ends, and hardware can settle a degree or two off after it.
     """
-    requires_caps(live_api, "audio", "motion")
-    api, _caps = live_api
-    assert api.wobbling is True
-    robot: Any = api.robot
+    requires_caps(live_bridge, "audio", "motion")
+    bridge, _caps = live_bridge
+    assert bridge.wobbling is True
+    robot: Any = bridge.robot
 
     async def scenario() -> tuple[float, float]:
-        await api.set_idle("hold")  # isolate the wobble from breathing's own sway
+        await bridge.set_idle("hold")  # isolate the wobble from breathing's own sway
         await asyncio.sleep(BLEND_S + 0.5)
         try:
-            start = await _still_head_pose(api)
-            peak = await _peak_deviation_during_loud_say(api, start)
+            start = await _still_head_pose(bridge)
+            peak = await _peak_deviation_during_loud_say(bridge, start)
             deadline = time.monotonic() + 3.0
             while True:
                 pose = await asyncio.to_thread(robot.get_current_head_pose)
@@ -387,7 +387,7 @@ def test_wobbling_is_on_by_default_and_sways_the_head(
                     return peak, settled
                 await asyncio.sleep(0.05)
         finally:
-            await api.set_idle("breathing")
+            await bridge.set_idle("breathing")
 
     peak, settled = asyncio.run(scenario())
     print(f"\n[e2e] wobble on: peak {peak:.2f} deg, settled {settled:.2f} deg")
@@ -396,7 +396,7 @@ def test_wobbling_is_on_by_default_and_sways_the_head(
 
 
 def test_wobbling_off_keeps_the_head_still_while_audio_plays(
-    live_api: tuple[ReachyMiniApi, frozenset[str]],
+    live_bridge: tuple[ReachyMiniBridge, frozenset[str]],
 ) -> None:
     """With wobbling off, the same loud tone leaves the head where it was.
 
@@ -404,21 +404,21 @@ def test_wobbling_off_keeps_the_head_still_while_audio_plays(
     must stay within 0.5 deg. Wobbling is restored afterwards, since the module-scoped
     fixture is shared and on by default.
     """
-    requires_caps(live_api, "audio", "motion")
-    api, _caps = live_api
+    requires_caps(live_bridge, "audio", "motion")
+    bridge, _caps = live_bridge
 
     async def scenario() -> float:
-        await api.set_idle("hold")  # isolate stillness from breathing's own sway
+        await bridge.set_idle("hold")  # isolate stillness from breathing's own sway
         await asyncio.sleep(BLEND_S + 0.5)
         try:
-            start = await _still_head_pose(api)
-            await api.set_wobbling(False)
+            start = await _still_head_pose(bridge)
+            await bridge.set_wobbling(False)
             try:
-                return await _peak_deviation_during_loud_say(api, start)
+                return await _peak_deviation_during_loud_say(bridge, start)
             finally:
-                await api.set_wobbling(True)
+                await bridge.set_wobbling(True)
         finally:
-            await api.set_idle("breathing")
+            await bridge.set_idle("breathing")
 
     peak = asyncio.run(scenario())
     print(f"\n[e2e] wobble off: peak {peak:.2f} deg")
@@ -426,7 +426,7 @@ def test_wobbling_off_keeps_the_head_still_while_audio_plays(
 
 
 def test_say_with_real_tts_speaks_through_the_robot(
-    live_api: tuple[ReachyMiniApi, frozenset[str]],
+    live_bridge: tuple[ReachyMiniBridge, frozenset[str]],
 ) -> None:
     """Real TTS end-to-end: `TTSEngineSynthesizer` on the local pocket model → speaker.
 
@@ -436,17 +436,17 @@ def test_say_with_real_tts_speaks_through_the_robot(
     on `audio` only, so it runs on every dev sync (the dev group carries `tts-pocket`).
     On the headfull-viewer sim you should hear the phrase; assert it completes.
     """
-    requires_caps(live_api, "audio")
-    api, _caps = live_api
+    requires_caps(live_bridge, "audio")
+    bridge, _caps = live_bridge
 
     synth = TTSEngineSynthesizer({"module": {"type": "pocket", "voice": "george"}})
     # pocket-tts emits its model's native 24 kHz, so the say sink resamples to 16 kHz.
     assert synth.sample_rate == 24000
-    asyncio.run(api.say("Hello, I am Reachy Mini.", synth))
+    asyncio.run(bridge.say("Hello, I am Reachy Mini.", synth))
 
 
 def test_say_with_elevenlabs_speaks_through_the_robot(
-    live_api: tuple[ReachyMiniApi, frozenset[str]],
+    live_bridge: tuple[ReachyMiniBridge, frozenset[str]],
 ) -> None:
     """The cloud provider end-to-end: `TTSEngineSynthesizer` (ElevenLabs) → speaker.
 
@@ -455,8 +455,8 @@ def test_say_with_elevenlabs_speaks_through_the_robot(
     key) and `audio`.
     """
     require_env("ELEVENLABS_API_KEY")
-    requires_caps(live_api, "audio")
-    api, _caps = live_api
+    requires_caps(live_bridge, "audio")
+    bridge, _caps = live_bridge
 
     synth = TTSEngineSynthesizer(
         {
@@ -470,11 +470,11 @@ def test_say_with_elevenlabs_speaks_through_the_robot(
     )
     # The real ElevenLabs module emits 44.1 kHz, so the say sink resamples to 16 kHz.
     assert synth.sample_rate == 44100
-    asyncio.run(api.say("Hello, I am Reachy Mini.", synth))
+    asyncio.run(bridge.say("Hello, I am Reachy Mini.", synth))
 
 
 def test_say_with_gradium_speaks_through_the_robot(
-    live_api: tuple[ReachyMiniApi, frozenset[str]],
+    live_bridge: tuple[ReachyMiniBridge, frozenset[str]],
 ) -> None:
     """Another cloud provider end-to-end: `TTSEngineSynthesizer` (Gradium) → speaker.
 
@@ -483,8 +483,8 @@ def test_say_with_gradium_speaks_through_the_robot(
     Gated on `GRADIUM_API_KEY` (skips cleanly without a key) and `audio`.
     """
     require_env("GRADIUM_API_KEY")
-    requires_caps(live_api, "audio")
-    api, _caps = live_api
+    requires_caps(live_bridge, "audio")
+    bridge, _caps = live_bridge
 
     synth = TTSEngineSynthesizer(
         {
@@ -499,11 +499,11 @@ def test_say_with_gradium_speaks_through_the_robot(
     )
     # At `sample_rate: 16000` the module emits the speaker rate: nothing to resample.
     assert synth.sample_rate == 16000
-    asyncio.run(api.say("Hello, I am Reachy Mini.", synth))
+    asyncio.run(bridge.say("Hello, I am Reachy Mini.", synth))
 
 
 def test_gravity_compensation_dispatches_over_the_live_path(
-    live_api: tuple[ReachyMiniApi, frozenset[str]],
+    live_bridge: tuple[ReachyMiniBridge, frozenset[str]],
 ) -> None:
     """`set_motors_state("gravity_compensation")` reaches a daemon that supports it.
 
@@ -511,14 +511,14 @@ def test_gravity_compensation_dispatches_over_the_live_path(
     (`reachy-mini[placo_kinematics]`). On the default engine the daemon rejects the mode and
     closes the client connection, which would fail every later test in the module.
     """
-    requires_caps(live_api, "motion", "gravity_compensation")
-    api, _caps = live_api
+    requires_caps(live_bridge, "motion", "gravity_compensation")
+    bridge, _caps = live_bridge
 
     async def scenario() -> tuple[str, str]:
-        original = await api.get_motors_state()
-        await api.set_motors_state("gravity_compensation")
-        mode = await api.get_motors_state()
-        await api.set_motors_state(original)  # restore
+        original = await bridge.get_motors_state()
+        await bridge.set_motors_state("gravity_compensation")
+        mode = await bridge.get_motors_state()
+        await bridge.set_motors_state(original)  # restore
         return original, mode
 
     original, mode = asyncio.run(scenario())
@@ -527,28 +527,28 @@ def test_gravity_compensation_dispatches_over_the_live_path(
 
 
 def test_gravity_compensation_is_refused_off_placo_and_the_connection_survives(
-    live_api: tuple[ReachyMiniApi, frozenset[str]],
+    live_bridge: tuple[ReachyMiniBridge, frozenset[str]],
 ) -> None:
-    """On a robot daemon without Placo, the api refuses the mode instead of sending it.
+    """On a robot daemon without Placo, the bridge refuses the mode instead of sending it.
 
     Sent, the daemon would reject it by closing this client's connection. The guard raises
     `GravityCompensationUnsupportedError` first, so the motor state still reads back
     afterwards over the same connection. Skips where there is nothing to refuse: a daemon
     that supports the mode, or a simulation (which ignores motor modes).
     """
-    requires_caps(live_api, "motion")
-    api, caps = live_api
+    requires_caps(live_bridge, "motion")
+    bridge, caps = live_bridge
     if "gravity_compensation" in caps:
         pytest.skip("the daemon supports gravity compensation; nothing to refuse")
-    status = api.robot.client.get_status()
+    status = bridge.robot.client.get_status()
     if status.simulation_enabled or status.mockup_sim_enabled:
-        pytest.skip("a simulation ignores motor modes; the api sends them unchecked")
+        pytest.skip("a simulation ignores motor modes; the bridge sends them unchecked")
 
     async def scenario() -> tuple[str, str]:
-        before = await api.get_motors_state()
+        before = await bridge.get_motors_state()
         with pytest.raises(GravityCompensationUnsupportedError):
-            await api.set_motors_state("gravity_compensation")
-        return before, await api.get_motors_state()
+            await bridge.set_motors_state("gravity_compensation")
+        return before, await bridge.get_motors_state()
 
     before, after = asyncio.run(scenario())
     assert after == before
@@ -575,7 +575,7 @@ def _require_emotions_library() -> None:
 
 
 def test_play_emotion_plays_a_real_move(
-    live_api: tuple[ReachyMiniApi, frozenset[str]],
+    live_bridge: tuple[ReachyMiniBridge, frozenset[str]],
 ) -> None:
     """Actually play an emotion: enumerate the library, then move the robot.
 
@@ -585,19 +585,21 @@ def test_play_emotion_plays_a_real_move(
     the dataset truly can't be fetched (offline). On the headfull-viewer sim you should
     see the robot perform the move.
     """
-    requires_caps(live_api, "motion")
-    api, _caps = live_api
+    requires_caps(live_bridge, "motion")
+    bridge, _caps = live_bridge
     _require_emotions_library()
 
     async def scenario() -> tuple[str, float, float]:
         from reachy_mini_bridge.motion import NEUTRAL_ANTENNAS
 
-        names = await api.list_emotions()
+        names = await bridge.list_emotions()
         assert names, "emotions library loaded but empty"
-        await api.set_motors_state("enabled")
-        await api.play_emotion(names[0])  # completes only if the move actually played
+        await bridge.set_motors_state("enabled")
+        await bridge.play_emotion(
+            names[0]
+        )  # completes only if the move actually played
         await asyncio.sleep(1.5)  # the idle move eases the head back to neutral
-        robot: Any = api.robot
+        robot: Any = bridge.robot
         pose = await asyncio.to_thread(robot.get_current_head_pose)
         _joints, antennas = await asyncio.to_thread(robot.get_current_joint_positions)
         deviation = np.abs(np.asarray(antennas) - NEUTRAL_ANTENNAS)
@@ -613,26 +615,26 @@ def test_play_emotion_plays_a_real_move(
 
 
 def test_cancelled_emotion_stops_motion_and_sound(
-    live_api: tuple[ReachyMiniApi, frozenset[str]],
+    live_bridge: tuple[ReachyMiniBridge, frozenset[str]],
 ) -> None:
-    """specs/core/api.md "Cancellation": cancelling `play_emotion` 3 s into `dance2` returns
+    """specs/core/bridge.md "Cancellation": cancelling `play_emotion` 3 s into `dance2` returns
     at once, the joints are still afterwards (no sound left driving the wobbler), and
     the local backend's playbin is cleared. Measured before the fix: the sound played
     its remaining 15 s and the head kept swaying 0.1–0.2 rad per half second."""
-    requires_caps(live_api, "motion")
-    api, _caps = live_api
+    requires_caps(live_bridge, "motion")
+    bridge, _caps = live_bridge
     _require_emotions_library()
-    robot = api.robot
+    robot = bridge.robot
     assert isinstance(robot, ReachyMini)
 
     async def scenario() -> tuple[float, float, object]:
-        await api.set_motors_state("enabled")
-        await api.set_wobbling(True)
+        await bridge.set_motors_state("enabled")
+        await bridge.set_wobbling(True)
         # The hold keeps the joints still after the return blend; breathing would
         # otherwise still be moving them when we sample (specs/motion/motion.md).
-        await api.set_idle("hold")
+        await bridge.set_idle("hold")
         try:
-            task = asyncio.create_task(api.play_emotion("dance2"))
+            task = asyncio.create_task(bridge.play_emotion("dance2"))
             await asyncio.sleep(3.0)  # long enough to see the dance and hear its sound
             t0 = time.monotonic()
             task.cancel()
@@ -656,7 +658,7 @@ def test_cancelled_emotion_stops_motion_and_sound(
             playbin = getattr(robot.media.audio, "_playbin", "not-local")
             return latency, travel, playbin
         finally:
-            await api.set_idle("breathing")
+            await bridge.set_idle("breathing")
 
     latency, travel, playbin = asyncio.run(scenario())
     print(
@@ -669,9 +671,9 @@ def test_cancelled_emotion_stops_motion_and_sound(
 
 
 def test_camera_frame_delivers_a_frame(
-    live_api: tuple[ReachyMiniApi, frozenset[str]],
+    live_bridge: tuple[ReachyMiniBridge, frozenset[str]],
 ) -> None:
-    """The camera feed publishes a live frame: `api.camera.latest()` is a `CameraFrame`
+    """The camera feed publishes a live frame: `bridge.camera.latest()` is a `CameraFrame`
     whose image is BGR `HxWx3` uint8 (specs/vision/camera.md).
 
     Gated on `camera`, which the fixture probes true only where a GL context is
@@ -679,21 +681,21 @@ def test_camera_frame_delivers_a_frame(
     robot. So this **skips** on the headless sim / CI and runs where the camera exists,
     driving the public API rather than reaching into `robot.media`.
     """
-    requires_caps(live_api, "camera")
-    api, _caps = live_api
+    requires_caps(live_bridge, "camera")
+    bridge, _caps = live_bridge
     deadline = time.monotonic() + 2.0  # the first frame follows the session's entry
-    while api.camera.latest() is None and time.monotonic() < deadline:
+    while bridge.camera.latest() is None and time.monotonic() < deadline:
         time.sleep(0.05)
-    frame = api.camera.latest()
-    assert frame is not None, "camera probed but api.camera.latest() stayed None"
+    frame = bridge.camera.latest()
+    assert frame is not None, "camera probed but bridge.camera.latest() stayed None"
     assert frame.image.ndim == 3 and frame.image.shape[2] == 3, (
         f"expected HxWx3 BGR, got {frame.image.shape}"
     )
     assert frame.image.dtype == np.uint8
     assert frame.frame_id >= 1 and frame.ts > 0.0
-    before = api.camera.published_count
+    before = bridge.camera.published_count
     time.sleep(1.0)
-    rate = api.camera.published_count - before
+    rate = bridge.camera.published_count - before
     print(f"\n[e2e] camera feed: {rate} frames/s, first frame {frame.image.shape}")
     assert rate >= 5, f"the feed published {rate} frames in a second"
 
@@ -704,7 +706,7 @@ def test_camera_frame_delivers_a_frame(
 # scene, which every harness-spawned sim runs: specs/testing/sim_scene.md); skips elsewhere — the
 # headless sim renders no camera, a robot has no scriptable face. The portrait plane goes
 # through the real pipeline: rendered by the daemon, streamed to the client, found by the
-# bridge's shipped detector on the camera feed (the `yunet` detector `live_api` configures,
+# bridge's shipped detector on the camera feed (the `yunet` detector `live_bridge` configures,
 # specs/vision/user_perception.md), and the bridge's own tracker aims the head
 # (specs/motion/head_tracking.md). So these tests check how the head moves and where it settles:
 # toward the face, past it once by a bounded amount and never oscillating, onto the yaw
@@ -712,7 +714,7 @@ def test_camera_frame_delivers_a_frame(
 # viewer: the head turns onto the portrait, keeps breathing while it looks, follows it,
 # and idles in full again once it is gone.
 #
-# `live_api` is module-scoped, so each test re-arms tracking at its start
+# `live_bridge` is module-scoped, so each test re-arms tracking at its start
 # (`stop_head_tracking()` then `start_head_tracking()`), withdrawing any aim left over.
 
 FACE = "face"
@@ -794,7 +796,7 @@ class _Track:
         self.expected_yaw = expected_yaw
         self.samples: list[tuple[float, float]] = []
         self.times: list[float] = []
-        self.face = face  # the target face of `api.faces` once settled, or None
+        self.face = face  # the target face of `bridge.faces` once settled, or None
         self.delay_s: float | None = None  # the tracker's delay estimate once settled
         self.frame_note = ""  # the camera frame's age and whether it carried a pose
 
@@ -841,7 +843,7 @@ class _Track:
 
 
 async def _track_onto(
-    api: ReachyMiniApi,
+    bridge: ReachyMiniBridge,
     where: str,
     lateral: float,
     settle_timeout: float = 10.0,
@@ -849,8 +851,8 @@ async def _track_onto(
 ) -> _Track:
     """Sample the head until it holds still (yaw within 1° over a second, and at least
     `min_seconds` in — detection and the gaze layer's fade take a moment to start the
-    head moving), or `settle_timeout`; then read the tracked face from `api.faces`."""
-    robot: Any = api.robot
+    head moving), or `settle_timeout`; then read the tracked face from `bridge.faces`."""
+    robot: Any = bridge.robot
     start_yaw, _ = _yaw_pitch_deg(await asyncio.to_thread(robot.get_current_head_pose))
     track = _Track(where, start_yaw, _expected_yaw_deg(lateral), None)
     started = time.monotonic()
@@ -866,17 +868,19 @@ async def _track_onto(
         if time.monotonic() >= deadline:
             break
         await asyncio.sleep(0.05)
-    faces = api.faces.value.faces
+    faces = bridge.faces.value.faces
     track.face = faces[0] if faces else None
-    tracker = api._tracker  # the estimate the gaze tests print, for the spec's numbers
+    tracker = (
+        bridge._tracker
+    )  # the estimate the gaze tests print, for the spec's numbers
     track.delay_s = None if tracker is None else tracker.delay_s
-    frame = api.camera.latest()
+    frame = bridge.camera.latest()
     track.frame_note = (
         "no frame"
         if frame is None
         else f"frame age {time.monotonic() - frame.ts:.3f} s, "
         f"pose stamped: {frame.head_pose is not None}, "
-        f"report pose: {api.faces.value.head_pose is not None}"
+        f"report pose: {bridge.faces.value.head_pose is not None}"
     )
     return track
 
@@ -934,12 +938,12 @@ async def _sample_idle(robot: Any, seconds: float) -> tuple[float, float]:
 
 @pytest.fixture
 def face_scene(
-    live_api: tuple[ReachyMiniApi, frozenset[str]], sim_scene: SimSceneClient
+    live_bridge: tuple[ReachyMiniBridge, frozenset[str]], sim_scene: SimSceneClient
 ) -> Iterator[SimSceneClient]:
     """The face at its default spot, hidden — the scene's props start hidden
     (specs/testing/sim_scene.md); a test shows it when its scenario needs it, and this fixture
     hides it again afterwards for whatever runs next."""
-    requires_caps(live_api, "camera", "faces")
+    requires_caps(live_bridge, "camera", "faces")
     sim_scene.place(FACE, DEFAULT_FACE_POS)
     sim_scene.hide(FACE)
     yield sim_scene
@@ -948,14 +952,14 @@ def face_scene(
 
 
 def test_faces_report_someone_appearing_and_leaving(
-    live_api: tuple[ReachyMiniApi, frozenset[str]], face_scene: SimSceneClient
+    live_bridge: tuple[ReachyMiniBridge, frozenset[str]], face_scene: SimSceneClient
 ) -> None:
     """specs/vision/user_perception.md "The report is an observable": a subscriber of
-    `api.faces.changes()` is woken with one face when the portrait is shown, and with
+    `bridge.faces.changes()` is woken with one face when the portrait is shown, and with
     none once it has been hidden past the absence window. Tracking is stopped for the
     test (the head stays out of it); the detection loop runs the configured `yunet`
     detector for the caller's switch alone."""
-    api, _caps = live_api
+    bridge, _caps = live_bridge
 
     async def next_count(changes: AsyncIterator[FaceReport], count: int) -> FaceReport:
         async for report in changes:  # skips e.g. the `active` flip of a loop start
@@ -964,10 +968,10 @@ def test_faces_report_someone_appearing_and_leaving(
         raise AssertionError("the faces subscription ended")
 
     async def scenario() -> tuple[FaceReport, FaceReport]:
-        await api.set_motors_state("enabled")
-        await api.set_face_detection(True)
-        await api.stop_head_tracking()
-        changes = api.faces.changes()
+        await bridge.set_motors_state("enabled")
+        await bridge.set_face_detection(True)
+        await bridge.stop_head_tracking()
+        changes = bridge.faces.changes()
         try:
             appeared = asyncio.ensure_future(next_count(changes, 1))
             await asyncio.sleep(0)  # subscribed before the face shows
@@ -978,7 +982,7 @@ def test_faces_report_someone_appearing_and_leaving(
         finally:
             await changes.aclose()  # type: ignore[attr-defined]
             await (
-                api.start_head_tracking()
+                bridge.start_head_tracking()
             )  # the module's default state for what follows
         return first, left
 
@@ -991,27 +995,27 @@ def test_faces_report_someone_appearing_and_leaving(
 
 
 def test_head_tracking_turns_onto_a_face_and_follows_it(
-    live_api: tuple[ReachyMiniApi, frozenset[str]], face_scene: SimSceneClient
+    live_bridge: tuple[ReachyMiniBridge, frozenset[str]], face_scene: SimSceneClient
 ) -> None:
-    """specs/core/api.md "Attention / gaze": with tracking on (the config default), the head
+    """specs/core/bridge.md "Attention / gaze": with tracking on (the config default), the head
     turns onto a face that appears ahead, then follows it 0.15 m to either side and back:
     each time toward the face, past it at most once by a bounded amount, settling at the
     yaw its position implies with the face at the image centre and the pitch unchanged."""
-    api, _caps = live_api
+    bridge, _caps = live_bridge
 
     async def scenario() -> list[_Track]:
-        await api.set_motors_state("enabled")
-        await api.stop_head_tracking()
-        await api.start_head_tracking()
-        assert api.tracking, "tracking is on by default from the config"
+        await bridge.set_motors_state("enabled")
+        await bridge.stop_head_tracking()
+        await bridge.start_head_tracking()
+        assert bridge.tracking, "tracking is on by default from the config"
         face_scene.show(FACE)
-        tracks = [await _track_onto(api, "face ahead", 0.0)]
+        tracks = [await _track_onto(bridge, "face ahead", 0.0)]
         for lateral in (LATERAL_M, -LATERAL_M, 0.0):
             face_scene.place(FACE, _face_at(lateral), duration=1.0)
             tracks.append(
-                await _track_onto(api, f"face moved to y={lateral:+.2f} m", lateral)
+                await _track_onto(bridge, f"face moved to y={lateral:+.2f} m", lateral)
             )
-        assert api.attention == "engaged"
+        assert bridge.attention == "engaged"
         return tracks
 
     first, *moves = asyncio.run(scenario())
@@ -1021,38 +1025,38 @@ def test_head_tracking_turns_onto_a_face_and_follows_it(
 
 
 def test_attention_hands_the_head_back_and_reengages_on_the_face(
-    live_api: tuple[ReachyMiniApi, frozenset[str]], face_scene: SimSceneClient
+    live_bridge: tuple[ReachyMiniBridge, frozenset[str]], face_scene: SimSceneClient
 ) -> None:
-    """specs/core/api.md "Attention": alone, the robot idles in full. Once the face has been
+    """specs/core/bridge.md "Attention": alone, the robot idles in full. Once the face has been
     gone for the tracker's loss timeout `attention` reads `watching`, the gaze layer
     fades out, and the head settles back near neutral, breathing. When a face comes back
     on the other side, attention re-engages and the head turns onto its new position."""
-    api, _caps = live_api
-    robot: Any = api.robot
+    bridge, _caps = live_bridge
+    robot: Any = bridge.robot
 
     async def scenario() -> tuple[_Track, float, float, str | None, _Track]:
-        await api.set_motors_state("enabled")
-        await api.stop_head_tracking()
-        await api.start_head_tracking()
+        await bridge.set_motors_state("enabled")
+        await bridge.stop_head_tracking()
+        await bridge.start_head_tracking()
         face_scene.place(FACE, _face_at(LATERAL_M))
         face_scene.show(FACE)
-        assert await _wait_for(lambda: api.attention == "engaged", 6.0)
-        first = await _track_onto(api, "engaged on the face", LATERAL_M)
+        assert await _wait_for(lambda: bridge.attention == "engaged", 6.0)
+        first = await _track_onto(bridge, "engaged on the face", LATERAL_M)
         face_scene.hide(FACE)
         hand_back = TRACKING_LOST_S + BLEND_S + 4.0
-        assert await _wait_for(lambda: api.attention == "watching", hand_back), (
-            f"attention still {api.attention!r} {hand_back:.0f}s after the face left"
+        assert await _wait_for(lambda: bridge.attention == "watching", hand_back), (
+            f"attention still {bridge.attention!r} {hand_back:.0f}s after the face left"
         )
         # long enough to always contain a whole breath, wherever the sample starts;
         # `settled` is the mean over that window, since the idle move roams
         z_range, settled = await _sample_idle(robot, BREATH_S + BREATH_REST_S[1] + 1.0)
         face_scene.place(FACE, _face_at(-LATERAL_M))
         face_scene.show(FACE)
-        reengaged = await _wait_for(lambda: api.attention == "engaged", 8.0)
+        reengaged = await _wait_for(lambda: bridge.attention == "engaged", 8.0)
         again = await _track_onto(
-            api, "re-engaged on the face's new position", -LATERAL_M
+            bridge, "re-engaged on the face's new position", -LATERAL_M
         )
-        return first, settled, z_range, api.attention if reengaged else None, again
+        return first, settled, z_range, bridge.attention if reengaged else None, again
 
     first, settled, z_range, attention, again = asyncio.run(scenario())
     _assert_tracked(first)
@@ -1072,27 +1076,27 @@ def test_attention_hands_the_head_back_and_reengages_on_the_face(
 
 
 def test_emotion_plays_over_tracking_and_the_head_returns_to_the_face(
-    live_api: tuple[ReachyMiniApi, frozenset[str]], face_scene: SimSceneClient
+    live_bridge: tuple[ReachyMiniBridge, frozenset[str]], face_scene: SimSceneClient
 ) -> None:
     """specs/motion/motion.md "Emotions through the loop": an emotion under full-weight tracking
     plays as recorded (the motion loop leaves the gaze layer out of a primary) — the head
     moves through the choreography rather than staying pinned toward the face — and once
     the move ends the layer fades back in and the head turns back onto the still-visible
     face, attention engaged."""
-    requires_caps(live_api, "motion")
-    api, _caps = live_api
-    robot: Any = api.robot
+    requires_caps(live_bridge, "motion")
+    bridge, _caps = live_bridge
+    robot: Any = bridge.robot
     _require_emotions_library()
 
     async def scenario() -> tuple[str, float, _Track]:
-        await api.set_motors_state("enabled")
-        await api.stop_head_tracking()
-        await api.start_head_tracking()
+        await bridge.set_motors_state("enabled")
+        await bridge.stop_head_tracking()
+        await bridge.start_head_tracking()
         face_scene.place(FACE, _face_at(LATERAL_M))
         face_scene.show(FACE)
-        assert await _wait_for(lambda: api.attention == "engaged", 6.0)
-        await _track_onto(api, "before the emotion", LATERAL_M)
-        names = await api.list_emotions()
+        assert await _wait_for(lambda: bridge.attention == "engaged", 6.0)
+        await _track_onto(bridge, "before the emotion", LATERAL_M)
+        names = await bridge.list_emotions()
         assert names, "emotions library loaded but empty"
         emotion = names[0]  # the short move test_play_emotion_plays_a_real_move plays
         angles: list[float] = []
@@ -1105,11 +1109,11 @@ def test_emotion_plays_over_tracking_and_the_head_returns_to_the_face(
 
         sampler = asyncio.create_task(sample_during_move())
         try:
-            await api.play_emotion(emotion)
+            await bridge.play_emotion(emotion)
         finally:
             sampler.cancel()
         move_excursion = (max(angles) - min(angles)) if len(angles) > 1 else 0.0
-        after = await _track_onto(api, "after the emotion", LATERAL_M)
+        after = await _track_onto(bridge, "after the emotion", LATERAL_M)
         return emotion, move_excursion, after
 
     emotion, move_excursion, after = asyncio.run(scenario())
@@ -1121,4 +1125,4 @@ def test_emotion_plays_over_tracking_and_the_head_returns_to_the_face(
         f"the emotion barely moved the head ({move_excursion:.1f} deg) — it may not have played"
     )
     _assert_tracked(after)
-    assert api.attention == "engaged"
+    assert bridge.attention == "engaged"

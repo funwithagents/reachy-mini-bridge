@@ -12,7 +12,7 @@ tests:
 
 ## Purpose
 
-The bridge owns bringing up — and tearing down — a local `reachy-mini-daemon`: a MuJoCo one for the `sim` backend, and a hardware one for a robot plugged into this machine over USB (Reachy Mini Lite), so that a `ReachyMiniApi` whose config asks for it ([config.md](../core/config.md) `daemon.spawn`) produces a working simulated or USB-attached robot in one call, and so that the shipped testing harness ([testing_support.md](../testing/testing_support.md)) — which brings up either kind — and any consumer's own tooling reuse one implementation of the launch recipes in [../docs/running-the-sim-daemon.md](../../docs/running-the-sim-daemon.md).
+The bridge owns bringing up — and tearing down — a local `reachy-mini-daemon`: a MuJoCo one for the `sim` backend, and a hardware one for a robot plugged into this machine over USB (Reachy Mini Lite), so that a `ReachyMiniBridge` whose config asks for it ([config.md](../core/config.md) `daemon.spawn`) produces a working simulated or USB-attached robot in one call, and so that the shipped testing harness ([testing_support.md](../testing/testing_support.md)) — which brings up either kind — and any consumer's own tooling reuse one implementation of the launch recipes in [../docs/running-the-sim-daemon.md](../../docs/running-the-sim-daemon.md).
 
 Upstream's `ReachyMini` is a *client*: it needs a separately running daemon (hardware, or the MuJoCo simulation) and connects to it in its constructor (see [../docs/reachy-mini-api.md](../../docs/reachy-mini-api.md)). This module is the piece between "a config that says `sim` (or `real`, for a robot on this machine)" and "a daemon that is ready to accept that client": it launches the right variant, waits for actual readiness, keeps the child's environment sane, and stops exactly what it started.
 
@@ -28,16 +28,27 @@ class DaemonError(BridgeError): ...
 class DaemonHandle:
     host: str
     port: int
-    # True when this context spawned the process and will stop it
+    # True when start_daemon spawned the process; stop() then stops it
     owned: bool
     # the spawned process, when owned
     pid: int | None
+
+    def stop(self) -> None: ...  # terminate, grace, kill an owned daemon; a no-op on a borrowed one
 
 
 def is_daemon_ready(host: str, port: int) -> bool: ...
 
 
 def launch_command(config: DaemonConfig, *, backend: str = "sim") -> list[str]: ...
+
+
+def start_daemon(
+    config: DaemonConfig,
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    backend: str = "sim",
+) -> DaemonHandle: ...
 
 
 @contextmanager
@@ -50,15 +61,15 @@ def managed_daemon(
 ) -> Iterator[DaemonHandle]: ...
 ```
 
-`backend` is `"sim"` (the default) or `"real"` and selects the launch recipe below; anything else is a `ValueError`. `managed_daemon` is a **synchronous** context manager (subprocess and socket work); [api.md](../core/api.md) enters and exits it off the event loop with `asyncio.to_thread`. `DaemonConfig` is [config.md](../core/config.md)'s block — `daemon.py` imports `config.py`, a one-way dependency.
+`backend` is `"sim"` (the default) or `"real"` and selects the launch recipe below; anything else is a `ValueError`. `start_daemon` and `DaemonHandle.stop()` are the lifecycle pair — the daemon's counterpart of the `start()` / `stop()` every session of the bridge has ([bridge.md](../core/bridge.md) "Lifecycle"), **synchronous** because they are subprocess and socket work; the bridge runs each off the event loop with `asyncio.to_thread`. `managed_daemon` is the context-manager form over the pair — `start_daemon` on entry, the handle's `stop()` on exit, on every exit path — for the testing harness and any synchronous caller. `DaemonConfig` is [config.md](../core/config.md)'s block — `daemon.py` imports `config.py`, a one-way dependency.
 
 ### Own it or borrow it
 
-`managed_daemon` follows `config.spawn`:
+`start_daemon` (and so `managed_daemon`) follows `config.spawn`:
 
 - **`auto`** — if a daemon is already ready at `host:port`, yield it **borrowed** (`owned=False`) and never stop it: a viewer sim the user started by hand, or a daemon another process owns. If the port is open but the daemon is not yet ready (still booting), wait for readiness up to `startup_timeout`, then borrow it. If the port is free, **spawn** and own it.
 - **`always`** — spawn and own; the port already open is a `DaemonError` (the caller asked for a fresh daemon and something else holds the address).
-- **`never`** — not a `managed_daemon` mode: the api simply connects, and this module is not involved.
+- **`never`** — not a `start_daemon` mode: the bridge simply connects, and this module is not involved.
 
 `host` must be a loopback address — the bridge only ever spawns on the local machine (enforced at config time, [config.md](../core/config.md)).
 
@@ -68,7 +79,7 @@ def managed_daemon(
 
 **The probe has no side effect on the daemon.** It is one HTTP read, never an SDK client: a `reachy_mini.ReachyMini` built with `media_backend="no_media"` (upstream 1.10 / 1.11) calls `release_media()` on the daemon at construction and `acquire_media()` at exit, and the daemon answers each pair by stopping and rebuilding its whole media pipeline — WebRTC peers dropped, audio interrupted, and on macOS the camera drawn again by the unstable `avfvideosrc` index ([real_daemon.md](real_daemon.md)). A readiness probe that rebuilt the daemon's media on every successful poll was one of the two ways a real robot's camera came up dead.
 
-After spawning, `managed_daemon` polls `is_daemon_ready` once per second until `startup_timeout`. If the child exits first, it raises `DaemonError` with the exit code and the launch command; on timeout it stops the child and raises `DaemonError` (the message includes the viewer hint below for a `sim` daemon with `headless` `false`).
+After spawning, `start_daemon` polls `is_daemon_ready` once per second until `startup_timeout`. If the child exits first, it raises `DaemonError` with the exit code and the launch command; on timeout it stops the child and raises `DaemonError` (the message includes the viewer hint below for a `sim` daemon with `headless` `false`).
 
 ### The launch command
 
@@ -81,7 +92,7 @@ After spawning, `managed_daemon` polls `is_daemon_ready` once per second until `
 
 For `real` — a robot attached to this machine (USB):
 
-- **hardware**: `<this interpreter> -m reachy_mini_bridge.real_daemon [--kinematics-engine Placo] --[no-]preload-datasets` — the bridge's **real daemon launcher** ([real_daemon.md](real_daemon.md)): upstream's hardware daemon, run in-process with the macOS camera check that makes the robot's camera open reliably. No `--sim`; the daemon finds the robot's serial port itself, wakes the robot on start and puts it to sleep on stop. `--kinematics-engine Placo` is passed (through the launcher, verbatim) when the `placo` package is importable (`reachy-mini[placo_kinematics]`): the daemon's default engine rejects gravity compensation, and rejecting it drops the client's connection ([api.md](../core/api.md) "Motors"). `headless` and `scene` are sim knobs and play no part.
+- **hardware**: `<this interpreter> -m reachy_mini_bridge.real_daemon [--kinematics-engine Placo] --[no-]preload-datasets` — the bridge's **real daemon launcher** ([real_daemon.md](real_daemon.md)): upstream's hardware daemon, run in-process with the macOS camera check that makes the robot's camera open reliably. No `--sim`; the daemon finds the robot's serial port itself, wakes the robot on start and puts it to sleep on stop. `--kinematics-engine Placo` is passed (through the launcher, verbatim) when the `placo` package is importable (`reachy-mini[placo_kinematics]`): the daemon's default engine rejects gravity compensation, and rejecting it drops the client's connection ([bridge.md](../core/bridge.md) "Motors"). `headless` and `scene` are sim knobs and play no part.
 
 - **scene file** (`config.scene` ending in `.xml`, either launch mode): `mjpython -m reachy_mini_bridge.testing.sim_scene --scene-path <abs> --[no-]preload-datasets [camera flags] [display flags]` for the viewer, `<this interpreter> -m reachy_mini_bridge.testing.sim_scene --scene-path <abs> --headless --[no-]preload-datasets [camera flags]` headless — the test scene's launcher (shipped in the testing package), which is the sim daemon launcher with the scene's extension installed: upstream's daemon on a scene *file* the bridge wrote (hidden-by-default props — a portrait plane today — with a director and an HTTP endpoint to show/place/hide them: [sim_scene.md](../testing/sim_scene.md)), with the same corrections and camera choice as every other sim. The path is made absolute at launch; the launcher checks the file exists. Any other `scene` value is an upstream scene *name*, passed as `--scene`.
 
@@ -99,17 +110,17 @@ The child's stdout and stderr are merged into one pipe that a reader thread drai
 
 ### The child runs in its own session
 
-The spawned daemon is started with `start_new_session=True` (`setsid()` in the child — the bridge's hosts are macOS and Linux) and its stdin detached (`DEVNULL`), so it belongs to neither the terminal's session nor its foreground process group. A terminal's Ctrl+C delivers `SIGINT` to every process in the foreground group; a daemon sharing that group would shut down *at the same moment* as the bridge process — closing its WebSocket clients with `1012 service restart` — and the api's ordered teardown ([api.md](../core/api.md) "Lifecycle") would then run against a daemon that is already gone: the motion loop's every tick failing (a warning per tick), upstream's wobbler printing tracebacks for the speech offsets still scheduled for a playing sound, the camera pipeline reporting end-of-stream, and the robot left wherever the dying daemon dropped it. In its own session the daemon sees no terminal signal at all: the bridge process alone gets the `KeyboardInterrupt`, exits the api against a live daemon (motion eases to neutral, tracking and wobbling are switched off daemon-side, media and the client close), and only then does teardown terminate the daemon, which uses its grace to put the robot to sleep. The order in which things stop is the bridge's to decide, and only the bridge stops the daemon.
+The spawned daemon is started with `start_new_session=True` (`setsid()` in the child — the bridge's hosts are macOS and Linux) and its stdin detached (`DEVNULL`), so it belongs to neither the terminal's session nor its foreground process group. A terminal's Ctrl+C delivers `SIGINT` to every process in the foreground group; a daemon sharing that group would shut down *at the same moment* as the bridge process — closing its WebSocket clients with `1012 service restart` — and the bridge's ordered teardown ([bridge.md](../core/bridge.md) "Lifecycle") would then run against a daemon that is already gone: the motion loop's every tick failing (a warning per tick), upstream's wobbler printing tracebacks for the speech offsets still scheduled for a playing sound, the camera pipeline reporting end-of-stream, and the robot left wherever the dying daemon dropped it. In its own session the daemon sees no terminal signal at all: the bridge process alone gets the `KeyboardInterrupt`, exits the bridge against a live daemon (motion eases to neutral, tracking and wobbling are switched off daemon-side, media and the client close), and only then does teardown terminate the daemon, which uses its grace to put the robot to sleep. The order in which things stop is the bridge's to decide, and only the bridge stops the daemon.
 
 ### Teardown stops what the bridge started
 
-On exit, an **owned** daemon is terminated (`SIGTERM`), given 10 seconds to exit, then killed. A real daemon uses that grace to put the robot to sleep (measured at about 8 seconds on a Lite). A **borrowed** daemon is left running. Teardown runs on every exit path, including when the body raises.
+`DaemonHandle.stop()` terminates an **owned** daemon (`SIGTERM`), gives it 10 seconds to exit, then kills it, and stops the reader of its output; a real daemon uses that grace to put the robot to sleep (measured at about 8 seconds on a Lite). On a **borrowed** daemon it is a no-op — the daemon is left running — and a second `stop()` is a no-op too. `managed_daemon` calls it on every exit path, including when the body raises.
 
 **An orphaned daemon is the accepted trade-off of the detached session.** Because the daemon no longer shares the terminal's session, it outlives a bridge process that never reaches teardown — one that is `SIGKILL`ed, crashes without unwinding, or loses its terminal (the `SIGHUP` of a closed window goes to the terminal's session, which the daemon has left). Such a daemon keeps serving on its port, with the robot awake. On the next run, `daemon.spawn: "auto"` borrows it (`owned=False`, so the bridge never stops it) and `"always"` raises `DaemonError` naming the port already in use; `pkill -f reachy-mini-daemon` stops it by hand. A parent-death watchdog is deferred (open question 1).
 
 ### One implementation, two users
 
-`ReachyMiniApi.__aenter__` enters `managed_daemon` before building the robot when `daemon.spawn != "never"`, passing the config's `backend` (`sim` or `real`) to select the recipe ([api.md](../core/api.md) "Lifecycle"). The shipped testing harness's private `testing/_daemon.py` is a thin wrapper over the same functions — `is_daemon_ready` for the borrow decision, `managed_daemon(spawn="auto", backend=...)` to spawn a `sim` daemon or, on a loopback address, a `real` one — translating `DaemonError` into `pytest.skip` so the live tier still skips, never fails, when the environment cannot provide a daemon ([testing_support.md](../testing/testing_support.md)).
+`ReachyMiniBridge.start()` calls `start_daemon` before building the robot when `daemon.spawn != "never"`, passing the config's `backend` (`sim` or `real`) to select the recipe, and its `stop()` ends with the handle's `stop()` ([bridge.md](../core/bridge.md) "Lifecycle"). The shipped testing harness's private `testing/_daemon.py` is a thin wrapper over the same functions — `is_daemon_ready` for the borrow decision, `managed_daemon(spawn="auto", backend=...)` to spawn a `sim` daemon or, on a loopback address, a `real` one — translating `DaemonError` into `pytest.skip` so the live tier still skips, never fails, when the environment cannot provide a daemon ([testing_support.md](../testing/testing_support.md)).
 
 ### Testable without a daemon
 
@@ -120,7 +131,7 @@ The process-spawning and readiness-probing steps are injectable seams (module-pr
 - **[config.md](../core/config.md):** `DaemonConfig` (the `daemon` block) is this module's input; the loopback-host rule and the `sim`/`real`-only rule are enforced there.
 - **[sim_daemon.md](sim_daemon.md):** every `sim` recipe runs the bridge's sim daemon launcher (or the test scene's, built on it).
 - **[real_daemon.md](real_daemon.md):** the `real` recipe runs the bridge's real daemon launcher; the readiness probe is side-effect-free so that it never re-draws the camera that launcher checks.
-- **[api.md](../core/api.md):** the api's lifecycle enters `managed_daemon` first, then builds and enters the robot, then opens the media session.
+- **[bridge.md](../core/bridge.md):** the bridge's `start()` calls `start_daemon` first, then builds and enters the robot, then starts the media session; its `stop()` ends with the handle's `stop()`.
 - **[robot.md](../core/robot.md):** the connection options a managed daemon needs (`network`, `local` media) are filled into the `robot` block by config; the readiness probe itself uses no client.
 - **[testing_support.md](../testing/testing_support.md):** `testing/_daemon.py` wraps this module.
 

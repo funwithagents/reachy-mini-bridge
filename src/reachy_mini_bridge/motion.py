@@ -24,7 +24,7 @@ from abc import abstractmethod
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal, Self
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 import websockets.exceptions
@@ -511,7 +511,7 @@ def check_idle_move_factory(factory: object) -> None:
     ``gaze_offsets(0.0)`` are ``IdleOffsets`` of finite numbers. Runs on the caller's
     thread."""
     if not callable(factory):
-        # ValueError, not TypeError: the api's one error for bad input (specs/core/api.md)
+        # ValueError, not TypeError: the bridge's one error for bad input (specs/core/bridge.md)
         raise ValueError(  # noqa: TRY004
             "an idle move factory must be a zero-argument callable returning an "
             f"IdleMove (an IdleMove subclass is one), got {type(factory).__name__}"
@@ -594,7 +594,7 @@ class _Fade:
 
 @dataclass
 class _Primary:
-    """A queued primary move and the future the api awaits for it."""
+    """A queued primary move and the future the bridge awaits for it."""
 
     move: Move
     sound_path: Path | None
@@ -618,7 +618,7 @@ class _Playing:
 class MotionSession:
     """The one writer of the robot's target: a 60 Hz thread (specs/motion/motion.md).
 
-    Started paused; the api resumes it once the motors read ``enabled``. Every public
+    Started paused; the bridge resumes it once the motors read ``enabled``. Every public
     method is safe to call from the event loop and returns at once; the thread applies
     it at the top of its next tick.
     """
@@ -652,6 +652,8 @@ class MotionSession:
         self._queue: list[_Primary] = []  # pending primaries, FIFO
         self._playing: _Playing | None = None
         self._stop = False
+        self._started = False  # start() called (the thread starts once)
+        self._stopped = False  # stop() called
         # The gaze layer (specs/motion/motion.md "The gaze layer"): the latest aim and focus
         # the tracker handed over, the eased aim the loop composes, the effective
         # weight's minjerk fade from `_gaze_w_from` to `_gaze_w_to`, begun at
@@ -669,7 +671,7 @@ class MotionSession:
         self._history: deque[tuple[float, npt.NDArray[np.float64]]] = deque()
         self._history_lock = threading.Lock()
 
-    # --- api-facing commands (event-loop thread; enqueue and return at once) ---
+    # --- bridge-facing commands (event-loop thread; enqueue and return at once) ---
 
     def submit(
         self, move: Move, sound_path: Path | None
@@ -818,9 +820,9 @@ class MotionSession:
             return  # nothing to resume into: the session is over
         self._paused = False  # the next tick re-anchors: _commanding is False
 
-    def close(self) -> None:
+    def _close(self) -> None:
         """Blocking: stop the thread, easing to neutral first if it is commanding and
-        presence is on. Call under ``asyncio.to_thread`` — never on the event loop."""
+        presence is on. Run under ``asyncio.to_thread`` — never on the event loop."""
         self._commands.put(self._on_close)
         self._thread.join(timeout=BLEND_S + 2.0)
 
@@ -861,12 +863,22 @@ class MotionSession:
 
     # --- lifecycle ---
 
-    async def __aenter__(self) -> Self:
+    async def start(self) -> None:
+        """Start the loop thread, paused until ``resume()``. ``BridgeError`` on a
+        session already started (a thread starts once)."""
+        if self._started:
+            raise BridgeError("MotionSession is already started")
+        self._started = True
         self._thread.start()
-        return self
 
-    async def __aexit__(self, *exc: object) -> None:
-        await asyncio.to_thread(self.close)
+    async def stop(self) -> None:
+        """Stop the loop: ease the head to neutral first when it is commanding and
+        presence is on, then join the thread — off the event loop. A no-op before
+        ``start()`` and after a stop."""
+        if not self._started or self._stopped:
+            return
+        self._stopped = True
+        await asyncio.to_thread(self._close)
 
     # --- the thread ---
 
@@ -941,7 +953,7 @@ class MotionSession:
         playing = self._playing
         t = 0.0  # reassigned below; a fresh `playing` always starts its blend at t=0
 
-        # Drop a primary the api cancelled, or an idle move a queued primary preempts
+        # Drop a primary the bridge cancelled, or an idle move a queued primary preempts
         # (idle has no duration of its own — it plays only while the queue is empty).
         if playing is not None:
             cancelled = playing.primary is not None and playing.primary.done.cancelled()
@@ -1125,7 +1137,7 @@ class MotionSession:
     def _on_lost_connection(self, error: Exception) -> None:
         """A lost connection is not a bad tick (specs/motion/motion.md "Lifecycle"): one warning,
         then pause for good — a paused loop sends nothing, so it logs nothing more.
-        Upstream's client does not reconnect; the caller exits and re-enters the api."""
+        Upstream's client does not reconnect; the caller exits and re-enters the bridge."""
         _logger.warning("motion loop paused: lost connection to the daemon: %s", error)
         self._lost = True
         self._paused = True

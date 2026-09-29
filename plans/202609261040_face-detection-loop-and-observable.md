@@ -8,7 +8,7 @@ First of three plans; the other two build on it in order.
 
 ## How to work this plan
 
-- **Read first:** [AGENTS.md](../AGENTS.md); [specs/vision/user_perception.md](../specs/vision/user_perception.md) in full (the design — do not redesign it); [specs/core/api.md](../specs/core/api.md) "Faces (perception)", "Attention / gaze" and "Lifecycle"; [specs/core/config.md](../specs/core/config.md) "`faces` block"; [specs/core/robot.md](../specs/core/robot.md) "The consumed slice"; [docs/reachy-mini-api.md](../docs/reachy-mini-api.md) "Face tracking" for the daemon facts.
+- **Read first:** [AGENTS.md](../AGENTS.md); [specs/vision/user_perception.md](../specs/vision/user_perception.md) in full (the design — do not redesign it); [specs/core/bridge.md](../specs/core/bridge.md) "Faces (perception)", "Attention / gaze" and "Lifecycle"; [specs/core/config.md](../specs/core/config.md) "`faces` block"; [specs/core/robot.md](../specs/core/robot.md) "The consumed slice"; [docs/reachy-mini-api.md](../docs/reachy-mini-api.md) "Face tracking" for the daemon facts.
 - **Do the steps in order.** Each ends with the same check; fix everything red before the next step:
 
   ```
@@ -16,7 +16,7 @@ First of three plans; the other two build on it in order.
   ```
 
   (`ruff format .` also reflows the Python blocks in `plans/*.md` — format the code directories only.)
-- **Tests are functional:** assert on `api.faces.value`, on what a `changes()` subscriber receives, on the fake's recorded commands (`start_head_tracking` weights) and on the `attention` property — never on internals. Keep fake-tier tests fast: monkeypatch `FACE_POLL_HZ`, `FACE_ABSENT_S` and `ATTENTION_GRACE_S` to tenths of a second; sleeps ≤ 1.5 s. Every stream added here gets a cancel-mid-flight test ([specs/core/api.md](../specs/core/api.md) "Cancellation").
+- **Tests are functional:** assert on `api.faces.value`, on what a `changes()` subscriber receives, on the fake's recorded commands (`start_head_tracking` weights) and on the `attention` property — never on internals. Keep fake-tier tests fast: monkeypatch `FACE_POLL_HZ`, `FACE_ABSENT_S` and `ATTENTION_GRACE_S` to tenths of a second; sleeps ≤ 1.5 s. Every stream added here gets a cancel-mid-flight test ([specs/core/bridge.md](../specs/core/bridge.md) "Cancellation").
 - **Do not commit** unless asked. Do not touch `docs/upstream-*.md` beyond what a step says.
 
 ## Facts you must not violate (daemon, SDK 1.10)

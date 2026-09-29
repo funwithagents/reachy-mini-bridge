@@ -25,24 +25,24 @@ it (see [running-the-sim-daemon.md](running-the-sim-daemon.md) "The MuJoCo versi
 
 ## Unit tests — the `fake` backend
 
-Construct `ReachyMiniApi("fake")` directly. The fake records every command it receives on
+Construct `ReachyMiniBridge("fake")` directly. The fake records every command it receives on
 `robot.commands` (a list of `(name, args)` tuples) and returns synthetic perception, with no
-daemon, network, or hardware. Assert through the `api.robot` escape hatch — narrow it to
-`FakeReachyMini` first, since `api.robot` is typed as the real-or-fake union:
+daemon, network, or hardware. Assert through the `bridge.robot` escape hatch — narrow it to
+`FakeReachyMini` first, since `bridge.robot` is typed as the real-or-fake union:
 
 ```python
 import asyncio
 
-from reachy_mini_bridge import ReachyMiniApi
+from reachy_mini_bridge import ReachyMiniBridge
 from reachy_mini_bridge.fake_reachy_mini import FakeReachyMini
 
 
 def test_my_greeting_plays_an_emotion():
     async def run() -> list[str]:
-        async with ReachyMiniApi("fake") as api:
-            await api.set_motors_state("enabled")
-            await my_greeting(api)  # your code under test
-            robot = api.robot  # the escape hatch: the FakeReachyMini
+        async with ReachyMiniBridge("fake") as bridge:
+            await bridge.set_motors_state("enabled")
+            await my_greeting(bridge)  # your code under test
+            robot = bridge.robot  # the escape hatch: the FakeReachyMini
             assert isinstance(robot, FakeReachyMini)  # narrows the union for pyright
             return [name for name, _args in robot.commands]
 
@@ -61,7 +61,7 @@ Opt into the shipped pytest plugin from your **root** `conftest.py`:
 pytest_plugins = ["reachy_mini_bridge.testing.fixtures"]
 ```
 
-That gives you the module-scoped `live_api` fixture. Gate each test on the capabilities it
+That gives you the module-scoped `live_bridge` fixture. Gate each test on the capabilities it
 needs with `requires_caps` — a test skips (never fails) where the current target can't meet
 its needs, so one test runs unchanged on the headless sim, the headfull viewer, or a real
 robot:
@@ -72,15 +72,15 @@ import asyncio
 from reachy_mini_bridge.testing import require_env, requires_caps
 
 
-def test_it_speaks(live_api):
-    requires_caps(live_api, "audio")
-    api, _caps = live_api
-    asyncio.run(api.say("hello", my_synth))
+def test_it_speaks(live_bridge):
+    requires_caps(live_bridge, "audio")
+    bridge, _caps = live_bridge
+    asyncio.run(bridge.say("hello", my_synth))
 
 
-def test_it_nods(live_api):
-    requires_caps(live_api, "motion")
-    api, _caps = live_api
+def test_it_nods(live_bridge):
+    requires_caps(live_bridge, "motion")
+    bridge, _caps = live_bridge
     ...
 ```
 
@@ -96,7 +96,7 @@ loop stays fast and daemon-free.
 
 ### Capabilities
 
-`requires_caps(live_api, ...)` accepts the capabilities the harness probes against the live
+`requires_caps(live_bridge, ...)` accepts the capabilities the harness probes against the live
 daemon at setup:
 
 | Capability | Meaning | sim headless | sim headfull | real robot |
@@ -105,7 +105,7 @@ daemon at setup:
 | `audio` | recording yields a mic sample | ✅ | ✅ | ✅ |
 | `camera` | a camera frame comes back (needs a GL context) | ⚠️ not on headless macOS | ✅ | ✅ |
 | `gravity_compensation` | hardware daemon on the Placo kinematics engine | ❌ | ❌ | ✅ with `reachy-mini[placo_kinematics]` |
-| `faces` | the daemon runs the bridge's test scene (every sim the harness spawns does), which has a `face` body — hidden until shown; the bridge's `yunet` detector, which `live_api` configures, finds it in the rendered camera | ✅ (nothing looks at it: no camera) | ✅ | ❌ |
+| `faces` | the daemon runs the bridge's test scene (every sim the harness spawns does), which has a `face` body — hidden until shown; the bridge's `yunet` detector, which `live_bridge` configures, finds it in the rendered camera | ✅ (nothing looks at it: no camera) | ✅ | ❌ |
 | `doa` | mic-array direction of arrival | ❌ | ❌ | ✅ (reserved) |
 
 Capabilities are **probed, not assumed** from the backend type — environment quirks decide
@@ -114,13 +114,13 @@ what actually works.
 **Audio devices.** Every target picks the audio card named "Reachy Mini Audio" when one is
 plugged in, so the `sim` target plays through (and records from) a USB-connected robot
 too; without one it uses the machine's default speaker and mic. Don't stop and restart the
-media pipeline in a test (`api.robot.media.stop_recording()` then `start_recording()`): on
+media pipeline in a test (`bridge.robot.media.stop_recording()` then `start_recording()`): on
 macOS the restarted pipeline reopens on the system defaults, so the rest of the module's
 audio silently leaves the robot.
 
 ## Configuration (environment variables)
 
-The `live_api` fixture reads the same knobs the bridge's own tier uses:
+The `live_bridge` fixture reads the same knobs the bridge's own tier uses:
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -134,19 +134,19 @@ scene: upstream's empty scene plus a portrait that stays hidden until a test sho
 tests that don't use it are unaffected, and `faces` is probed on every spawned sim. With
 `REACHY_MINI_E2E_SIM_VIEWER=1` (the camera needs the viewer), the `sim_scene` fixture (from the same
 plugin module) hands you a `SimSceneClient` to show, place, move and hide it while your
-code runs — the bridge's own detector (the `yunet` detector `live_api` configures) finds
+code runs — the bridge's own detector (the `yunet` detector `live_bridge` configures) finds
 it in the rendered camera stream and the bridge's tracker does the rest, so the head
 converges on the face as a robot's does and a test can assert how the head moves and where
 it settles, not only that it moved:
 
 ```python
-def test_it_looks_at_whoever_is_there(live_api, sim_scene):
-    requires_caps(live_api, "camera", "faces")
-    api, _caps = live_api
+def test_it_looks_at_whoever_is_there(live_bridge, sim_scene):
+    requires_caps(live_bridge, "camera", "faces")
+    bridge, _caps = live_bridge
     sim_scene.place("face", (0.45, 0.15, 0.20))  # 18.4° to the robot's left
     sim_scene.show("face")
     ...  # the head turns left, past the face by a few degrees, and settles at ~+18° yaw
-    # with the target face of api.faces.value near (0, 0)
+    # with the target face of bridge.faces.value near (0, 0)
     sim_scene.hide("face")  # nobody there: the head is handed back to the idle move
 ```
 
@@ -166,14 +166,14 @@ port, no robot answering), the test **skips** rather than failing.
 **Gravity compensation** needs the daemon's Placo kinematics engine. Install
 `reachy-mini[placo_kinematics]` and a harness-spawned `real` daemon uses it automatically; a
 daemon you start yourself needs `--kinematics-engine Placo`. Without it,
-`api.set_motors_state("gravity_compensation")` raises `GravityCompensationUnsupportedError`
+`bridge.set_motors_state("gravity_compensation")` raises `GravityCompensationUnsupportedError`
 (sending the mode would make the robot daemon close the connection), so gate such tests on
-`requires_caps(live_api, "gravity_compensation")`. See
+`requires_caps(live_bridge, "gravity_compensation")`. See
 [running-the-sim-daemon.md](running-the-sim-daemon.md) for the launch recipes and the
 macOS viewer notes.
 
 **Outside pytest,** the same lifecycle is available to your application: a
 `ReachyMiniConfig` with `"backend": "sim"` (or `"real"`, for a robot plugged in over USB)
-and `"daemon": {"spawn": "auto"}` makes `async with ReachyMiniApi(config)` spawn (or
+and `"daemon": {"spawn": "auto"}` makes `async with ReachyMiniBridge(config)` spawn (or
 borrow) the daemon itself — see
 [specs/core/config.md](../specs/core/config.md) and [specs/daemon/daemon.md](../specs/daemon/daemon.md).

@@ -6,6 +6,7 @@ The feed runs its real thread over a stub `read_frame` that returns scripted fra
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -79,13 +80,13 @@ def running() -> Iterator[
         reader: _Reader, pose_at: Callable[[float], npt.NDArray[np.float64]] | None
     ) -> CameraFeed:
         feed = CameraFeed(reader, pose_at)
-        feed.start()
+        asyncio.run(feed.start())
         feeds.append(feed)
         return feed
 
     yield start
     for feed in feeds:
-        feed.stop()
+        asyncio.run(feed.stop())
 
 
 def test_frames_are_published_in_order_and_nones_publish_nothing(
@@ -108,18 +109,18 @@ def test_latest_is_none_before_start_and_after_stop() -> None:
     reader = _Reader([(_image(1), 1.0)])
     feed = CameraFeed(reader, None)
     assert feed.latest() is None
-    feed.start()
+    asyncio.run(feed.start())
     _wait_until(lambda: feed.latest() is not None)
-    feed.stop()
+    asyncio.run(feed.stop())
     assert feed.latest() is None
     assert feed.published_count == 1
     # frame_id counts on across start / stop, so an old result is never mistaken for new.
     reader.extend([(_image(2), 2.0)])
-    feed.start()
+    asyncio.run(feed.start())
     _wait_until(lambda: feed.published_count == 2)
     latest = feed.latest()
     assert latest is not None and latest.frame_id == 2
-    feed.stop()
+    asyncio.run(feed.stop())
 
 
 def test_a_raising_reader_keeps_the_last_frame_and_recovers(
@@ -178,10 +179,10 @@ def test_head_pose_is_the_pose_at_the_capture_time_or_none(
     assert asked == [5.0]
     assert latest.ts >= 5.0  # the arrival on the monotonic clock, not 5.0
     without = CameraFeed(_Reader([(_image(3), 7.0)]), None)
-    without.start()
+    asyncio.run(without.start())
     _wait_until(lambda: without.published_count == 1)
     frame = without.latest()
-    without.stop()
+    asyncio.run(without.stop())
     assert frame is not None and frame.ts == 7.0 and frame.head_pose is None
 
 
@@ -224,13 +225,13 @@ def test_two_consumers_both_see_every_frame(
 def test_start_needs_a_reader_and_bind_gives_one() -> None:
     feed = CameraFeed()
     with pytest.raises(BridgeError, match="no reader"):
-        feed.start()
+        asyncio.run(feed.start())
     feed.bind(_Reader([(_image(1), 1.0)]), None)
-    feed.start()
+    asyncio.run(feed.start())
     _wait_until(lambda: feed.published_count == 1)
     with pytest.raises(BridgeError, match="while it runs"):
         feed.bind(_Reader([]), None)
-    feed.stop()
+    asyncio.run(feed.stop())
 
 
 # --- the shape a vision graph plugs onto (specs/vision/camera.md "A valid upstream") --------
@@ -258,3 +259,16 @@ def test_the_feed_and_its_frames_have_the_upstream_shape() -> None:
     upstream: Upstream[FrameLike] = CameraFeed(_Reader([]), None)
     assert isinstance(frame_like, FrameLike)
     assert upstream.latest() is None
+
+
+def test_stop_before_start_is_a_noop_and_start_while_running_too() -> None:
+    reader = _Reader([(_image(1), 1.0)])
+    feed = CameraFeed(reader, None)
+    asyncio.run(feed.stop())
+    assert feed.latest() is None and not feed.running
+    asyncio.run(feed.start())
+    asyncio.run(feed.start())  # already running: the same one thread keeps reading
+    _wait_until(lambda: feed.published_count == 1)
+    assert feed.running
+    asyncio.run(feed.stop())
+    assert feed.latest() is None and not feed.running

@@ -12,6 +12,7 @@ import logging
 import threading
 import time
 from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -30,6 +31,16 @@ from reachy_mini_bridge.audio import (
 )
 from reachy_mini_bridge.errors import BridgeError
 from reachy_mini_bridge.fake_reachy_mini import FakeReachyMini
+
+
+@asynccontextmanager
+async def _open(session: MediaSession) -> AsyncIterator[MediaSession]:
+    """``start()`` / ``stop()`` around a block — what the bridge does with the session."""
+    await session.start()
+    try:
+        yield session
+    finally:
+        await session.stop()
 
 
 class _ToneSynth:
@@ -125,7 +136,7 @@ def test_say_pushes_matched_rate_without_resampling() -> None:
     robot = FakeReachyMini()  # speaker reports 16 kHz (see fake_reachy_mini.py)
 
     async def run() -> None:
-        async with MediaSession(robot) as session:
+        async with _open(MediaSession(robot)) as session:
             await session.say("hi", _ToneSynth(16000, chunks=3, block=800))
 
     asyncio.run(run())
@@ -138,7 +149,7 @@ def test_say_resamples_when_rates_differ() -> None:
     robot = FakeReachyMini()  # speaker is 16 kHz; synth is 8 kHz -> upsample x2
 
     async def run() -> None:
-        async with MediaSession(robot) as session:
+        async with _open(MediaSession(robot)) as session:
             await session.say("hi", _ToneSynth(8000, chunks=3, block=800))
 
     asyncio.run(run())
@@ -166,7 +177,7 @@ def test_say_fans_mono_out_to_speaker_channels() -> None:
     robot.media.push_audio_sample = spy  # type: ignore[method-assign]
 
     async def run() -> None:
-        async with MediaSession(robot) as session:
+        async with _open(MediaSession(robot)) as session:
             await session.say("hi", _ToneSynth(16000, chunks=1, block=800))
 
     asyncio.run(run())
@@ -220,7 +231,7 @@ def test_say_returns_only_after_the_utterance_has_played() -> None:
     robot = FakeReachyMini()
 
     async def run() -> float:
-        async with MediaSession(robot) as session:
+        async with _open(MediaSession(robot)) as session:
             start = time.monotonic()
             await session.say("hi", _ToneSynth(16000, chunks=4, block=800))  # 0.2 s
             return time.monotonic() - start
@@ -233,7 +244,7 @@ def test_say_with_no_audio_returns_at_once() -> None:
     robot = FakeReachyMini()
 
     async def run() -> float:
-        async with MediaSession(robot) as session:
+        async with _open(MediaSession(robot)) as session:
             start = time.monotonic()
             await session.say("hi", _SilentSynth())
             return time.monotonic() - start
@@ -255,7 +266,7 @@ def test_cancelled_say_flushes_the_speaker() -> None:
     robot = FakeReachyMini()
 
     async def run() -> None:
-        async with MediaSession(robot) as session:
+        async with _open(MediaSession(robot)) as session:
             task = asyncio.create_task(session.say("hi", _StallingSynth()))
             while not _pushed_frames(robot):
                 await asyncio.sleep(0)
@@ -271,7 +282,7 @@ def test_cancel_during_the_completion_wait_flushes_the_speaker() -> None:
     robot = FakeReachyMini()
 
     async def run() -> None:
-        async with MediaSession(robot) as session:
+        async with _open(MediaSession(robot)) as session:
             synth = _ToneSynth(16000, chunks=4, block=800)  # 0.2 s
             task = asyncio.create_task(session.say("hi", synth))
             while len(_pushed_frames(robot)) < 4:  # synthesis done; say is now waiting
@@ -290,7 +301,7 @@ def test_synthesizer_failure_flushes_the_speaker_and_propagates() -> None:
     robot = FakeReachyMini()
 
     async def run() -> None:
-        async with MediaSession(robot) as session:
+        async with _open(MediaSession(robot)) as session:
             with pytest.raises(RuntimeError, match="boom"):
                 await session.say("hi", _FailingSynth())
 
@@ -302,7 +313,7 @@ def test_media_session_opens_and_tears_down_pipeline() -> None:
     robot = FakeReachyMini()
 
     async def run() -> None:
-        async with MediaSession(robot):
+        async with _open(MediaSession(robot)):
             pass
 
     asyncio.run(run())
@@ -316,7 +327,7 @@ def test_media_session_applies_audio_config_when_given() -> None:
     profile = {"noise_suppression": "high"}
 
     async def run() -> None:
-        async with MediaSession(robot, audio_config=profile):
+        async with _open(MediaSession(robot, audio_config=profile)):
             pass
 
     asyncio.run(run())
@@ -339,7 +350,7 @@ def test_failed_open_unwinds_what_started(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(robot.media, "start_playing", _raise("no speaker"))
 
     async def run() -> None:
-        async with MediaSession(robot):
+        async with _open(MediaSession(robot)):
             pass
 
     with pytest.raises(RuntimeError, match="no speaker"):
@@ -355,7 +366,7 @@ def test_failed_audio_config_unwinds_both_directions(
     monkeypatch.setattr(robot.media.audio, "apply_audio_config", _raise("bad profile"))
 
     async def run() -> None:
-        async with MediaSession(robot, audio_config={"agc": 1}):
+        async with _open(MediaSession(robot, audio_config={"agc": 1})):
             pass
 
     with pytest.raises(RuntimeError, match="bad profile"):
@@ -377,7 +388,7 @@ def test_exit_stops_playback_even_if_stopping_recording_fails(
     session = MediaSession(robot)
 
     async def run() -> None:
-        async with session:
+        async with _open(session):
             pass
 
     with pytest.raises(RuntimeError, match="stuck mic"):
@@ -396,7 +407,7 @@ def test_say_requires_an_open_session() -> None:
     async def run() -> None:
         with pytest.raises(BridgeError, match="say"):
             await session.say("hi", synth)
-        async with session:
+        async with _open(session):
             pass
         with pytest.raises(BridgeError, match="say"):
             await session.say("hi", synth)
@@ -417,9 +428,9 @@ def test_double_open_raises() -> None:
     session = MediaSession(robot)
 
     async def run() -> None:
-        async with session:
+        async with _open(session):
             with pytest.raises(BridgeError):
-                async with session:
+                async with _open(session):
                     pass
 
     asyncio.run(run())
@@ -444,7 +455,7 @@ def test_audio_input_yields_mono_int16_and_break_stops() -> None:
     robot = FakeReachyMini()  # capture is float32 (160, 2)
 
     async def run() -> list[bytes]:
-        async with MediaSession(robot) as session:
+        async with _open(MediaSession(robot)) as session:
             return await _take(session.audio_input(), 2)
 
     chunks = asyncio.run(run())
@@ -457,7 +468,7 @@ def test_audio_input_raw_is_interleaved_stereo() -> None:
     robot = FakeReachyMini()
 
     async def run() -> tuple[list[bytes], list[bytes]]:
-        async with MediaSession(robot) as session:
+        async with _open(MediaSession(robot)) as session:
             mono = await _take(session.audio_input(mono=True), 1)
             raw = await _take(session.audio_input(mono=False), 1)
             return mono, raw
@@ -473,7 +484,7 @@ def test_audio_input_mono_downmix_uses_real_sample_values() -> None:
     robot.media.get_audio_sample = lambda: np.full((4, 2), [1.0, 0.0], dtype=np.float32)  # type: ignore[method-assign]
 
     async def run() -> bytes:
-        async with MediaSession(robot) as session:
+        async with _open(MediaSession(robot)) as session:
             return (await _take(session.audio_input(), 1))[0]
 
     chunk = asyncio.run(run())
@@ -565,12 +576,12 @@ def test_stop_sound_on_an_unknown_backend_warns_and_returns(
 
 def test_say_missing_synthesizer_is_a_type_the_caller_can_supply() -> None:
     # The session's say always takes an explicit synth; the "no synth configured"
-    # error lives at the api layer (see tests/test_api.py). Here just prove a plain
+    # error lives at the bridge layer (see tests/test_bridge.py). Here just prove a plain
     # object without the protocol shape is rejected at call time.
     robot = FakeReachyMini()
 
     async def run() -> None:
-        async with MediaSession(robot) as session:
+        async with _open(MediaSession(robot)) as session:
             with pytest.raises(AttributeError):
                 await session.say("hi", object())  # type: ignore[arg-type]
 
@@ -589,7 +600,7 @@ def test_mic_tap_ends_when_the_session_closes() -> None:
                 chunks += 1
 
         session = MediaSession(robot)
-        async with session:
+        async with _open(session):
             task = asyncio.create_task(drain(session.audio_input()))
             await asyncio.sleep(0.05)
         await asyncio.wait_for(task, 1.0)  # finishes on its own; no timeout
@@ -605,7 +616,7 @@ def test_mic_tap_waits_out_missing_samples(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(robot.media, "get_audio_sample", lambda: samples.pop(0))
 
     async def run() -> bytes:
-        async with MediaSession(robot) as session:
+        async with _open(MediaSession(robot)) as session:
             return (await _take(session.audio_input(), 1))[0]
 
     chunk = asyncio.run(run())
@@ -623,7 +634,7 @@ def test_mic_tap_does_not_busy_poll(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(robot.media, "get_audio_sample", empty)
 
     async def run() -> None:
-        async with MediaSession(robot) as session:
+        async with _open(MediaSession(robot)) as session:
             with pytest.raises(TimeoutError):
                 await asyncio.wait_for(_take(session.audio_input(), 1), 0.2)
 
@@ -633,7 +644,7 @@ def test_mic_tap_does_not_busy_poll(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls < 50
 
 
-# --- cancel-safe bring-up steps (specs/core/api.md "Lifecycle") ---
+# --- cancel-safe bring-up steps (specs/core/bridge.md "Lifecycle") ---
 
 
 def test_cancel_during_media_open_unwinds_the_started_capture(
@@ -652,7 +663,7 @@ def test_cancel_during_media_open_unwinds_the_started_capture(
     session = MediaSession(robot)
 
     async def run() -> None:
-        task = asyncio.create_task(session.__aenter__())
+        task = asyncio.create_task(session.start())
         while not started.is_set():
             await asyncio.sleep(0.01)
         task.cancel()
@@ -696,3 +707,10 @@ def test_cancel_safe_step_propagates_a_failing_step_as_the_cancel() -> None:
 
     asyncio.run(run())
     assert undone == []
+
+
+def test_stop_before_start_is_a_noop() -> None:
+    robot = FakeReachyMini()
+    session = MediaSession(robot)
+    asyncio.run(session.stop())
+    assert _command_names(robot) == []

@@ -671,3 +671,39 @@ def test_teardown_runs_when_the_body_raises(harness: _Harness) -> None:
     with pytest.raises(RuntimeError, match="body"), daemon.managed_daemon(_AUTO):
         raise RuntimeError("body")
     assert harness.proc.calls == ["terminate", "wait"]
+
+
+# --- the pair under managed_daemon ---------------------------------------------------
+
+
+def test_start_daemon_returns_an_owned_handle_whose_stop_ends_the_child(
+    harness: _Harness,
+) -> None:
+    harness.ready = iter([False, True])
+    handle = daemon.start_daemon(_AUTO)
+    assert handle == daemon.DaemonHandle("127.0.0.1", 8000, owned=True, pid=4242)
+    assert harness.proc.calls == []  # running until stopped
+    handle.stop()
+    assert harness.proc.calls == ["terminate", "wait"]
+    handle.stop()  # a second stop is a no-op
+    assert harness.proc.calls == ["terminate", "wait"]
+
+
+def test_start_daemon_borrowed_handle_stop_is_a_noop(harness: _Harness) -> None:
+    harness.port_open = True
+    harness.ready = iter([True])
+    handle = daemon.start_daemon(_AUTO)
+    assert handle.owned is False
+    handle.stop()
+    assert harness.spawned == [] and harness.proc.calls == []
+
+
+def test_start_daemon_stops_a_child_that_never_becomes_ready(harness: _Harness) -> None:
+    clock = iter([0.0, 0.0, 0.5, 1.0, 1.5])
+    with (
+        pytest.MonkeyPatch.context() as mp,
+        pytest.raises(DaemonError, match="did not become ready"),
+    ):
+        mp.setattr(daemon.time, "monotonic", lambda: next(clock))
+        daemon.start_daemon(DaemonConfig(spawn="auto", startup_timeout=1.0))
+    assert harness.proc.calls == ["terminate", "wait"]

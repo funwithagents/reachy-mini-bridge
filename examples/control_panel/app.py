@@ -32,7 +32,7 @@ REFRESH_S = 0.5
 # The camera has its own, faster timer so the face markers follow a moving face.
 CAMERA_REFRESH_S = 0.2
 # Show the camera as a mirror (like a selfie view): someone stepping to their right moves
-# right on screen. Display only — the faces line keeps the api's image coordinates.
+# right on screen. Display only — the faces line keeps the bridge's image coordinates.
 MIRROR_CAMERA = True
 LOG_LINES = 50
 MOTOR_STATES = ("enabled", "disabled", "gravity_compensation")
@@ -99,7 +99,7 @@ def refresh_camera(
 ) -> tuple[npt.NDArray[np.uint8] | None, str]:
     """One camera tick: the frame with a marker on each reported face (mirrored when
     ``MIRROR_CAMERA``), and the faces line under it."""
-    active = controller.api.faces.value.active
+    active = controller.bridge.faces.value.active
     positions = controller.face_positions()
     rolls = controller.face_rolls()
     text = faces_line(positions if active else None, controller.face_rate, rolls)
@@ -118,7 +118,7 @@ def refresh_camera(
 
 def build_app(controller: ControlPanelController) -> gr.Blocks:
     """The panel over a started controller."""
-    config = controller.api.config
+    config = controller.bridge.config
     log: Log = []
 
     def guarded(verb: str, fn: Callable[..., Any]) -> Callable[..., None]:
@@ -265,7 +265,7 @@ def build_app(controller: ControlPanelController) -> gr.Blocks:
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="python -m examples.control_panel",
-        description="A Gradio control panel over ReachyMiniApi: every verb a button, "
+        description="A Gradio control panel over ReachyMiniBridge: every verb a button, "
         "the robot's state on screen.",
     )
     parser.add_argument(

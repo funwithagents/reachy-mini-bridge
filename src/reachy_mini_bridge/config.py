@@ -1,6 +1,6 @@
 """Configuration: ``ReachyMiniConfig`` (specs/core/config.md).
 
-One declarative object describing everything needed to bring up a ``ReachyMiniApi``:
+One declarative object describing everything needed to bring up a ``ReachyMiniBridge``:
 the backend, the upstream ``ReachyMini`` connection kwargs (forwarded verbatim), how the
 bridge manages the daemon, the tts-engine ``engine`` block for the default synthesizer,
 the XVF3800 audio profile, face detection, and the behaviour at rest. Buildable from a
@@ -327,7 +327,7 @@ class FaceSettings:
     # The detector the bridge runs on the camera feed's frames: None (no detection),
     # "yunet" (the shipped detector, upstream's model) or "custom" (the caller's).
     detector: str | None = None
-    # Run the detection loop from session entry, so `api.faces` reports who is there.
+    # Run the detection loop from session entry, so `bridge.faces` reports who is there.
     detection: bool = False
     # Python only: the custom detector's factory, used when detector is "custom".
     face_detector: Callable[[], FaceDetector] | None = None
@@ -367,8 +367,8 @@ class FaceSettings:
 @dataclass
 class MotionSettings:
     """Everything that shapes the robot's behaviour at rest, applied when the session
-    starts (specs/motion/motion.md, specs/core/api.md): the loop's own idle modes (``presence``,
-    ``idle``, ``idle_move``) and the daemon-side modes the api arms around them (``wobbling``,
+    starts (specs/motion/motion.md, specs/core/bridge.md): the loop's own idle modes (``presence``,
+    ``idle``, ``idle_move``) and the daemon-side modes the bridge arms around them (``wobbling``,
     ``tracking``)."""
 
     # The background behaviour: idle moments are filled with the idle move.
@@ -426,7 +426,7 @@ class MotionSettings:
 
 @dataclass
 class ReachyMiniConfig:
-    """Everything needed to bring up a ``ReachyMiniApi`` (specs/core/config.md)."""
+    """Everything needed to bring up a ``ReachyMiniBridge`` (specs/core/config.md)."""
 
     # "real" | "sim" | "fake"
     backend: str = "real"
@@ -524,11 +524,11 @@ class ReachyMiniConfig:
         """Read a JSON file, then delegate to :meth:`from_dict` (errors name the path)."""
         return cls.from_dict(_load_file(path))
 
-    # --- derived views the api uses ---
+    # --- derived views the bridge uses ---
 
     @property
     def manages_daemon(self) -> bool:
-        """Whether the api brings up (or borrows) the daemon itself (``spawn != never``)."""
+        """Whether the bridge brings up (or borrows) the daemon itself (``spawn != never``)."""
         return self.daemon.spawn != "never"
 
     def effective_robot_options(self) -> dict[str, Any]:

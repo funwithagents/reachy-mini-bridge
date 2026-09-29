@@ -6,7 +6,7 @@ USB-attached ``real`` robot) and "a daemon ready to accept that client": own it 
 it, wait for *readiness* (the backend is up, not merely the port), launch headless by
 default, scrub the GStreamer environment the child inherits, forward the child's own log
 lines into the bridge's, and stop exactly what was started. Shared by
-``ReachyMiniApi`` and the testing harness (``reachy_mini_bridge.testing``).
+``ReachyMiniBridge`` and the testing harness (``reachy_mini_bridge.testing``).
 
 The process-spawning and readiness-probing steps are module-private callables
 (``_spawn``, ``_ready``, ``_sleep``, ``_port_open``, ``_placo_available``) resolved at
@@ -29,7 +29,7 @@ import urllib.request
 from collections import deque
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import IO, Protocol
 
 from .config import DAEMON_BACKENDS, DaemonConfig
@@ -91,14 +91,32 @@ _VIEWER_HINT = (
 
 @dataclass(frozen=True)
 class DaemonHandle:
-    """What ``managed_daemon`` yields: where the daemon is and whether we own it."""
+    """What ``start_daemon`` returns (and ``managed_daemon`` yields): where the daemon is,
+    whether we own it, and — when we do — the ``stop()`` that ends it."""
 
     host: str
     port: int
-    # True when this context spawned the process and will stop it
+    # True when start_daemon spawned the process; stop() then stops it
     owned: bool
     # the spawned process, when owned
     pid: int | None
+    # the owned process and the reader of its output; None when borrowed, and once stopped
+    _proc: _Process | None = field(default=None, repr=False, compare=False)
+    _output: _ChildOutput | None = field(default=None, repr=False, compare=False)
+
+    def stop(self) -> None:
+        """Stop an owned daemon — terminate, grace, kill — and stop draining its output.
+        A no-op on a borrowed daemon, and on a second call."""
+        proc, output = self._proc, self._output
+        if proc is None:
+            return
+        object.__setattr__(self, "_proc", None)
+        object.__setattr__(self, "_output", None)
+        try:
+            _stop(proc)
+        finally:
+            if output is not None:
+                output.stop()
 
 
 class _Process(Protocol):
@@ -346,7 +364,7 @@ def _spawn(cmd: list[str], env: dict[str, str]) -> _Process:
         env=env,
         # Own session => own process group (specs/daemon/daemon.md "The child runs in its own
         # session"): a terminal's Ctrl+C is a SIGINT to the whole foreground group, and a
-        # daemon sharing it would die *with* the bridge instead of last — the api's
+        # daemon sharing it would die *with* the bridge instead of last — the bridge's
         # teardown would then run against a dead server (a warning per motion tick,
         # wobbler tracebacks, the robot left wherever it dropped). Detached, the daemon
         # sees no terminal signal; only `_stop` ends it, after the robot session closed.
@@ -365,26 +383,28 @@ def _sleep(seconds: float) -> None:
 # --- the lifecycle ------------------------------------------------------------------
 
 
-@contextmanager
-def managed_daemon(
+def start_daemon(
     config: DaemonConfig,
     *,
     host: str = "127.0.0.1",
     port: int = 8000,
     backend: str = "sim",
-) -> Iterator[DaemonHandle]:
-    """Yield a ready daemon at ``host:port`` per ``config.spawn`` (``auto`` | ``always``).
+) -> DaemonHandle:
+    """A ready daemon at ``host:port`` per ``config.spawn`` (``auto`` | ``always``), as a
+    handle whose ``stop()`` ends what this call started.
 
     ``backend`` picks the launch recipe: ``sim`` (MuJoCo) or ``real`` (a USB-attached robot).
 
     ``auto``: borrow a daemon already ready (or still booting) at the address, else
     spawn one and own it. ``always``: spawn and own; the port already open is an error.
-    An owned daemon is stopped on exit (terminate, grace, kill) on every exit path; a
-    borrowed one is left running. Synchronous — the api enters it off the event loop.
+    A spawned daemon that fails to become ready is stopped before the ``DaemonError``
+    propagates. Synchronous (subprocess and socket work) — the bridge runs it, and the
+    handle's ``stop()``, off the event loop; ``managed_daemon`` is the context-manager
+    form over the pair.
     """
     if config.spawn not in ("auto", "always"):
         raise ValueError(
-            f"managed_daemon needs spawn 'auto' or 'always', got {config.spawn!r}"
+            f"start_daemon needs spawn 'auto' or 'always', got {config.spawn!r}"
         )
     _check_backend(backend)
     if _port_open(host, port):
@@ -393,8 +413,7 @@ def managed_daemon(
                 f"port {port} on {host} is already in use, and daemon.spawn is 'always'"
             )
         _wait_until_ready(host, port, config, backend, proc=None, cmd=None)
-        yield DaemonHandle(host=host, port=port, owned=False, pid=None)
-        return
+        return DaemonHandle(host=host, port=port, owned=False, pid=None)
 
     cmd = launch_command(config, backend=backend)
     proc = _spawn(cmd, scrubbed_env())
@@ -403,10 +422,33 @@ def managed_daemon(
         _wait_until_ready(
             host, port, config, backend, proc=proc, cmd=cmd, output=output
         )
-        yield DaemonHandle(host=host, port=port, owned=True, pid=proc.pid)
+    except BaseException:
+        try:
+            _stop(proc)
+        finally:
+            output.stop()
+        raise
+    return DaemonHandle(
+        host=host, port=port, owned=True, pid=proc.pid, _proc=proc, _output=output
+    )
+
+
+@contextmanager
+def managed_daemon(
+    config: DaemonConfig,
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    backend: str = "sim",
+) -> Iterator[DaemonHandle]:
+    """``start_daemon`` on entry, the handle's ``stop()`` on exit — on every exit path.
+    The context-manager form of the pair, for the testing harness and any synchronous
+    caller."""
+    handle = start_daemon(config, host=host, port=port, backend=backend)
+    try:
+        yield handle
     finally:
-        _stop(proc)
-        output.stop()
+        handle.stop()
 
 
 def _wait_until_ready(

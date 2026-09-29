@@ -9,7 +9,7 @@ Implements the settled behavior in `specs/project.md` ("Optional extras") and `s
 - `pyproject.toml` — `tts-gradium = ["tts-engine[gradium]"]`; the dev group pulls it alongside the other two so the key-gated live test runs rather than failing on a missing extra.
 - `uv.lock` — the `gradium` SDK enters the dev resolution.
 - `tests-e2e/test_api.py` — `test_say_with_gradium_speaks_through_the_robot`: key-gated on `GRADIUM_API_KEY`, asserts the synthesizer reports 16 kHz (the no-resample path) and that `say` completes.
-- `specs/project.md`, `specs/audio/audio.md`, `specs/core/config.md`, `specs/testing/testing.md`, `specs/_overview.md`, `specs/core/api.md` — name the third extra; `audio.md` states the rule plainly — a synthesizer at 16 kHz is played as is, any other rate is resampled — with each provider's rate.
+- `specs/project.md`, `specs/audio/audio.md`, `specs/core/config.md`, `specs/testing/testing.md`, `specs/_overview.md`, `specs/core/bridge.md` — name the third extra; `audio.md` states the rule plainly — a synthesizer at 16 kHz is played as is, any other rate is resampled — with each provider's rate.
 - `README.md`, `AGENTS.md`, `src/reachy_mini_bridge/audio.py` (adapter docstring) — the extras table, a `gradium` config example, the credential list.
 
 ## Steps

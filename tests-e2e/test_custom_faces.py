@@ -4,15 +4,15 @@
 It registers the bridge's shipped detector class through the `custom` path — as a
 developer registers a wrapper of their own — on the camera feed of the viewer sim, and
 checks that the head converges on the test scene's portrait as it does with the detector
-named in the config (tests-e2e/test_api.py). It tests the registration and the runner,
+named in the config (tests-e2e/test_bridge.py). It tests the registration and the runner,
 not the model. Run it with
 
     REACHY_MINI_E2E_SIM_VIEWER=1 uv run pytest tests-e2e -rs -k custom
 
-It has its own api session (`live_api_custom_faces`, below): the detector is config-only,
-and a second session on the daemon `live_api` drives would be a second motion loop
-writing the head — so this module runs after test_api.py has released its session, and
-exactly one api drives the head. The fixture lives here rather than in conftest.py because
+It has its own bridge session (`live_bridge_custom_faces`, below): the detector is config-only,
+and a second session on the daemon `live_bridge` drives would be a second motion loop
+writing the head — so this module runs after test_bridge.py has released its session, and
+exactly one bridge drives the head. The fixture lives here rather than in conftest.py because
 nothing else uses it.
 """
 
@@ -28,7 +28,7 @@ import numpy as np
 import pytest
 
 from reachy_mini_bridge import ReachyMiniConfig
-from reachy_mini_bridge.api import ReachyMiniApi
+from reachy_mini_bridge.bridge import ReachyMiniBridge
 from reachy_mini_bridge.config import FaceSettings, MotionSettings
 from reachy_mini_bridge.testing import _daemon, requires_caps
 from reachy_mini_bridge.testing.fixtures import _probe_capabilities
@@ -73,16 +73,16 @@ async def _settled_yaw(
 
 
 @pytest.fixture(scope="module")
-def live_api_custom_faces(
+def live_bridge_custom_faces(
     _live_daemon: tuple[str, int],
-) -> Iterator[tuple[ReachyMiniApi, frozenset[str]]]:
-    """`live_api`'s twin for the `custom` detection path: the same target, daemon and
+) -> Iterator[tuple[ReachyMiniBridge, frozenset[str]]]:
+    """`live_bridge`'s twin for the `custom` detection path: the same target, daemon and
     capability probe, but a config with `faces.detector="custom"` and the shipped
     detector class registered as the custom factory. Its own session, because the
-    detector is config-only and two api sessions on one daemon would be two motion loops
+    detector is config-only and two bridge sessions on one daemon would be two motion loops
     writing the head."""
     host, port = _live_daemon
-    api = ReachyMiniApi(
+    bridge = ReachyMiniBridge(
         ReachyMiniConfig(
             backend=_daemon.backend(),
             robot={
@@ -97,20 +97,20 @@ def live_api_custom_faces(
             motion=MotionSettings(tracking=True),
         )
     )
-    asyncio.run(api.__aenter__())
+    asyncio.run(bridge.start())
     try:
-        caps = _probe_capabilities(api.robot, (host, port))
-        yield api, caps
+        caps = _probe_capabilities(bridge.robot, (host, port))
+        yield bridge, caps
     finally:
-        asyncio.run(api.__aexit__(None, None, None))
+        asyncio.run(bridge.stop())
 
 
 @pytest.fixture
 def face_scene(
-    live_api_custom_faces: tuple[ReachyMiniApi, frozenset[str]],
+    live_bridge_custom_faces: tuple[ReachyMiniBridge, frozenset[str]],
     sim_scene: SimSceneClient,
 ) -> Iterator[SimSceneClient]:
-    requires_caps(live_api_custom_faces, "camera", "faces")
+    requires_caps(live_bridge_custom_faces, "camera", "faces")
     sim_scene.place(FACE, DEFAULT_FACE_POS)
     sim_scene.hide(FACE)
     yield sim_scene
@@ -119,32 +119,32 @@ def face_scene(
 
 
 def test_custom_detector_converges_on_the_face(
-    live_api_custom_faces: tuple[ReachyMiniApi, frozenset[str]],
+    live_bridge_custom_faces: tuple[ReachyMiniBridge, frozenset[str]],
     face_scene: SimSceneClient,
 ) -> None:
-    """With the shipped detector class registered as the custom detector, `api.faces`
+    """With the shipped detector class registered as the custom detector, `bridge.faces`
     reports from the `custom` path at the feed's rate and the head turns onto the
     portrait ahead and then onto it moved sideways, settling at the yaw its position
     implies with the face at the image centre."""
-    api, _caps = live_api_custom_faces
-    robot: Any = api.robot
+    bridge, _caps = live_bridge_custom_faces
+    robot: Any = bridge.robot
     x, _y, z = DEFAULT_FACE_POS
 
     async def scenario() -> tuple[float, float, Any, float, str | None]:
-        await api.set_motors_state("enabled")
-        await api.stop_head_tracking()
-        await api.start_head_tracking()
+        await bridge.set_motors_state("enabled")
+        await bridge.stop_head_tracking()
+        await bridge.start_head_tracking()
         face_scene.show(FACE)
         ahead = await _settled_yaw(robot)
         face_scene.place(FACE, (x, LATERAL_M, z), duration=1.0)
         aside = await _settled_yaw(robot)
-        report = api.faces.value
+        report = bridge.faces.value
         seen = {report.ts}
         deadline = time.monotonic() + 2.0
         while time.monotonic() < deadline:
-            seen.add(api.faces.value.ts)
+            seen.add(bridge.faces.value.ts)
             await asyncio.sleep(0.01)
-        return ahead, aside, report, (len(seen) - 1) / 2.0, api.attention
+        return ahead, aside, report, (len(seen) - 1) / 2.0, bridge.attention
 
     ahead, aside, report, rate, attention = asyncio.run(scenario())
     print(

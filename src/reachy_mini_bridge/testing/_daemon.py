@@ -46,7 +46,7 @@ def backend() -> str:
 
     `real` → `"real"`, anything else (the default `sim`) → `"sim"`. The fixture connects
     as a plain network client to the daemon this module manages (`daemon.spawn` stays
-    `"never"` on the api side), so both backends build the identical client here; passing
+    `"never"` on the bridge side), so both backends build the identical client here; passing
     the target's real backend keeps the label honest and exercises the bridge's `sim`
     construction path.
     """

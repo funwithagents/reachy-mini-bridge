@@ -2,7 +2,7 @@
 
 **Status:** Done
 
-Implements `specs/core/api.md` ("Constructed from a config") and `specs/audio/audio.md` ("`tts-engine` is the default adapter"): a configured `tts` block whose synthesizer cannot be built (typically its `api_key_env` unset) no longer fails `ReachyMiniApi` construction — the api comes up with **no voice**, exposes the cause as `synthesizer_error`, and `say` raises a `BridgeError` chained to it. Motivated by the host application `reachy-mini-interaction-wica`, whose "an unset TTS key degrades only `say`" contract currently forces it to build the adapter itself instead of using the config path; after this plan any host can use `reachy.tts` directly and still keep the robot up. Deliberately leaves out lazy (first-`say`) construction, retry/reload of the voice, and any change to the `tts` extra's missing-install error.
+Implements `specs/core/bridge.md` ("Constructed from a config") and `specs/audio/audio.md` ("`tts-engine` is the default adapter"): a configured `tts` block whose synthesizer cannot be built (typically its `api_key_env` unset) no longer fails `ReachyMiniApi` construction — the api comes up with **no voice**, exposes the cause as `synthesizer_error`, and `say` raises a `BridgeError` chained to it. Motivated by the host application `reachy-mini-interaction-wica`, whose "an unset TTS key degrades only `say`" contract currently forces it to build the adapter itself instead of using the config path; after this plan any host can use `reachy.tts` directly and still keep the robot up. Deliberately leaves out lazy (first-`say`) construction, retry/reload of the voice, and any change to the `tts` extra's missing-install error.
 
 ## Design decisions (settled with the user)
 
@@ -14,7 +14,7 @@ Implements `specs/core/api.md` ("Constructed from a config") and `specs/audio/au
 
 ## Scope
 
-- `specs/core/api.md` — "Constructed from a config": after "The explicit `synthesizer=` keyword wins over the config's `tts` block, which is then not consumed", state the degrade rule (adapter build failure other than the missing extra ⇒ no voice, `synthesizer_error` carries the cause, `say` raises `BridgeError` chained to it; the missing extra stays `ConfigError`). Status `Implemented → Updated`, back to `Implemented` on completion.
+- `specs/core/bridge.md` — "Constructed from a config": after "The explicit `synthesizer=` keyword wins over the config's `tts` block, which is then not consumed", state the degrade rule (adapter build failure other than the missing extra ⇒ no voice, `synthesizer_error` carries the cause, `say` raises `BridgeError` chained to it; the missing extra stays `ConfigError`). Status `Implemented → Updated`, back to `Implemented` on completion.
 - `specs/audio/audio.md` — "`tts-engine` is the default adapter" bullet: the same rule from the adapter's side (its constructor resolving `api_key_env` is the usual failure). Status `Implemented → Updated → Implemented`.
 - `specs/core/config.md` — the `tts` block's "extra must be installed" bullet gains one sentence pointing at api.md for the degrade rule. Editorial for `config.py` (which does not change), so its status stays `Implemented`.
 - `specs/_index.md` — keep the two `Updated` rows in sync.
@@ -25,7 +25,7 @@ Implements `specs/core/api.md` ("Constructed from a config") and `specs/audio/au
 
 ## Steps
 
-1. **Specs first.** Edit `specs/core/api.md`, `specs/audio/audio.md`, `specs/core/config.md` as scoped; set api/audio `**Status:**` to `Updated` and sync [specs/_index.md](../specs/_index.md).
+1. **Specs first.** Edit `specs/core/bridge.md`, `specs/audio/audio.md`, `specs/core/config.md` as scoped; set api/audio `**Status:**` to `Updated` and sync [specs/_index.md](../specs/_index.md).
 2. **Tests first (red), in `tests/test_api.py`** (same `monkeypatch.setattr(api_module, "TTSEngineSynthesizer", …)` seam the neighbouring tests use):
    - `test_tts_block_build_failure_degrades_to_no_voice`: the patched adapter raises `ValueError("environment variable 'X' is unset")`; `ReachyMiniApi(ReachyMiniConfig(backend="fake", tts=block))` constructs; `api.synthesizer_error` is that exception; `async with` on the fake succeeds; `await api.say("hi")` raises `BridgeError` whose message contains `"X"` and whose `__cause__` is the recorded exception; `await api.list_emotions()` still works inside the same session (the robot is up).
    - `test_synthesizer_error_is_none_when_the_voice_builds`: with the adapter patched to a working `_ToneSynth` subclass, `synthesizer_error is None`.

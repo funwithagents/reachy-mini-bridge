@@ -393,14 +393,14 @@ async def _running_custom(
 
     subscriber = asyncio.create_task(subscribe())
     await asyncio.sleep(0)
-    feed.start()
+    await feed.start()
     if start:
         await detection.start()
     try:
         yield loop
     finally:
         await detection.stop()
-        feed.stop()
+        await feed.stop()
         await asyncio.sleep(0)
         subscriber.cancel()
 
@@ -606,14 +606,14 @@ def test_the_shipped_detector_is_resolved_by_name(
         feed = CameraFeed(frame_reader(robot), None)
         faces: Observable[FaceReport] = Observable(FaceReport.inactive("yunet"))
         detection = FaceDetection(detector="yunet", faces=faces, feed=feed)
-        feed.start()
+        await feed.start()
         await detection.start()
         try:
             await _wait_for(lambda: bool(faces.value.faces))
             return faces.value
         finally:
             await detection.stop()
-            feed.stop()
+            await feed.stop()
 
     report = _run(run)
     assert report.source == "yunet" and report.active

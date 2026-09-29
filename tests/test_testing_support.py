@@ -3,7 +3,7 @@
 Deterministic and daemon-free: they exercise the skip gates, the public re-exports, the
 plugin's fixture registration, the target→backend resolution, the per-target daemon
 bring-up decisions (library lifecycle scripted), and the gravity-compensation probe (daemon
-answers scripted) — none of which needs a live daemon. The `live_api` fixture itself (which *does* need a daemon) is exercised by the
+answers scripted) — none of which needs a live daemon. The `live_bridge` fixture itself (which *does* need a daemon) is exercised by the
 e2e tier, not here.
 """
 
@@ -86,11 +86,11 @@ def test_require_env_skips_when_empty(monkeypatch: pytest.MonkeyPatch):
 # --- plugin registers the fixtures (without spawning a daemon) ---
 
 
-def test_live_api_and_daemon_are_module_scoped_fixtures():
+def test_live_bridge_and_daemon_are_module_scoped_fixtures():
     # Importing the plugin module registers the fixtures without touching a daemon.
     # `@pytest.fixture` wraps each in a FixtureFunctionDefinition carrying its marker;
     # assert both are fixtures *and* module-scoped (one daemon per test file, per spec).
-    for fixture in (fixtures.live_api, fixtures._live_daemon, fixtures.sim_scene):
+    for fixture in (fixtures.live_bridge, fixtures._live_daemon, fixtures.sim_scene):
         marker = getattr(fixture, "_fixture_function_marker", None)
         assert marker is not None, f"{fixture!r} is not a pytest fixture"
         assert marker.scope == "module"
@@ -323,7 +323,7 @@ class _SharedPipelineMedia:
 
     def __init__(self, *, yields_samples: bool = True) -> None:
         self.device = "robot"
-        self.running = True  # the api's MediaSession already started it
+        self.running = True  # the bridge's MediaSession already started it
         self.yields_samples = yields_samples
 
     def start_recording(self) -> None:

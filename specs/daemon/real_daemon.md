@@ -17,7 +17,7 @@ Every hardware daemon the bridge starts — a Reachy Mini Lite on this machine's
 
 Upstream's media server (SDK 1.10 and 1.11) finds the robot's camera once, at daemon construction, as its position in GStreamer's device monitor list, and opens it with `avfvideosrc device-index=N`. The order that index reads is AVFoundation's, and it is not stable: measured on a Mac with the robot and the built-in camera attached, consecutive opens of the same index in one process alternated between the two (the measurements are in [../docs/upstream-macos-camera-device-index.md](../../docs/upstream-macos-camera-device-index.md)). Each build of the media pipeline is therefore a draw, and the wrong pick opens the computer's camera under the robot camera's caps (1920×1080@60), which fail to negotiate: the daemon logs `Internal data stream error … GstAVFVideoSrc` / `streaming stopped, reason not-negotiated`, audio keeps working, the IPC socket exists, and no client ever gets a frame — `get_camera_frame()` stays `None` and face tracking is blind. A daemon that "sometimes does not start the camera" is this draw lost.
 
-The launcher corrects it inside the daemon process, so the bridge — the api, the control panel, the e2e tier — sees a hardware daemon whose camera is the robot's. The correction belongs upstream ([../docs/upstream-macos-camera-device-index.md](../../docs/upstream-macos-camera-device-index.md) is the draft); the launcher carries it until it lands there, and it is one removable piece, the same shape as the sim launcher's corrections ([sim_daemon.md](sim_daemon.md)).
+The launcher corrects it inside the daemon process, so the bridge — the bridge, the control panel, the e2e tier — sees a hardware daemon whose camera is the robot's. The correction belongs upstream ([../docs/upstream-macos-camera-device-index.md](../../docs/upstream-macos-camera-device-index.md) is the draft); the launcher carries it until it lands there, and it is one removable piece, the same shape as the sim launcher's corrections ([sim_daemon.md](sim_daemon.md)).
 
 ## Core concepts / Decided
 
@@ -29,7 +29,7 @@ python -m reachy_mini_bridge.real_daemon [--[no-]preload-datasets] [upstream fla
 
 `run_real_daemon(argv=None)` installs the camera check (below), rewrites `sys.argv` to `--[no-]preload-datasets` plus any unrecognised flags forwarded verbatim — `--kinematics-engine Placo`, which [daemon.md](daemon.md)'s launch command adds when `placo` is importable, travels this way — and calls upstream's `main()`. Everything else — serial-port detection, the wake-up on start and the sleep on stop, the FastAPI app, the media server, readiness, shutdown — is upstream's. No `--sim`: the launcher is the hardware recipe.
 
-It runs in the bridge's own interpreter (`<this interpreter> -m reachy_mini_bridge.real_daemon`, [daemon.md](daemon.md) "The launch command"), so unlike the sim recipes it needs no launcher on `PATH`: `reachy_mini` is a base dependency. A daemon started by hand with upstream's `reachy-mini-daemon` has none of this; for manual work, start `python -m reachy_mini_bridge.real_daemon` (or let a `ReachyMiniApi` config with `daemon.spawn` do it) and the bridge borrows it like any other.
+It runs in the bridge's own interpreter (`<this interpreter> -m reachy_mini_bridge.real_daemon`, [daemon.md](daemon.md) "The launch command"), so unlike the sim recipes it needs no launcher on `PATH`: `reachy_mini` is a base dependency. A daemon started by hand with upstream's `reachy-mini-daemon` has none of this; for manual work, start `python -m reachy_mini_bridge.real_daemon` (or let a `ReachyMiniBridge` config with `daemon.spawn` do it) and the bridge borrows it like any other.
 
 ### The camera check
 
@@ -52,7 +52,7 @@ The launcher does not touch readiness, which is the bridge's side of the same fa
 
 - **[daemon.md](daemon.md):** the `real` launch recipe runs this launcher; the readiness probe is side-effect-free for the reason above.
 - **[sim_daemon.md](sim_daemon.md):** the same pattern — a module of ours that patches upstream in-process and calls its `main()` — for the MuJoCo daemon; the two launchers share nothing but the shape, because their corrections do not overlap.
-- **[api.md](../core/api.md):** the camera feed (`api.camera`, [camera.md](../vision/camera.md)) on a real robot depends on the daemon having opened the robot's camera; with the check it does.
+- **[bridge.md](../core/bridge.md):** the camera feed (`bridge.camera`, [camera.md](../vision/camera.md)) on a real robot depends on the daemon having opened the robot's camera; with the check it does.
 
 ## Open questions
 

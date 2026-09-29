@@ -2,7 +2,7 @@
 (specs/examples/control_panel.md "Tests").
 
 Drives `ControlPanelController` from caller threads the way the Gradio app does and
-asserts through the api's escape hatch (`api.robot`, the FakeReachyMini's recorded
+asserts through the bridge's escape hatch (`bridge.robot`, the FakeReachyMini's recorded
 commands). The Gradio layer is only smoke-tested (skipped when gradio is absent).
 """
 
@@ -79,7 +79,7 @@ def _faces_config(scene: _Scene, *, tracking: bool = True) -> ReachyMiniConfig:
 
 
 def _fake(controller: ControlPanelController) -> FakeReachyMini:
-    robot = controller.api.robot
+    robot = controller.bridge.robot
     assert isinstance(robot, FakeReachyMini)
     return robot
 
@@ -123,13 +123,12 @@ def test_start_enters_the_session_and_stop_exits_it() -> None:
 
 
 def test_start_timeout_cancels_the_bring_up(monkeypatch: pytest.MonkeyPatch) -> None:
-    from reachy_mini_bridge import api as api_module
+    from reachy_mini_bridge import bridge as bridge_module
 
-    async def slow_enter(self: object) -> object:
+    async def slow_start(self: object) -> None:
         await asyncio.sleep(10)
-        return self
 
-    monkeypatch.setattr(api_module.MediaSession, "__aenter__", slow_enter)
+    monkeypatch.setattr(bridge_module.MediaSession, "start", slow_start)
     controller = ControlPanelController("fake")
     t0 = time.monotonic()
     with pytest.raises(TimeoutError):
@@ -138,7 +137,7 @@ def test_start_timeout_cancels_the_bring_up(monkeypatch: pytest.MonkeyPatch) -> 
     assert not controller.running
     # The bring-up unwound: the robot connection it had opened is closed again.
     with pytest.raises(BridgeError):
-        _ = controller.api.robot
+        _ = controller.bridge.robot
 
 
 # --- instant verbs --------------------------------------------------------------------
@@ -192,11 +191,11 @@ def test_snapshot_reflects_the_modes_and_the_camera_is_rgb() -> None:
         scene.show(0.2, 0.0)
         _wait_until(lambda: controller.snapshot().attention == "engaged")
         scene.hide()
-        assert controller.api.tracking_focus is True
+        assert controller.bridge.tracking_focus is True
 
         controller.set_head_tracking(False, focus=True)  # the Tracking box unticked
         state = controller.snapshot()
-        assert controller.api.tracking_focus is False
+        assert controller.bridge.tracking_focus is False
         assert state.tracking is False
         assert state.attention is None
 
@@ -398,3 +397,11 @@ def test_draw_faces_outlines_each_face_where_it_is() -> None:
     assert green[8, 191:200].all()
     # nothing far from either face
     assert not green[90, 20:60].any()
+
+
+def test_stop_stops_the_bridge() -> None:
+    controller = ControlPanelController("fake")
+    controller.start(timeout=5)
+    assert controller.bridge.running
+    controller.stop()
+    assert not controller.bridge.running

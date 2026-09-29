@@ -1,7 +1,7 @@
 """Functional tests for ReachyMiniConfig (specs/core/config.md).
 
 Builds configs the way a caller would — from dicts, JSON strings, and files — and pins
-the validation rules and the derived views the api consumes. Imports `reachy_mini` only
+the validation rules and the derived views the bridge consumes. Imports `reachy_mini` only
 through the `robot` key check (no daemon).
 """
 

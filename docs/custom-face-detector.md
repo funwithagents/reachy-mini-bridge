@@ -1,7 +1,7 @@
 # Your own face detector — `faces.detector: "custom"`
 
 How to run a face detector of your own inside the bridge: the head follows the faces it
-finds and `api.faces` reports them, exactly as with the shipped detector. Design:
+finds and `bridge.faces` reports them, exactly as with the shipped detector. Design:
 [specs/vision/user_perception.md](../specs/vision/user_perception.md) "Custom detectors".
 
 You need this only when the shipped detector is not what you want. `"faces": {"detector":
@@ -65,9 +65,9 @@ What the bridge asks of `detect`:
   copy before drawing on it.
 - Return faces in any order and **unsmoothed**: frames come from different head poses,
   and the tracker smooths the aim in the world, not the pixels.
-- Never touch the robot or the api from a detector. Its dependencies are its own.
+- Never touch the robot or the bridge from a detector. Its dependencies are its own.
 - A detector that raises is one skipped frame; one that raises on every frame flips
-  `api.faces.value.active` to `False` after a few seconds, and back once it works.
+  `bridge.faces.value.active` to `False` after a few seconds, and back once it works.
 
 ## 2. Register it
 
@@ -76,18 +76,18 @@ zero-argument callable returning a fresh detector (a class is one) — so a dete
 per-run state and every restart gets a clean one:
 
 ```python
-from reachy_mini_bridge import ReachyMiniApi, ReachyMiniConfig
+from reachy_mini_bridge import ReachyMiniBridge, ReachyMiniConfig
 
 config = ReachyMiniConfig.from_json_file("robot.json")
 # robot.json: "faces": {"detector": "custom", "detection": true}, "motion": {"tracking": true}
 config.faces.face_detector = MyDetector  # Python only: a JSON file cannot carry code
 
-async with ReachyMiniApi(config) as api:
-    await api.set_motors_state("enabled")
-    ...  # the head follows whoever it sees; api.faces reports every face, the target first
+async with ReachyMiniBridge(config) as bridge:
+    await bridge.set_motors_state("enabled")
+    ...  # the head follows whoever it sees; bridge.faces reports every face, the target first
 ```
 
-Or at run time, `await api.set_face_detector(MyDetector)`; registering another factory
+Or at run time, `await bridge.set_face_detector(MyDetector)`; registering another factory
 while the session runs swaps the detector between two frames. The factory is checked when
 registered — not callable, raising, or returning something without a callable `detect` is
 a `ValueError`, and the registered one stays — and session entry refuses `"custom"` with
@@ -97,9 +97,9 @@ that fails fails session entry with a `BridgeError` naming the cause.
 
 ## 3. What happens to your faces
 
-The bridge runs the detector on each new frame of `api.camera`, picks the **target** among
+The bridge runs the detector on each new frame of `bridge.camera`, picks the **target** among
 the faces it returns (the largest above a minimum size, then the nearest to the previous
-target, dropped after a run of misses), and publishes a `FaceReport` on `api.faces`: every
+target, dropped after a run of misses), and publishes a `FaceReport` on `bridge.faces`: every
 face in normalised image coordinates, the target first, with the frame's time and — when
 the feed knows it — the head pose the frame was taken from, so the tracker aims each face
 against the pose it was actually seen from. `source` reads `"custom"`. The report's fields
@@ -117,12 +117,12 @@ REACHY_MINI_E2E_SIM_VIEWER=1 uv run pytest tests-e2e -rs -k custom
 ## Sharing the detector with a vision graph
 
 The same detector object also runs in a vision graph you build over the camera feed,
-beside other perception. `api.camera` has the shape a latest-value vision runtime
+beside other perception. `bridge.camera` has the shape a latest-value vision runtime
 samples — `latest()` returning items with `frame_id`, `ts` and `image` — so a stage plugs
 onto it directly, with no adapter and no second reader of the camera:
 
 ```python
-hands = HandStage(api.camera, target_fps=30)   # any latest-value graph with that shape
+hands = HandStage(bridge.camera, target_fps=30)   # any latest-value graph with that shape
 ```
 
 When the graph runs its own face detector, register a thin detector that returns the

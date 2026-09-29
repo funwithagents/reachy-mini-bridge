@@ -12,6 +12,7 @@ the ``custom`` detection source, a display, a vision graph plugged on by shape.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
@@ -98,9 +99,10 @@ def frame_reader(robot: AnyReachyMini) -> FrameReader:
 class CameraFeed:
     """The one reader of the robot's camera (specs/vision/camera.md "The feed"): ``start()``
     spawns the reader thread, ``latest()`` is the newest frame from any thread,
-    ``stop()`` joins the thread and resets ``latest()`` to ``None``.
+    ``stop()`` joins the thread and resets ``latest()`` to ``None`` — the async
+    ``start()`` / ``stop()`` pair every session of the bridge has, the bridge's to call.
 
-    Built unbound by the api (``api.camera`` exists from construction) and bound to the
+    Built unbound by the bridge (``bridge.camera`` exists from construction) and bound to the
     session's robot and motion session at entry through :meth:`bind`; a test binds at
     construction. ``frame_id`` counts on across ``start()`` / ``stop()``.
     """
@@ -139,7 +141,7 @@ class CameraFeed:
         with self._lock:
             return self._latest
 
-    def start(self) -> None:
+    async def start(self) -> None:
         """Start the reader thread. A no-op while it runs; ``BridgeError`` unbound."""
         if self._thread is not None:
             return
@@ -151,13 +153,14 @@ class CameraFeed:
         )
         self._thread.start()
 
-    def stop(self) -> None:
-        """Stop the reader thread (blocking: joins it) and reset ``latest()`` to
-        ``None``, so nobody keeps reading a frame from a camera that is gone."""
+    async def stop(self) -> None:
+        """Stop the reader thread (joined off the event loop) and reset ``latest()`` to
+        ``None``, so nobody keeps reading a frame from a camera that is gone. A no-op
+        on a feed that is not running."""
         thread = self._thread
         if thread is not None:
             self._stop.set()
-            thread.join()
+            await asyncio.to_thread(thread.join)
             self._thread = None
         with self._lock:
             self._latest = None

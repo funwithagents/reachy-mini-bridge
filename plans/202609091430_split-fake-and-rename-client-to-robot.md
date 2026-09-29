@@ -14,7 +14,7 @@ Implements the module-layout section of [specs/core/robot.md](../specs/core/robo
 - `tests/test_audio.py`, `tests/test_api.py` — import `FakeReachyMini` from `.fake`.
 - `tests-e2e/test_robot.py` (renamed from `test_client.py`), `tests-e2e/conftest.py` — import from `.robot`.
 - `specs/core/robot.md` — **renamed** from `client.md`; title, frontmatter (`code:` = `robot.py` + `fake_reachy_mini.py`; `tests:` = `test_robot.py` + `test_fake_reachy_mini.py`), and a "Module layout" section.
-- `specs/_index.md`, `specs/_overview.md`, `specs/core/api.md`, `specs/audio/audio.md`, `specs/project.md`, `specs/testing/testing.md`, `docs/reachy-mini-api.md`, `docs/running-the-sim-daemon.md`, `AGENTS.md` — link/name references retargeted.
+- `specs/_index.md`, `specs/_overview.md`, `specs/core/bridge.md`, `specs/audio/audio.md`, `specs/project.md`, `specs/testing/testing.md`, `docs/reachy-mini-api.md`, `docs/running-the-sim-daemon.md`, `AGENTS.md` — link/name references retargeted.
 
 ## Steps
 

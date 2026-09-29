@@ -1,12 +1,12 @@
-"""The control panel's gradio-free core: one `ReachyMiniApi` session on a background
+"""The control panel's gradio-free core: one `ReachyMiniBridge` session on a background
 event loop, exposed to synchronous callers (specs/examples/control_panel.md "The controller").
 
-Gradio runs its handlers in worker threads, so the api — async-native, one session
+Gradio runs its handlers in worker threads, so the bridge — async-native, one session
 that must outlive every request — lives on a thread of its own with its own asyncio
 loop. Instant verbs submit a coroutine there and wait; the two spanning verbs (`say`,
 `play_emotion`) block for their whole effect and can be stopped from any other thread
 through `stop_saying()` / `stop_emotion()`, which cancel the task on the loop and wait
-until the verb has returned — the api stops the effect before re-raising its
+until the verb has returned — the bridge stops the effect before re-raising its
 `CancelledError`, so "returned" means "silent" / "no longer commanded".
 """
 
@@ -29,7 +29,7 @@ import numpy.typing as npt
 
 from reachy_mini_bridge import (
     BridgeError,
-    ReachyMiniApi,
+    ReachyMiniBridge,
     ReachyMiniConfig,
     SpeechSynthesizer,
 )
@@ -44,7 +44,7 @@ _SLOTS: tuple[Slot, ...] = ("say", "emotion")
 MIC_LEVEL_DECAY = 0.97
 # How long a stop waits for the cancelled verbs to return before giving up on them.
 STOP_TIMEOUT_S = 5.0
-# The face meter: how often it samples `api.faces.value`, and the window its rate of new
+# The face meter: how often it samples `bridge.faces.value`, and the window its rate of new
 # observations is averaged over.
 FACE_METER_HZ = 50.0
 FACE_RATE_WINDOW_S = 2.0
@@ -88,7 +88,7 @@ class _InFlight:
 
 
 class ControlPanelController:
-    """Owns one ``ReachyMiniApi`` session on a background loop; a sync facade over it.
+    """Owns one ``ReachyMiniBridge`` session on a background loop; a sync facade over it.
 
     ``start()`` brings the session up (blocking until it is entered, or re-raising
     what bring-up raised); ``stop()`` stops every in-flight verb, exits the session in
@@ -101,9 +101,9 @@ class ControlPanelController:
         *,
         synthesizer: SpeechSynthesizer | None = None,
     ) -> None:
-        self._api = ReachyMiniApi(config, synthesizer=synthesizer)
+        self._bridge = ReachyMiniBridge(config, synthesizer=synthesizer)
         self._has_synthesizer = (
-            synthesizer is not None or self._api.config.tts is not None
+            synthesizer is not None or self._bridge.config.tts is not None
         )
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -120,9 +120,9 @@ class ControlPanelController:
     # --- lifecycle -----------------------------------------------------------------
 
     @property
-    def api(self) -> ReachyMiniApi:
-        """The api this controller drives (its config is readable at any time)."""
-        return self._api
+    def bridge(self) -> ReachyMiniBridge:
+        """The bridge this controller drives (its config is readable at any time)."""
+        return self._bridge
 
     @property
     def running(self) -> bool:
@@ -140,14 +140,14 @@ class ControlPanelController:
         """Bring the session up; returns once entered, re-raises what bring-up raised.
 
         ``timeout`` (seconds) bounds the wait: on expiry the bring-up is cancelled, the
-        api unwinds what it had started, and ``TimeoutError`` is raised.
+        bridge unwinds what it had started, and ``TimeoutError`` is raised.
         """
         if self._thread is not None:
             raise BridgeError("the controller is already started")
         self._ready = cf.Future()
         self._loop_ready.clear()
         self._thread = threading.Thread(
-            target=self._run, name="control-panel-api", daemon=True
+            target=self._run, name="control-panel-bridge", daemon=True
         )
         self._thread.start()
         try:
@@ -174,7 +174,7 @@ class ControlPanelController:
             self._stop_slot(slot)
         ready = self._ready
         if ready is not None and not ready.done():
-            # Still in bring-up: cancel it (specs/core/api.md "Bring-up is cancellable").
+            # Still in bring-up: cancel it (specs/core/bridge.md "Bring-up is cancellable").
             loop.call_soon_threadsafe(task.cancel)
         else:
             loop.call_soon_threadsafe(stop_event.set)
@@ -205,15 +205,17 @@ class ControlPanelController:
         self._stop_event = asyncio.Event()
         self._loop_ready.set()
         try:
-            async with self._api as api:
+            bridge = self._bridge
+            await bridge.start()
+            try:
                 try:
-                    self._emotions = await api.list_emotions()
+                    self._emotions = await bridge.list_emotions()
                 except Exception as exc:  # noqa: BLE001 - the panel works without the list
                     _logger.warning("could not list the emotions library: %s", exc)
                     self._emotions = []
                 meters = [
-                    asyncio.create_task(self._mic_meter(api)),
-                    asyncio.create_task(self._face_meter(api)),
+                    asyncio.create_task(self._mic_meter(bridge)),
+                    asyncio.create_task(self._face_meter(bridge)),
                 ]
                 ready.set_result(None)
                 try:
@@ -224,6 +226,8 @@ class ControlPanelController:
                     for meter in meters:
                         with suppress(BaseException):
                             await meter
+            finally:
+                await bridge.stop()
         except BaseException as exc:
             if not ready.done():
                 ready.set_exception(exc)
@@ -233,11 +237,11 @@ class ControlPanelController:
             self._mic_level = 0.0
             self._face_rate = None
 
-    async def _mic_meter(self, api: ReachyMiniApi) -> None:
+    async def _mic_meter(self, bridge: ReachyMiniBridge) -> None:
         """Keep :attr:`mic_level` from the echo-cancelled mic (specs/examples/control_panel.md)."""
         try:
-            rate = api.mic_sample_rate
-            async for chunk in api.audio_input():
+            rate = bridge.mic_sample_rate
+            async for chunk in bridge.audio_input():
                 pcm = np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32768.0
                 rms = float(np.sqrt(np.mean(np.square(pcm)))) if pcm.size else 0.0
                 self._mic_level = max(rms, self._mic_level * MIC_LEVEL_DECAY)
@@ -250,13 +254,13 @@ class ControlPanelController:
             _logger.warning("the mic meter stopped: %s", exc)
             self._mic_level = 0.0
 
-    async def _face_meter(self, api: ReachyMiniApi) -> None:
+    async def _face_meter(self, bridge: ReachyMiniBridge) -> None:
         """Keep :attr:`face_rate` — new face observations per second, from the report's
         timestamps (specs/examples/control_panel.md "The face meter")."""
         arrivals: deque[float] = deque()
         last_ts: float | None = None
         while True:
-            report = api.faces.value
+            report = bridge.faces.value
             now = time.monotonic()
             if not report.active:
                 arrivals.clear()
@@ -303,7 +307,7 @@ class ControlPanelController:
                 await coro
                 return True
             except asyncio.CancelledError:
-                # The verb has already stopped its effect (specs/core/api.md "Cancellation");
+                # The verb has already stopped its effect (specs/core/bridge.md "Cancellation");
                 # report the stop instead of propagating it to the caller thread.
                 return False
 
@@ -332,7 +336,7 @@ class ControlPanelController:
             elif entry.future is not None:
                 entry.future.cancel()
         # A verb's future completes once its guarded coroutine has returned — i.e. once
-        # the api has stopped the effect — so waiting on it is the silence guarantee.
+        # the bridge has stopped the effect — so waiting on it is the silence guarantee.
         futures = [entry.future for entry in entries if entry.future is not None]
         _, pending = cf.wait(futures, timeout=STOP_TIMEOUT_S)
         if pending:
@@ -363,33 +367,33 @@ class ControlPanelController:
         return self._mic_level
 
     def _voice(self) -> str:
-        api = self._api
-        if api.synthesizer_error is not None:
-            return f"unavailable: {api.synthesizer_error}"
+        bridge = self._bridge
+        if bridge.synthesizer_error is not None:
+            return f"unavailable: {bridge.synthesizer_error}"
         return "ready" if self._has_synthesizer else "none"
 
     def snapshot(self) -> PanelState:
         """Read everything the panel shows (one ``get_motors_state`` round trip)."""
-        api = self._api
+        bridge = self._bridge
         try:
             motors = self.get_motors_state()
         except Exception as exc:  # noqa: BLE001 - shown as text, never a crash
             motors = f"unknown ({exc})"
         try:
-            rate: int | None = api.mic_sample_rate
+            rate: int | None = bridge.mic_sample_rate
         except BridgeError:
             rate = None
-        report = api.faces.value
+        report = bridge.faces.value
         positions = [(f.x, f.y) for f in report.faces] if report.active else []
         return PanelState(
-            backend=api.config.backend,
+            backend=bridge.config.backend,
             motors=motors,
-            presence=api.presence,
-            idle=api.idle,
-            wobbling=api.wobbling,
-            tracking=api.tracking,
-            attention=api.attention,
-            face_detection=api.face_detection,
+            presence=bridge.presence,
+            idle=bridge.idle,
+            wobbling=bridge.wobbling,
+            tracking=bridge.tracking,
+            attention=bridge.attention,
+            face_detection=bridge.face_detection,
             faces=len(report.faces) if report.active else -1,
             face_positions=positions,
             face_rate=self._face_rate if report.active else None,
@@ -403,41 +407,41 @@ class ControlPanelController:
     @property
     def face_rate(self) -> float | None:
         """New face observations per second, ``None`` while no detector is looking."""
-        return self._face_rate if self._api.faces.value.active else None
+        return self._face_rate if self._bridge.faces.value.active else None
 
     def face_positions(self) -> list[tuple[float, float]]:
         """The reported faces' normalised ``(x, y)`` right now (no robot round trip)."""
-        report = self._api.faces.value
+        report = self._bridge.faces.value
         return [(f.x, f.y) for f in report.faces] if report.active else []
 
     def face_rolls(self) -> list[float | None]:
         """The reported faces' roll in radians (``None`` when unknown), in the order of
         :meth:`face_positions`."""
-        report = self._api.faces.value
+        report = self._bridge.faces.value
         return [f.roll for f in report.faces] if report.active else []
 
     def camera_frame_rgb(self) -> npt.NDArray[np.uint8] | None:
         """The camera feed's newest frame as RGB, or ``None`` while there is none.
 
-        ``api.camera.latest()`` is a thread-safe sample, so no round trip to the loop;
+        ``bridge.camera.latest()`` is a thread-safe sample, so no round trip to the loop;
         the feed's image is shared and read-only, so the flip to RGB is into a copy.
         """
-        frame = self._api.camera.latest()
+        frame = self._bridge.camera.latest()
         return None if frame is None else np.ascontiguousarray(frame.image[:, :, ::-1])
 
     # --- instant verbs ------------------------------------------------------------
 
     def get_motors_state(self) -> str:
-        return self._call(self._api.get_motors_state())
+        return self._call(self._bridge.get_motors_state())
 
     def set_motors_state(self, state: str) -> None:
-        self._call(self._api.set_motors_state(state))
+        self._call(self._bridge.set_motors_state(state))
 
     def play_sound(self, sound_file: str) -> None:
-        self._call(self._api.play_sound(sound_file))
+        self._call(self._bridge.play_sound(sound_file))
 
     def start_head_tracking(self, focus: bool = False) -> None:
-        self._call(self._api.start_head_tracking(focus=focus))
+        self._call(self._bridge.start_head_tracking(focus=focus))
 
     def set_head_tracking(self, enabled: bool, focus: bool = False) -> None:
         """The Gaze checkboxes: tracking on (with or without focus) or off."""
@@ -447,19 +451,19 @@ class ControlPanelController:
             self.stop_head_tracking()
 
     def stop_head_tracking(self) -> None:
-        self._call(self._api.stop_head_tracking())
+        self._call(self._bridge.stop_head_tracking())
 
     def set_wobbling(self, enabled: bool) -> None:
-        self._call(self._api.set_wobbling(enabled))
+        self._call(self._bridge.set_wobbling(enabled))
 
     def set_presence(self, enabled: bool) -> None:
-        self._call(self._api.set_presence(enabled))
+        self._call(self._bridge.set_presence(enabled))
 
     def set_idle(self, mode: str) -> None:
-        self._call(self._api.set_idle(mode))
+        self._call(self._bridge.set_idle(mode))
 
     def set_face_detection(self, enabled: bool) -> None:
-        self._call(self._api.set_face_detection(enabled))
+        self._call(self._bridge.set_face_detection(enabled))
 
     # --- spanning verbs ---------------------------------------------------------------
 
@@ -470,7 +474,7 @@ class ControlPanelController:
         would interleave.
         """
         self.stop_saying()
-        return self._run_spanning("say", self._api.say(text))
+        return self._run_spanning("say", self._bridge.say(text))
 
     def stop_saying(self) -> int:
         """Stop the `say` in flight, waiting until the speaker is flushed; how many stopped."""
@@ -479,9 +483,9 @@ class ControlPanelController:
     def play_emotion(self, name: str) -> bool:
         """Play an emotion and block until its trajectory has played; ``False`` if stopped.
 
-        Not pre-empting: the api queues emotions FIFO, so a second call waits its turn.
+        Not pre-empting: the bridge queues emotions FIFO, so a second call waits its turn.
         """
-        return self._run_spanning("emotion", self._api.play_emotion(name))
+        return self._run_spanning("emotion", self._bridge.play_emotion(name))
 
     def stop_emotion(self) -> int:
         """Stop the playing emotion and every queued one; how many stopped."""
@@ -496,7 +500,7 @@ def draw_faces(
     """A copy of the RGB ``frame`` with a square outline on each face.
 
     ``positions`` are normalised image coordinates (``[-1, 1]``, x right, y down), as
-    ``api.faces`` reports them; the first — the target face — is drawn thicker.
+    ``bridge.faces`` reports them; the first — the target face — is drawn thicker.
     ``rolls`` (radians, per face, ``None`` when unknown) tilt each square with the
     face's eye line, in the frame's own coordinates.
     """

@@ -2,7 +2,7 @@
 
 **Status:** Done
 
-Implements `specs/audio/audio.md` ("One media session, owned here", "Mic in") and `specs/core/api.md` (a new "Lifecycle" bullet): the media session and the api tear down exactly what they started — even when opening or closing fails partway — `say` / `audio_input` refuse to run outside an open session, and the mic tap stops busy-polling when the daemon has no sample ready. Clears the `_open` flag and both "Robustness gaps" items in [specs/_analysis.md](../specs/_analysis.md). Deliberately leaves out `stop_talking` / barge-in (pending an owner decision) and the ignored `apply_audio_config` return value (tracked in the analysis).
+Implements `specs/audio/audio.md` ("One media session, owned here", "Mic in") and `specs/core/bridge.md` (a new "Lifecycle" bullet): the media session and the api tear down exactly what they started — even when opening or closing fails partway — `say` / `audio_input` refuse to run outside an open session, and the mic tap stops busy-polling when the daemon has no sample ready. Clears the `_open` flag and both "Robustness gaps" items in [specs/_analysis.md](../specs/_analysis.md). Deliberately leaves out `stop_talking` / barge-in (pending an owner decision) and the ignored `apply_audio_config` return value (tracked in the analysis).
 
 ## Design decisions (settled with the user)
 
@@ -15,7 +15,7 @@ Implements `specs/audio/audio.md` ("One media session, owned here", "Mic in") an
 ## Scope
 
 - `specs/audio/audio.md` — "One media session, owned here": state the lifecycle guarantees. A failed open unwinds what already started, teardown runs every stop even if one fails, `say` / `audio_input` require an open session and raise `BridgeError` otherwise, a double open raises `BridgeError`, and the getters and `clear_player` work at any time. "Mic in": the tap waits out empty reads with a short poll and ends when the session closes. Use affirmative, current-state wording. Status `Implemented → Updated`, back to `Implemented` on completion.
-- `specs/core/api.md` — the **Lifecycle** bullet in "Core concepts / Decided" already states these guarantees, and [202609141536_config-and-daemon-lifecycle.md](202609141536_config-and-daemon-lifecycle.md) (which runs first) builds the api-level `AsyncExitStack` — daemon → robot → media, robot construction in `__aenter__`, `robot` guarded. Nothing in `api.md` changes here, and its status is untouched. This plan's api work reduces to the tests in step 2 (`tests/test_api.py`), which must inject failures through a patched `build_robot` returning a prepared `FakeReachyMini` rather than through `api.robot` (unavailable before entry); step 4 is already done and is skipped.
+- `specs/core/bridge.md` — the **Lifecycle** bullet in "Core concepts / Decided" already states these guarantees, and [202609141536_config-and-daemon-lifecycle.md](202609141536_config-and-daemon-lifecycle.md) (which runs first) builds the api-level `AsyncExitStack` — daemon → robot → media, robot construction in `__aenter__`, `robot` guarded. Nothing in `api.md` changes here, and its status is untouched. This plan's api work reduces to the tests in step 2 (`tests/test_api.py`), which must inject failures through a patched `build_robot` returning a prepared `FakeReachyMini` rather than through `api.robot` (unavailable before entry); step 4 is already done and is skipped.
 - `specs/_index.md` — keep both rows' Status in sync.
 - `src/reachy_mini_bridge/audio.py` — `AsyncExitStack` lifecycle, `_require_open`, `audio_input` → check + `_tap`, poll sleep, `_MIC_POLL_INTERVAL_S`, import `BridgeError`.
 - `src/reachy_mini_bridge/api.py` — no change expected (the `AsyncExitStack` lifecycle is already there from the config plan); touch only if a media-session guard needs surfacing.
@@ -26,7 +26,7 @@ Implements `specs/audio/audio.md` ("One media session, owned here", "Mic in") an
 
 ## Steps
 
-1. **Specs first.** Edit `specs/audio/audio.md` and `specs/core/api.md` as scoped; set both `**Status:**` to `Updated` and sync [specs/_index.md](../specs/_index.md).
+1. **Specs first.** Edit `specs/audio/audio.md` and `specs/core/bridge.md` as scoped; set both `**Status:**` to `Updated` and sync [specs/_index.md](../specs/_index.md).
 2. **Tests first (red).** Failures are injected by replacing a fake method with a raising function, the same way `test_audio.py` already swaps `get_audio_sample`. In `tests/test_audio.py`:
    - `test_failed_open_unwinds_what_started`: `media.start_playing` raises. `async with MediaSession(robot)` re-raises, the commands show `media.start_recording` followed by `media.stop_recording`, and there is no `media.stop_playing` (playback never started).
    - `test_failed_audio_config_unwinds_both_directions`: `media.audio.apply_audio_config` raises with `audio_config` given. It re-raises, and both `media.stop_recording` and `media.stop_playing` are recorded.
@@ -54,7 +54,7 @@ Implements `specs/audio/audio.md` ("One media session, owned here", "Mic in") an
 4. **`ReachyMiniApi`.** `__aenter__`: build a local `AsyncExitStack`, `stack.enter_context(self._robot)`, `await stack.enter_async_context(self._media)`, store `stack.pop_all()` in `self._exit_stack`. On a failure in between, the local stack unwinds via `async with` / `aclose`. `__aexit__`: take the stack, clear the attribute, then `await stack.aclose()`. `ReachyMiniApi.audio_input` stays a thin delegate, so the session's call-time guard surfaces directly.
 5. **Live check (optional, sim).** Run `uv run pytest tests-e2e/test_api.py` on the headless sim. It confirms the `live_api` fixture, which opens and closes the api across separate `asyncio.run` calls, still works with the stack-based lifecycle.
 6. **Analysis.** Delete from [specs/_analysis.md](../specs/_analysis.md) the `_open` item and both "Robustness gaps" items.
-7. **Statuses.** Once verification passes, flip `specs/audio/audio.md` and `specs/core/api.md` back to `Implemented` (file + `_index.md`), and set this plan to `Done` here and in [_index.md](_index.md). If the front-door plan also has `api.md` at `Updated`, it returns to `Implemented` only once both plans are `Done`.
+7. **Statuses.** Once verification passes, flip `specs/audio/audio.md` and `specs/core/bridge.md` back to `Implemented` (file + `_index.md`), and set this plan to `Done` here and in [_index.md](_index.md). If the front-door plan also has `api.md` at `Updated`, it returns to `Implemented` only once both plans are `Done`.
 
 ## Verification
 

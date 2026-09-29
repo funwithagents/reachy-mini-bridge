@@ -6,7 +6,7 @@ How to bring up a `reachy_mini` daemon — for the e2e tests, or for developing 
 
 The bridge implements these recipes in `reachy_mini_bridge.daemon` (spec:
 [../specs/daemon/daemon.md](../specs/daemon/daemon.md)): a `ReachyMiniConfig` with `"backend": "sim"`
-and `"daemon": {"spawn": "auto"}` makes `ReachyMiniApi` spawn the headless daemon below
+and `"daemon": {"spawn": "auto"}` makes `ReachyMiniBridge` spawn the headless daemon below
 (or the viewer with `"headless": false`), wait for readiness, and stop it on exit — and the
 e2e harness uses the same code. `"backend": "real"` with the same `daemon` block does the
 same for a robot plugged into this machine over USB (see "Real robot" below). The commands
@@ -47,7 +47,7 @@ mjpython -m reachy_mini.daemon.app.main --sim --scene minimal --preload-datasets
 
 From a real Terminal (your GUI session) this opens the window. From a **background/agent/CI** process tree it **segfaults (exit 139)** at window creation — the viewer only opens inside a GUI (Aqua) session.
 
-> **The screen must be unlocked.** Even inside your GUI session, a **locked screen** (or a display asleep) denies the window server a GL context, so the viewer daemon either **hangs** (produces no output → the e2e harness times out) or **segfaults** (`exit -11` in the harness). This is the main source of "flaky" `REACHY_MINI_E2E_SIM_VIEWER=1` runs: unlock the screen and re-run. The headless target has no such requirement — it exercises the same api/audio/motion paths without a display (only the camera needs the viewer's GL context).
+> **The screen must be unlocked.** Even inside your GUI session, a **locked screen** (or a display asleep) denies the window server a GL context, so the viewer daemon either **hangs** (produces no output → the e2e harness times out) or **segfaults** (`exit -11` in the harness). This is the main source of "flaky" `REACHY_MINI_E2E_SIM_VIEWER=1` runs: unlock the screen and re-run. The headless target has no such requirement — it exercises the same bridge/audio/motion paths without a display (only the camera needs the viewer's GL context).
 
 ### The MuJoCo version
 
@@ -116,7 +116,7 @@ with build_robot(
     ...
 ```
 
-(Through the api, these go in the config's `robot` block; when the bridge manages the
+(Through the bridge, these go in the config's `robot` block; when the bridge manages the
 daemon itself it fills `connection_mode="network"`, `host`, `port`, and
 `media_backend="local"` in for you — see [../specs/core/config.md](../specs/core/config.md).)
 

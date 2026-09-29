@@ -2,12 +2,12 @@
 code:
   - src/reachy_mini_bridge/head_tracking.py
   - src/reachy_mini_bridge/motion.py
-  - src/reachy_mini_bridge/api.py
+  - src/reachy_mini_bridge/bridge.py
 tests:
   - tests/test_head_tracking.py
   - tests/test_motion.py
-  - tests/test_api.py
-  - tests-e2e/test_api.py
+  - tests/test_bridge.py
+  - tests-e2e/test_bridge.py
 ---
 
 # Head tracking (`head_tracking.py`)
@@ -26,7 +26,7 @@ Upstream tracks daemon-side, with the client able only to switch it on and off: 
 
 - **In:** the detection loop's per-poll observations — every `FaceReport`, not the debounced count events — through `observe(report)`; the motion loop's history of the head poses the robot reported, through `head_pose_history()` (the times and poses, for the delay estimate to index); the camera model of the active camera (below); the caller's `focus`.
 - **Out:** `motion.set_gaze(aim, focus=…)` — an aim (a 4×4 head pose) or `None` to withdraw it, and whether the head holds exactly on it. The tracker never touches the robot; the loop is the one writer.
-- It runs whenever tracking is on (`motion.tracking` at entry, `start_head_tracking` / `stop_head_tracking` while entered), built once per session by the api.
+- It runs whenever tracking is on (`motion.tracking` at entry, `start_head_tracking` / `stop_head_tracking` while entered), built once per session by the bridge.
 
 ### The aim
 
@@ -45,18 +45,18 @@ Upstream tracks daemon-side, with the client able only to switch it on and off: 
 - **Easing** is the loop's: the tracker publishes a new aim per observation with a face, and the loop eases toward it per tick ([motion.md](motion.md) `GAZE_ALPHA`), so an aim arriving at the detector's rate — 10 a second, upstream's camera-feed cap — never steps the head.
 - **Loss.** When no face has been seen for `TRACKING_LOST_S = 2.0` s (upstream's own lost-face timeout), the tracker withdraws the aim (`None`) and the loop fades the gaze layer out — the head eases back onto the idle move, at or near neutral, and the robot idles in full. The next face publishes an aim again and the layer fades back in. The grace the attention loop used to keep (3 s, longer than the daemon's recentre) has no reason left: there is no daemon recentre to wait out.
 - **Focus.** `start_head_tracking(focus=…)`'s flag, held by the tracker and handed to the loop with every aim. Off (the default), the head is the aim with the idle move's own gaze-time motion composed on top (its `gaze_offsets`, [motion.md](motion.md) "The gaze layer" — breathing keeps its breath and antennas and tones its roaming down; a custom move that defines none is still on the aim). On, the head holds exactly on the aim — the idle move's head motion is left out, its antennas kept, so the robot stares but still looks alive. There is no blend weight: the daemon's tracker blended its aim with the client's target by one, which the bridge's gaze layer has no use for (the aim is always composed in full, faded in and out over `BLEND_S`). `stop_head_tracking()` withdraws the aim.
-- **`attention` is derived**, no longer a loop of its own: `"engaged"` while the tracker holds an aim (a face seen within `TRACKING_LOST_S`), `"watching"` while tracking is on and nobody has been seen for longer, `None` when tracking is off ([api.md](../core/api.md) "Attention / gaze").
+- **`attention` is derived**, no longer a loop of its own: `"engaged"` while the tracker holds an aim (a face seen within `TRACKING_LOST_S`), `"watching"` while tracking is on and nobody has been seen for longer, `None` when tracking is off ([bridge.md](../core/bridge.md) "Attention / gaze").
 
 ### Configuration and verbs
 
-- `motion.tracking` ([config.md](../core/config.md), default `false`) — whether the tracker runs from session entry; `start_head_tracking(focus=False)` / `stop_head_tracking()` / `tracking` / `tracking_focus` while entered ([api.md](../core/api.md)). It lives in the `motion` block because the gaze is a layer of the motion loop.
+- `motion.tracking` ([config.md](../core/config.md), default `false`) — whether the tracker runs from session entry; `start_head_tracking(focus=False)` / `stop_head_tracking()` / `tracking` / `tracking_focus` while entered ([bridge.md](../core/bridge.md)). It lives in the `motion` block because the gaze is a layer of the motion loop.
 - **Tracking implies detection, and needs a detector.** The tracker is a client of the detection loop ([user_perception.md](../vision/user_perception.md) "The detection loop"), which runs while either `faces.detection` or tracking is on; starting tracking starts detection if it is not already running. With no detector configured (`faces.detector` `null`) tracking cannot run: `true` in the config is a `ConfigError`, `start_head_tracking()` a `ValueError`.
-- **A mode, not a move.** Tracking moves the head only through the motion loop, which is paused without motors and emits nothing with presence off, so `start_head_tracking` is a mode switch like `set_presence`: it needs no motors and raises nothing about them ([api.md](../core/api.md) "Motors" — this changes the verb's former contract, which also took a weight).
+- **A mode, not a move.** Tracking moves the head only through the motion loop, which is paused without motors and emits nothing with presence off, so `start_head_tracking` is a mode switch like `set_presence`: it needs no motors and raises nothing about them ([bridge.md](../core/bridge.md) "Motors" — this changes the verb's former contract, which also took a weight).
 - **Detectors are not the tracker's concern.** Which detector produced a report — the shipped YuNet or a developer's ([user_perception.md](../vision/user_perception.md) "Detectors") — the tracker neither knows nor cares: the head is steered from the reports alone. The daemon's own tracking is never armed ([robot.md](../core/robot.md)).
 
 ### Lifecycle
 
-Built by `ReachyMiniApi.__aenter__` together with the detection loop, when `motion.tracking` is on — whether or not motors are enabled. The api constructs the `MotionSession` object before them (construction starts no thread), so the tracker holds the session's `set_gaze` and `head_pose_history` from the outset; the tracker then starts with the detection loop, before the session's `start()` — an aim it hands over meanwhile waits in the session's command queue and takes effect at the first tick ([motion.md](motion.md) "The gaze layer") — and the aim shows the moment the loop is commanding. Stopped with the detection loop right after the motion session on exit ([api.md](../core/api.md) "Lifecycle"). `stop_head_tracking()` stops it mid-session and stops the detection loop too when `face_detection` is off.
+Built by `ReachyMiniBridge.start()` together with the detection loop, when `motion.tracking` is on — whether or not motors are enabled. The bridge constructs the `MotionSession` object before them (construction starts no thread), so the tracker holds the session's `set_gaze` and `head_pose_history` from the outset; the tracker then starts with the detection loop, before the session's `start()` — an aim it hands over meanwhile waits in the session's command queue and takes effect at the first tick ([motion.md](motion.md) "The gaze layer") — and the aim shows the moment the loop is commanding. Stopped with the detection loop right after the motion session on exit ([bridge.md](../core/bridge.md) "Lifecycle"). `stop_head_tracking()` stops it mid-session and stops the detection loop too when `face_detection` is off. The tracker has no `start()` of its own: it runs by being fed the loop's reports, and its `stop()` withdraws the aim.
 
 ### `fake` backend support
 
@@ -66,11 +66,11 @@ Nothing tracker-specific is needed on the fake beyond what perception and motion
 
 - **[user_perception.md](../vision/user_perception.md):** the reports the tracker consumes, every observation; tracking implies detection and needs a detector.
 - **[motion.md](motion.md):** `set_gaze` and `head_pose_history` (the reported head poses and their times); the gaze layer composes, eases and fades what the tracker hands it.
-- **[api.md](../core/api.md):** the tracking verbs and `attention`, re-based on the tracker; the attention loop and `play_emotion`'s daemon-weight dip are gone.
+- **[bridge.md](../core/bridge.md):** the tracking verbs and `attention`, re-based on the tracker; the attention loop and `play_emotion`'s daemon-weight dip are gone.
 - **[config.md](../core/config.md):** `motion.tracking`; `daemon.camera` selects the sim's camera model.
 - **[robot.md](../core/robot.md):** `media.camera.camera_specs` is the one member the tracker reads; the daemon's own tracking is not consumed.
 - **[sim_daemon.md](../daemon/sim_daemon.md):** the launcher carries no tracking geometry; the sim camera's pinhole and the fixed-camera rule for a webcam live here.
-- **[sim_scene.md](../testing/sim_scene.md) / [testing.md](../testing/testing.md):** the viewer-sim attention and gaze tests assert where the head ends up through the api and are the acceptance suite.
+- **[sim_scene.md](../testing/sim_scene.md) / [testing.md](../testing/testing.md):** the viewer-sim attention and gaze tests assert where the head ends up through the bridge and are the acceptance suite.
 
 ## Open questions
 

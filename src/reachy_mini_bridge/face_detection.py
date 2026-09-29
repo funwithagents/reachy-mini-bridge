@@ -4,7 +4,7 @@ observable face report (specs/vision/user_perception.md).
 The loop samples the camera feed ([camera](camera.py)) at ``FACE_POLL_HZ``, hands each
 new frame to its detector — the shipped ``yunet`` ([yunet](yunet.py), upstream's model)
 or a developer's ``custom`` ``FaceDetector`` — selects the target face itself, turns the
-result into a ``FaceReport``, ``update``s the api's ``Observable[FaceReport]`` on every
+result into a ``FaceReport``, ``update``s the bridge's ``Observable[FaceReport]`` on every
 observation and ``set``s it (wakes subscribers) only when the face count changes — a rise
 at once, a drop once it has held for ``FACE_ABSENT_S`` — or when ``active`` flips.
 Detection is opt-in: a config names the detector, and with none nothing runs.
@@ -83,7 +83,7 @@ class Face:
 
 @dataclass(frozen=True)
 class FaceReport:
-    """Who the detection loop sees: the value of ``api.faces``."""
+    """Who the detection loop sees: the value of ``bridge.faces``."""
 
     faces: tuple[Face, ...]  # every face the detector reports; the target face first
     ts: float  # the frame's time (the bridge's monotonic clock, specs/vision/camera.md)
@@ -116,7 +116,7 @@ class FaceDetector(Protocol):
     ``detect`` runs on a worker thread once per new camera frame — the frame is the
     feed's, shared and read-only (copy before drawing) — and returns the faces it sees,
     in any order, within a frame period (a slower call skips frames, never queues them).
-    It never touches the robot or the api; its dependencies are its own.
+    It never touches the robot or the bridge; its dependencies are its own.
     """
 
     def detect(
@@ -132,7 +132,7 @@ def check_face_detector_factory(factory: object) -> None:
     ``ValueError`` unless ``factory`` is a callable whose result has a callable
     ``detect``. Calls the factory once, on the caller's thread."""
     if not callable(factory):
-        # ValueError, not TypeError: the api's one error for bad input (specs/core/api.md)
+        # ValueError, not TypeError: the bridge's one error for bad input (specs/core/bridge.md)
         raise ValueError(  # noqa: TRY004
             "a face detector factory must be a zero-argument callable returning a "
             "FaceDetector (a class with a `detect(frame_bgr, ts)` method is one), got "
@@ -145,7 +145,7 @@ def check_face_detector_factory(factory: object) -> None:
             f"invalid face detector: the factory raised {type(e).__name__}: {e}"
         ) from e
     if not callable(getattr(detector, "detect", None)):
-        raise ValueError(  # noqa: TRY004 - ValueError is the api's error for bad input
+        raise ValueError(  # noqa: TRY004 - ValueError is the bridge's error for bad input
             f"invalid face detector: {type(detector).__name__} has no callable "
             "`detect(frame_bgr, ts)` method"
         )
@@ -390,7 +390,9 @@ class FaceDetection:
         if detector is None:
             factory = self._detector_factory if self._name == "custom" else None
             if factory is None:
-                return None  # cleared while running: the api stops the loop right after
+                return (
+                    None  # cleared while running: the bridge stops the loop right after
+                )
             detector = self._detector = await asyncio.to_thread(factory)
             self._selector = _FaceSelector()
         frame = feed.latest()

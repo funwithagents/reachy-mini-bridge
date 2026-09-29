@@ -7,8 +7,8 @@ run it:
   they're absent, it *skips* cleanly (you only exercise services you hold keys for).
 - `requires_caps(...)` — a test needs a robot capability (`motion`, `audio`, `camera`,
   …); it *skips* when the current target didn't probe that capability. The probed set
-  rides along in the `live_api` fixture value, so a test passes that value in:
-  `requires_caps(live_api, "audio")` — see specs/testing/testing_support.md.
+  rides along in the `live_bridge` fixture value, so a test passes that value in:
+  `requires_caps(live_bridge, "audio")` — see specs/testing/testing_support.md.
 """
 
 import os
@@ -27,7 +27,7 @@ def require_env(name: str) -> str:
 def requires_caps(live: tuple[object, frozenset[str]], *caps: str) -> None:
     """Skip the calling test unless the live target probed every capability in `caps`.
 
-    Pass the `live_api` fixture value (`(api, capabilities)`); the probed set travels in
+    Pass the `live_bridge` fixture value (`(bridge, capabilities)`); the probed set travels in
     it, so no ambient state is needed.
     """
     _obj, available = live
