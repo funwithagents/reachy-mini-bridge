@@ -36,7 +36,7 @@ from . import daemon as _daemon
 from . import robot as _robot
 from .audio import MediaSession, TTSEngineSynthesizer, cancel_safe_step
 from .camera import CameraFeed, frame_reader
-from .config import IDLE_MODES, LOOPBACK_HOSTS, ReachyMiniConfig
+from .config import IDLE_MODES, ReachyMiniConfig
 from .errors import (
     BridgeError,
     GravityCompensationUnsupportedError,
@@ -63,6 +63,14 @@ if TYPE_CHECKING:
 __all__ = ["ReachyMiniApi"]
 
 _logger = logging.getLogger(__name__)
+
+# The refusal of a detection or tracking switch without a detector
+# (specs/user_perception.md "Configuration").
+_NO_DETECTOR_MESSAGE = (
+    "face detection and head tracking need a face detector, but faces.detector is "
+    'null: name one in the config — "yunet" (the shipped detector) or "custom" '
+    "with a registered factory"
+)
 
 # Motor torque states, as the caller-facing single verb takes/returns them.
 _MOTOR_STATES = ("enabled", "disabled", "gravity_compensation")
@@ -301,6 +309,12 @@ class ReachyMiniApi:
         if self._exit_stack is not None:
             raise BridgeError("ReachyMiniApi is already entered")
         cfg = self._config
+        if cfg.faces.detector is None and (
+            self._face_detection_wanted or self._tracking_wanted
+        ):
+            # A config assembled in code can say what `from_dict` refuses
+            # (specs/config.md "Validation rules"); refused here, before anything starts.
+            raise ValueError(_NO_DETECTOR_MESSAGE)
         if cfg.faces.detector == "custom":
             # Checked before anything is entered (specs/user_perception.md "Custom
             # detectors"): a bad or missing detector fails bring-up with nothing to undo.
@@ -369,14 +383,12 @@ class ReachyMiniApi:
                 self._camera_model(robot),
                 history=motion.head_pose_history,
                 set_gaze=motion.set_gaze,
-                same_host=getattr(robot.client, "host", None) in LOOPBACK_HOSTS,
             )
             # The detection loop (specs/user_perception.md "Lifecycle"), feeding the
-            # tracker while tracking is on; in `daemon` mode it arms the daemon's
-            # detector, in `custom` mode it samples the camera feed for the detector.
+            # tracker while tracking is on: the configured detector (the shipped
+            # `yunet`, or the registered custom one) over the camera feed.
             detection = FaceDetection(
-                robot,
-                source=cfg.faces.detector,
+                detector=cfg.faces.detector,
                 faces=self._faces,
                 on_observation=self._on_face_observation,
                 feed=camera,
@@ -386,7 +398,7 @@ class ReachyMiniApi:
             # Exits after the motion session, before wobbling's cleanup.
             stack.push_async_callback(self._stop_detection)
             if self._face_detection_wanted or self._tracking_wanted:
-                await detection.start()
+                await self._start_detection(detection)
             # Entered after wobbling, exits first (specs/motion.md "Lifecycle"): the
             # stack unwinds in reverse, so the loop eases to neutral before wobbling
             # (and everything else) tears down.
@@ -441,11 +453,24 @@ class ReachyMiniApi:
             self._wobbling = False
 
     async def _stop_detection(self) -> None:
-        """Stop the detection loop (disarming the daemon's detector) and publish the
-        inactive report; an exit-stack step."""
+        """Stop the detection loop and publish the inactive report; an exit-stack step."""
         detection = self._detection
         if detection is not None:
             await detection.stop()
+
+    async def _start_detection(self, detection: FaceDetection) -> None:
+        """Start the loop: a detector it cannot run is the caller's ``ValueError``; a
+        detector that cannot be built (a model that fails to load) is a ``BridgeError``
+        chaining the cause (specs/user_perception.md "Building the detector")."""
+        try:
+            await detection.start()
+        except ValueError:
+            raise
+        except Exception as e:
+            raise BridgeError(
+                f"the face detector {self._config.faces.detector!r} could not be built: "
+                f"{type(e).__name__}: {e}"
+            ) from e
 
     def _camera_model(self, robot: AnyReachyMini) -> CameraModel:
         """The tracker's camera (specs/head_tracking.md "The aim"): the bridge's pinhole
@@ -470,7 +495,7 @@ class ReachyMiniApi:
             return
         wanted = self._face_detection_wanted or self._tracking_wanted
         if wanted and not detection.running:
-            await detection.start()
+            await self._start_detection(detection)
         elif not wanted and detection.running:
             await detection.stop()
 
@@ -663,12 +688,20 @@ class ReachyMiniApi:
 
         A mode, not a move: it holds until changed and needs no motors (the motion loop
         is paused without them, so the aim shows once they are enabled). Starts the
-        detection loop if it is not already running.
+        detection loop if it is not already running — so it needs a configured detector
+        (``faces.detector``; ``ValueError`` with none), and a detector that cannot be
+        built raises ``BridgeError`` and leaves tracking off.
         """
         tracker = self._require_tracker()
+        self._require_detector()
+        was_focus, was_wanted = tracker.focus, self._tracking_wanted
         tracker.focus = focus
         self._tracking_wanted = True
-        await self._sync_detection()
+        try:
+            await self._sync_detection()
+        except BaseException:
+            tracker.focus, self._tracking_wanted = was_focus, was_wanted
+            raise
 
     async def stop_head_tracking(self) -> None:
         """Stop the head tracker: the aim is withdrawn and the head eases back onto the
@@ -681,9 +714,9 @@ class ReachyMiniApi:
 
     @property
     def tracking(self) -> bool:
-        """Whether the bridge's tracker is on — its own record. On by default (the
-        config's ``motion.tracking`` flag); outside a session reads the config's value.
-        """
+        """Whether the bridge's tracker is on — its own record, initially the config's
+        ``motion.tracking`` flag (off by default: it needs a detector); outside a
+        session reads the config's value."""
         return self._tracking_wanted
 
     @property
@@ -723,22 +756,36 @@ class ReachyMiniApi:
     async def set_face_detection(self, enabled: bool) -> None:
         """Whether the detection loop runs for the caller's sake.
 
-        A mode needing no motors (nothing moves). The loop also runs whenever head
-        tracking is on, whatever this says; ``faces.value.active`` reports what is
-        actually running. Needs an entered session (:class:`BridgeError` otherwise).
+        A mode needing no motors (nothing moves) but a configured detector
+        (``faces.detector``; enabling with none is a ``ValueError``). The loop also runs
+        whenever head tracking is on, whatever this says; ``faces.value.active`` reports
+        what is actually running. Needs an entered session (:class:`BridgeError`
+        otherwise); a detector that cannot be built raises ``BridgeError`` and leaves
+        the switch as it was.
         """
         if self._detection is None:
             raise BridgeError(
                 "face detection is only available inside `async with ReachyMiniApi(...)`"
             )
+        if enabled:
+            self._require_detector()
+        was_wanted = self._face_detection_wanted
         self._face_detection_wanted = enabled
-        await self._sync_detection()
+        try:
+            await self._sync_detection()
+        except BaseException:
+            self._face_detection_wanted = was_wanted
+            raise
 
     @property
     def face_detection(self) -> bool:
         """The caller's detection switch — the config's ``faces.detection`` outside a
         session."""
         return self._face_detection_wanted
+
+    def _require_detector(self) -> None:
+        if self._config.faces.detector is None:
+            raise ValueError(_NO_DETECTOR_MESSAGE)
 
     @staticmethod
     def _check_face_detector(factory: object) -> None:
@@ -750,15 +797,15 @@ class ReachyMiniApi:
         check_face_detector_factory(factory)
 
     async def set_face_detector(self, factory: FaceDetectorFactory | None) -> None:
-        """Register the custom detector for the ``custom`` detection source
+        """Register the custom detector for ``faces.detector: "custom"``
         (specs/user_perception.md "Custom detectors"): a zero-argument callable
         returning an object with ``detect(frame_bgr, ts) -> Sequence[PixelFace]`` — a
         class is one — or ``None`` to clear it.
 
         Checked before it is stored: ``ValueError`` for a factory that is not callable,
         raises, or builds something without a callable ``detect`` — the registered one
-        then stays. Stored whatever the source is; with the source ``custom`` and the
-        loop running, the loop swaps to the new detector between two polls (clearing it
+        then stays. Stored whatever the detector is; with the detector ``custom`` and
+        the loop running, the loop swaps to the new one between two polls (clearing it
         stops the loop, which the next start will refuse until one is registered).
         """
         if factory is not None:

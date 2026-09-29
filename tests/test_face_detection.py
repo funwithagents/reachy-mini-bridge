@@ -1,9 +1,10 @@
 """Functional tests for the detection loop (specs/user_perception.md) on the fake.
 
 The loop runs unchanged at real time, with its timing shortened: polls at 20 Hz, a
-drop published after 0.15 s. A test drives the scene through the fake's show_face /
-hide_face (the `daemon` source) or a stub detector over the camera feed (the `custom`
-source) and observes the report (`value`) and what a `changes()` subscriber wakes on.
+drop published after 0.15 s. A test drives a stub detector's scene over the fake's camera
+feed — showing, moving and hiding faces — and observes the report (`value`) and what a
+`changes()` subscriber wakes on. The fake has no detector of its own; the shipped one is
+resolved by name and exercised on the stub.
 """
 
 from __future__ import annotations
@@ -15,22 +16,19 @@ import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
-from typing import Any
 
 import numpy as np
 import numpy.typing as npt
 import pytest
 
 from reachy_mini_bridge import face_detection as fd
+from reachy_mini_bridge import fake_reachy_mini as fake_module
 from reachy_mini_bridge.camera import CameraFeed, CameraFrame, frame_reader
 from reachy_mini_bridge.face_detection import (
-    DAEMON_DETECT_WEIGHT,
-    Face,
     FaceDetection,
     FaceReport,
     PixelFace,
     check_face_detector_factory,
-    report_from_daemon,
     report_from_pixels,
 )
 from reachy_mini_bridge.fake_reachy_mini import FAKE_FRAME_HZ, FakeReachyMini
@@ -58,34 +56,6 @@ class _Loop:
         self.observed: list[FaceReport] = []
 
 
-@asynccontextmanager
-async def _running() -> AsyncIterator[_Loop]:
-    robot = FakeReachyMini()
-    faces: Observable[FaceReport] = Observable(FaceReport.inactive("daemon"))
-    loop = _Loop(robot, faces)
-    detection = FaceDetection(
-        robot,
-        source="daemon",
-        faces=faces,
-        on_observation=loop.observed.append,
-    )
-
-    async def subscribe() -> None:
-        async for report in faces.changes():
-            loop.woken.append(report)
-
-    subscriber = asyncio.create_task(subscribe())
-    await asyncio.sleep(0)
-    await detection.start()
-    await asyncio.sleep(2 * POLL_S)  # the first poll has published `active`
-    try:
-        yield loop
-    finally:
-        await detection.stop()
-        await asyncio.sleep(0)
-        subscriber.cancel()
-
-
 def _counts(reports: list[FaceReport]) -> list[int]:
     return [len(r.faces) for r in reports]
 
@@ -97,42 +67,51 @@ def _run[T](coro: Callable[[], Awaitable[T]]) -> T:
     return asyncio.run(main())
 
 
-def test_report_from_daemon_maps_the_payload() -> None:
-    detected = {"detected": True, "x": 0.25, "y": -0.5, "roll": 0.1, "ts": 12.5}
-    assert report_from_daemon(detected, active=True) == FaceReport(
-        faces=(Face(x=0.25, y=-0.5, roll=0.1, size=None),),
-        ts=12.5,
-        source="daemon",
-        active=True,
-    )
-    nobody = {"detected": False, "x": None, "y": None, "roll": None, "ts": None}
-    assert report_from_daemon(nobody, active=True) == FaceReport(
-        (), 0.0, "daemon", True
-    )
+# --- the report and the debounce, driven through a stub detector's scene -----------------
+#
+# The detector runs once per frame, so the scene's changes reach the loop at the fake's
+# frame rate. These tests raise it to 40 fps (a frame every 25 ms) so the 0.15 s absence
+# window spans several frames and a shorter gap still shows in `value`.
+
+FAST_FRAME_HZ = 40.0
 
 
-def test_the_loop_publishes_active_then_a_face_appearing_once() -> None:
+@pytest.fixture
+def fast_frames(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(fake_module, "FAKE_FRAME_HZ", FAST_FRAME_HZ)
+
+
+def test_the_loop_publishes_active_then_a_face_appearing_once(
+    fast_frames: None,
+) -> None:
+    scene = _Scene()
+
     async def run() -> tuple[list[FaceReport], FaceReport]:
-        async with _running() as loop:
-            loop.robot.show_face(0.2, 0.1)
-            await asyncio.sleep(4 * POLL_S)
+        async with _running_custom(scene) as loop:
+            await _wait_for(lambda: loop.faces.value.active)
+            scene.show(0.2, 0.1)
+            await asyncio.sleep(0.2)
             return list(loop.woken), loop.faces.value
 
     woken, value = _run(run)
     assert [(r.active, len(r.faces)) for r in woken] == [(True, 0), (True, 1)]
-    assert value.faces == (Face(x=0.2, y=0.1, roll=None, size=None),)
+    assert value.faces[0].x == pytest.approx(0.2, abs=0.02)
+    assert value.faces[0].y == pytest.approx(0.1, abs=0.03)
+    assert value.source == "custom"
 
 
-def test_a_gap_shorter_than_the_absence_window_wakes_nobody() -> None:
+def test_a_gap_shorter_than_the_absence_window_wakes_nobody(fast_frames: None) -> None:
+    scene = _Scene()
+
     async def run() -> tuple[list[int], list[int]]:
-        async with _running() as loop:
-            loop.robot.show_face()
-            await asyncio.sleep(3 * POLL_S)
+        async with _running_custom(scene) as loop:
+            scene.show()
+            await _wait_for(lambda: bool(loop.faces.value.faces))
             loop.woken.clear()
-            loop.robot.hide_face()
-            await asyncio.sleep(0.08)  # < 0.15 s
+            scene.hide()
+            await asyncio.sleep(0.08)  # < 0.15 s, > two frames at 40 fps
             read_meanwhile = len(loop.faces.value.faces)
-            loop.robot.show_face()
+            scene.show()
             await asyncio.sleep(0.3)
             return [read_meanwhile], _counts(loop.woken)
 
@@ -141,13 +120,17 @@ def test_a_gap_shorter_than_the_absence_window_wakes_nobody() -> None:
     assert woken == []
 
 
-def test_a_face_gone_past_the_window_wakes_once_with_an_empty_report() -> None:
+def test_a_face_gone_past_the_window_wakes_once_with_an_empty_report(
+    fast_frames: None,
+) -> None:
+    scene = _Scene()
+
     async def run() -> list[FaceReport]:
-        async with _running() as loop:
-            loop.robot.show_face()
-            await asyncio.sleep(3 * POLL_S)
+        async with _running_custom(scene) as loop:
+            scene.show()
+            await _wait_for(lambda: bool(loop.faces.value.faces))
             loop.woken.clear()
-            loop.robot.hide_face()
+            scene.hide()
             await asyncio.sleep(0.5)
             return list(loop.woken)
 
@@ -155,88 +138,53 @@ def test_a_face_gone_past_the_window_wakes_once_with_an_empty_report() -> None:
     assert [(r.active, r.faces) for r in woken] == [(True, ())]
 
 
-def test_a_moving_face_updates_the_value_without_waking() -> None:
+def test_a_moving_face_updates_the_value_without_waking(fast_frames: None) -> None:
+    scene = _Scene()
+
     async def run() -> tuple[float, list[int]]:
-        async with _running() as loop:
-            loop.robot.show_face(0.0, 0.0)
-            await asyncio.sleep(3 * POLL_S)
+        async with _running_custom(scene) as loop:
+            scene.show(0.0, 0.0)
+            await _wait_for(lambda: bool(loop.faces.value.faces))
             loop.woken.clear()
-            loop.robot.show_face(0.5, 0.0)
-            await asyncio.sleep(3 * POLL_S)
+            scene.show(0.5, 0.0)
+            await _wait_for(lambda: loop.faces.value.faces[0].x > 0.4)
             return loop.faces.value.faces[0].x, _counts(loop.woken)
 
     x, woken = _run(run)
-    assert x == 0.5
+    assert x == pytest.approx(0.5, abs=0.02)
     assert woken == []
 
 
-def test_stop_publishes_the_inactive_report() -> None:
+def test_stop_publishes_the_inactive_report(fast_frames: None) -> None:
+    scene = _Scene()
+
     async def run() -> tuple[FaceReport, list[FaceReport]]:
-        async with _running() as loop:
-            loop.robot.show_face()
-            await asyncio.sleep(3 * POLL_S)
+        async with _running_custom(scene) as loop:
+            scene.show()
+            await _wait_for(lambda: bool(loop.faces.value.faces))
         await asyncio.sleep(0)
         return loop.faces.value, loop.woken
 
     value, woken = _run(run)
-    assert value == FaceReport.inactive("daemon")
-    assert woken[-1] == FaceReport.inactive("daemon")
+    assert value == FaceReport.inactive("custom")
+    assert woken[-1] == FaceReport.inactive("custom")
 
 
-def test_the_loop_arms_the_daemons_detector_and_disarms_it() -> None:
-    async def run() -> list[tuple[str, dict[str, Any]]]:
-        async with _running() as loop:
-            pass
-        return [c for c in loop.robot.commands if "head_tracking" in c[0]]
+def test_on_observation_sees_every_observation(fast_frames: None) -> None:
+    scene = _Scene()
 
-    assert _run(run) == [
-        ("start_head_tracking", {"weight": DAEMON_DETECT_WEIGHT}),
-        ("stop_head_tracking", {}),
-    ]
-
-
-def test_a_failing_source_reads_inactive_then_active_on_recovery(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(fd, "FACE_SOURCE_DOWN_S", 0.2)
-    real = fd.daemon_face_target
-    failing = {"on": False}
-
-    def flaky(robot: Any) -> dict[str, Any]:
-        if failing["on"]:
-            raise OSError("503 Service Unavailable")
-        return real(robot)
-
-    monkeypatch.setattr(fd, "daemon_face_target", flaky)
-
-    async def run() -> tuple[list[bool], bool]:
-        async with _running() as loop:
-            loop.robot.show_face()
-            await asyncio.sleep(3 * POLL_S)
-            loop.woken.clear()
-            failing["on"] = True
-            await asyncio.sleep(0.4)
-            down = loop.faces.value.active
-            failing["on"] = False
-            await asyncio.sleep(3 * POLL_S)
-            return [r.active for r in loop.woken], down
-
-    woken, down = _run(run)
-    assert down is False
-    assert woken == [False, True]
-
-
-def test_on_observation_sees_every_poll() -> None:
     async def run() -> tuple[int, int]:
-        async with _running() as loop:
+        async with _running_custom(scene) as loop:
+            await _wait_for(lambda: loop.faces.value.active)
+            scene.show()
+            await asyncio.sleep(0.05)
             loop.observed.clear()
-            loop.robot.show_face()
             await asyncio.sleep(0.5)
             return len(loop.observed), sum(1 for r in loop.observed if r.faces)
 
-    polls, with_face = _run(run)
-    assert polls >= 6  # ~10 polls in 0.5 s at 20 Hz
-    assert with_face >= polls - 1
+    observations, with_face = _run(run)
+    assert observations >= 6  # ~10 a second: one per poll at 20 Hz, once per new frame
+    assert with_face == observations
 
 
 # --- custom detectors: the contract and its check ----------------------------------------
@@ -266,9 +214,20 @@ class _Scene:
         self.calls: list[tuple[float, tuple[int, ...]]] = []
         self.raises = False
         self.delay_s = 0.0
+        self.built_on: list[int] = []  # the thread each detector was built on
 
     def factory(self) -> _StubDetector:
+        self.built_on.append(threading.get_ident())
         return _StubDetector(self)
+
+    def show(self, x: float = 0.0, y: float = 0.0) -> None:
+        """One face whose nose sits at the normalised (x, y) of the fake's frame."""
+        u = (x + 1.0) / 2.0 * (WIDTH - 1)
+        v = (y + 1.0) / 2.0 * (HEIGHT - 1)
+        self.faces[:] = [_face(u, v, 10.0, 16.0)]
+
+    def hide(self) -> None:
+        self.faces.clear()
 
 
 def _face(
@@ -419,8 +378,7 @@ async def _running_custom(
     feed = CameraFeed(frame_reader(robot), lambda _t: POSE.copy())
     faces: Observable[FaceReport] = Observable(FaceReport.inactive("custom"))
     detection = FaceDetection(
-        robot,
-        source="custom",
+        detector="custom",
         faces=faces,
         on_observation=None,
         feed=feed,
@@ -476,7 +434,9 @@ def test_the_custom_source_reports_the_detectors_faces_on_the_frame() -> None:
     assert report.head_pose is not None
     assert report.head_pose[1, 3] == 0.25
     assert scene.calls[0][1] == (HEIGHT, WIDTH, 3)
-    assert "start_head_tracking" not in commands  # the daemon's tracking is left alone
+    assert (
+        commands == []
+    )  # nothing is sent to the robot: the daemon's tracking is untouched
 
 
 def test_the_detector_runs_once_per_frame_not_once_per_poll() -> None:
@@ -560,18 +520,105 @@ def test_restart_swaps_the_detector_between_polls() -> None:
     assert stale_calls == 0  # the old detector is never called again
 
 
-def test_the_custom_source_needs_a_feed_and_a_detector() -> None:
+def test_start_refuses_what_it_cannot_run() -> None:
+    """No detector named, `custom` with none registered, no feed, an unknown name: each
+    a ValueError, and nothing started."""
+    scene = _Scene()
+
     async def run() -> None:
         robot = FakeReachyMini()
-        faces: Observable[FaceReport] = Observable(FaceReport.inactive("custom"))
-        with pytest.raises(ValueError, match="needs the camera feed"):
-            await FaceDetection(robot, source="custom", faces=faces).start()
+        faces: Observable[FaceReport] = Observable(FaceReport.inactive(None))
         feed = CameraFeed(frame_reader(robot), None)
+        with pytest.raises(ValueError, match="no face detector is configured"):
+            await FaceDetection(detector=None, faces=faces, feed=feed).start()
         with pytest.raises(ValueError, match="no face detector is registered"):
-            await FaceDetection(robot, source="custom", faces=faces, feed=feed).start()
-        assert robot.commands == []
+            await FaceDetection(detector="custom", faces=faces, feed=feed).start()
+        with pytest.raises(ValueError, match="needs the camera feed"):
+            await FaceDetection(
+                detector="custom", faces=faces, detector_factory=scene.factory
+            ).start()
+        with pytest.raises(ValueError, match="unknown face detector 'daemon'"):
+            await FaceDetection(detector="daemon", faces=faces, feed=feed).start()
+        assert robot.commands == [] and scene.built_on == []
+        assert faces.value == FaceReport.inactive(None)
 
     _run(run)
+
+
+def test_the_detector_is_built_on_a_worker_thread_before_the_loop_runs() -> None:
+    scene = _Scene([_face(30, 24)])
+    running_when_built: list[bool] = []
+
+    async def run() -> tuple[list[int], int]:
+        async with _running_custom(scene, start=False) as loop:
+            detection = loop.detection
+            factory = scene.factory
+
+            def watching_factory() -> _StubDetector:
+                running_when_built.append(detection.running)
+                return factory()
+
+            detection.restart(watching_factory)
+            await detection.start()
+            assert detection.running
+            await _wait_for(lambda: bool(loop.faces.value.faces))
+            return list(scene.built_on), threading.get_ident()
+
+    built_on, main_thread = _run(run)
+    assert len(built_on) == 1 and built_on[0] != main_thread
+    assert running_when_built == [False]
+
+
+def test_a_factory_that_raises_fails_the_start_and_starts_nothing() -> None:
+    def broken() -> _StubDetector:
+        raise OSError("no network: the model could not be downloaded")
+
+    async def run() -> tuple[bool, FaceReport, int]:
+        robot = FakeReachyMini()
+        faces: Observable[FaceReport] = Observable(FaceReport.inactive("custom"))
+        feed = CameraFeed(frame_reader(robot), None)
+        detection = FaceDetection(
+            detector="custom", faces=faces, feed=feed, detector_factory=broken
+        )
+        with pytest.raises(OSError, match="no network"):
+            await detection.start()
+        await asyncio.sleep(0.05)
+        running = detection.running
+        await detection.stop()  # a no-op on a loop that never started
+        return running, faces.value, len(robot.commands)
+
+    running, value, commands = _run(run)
+    assert running is False
+    assert value == FaceReport.inactive("custom")
+    assert commands == 0
+
+
+def test_the_shipped_detector_is_resolved_by_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`yunet` builds the shipped detector through its factory (substituted here: the
+    real one loads upstream's model) and labels its reports."""
+    scene = _Scene([_face(30, 24)])
+    monkeypatch.setattr(fd, "_yunet_factory", scene.factory)
+
+    async def run() -> FaceReport:
+        robot = FakeReachyMini()
+        feed = CameraFeed(frame_reader(robot), None)
+        faces: Observable[FaceReport] = Observable(FaceReport.inactive("yunet"))
+        detection = FaceDetection(detector="yunet", faces=faces, feed=feed)
+        feed.start()
+        await detection.start()
+        try:
+            await _wait_for(lambda: bool(faces.value.faces))
+            return faces.value
+        finally:
+            await detection.stop()
+            feed.stop()
+
+    report = _run(run)
+    assert report.source == "yunet" and report.active
+    assert len(report.faces) == 1 and scene.built_on
+    assert report.faces[0].size == pytest.approx(12 / 48)
 
 
 def test_a_display_sampling_the_feed_costs_the_detector_no_frames() -> None:

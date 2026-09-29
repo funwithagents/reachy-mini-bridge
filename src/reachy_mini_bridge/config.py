@@ -54,7 +54,7 @@ SIM_DISPLAYS = ("camera_overlay",)
 # same three values as a type.
 IDLE_MODES = ("breathing", "hold", "custom")
 # The face detection sources (specs/user_perception.md "Detection sources").
-FACE_DETECTORS = ("daemon", "custom")
+FACE_DETECTORS = ("yunet", "custom")
 
 # Upstream kwargs the bridge owns; each maps to the config field that replaces it.
 _RESERVED_ROBOT_KEYS = {
@@ -320,14 +320,15 @@ class AudioSettings:
 
 @dataclass
 class FaceSettings:
-    """Face detection (specs/user_perception.md): where the faces come from and whether
-    the detection loop runs from session entry."""
+    """Face detection (specs/user_perception.md): which detector finds the faces and
+    whether the detection loop runs from session entry. Opt-in: with no detector named,
+    nothing is detected and nothing tracks."""
 
-    # The detection source: "daemon" (the daemon's own detector, over its HTTP API) or
-    # "custom" (the caller's detector on the camera frames).
-    detector: str = "daemon"
+    # The detector the bridge runs on the camera feed's frames: None (no detection),
+    # "yunet" (the shipped detector, upstream's model) or "custom" (the caller's).
+    detector: str | None = None
     # Run the detection loop from session entry, so `api.faces` reports who is there.
-    detection: bool = True
+    detection: bool = False
     # Python only: the custom detector's factory, used when detector is "custom".
     face_detector: Callable[[], FaceDetector] | None = None
 
@@ -340,11 +341,12 @@ class FaceSettings:
                 "build FaceSettings(face_detector=...) or call set_face_detector(...)"
             )
         _reject_unknown_keys(block, "faces", {"detector", "detection"})
-        detector = block.get("detector", "daemon")
-        detection = block.get("detection", True)
-        if detector not in FACE_DETECTORS:
+        detector = block.get("detector")
+        detection = block.get("detection", False)
+        if detector is not None and detector not in FACE_DETECTORS:
             raise ConfigError(
-                f"'faces.detector' must be one of {FACE_DETECTORS}, got {detector!r}"
+                f"'faces.detector' must be null or one of {FACE_DETECTORS}, "
+                f"got {detector!r}"
             )
         if not isinstance(detection, bool):
             raise ConfigError("'faces.detection' must be a boolean")
@@ -379,8 +381,9 @@ class MotionSettings:
     idle_move: Callable[[], IdleMove] | None = None
     # Audio-reactive head sway, enabled on entry.
     wobbling: bool = True
-    # The bridge's head tracker, on from session entry (a mode: no motors needed).
-    tracking: bool = True
+    # The bridge's head tracker, on from session entry (a mode: no motors needed, but a
+    # `faces.detector`).
+    tracking: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> MotionSettings:
@@ -396,7 +399,7 @@ class MotionSettings:
         presence = block.get("presence", True)
         idle = block.get("idle", "breathing")
         wobbling = block.get("wobbling", True)
-        tracking = block.get("tracking", True)
+        tracking = block.get("tracking", False)
         if not isinstance(presence, bool):
             raise ConfigError("'motion.presence' must be a boolean")
         if idle not in IDLE_MODES:
@@ -433,7 +436,7 @@ class ReachyMiniConfig:
     # a tts-engine ``engine`` block, verbatim
     tts: dict[str, Any] | None = None
     audio: AudioSettings = field(default_factory=AudioSettings)
-    # face detection: the source (daemon / custom) and whether it runs from entry
+    # face detection: the detector (None / yunet / custom) and whether it runs from entry
     faces: FaceSettings = field(default_factory=FaceSettings)
     # everything that shapes the robot's behaviour at rest (specs/config.md "motion block")
     motion: MotionSettings = field(default_factory=MotionSettings)
@@ -486,6 +489,20 @@ class ReachyMiniConfig:
         faces = FaceSettings.from_dict(top.get("faces", {}))
 
         motion = MotionSettings.from_dict(top.get("motion", {}))
+        if faces.detector is None and (faces.detection or motion.tracking):
+            switches = [
+                name
+                for name, on in (
+                    ("faces.detection", faces.detection),
+                    ("motion.tracking", motion.tracking),
+                )
+                if on
+            ]
+            raise ConfigError(
+                f"{' and '.join(repr(s) for s in switches)} need a face detector, but "
+                "'faces.detector' is null: name one (e.g. \"yunet\", the shipped "
+                "detector) or turn the switch off"
+            )
 
         return cls(
             backend=backend,

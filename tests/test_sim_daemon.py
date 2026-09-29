@@ -1,10 +1,10 @@
 """Fast-tier tests for `reachy_mini_bridge.sim_daemon` (specs/sim_daemon.md).
 
-Daemon-free, camera-free and offline. The correction is exercised on the real upstream
-`MujocoBackend`, with the face tracker's detector replaced by a stand-in queueing one
-observation — no render, no detector, no network. Tests that need `mujoco` skip where the
-sim extra is absent. The head's convergence on a face is the bridge tracker's, pinned in
-tests/test_head_tracking.py.
+Daemon-free, camera-free and offline: the backend subclass's hooks are exercised on the
+real upstream `MujocoBackend` (no render, no network), the camera-source wiring and the
+overlay on stubs. Tests that need `mujoco` skip where the sim extra is absent. The sim's
+faces are the bridge's detector's to find and the head's convergence the bridge tracker's,
+pinned in tests/test_head_tracking.py.
 """
 
 from __future__ import annotations
@@ -23,21 +23,17 @@ import numpy as np
 import pytest
 
 from reachy_mini_bridge import sim_daemon
-from reachy_mini_bridge.face_detection import DAEMON_DETECT_WEIGHT
-from reachy_mini_bridge.head_tracking import pinhole_intrinsics
 from reachy_mini_bridge.sim_daemon import (
     SimDaemonExtension,
     ViewerOverlay,
     WebcamRelay,
-    corrected_backend,
+    bridge_backend,
     overlay_rect,
     relay_pipeline_candidates,
     relay_pipeline_description,
     resample_nearest,
     webcam_source,
 )
-
-FRAME = (320, 180)  # the face tracker's downscaled frame
 
 
 @pytest.fixture(autouse=True)
@@ -55,7 +51,7 @@ def restore_upstream_globals(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     yield
 
 
-# --- the correction: tracking stepped each control tick ----------------------------------
+# --- the backend subclass: hooks, and the control loop left as upstream's ----------
 
 
 @pytest.fixture
@@ -75,54 +71,29 @@ def scene_name(tmp_path: Path, mujoco: Any) -> str:
     return upstream_scene_name(path)
 
 
-def test_a_control_tick_steps_head_tracking(mujoco: Any, scene_name: str) -> None:
-    """The correction: upstream's MuJoCo loop never steps daemon-side tracking; the
-    corrected backend steps it right after the kinematics update of each control tick,
-    so an observation the detector queued becomes the backend's face target — what the
-    daemon publishes and the bridge's `daemon` detection source reads — within a tick,
-    at the negligible weight the bridge arms it at. Upstream's own loop leaves it
-    undetected."""
-    from reachy_mini.daemon.backend.mujoco.backend import MujocoBackend
-    from reachy_mini.vision.face_tracking import FaceObservation
-
-    def backend_with_a_queued_face(backend_class: type) -> Any:
-        backend = backend_class(scene=scene_name, headless=True, use_audio=False)
-        observations = [
-            FaceObservation(
-                center=(0.25, -0.1),
-                roll=0.0,
-                width=FRAME[0],
-                height=FRAME[1],
-                camera_matrix=pinhole_intrinsics(112.3, FRAME),
-                distortion=np.zeros(5),
-                timestamp=time.monotonic(),
-            )
-        ]
-        backend._tracking_enabled = True
-        backend._tracking_requested_weight = DAEMON_DETECT_WEIGHT
-        backend._tracker = SimpleNamespace(
-            latest=lambda: observations.pop() if observations else None
-        )
-        assert not backend.get_tracked_face().detected
-        backend.update_head_kinematics_model(np.zeros(7), np.zeros(2))
-        return backend
-
-    face = backend_with_a_queued_face(
-        corrected_backend(MujocoBackend)
-    ).get_tracked_face()
-    assert face.detected and (face.x, face.y) == pytest.approx((0.25, -0.1))
-    assert not backend_with_a_queued_face(MujocoBackend).get_tracked_face().detected
-
-
 def test_on_backend_runs_once_the_model_exists(mujoco: Any, scene_name: str) -> None:
     from reachy_mini.daemon.backend.mujoco.backend import MujocoBackend
 
     seen: list[int] = []
     extension = SimDaemonExtension(on_backend=lambda b: seen.append(int(b.model.nbody)))
-    corrected_backend(MujocoBackend, extensions=[extension])(
+    bridge_backend(MujocoBackend, extensions=[extension])(
         scene=scene_name, headless=True, use_audio=False
     )
     assert len(seen) == 1 and seen[0] > 0
+
+
+def test_the_subclass_leaves_the_control_loop_and_tracking_to_upstream() -> None:
+    """The launcher changes what the camera stream carries and what the viewer shows,
+    nothing of the daemon's control loop, kinematics or face tracking
+    (specs/sim_daemon.md "The backend subclass")."""
+    subclass = bridge_backend(_StubBackend)
+    own = set(vars(subclass))  # `run` is wrapped for the overlay's sake; nothing else
+    assert not own & {
+        "update_head_kinematics_model",
+        "step_head_tracking",
+        "set_tracking_face",
+        "update_target_head_joints_from_ik",
+    }, own
 
 
 # --- webcam mode wiring (no MuJoCo) --------------------------------------------------------
@@ -137,7 +108,6 @@ class _StubBackend:
         self.ran = False
         self.pose = np.diag([1.0, 1.0, 1.0, 1.0])
         self.pose[0, 3] = 0.5
-        self.seen_in_aim: Any = None
 
     def run(self) -> None:
         self.ran = True
@@ -147,15 +117,6 @@ class _StubBackend:
 
     def get_current_head_pose(self) -> Any:
         return self.pose
-
-    def set_tracking_face(self, *args: Any) -> None:
-        self.seen_in_aim = self.get_current_head_pose()
-
-    def update_head_kinematics_model(self, *args: Any) -> None:
-        pass
-
-    def step_head_tracking(self) -> None:
-        pass
 
 
 def test_webcam_mode_relays_instead_of_rendering() -> None:
@@ -172,13 +133,10 @@ def test_webcam_mode_relays_instead_of_rendering() -> None:
             events.append("stop")
 
     webcam = sim_daemon._Camera(source="webcam", device=2, hfov_deg=65.0)
-    backend = corrected_backend(_StubBackend, camera=webcam, relay_factory=_Relay)()
+    backend = bridge_backend(_StubBackend, camera=webcam, relay_factory=_Relay)()
     assert backend.rendering_loop("eye_camera", 5005) is None
     backend.run()
     assert backend.ran and events == ["relay 2", "start", "stop"]
-    # the daemon's aim is upstream's: the head pose it reads is the real one
-    backend.set_tracking_face((0.0, 0.0), 0.0, 320, 180, np.eye(3), np.zeros(5), 0.0)
-    assert backend.seen_in_aim[0, 3] == 0.5
 
 
 def test_webcam_source_per_platform() -> None:
@@ -680,9 +638,7 @@ def test_sim_mode_with_the_overlay_taps_the_eye_camera_renderer() -> None:
         return overlays[-1]
 
     on = sim_daemon._Displays(camera_overlay=True)
-    backend = corrected_backend(
-        _RenderingStubBackend, displays=on, overlay_factory=make
-    )()
+    backend = bridge_backend(_RenderingStubBackend, displays=on, overlay_factory=make)()
     renderer = backend._get_renderer("eye_camera")
     frame = renderer.render()
     assert frame.shape == (720, 1280, 3) and int(frame[0, 0, 0]) == 7
@@ -691,7 +647,7 @@ def test_sim_mode_with_the_overlay_taps_the_eye_camera_renderer() -> None:
     assert shown.shape == (360, 640, 3) and int(shown[0, 0, 0]) == 7
     assert overlays[0].labels == ["eye camera 1280x720"]
     assert renderer.scene == "scene"  # everything else is the renderer's
-    off = corrected_backend(_RenderingStubBackend)()
+    off = bridge_backend(_RenderingStubBackend)()
     assert off._get_renderer("eye_camera") is off.renderer
 
 
@@ -712,7 +668,7 @@ def test_webcam_mode_with_the_overlay_hands_it_to_the_relay() -> None:
     webcam = sim_daemon._Camera(source="webcam")
     on = sim_daemon._Displays(camera_overlay=True)
     overlay = _FakeOverlay(events)
-    backend = corrected_backend(
+    backend = bridge_backend(
         _StubBackend,
         camera=webcam,
         displays=on,
@@ -749,7 +705,7 @@ def test_the_run_hands_the_viewer_to_the_overlay_and_stops_it_before_the_close()
 
     overlay = _FakeOverlay(events)
     on = sim_daemon._Displays(camera_overlay=True)
-    corrected_backend(
+    bridge_backend(
         _ViewerBackend,
         displays=on,
         overlay_factory=lambda: overlay,
@@ -772,7 +728,7 @@ def test_the_run_hands_the_viewer_to_the_overlay_and_stops_it_before_the_close()
             raise RuntimeError("boom")
 
     with pytest.raises(RuntimeError, match="boom"):
-        corrected_backend(
+        bridge_backend(
             _FailingBackend,
             displays=on,
             overlay_factory=lambda: overlay,
@@ -796,7 +752,7 @@ def _run(argv: list[str], monkeypatch: pytest.MonkeyPatch, **kwargs: Any) -> lis
     return seen[0]
 
 
-def test_run_sim_daemon_rewrites_argv_and_installs_the_corrections(
+def test_run_sim_daemon_rewrites_argv_and_installs_the_backend(
     monkeypatch: pytest.MonkeyPatch, mujoco: Any
 ) -> None:
     fastapi = pytest.importorskip("fastapi")
@@ -833,7 +789,7 @@ def test_run_sim_daemon_rewrites_argv_and_installs_the_corrections(
     ]
     assert issubclass(upstream_daemon.MujocoBackend, original_backend)
     assert upstream_daemon.MujocoBackend is not original_backend
-    # the daemon's aim is left as upstream has it: the bridge's tracker aims the head
+    # the daemon's tracking is left as upstream has it: the bridge's tracker aims the head
     assert face_tracking.intrinsics_for_size is camera_utils.intrinsics_for_size
     upstream_args: Any = SimpleNamespace()
     app = upstream_main.create_app(upstream_args, None)
@@ -858,7 +814,7 @@ def test_run_sim_daemon_turns_on_a_viewer_display(
         seen.update(kwargs)
         return backend_class
 
-    monkeypatch.setattr(sim_daemon, "corrected_backend", corrected)
+    monkeypatch.setattr(sim_daemon, "bridge_backend", corrected)
     argv = _run(["--sim-display", "camera_overlay"], monkeypatch)
     assert argv[1:] == ["--sim", "--preload-datasets"]
     assert seen["displays"] == sim_daemon._Displays(camera_overlay=True)

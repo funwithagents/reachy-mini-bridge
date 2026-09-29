@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -35,8 +36,11 @@ def test_defaults() -> None:
     assert cfg.daemon.spawn == "never"
     assert cfg.tts is None
     assert cfg.audio.xvf3800 is None
-    assert cfg.faces == FaceSettings(detector="daemon", detection=True)
+    # Detection is opt-in (specs/user_perception.md): no detector, no detection, and
+    # tracking off since it needs a detector.
+    assert cfg.faces == FaceSettings(detector=None, detection=False)
     assert cfg.motion == MotionSettings()
+    assert cfg.motion.tracking is False
     assert ReachyMiniConfig.from_dict({}) == cfg
 
 
@@ -65,8 +69,10 @@ def test_from_json_file_round_trips_the_repo_example() -> None:
     assert cfg.tts["module"]["type"] == "pocket"
     assert cfg.tts["module"]["voice"] == "george"
     assert cfg.audio == AudioSettings(xvf3800=None)
-    assert cfg.faces == FaceSettings(detector="daemon", detection=True)
-    assert cfg.motion == MotionSettings()
+    # The example shows the robot that follows the person in front of the webcam: the
+    # shipped detector, detection and tracking on.
+    assert cfg.faces == FaceSettings(detector="yunet", detection=True)
+    assert cfg.motion == MotionSettings(tracking=True)
 
 
 def test_from_json_and_from_json_file_delegate_to_from_dict(tmp_path: Path) -> None:
@@ -361,7 +367,7 @@ def test_daemon_sim_displays_reject_bad_values(displays: object) -> None:
         )
 
 
-def test_faces_block_sets_the_source_and_the_switch(tmp_path: Path) -> None:
+def test_faces_block_sets_the_detector_and_the_switch(tmp_path: Path) -> None:
     text = '{"faces": {"detector": "custom", "detection": false}}'
     expected = FaceSettings(detector="custom", detection=False)
     assert ReachyMiniConfig.from_json(text).faces == expected
@@ -370,16 +376,57 @@ def test_faces_block_sets_the_source_and_the_switch(tmp_path: Path) -> None:
     path.write_text(block)
     assert FaceSettings.from_json(block) == expected
     assert FaceSettings.from_json_file(path) == expected
+    yunet = ReachyMiniConfig.from_json(
+        '{"faces": {"detector": "yunet", "detection": true}}'
+    )
+    assert yunet.faces == FaceSettings(detector="yunet", detection=True)
+
+
+def test_faces_detector_null_and_absent_both_mean_none() -> None:
+    assert (
+        ReachyMiniConfig.from_dict({"faces": {"detector": None}}).faces.detector is None
+    )
+    assert ReachyMiniConfig.from_dict({"faces": {}}).faces.detector is None
+    assert ReachyMiniConfig.from_dict({"faces": {"detection": False}}).faces == (
+        FaceSettings(detector=None, detection=False)
+    )
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"faces": {"detection": True}},
+        {"motion": {"tracking": True}},
+        {"faces": {"detection": True}, "motion": {"tracking": True}},
+        {"faces": {"detector": None, "detection": True}},
+    ],
+)
+def test_a_switch_on_without_a_detector_is_a_config_error(data: dict[str, Any]) -> None:
+    """The cross-block rule (specs/config.md): detection and tracking need a detector."""
+    with pytest.raises(ConfigError, match=r"faces\.detector") as info:
+        ReachyMiniConfig.from_dict(data)
+    message = str(info.value)
+    if data.get("faces", {}).get("detection"):
+        assert "faces.detection" in message
+    if data.get("motion", {}).get("tracking"):
+        assert "motion.tracking" in message
+    assert "yunet" in message  # the message points at the shipped detector
+    # The same switches with a detector named are valid.
+    with_detector = {**data, "faces": {**data.get("faces", {}), "detector": "yunet"}}
+    cfg = ReachyMiniConfig.from_dict(with_detector)
+    assert cfg.faces.detector == "yunet"
 
 
 @pytest.mark.parametrize(
     ("faces", "field"),
     [
         ({"detector": "local"}, r"faces\.detector"),
-        ({"detector": None}, r"faces\.detector"),
+        ({"detector": "daemon"}, r"faces\.detector"),
+        ({"detector": 1}, r"faces\.detector"),
+        ({"detector": True}, r"faces\.detector"),
         ({"detection": "yes"}, r"faces\.detection"),
         ({"detection": 1}, r"faces\.detection"),
-        ({"detecter": "daemon"}, "detecter"),
+        ({"detecter": "yunet"}, "detecter"),
         ({"face_detector": "my.module:Yunet"}, r"faces\.face_detector"),
     ],
 )
@@ -393,10 +440,11 @@ def test_faces_must_be_an_object() -> None:
         ReachyMiniConfig.from_dict({"faces": []})
 
 
-def test_motion_defaults_are_on() -> None:
+def test_motion_defaults() -> None:
     assert ReachyMiniConfig.from_dict({}).motion == MotionSettings()
+    assert MotionSettings().presence is True
     assert MotionSettings().wobbling is True
-    assert MotionSettings().tracking is True
+    assert MotionSettings().tracking is False  # needs a detector, none by default
 
 
 def test_motion_block_sets_the_switches() -> None:
@@ -417,8 +465,10 @@ def test_motion_block_sets_the_switches() -> None:
     assert cfg.motion == MotionSettings(presence=True, idle="custom", idle_move=None)
     cfg = ReachyMiniConfig.from_json('{"motion": {"wobbling": false}}')
     assert cfg.motion == MotionSettings(wobbling=False)
-    cfg = ReachyMiniConfig.from_dict({"motion": {"tracking": False}})
-    assert cfg.motion == MotionSettings(tracking=False)
+    cfg = ReachyMiniConfig.from_dict(
+        {"faces": {"detector": "custom"}, "motion": {"tracking": True}}
+    )
+    assert cfg.motion == MotionSettings(tracking=True)
 
 
 @pytest.mark.parametrize(

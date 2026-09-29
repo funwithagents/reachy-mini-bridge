@@ -17,15 +17,15 @@ The upstream `reachy_mini` SDK gives full, low-level access to the robot. The br
 | **The daemon** | Start `reachy-mini-daemon` yourself. Spawning it from a Python process that has already imported `reachy_mini` can crash it | Optionally started for you (sim, or a robot plugged in over USB), or an already running one is reused. A daemon the bridge started is stopped on exit, and the robot goes to sleep |
 | **Clean shutdown** | Up to the app | Leaving `async with` turns head wobbling back off (the setting is shared by every app on the daemon), then closes the audio, the connection and the daemon in order, even when a step fails. Cancelling during start-up leaks nothing |
 | **Configuration** | Constructor arguments in code | One JSON config for the backend, connection, daemon, voice, mic profile and wobbling. The same file switches between the real robot, the simulator and the fake |
-| **Following a face** | `start_head_tracking()` makes the daemon aim the head at a detected face. Once the face is lost, the head recentres and then stays frozen at neutral, ignoring your targets, until tracking is re-armed | Tracking is on by default, and the bridge aims the head itself: the robot looks at the person **and keeps breathing** while it does, its idle roaming toned down so it stays on them. When nobody has been seen for two seconds the head eases back into the idle motion, and it turns back as soon as a face returns. Emotions play as recorded over it. Who is there is `api.faces`: read its value, or `async for report in api.faces.changes()` to be told when someone appears or leaves (the daemon's detections, 10 a second, each picked up within ~33 ms — not the SDK's once-a-second status) |
-| **The simulator** | In the MuJoCo sim, face tracking does not work: the loop never runs the tracking step, and even when it does, the tracker's camera matrix is wrong for the sim camera, so the head settles ~45° away from the face. The sim camera can only show the rendered scene | Every sim the bridge starts runs through its own launcher, which makes the daemon's face detection work, and the bridge's tracker aims with the sim camera's true geometry: the head turns onto a face and settles on it as on a robot. The sim can also use your **webcam** as the robot's camera, so the simulated robot sees and follows you (see [The simulator](#the-simulator)) |
+| **Following a face** | `start_head_tracking()` makes the daemon aim the head at a detected face. Once the face is lost, the head recentres and then stays frozen at neutral, ignoring your targets, until tracking is re-armed | Name a detector in the config (`"faces": {"detector": "yunet"}` — upstream's own model, run by the bridge; nothing to install) and the bridge detects and aims the head itself: the robot looks at the person **and keeps breathing** while it does, its idle roaming toned down so it stays on them. When nobody has been seen for two seconds the head eases back into the idle motion, and it turns back as soon as a face returns. Emotions play as recorded over it. Who is there is `api.faces`: every face the detector sees with its size, read as a value, or `async for report in api.faces.changes()` to be told when someone appears or leaves (once per camera frame, 10 a second on a local daemon — not the SDK's once-a-second status) |
+| **The simulator** | In the MuJoCo sim, face tracking does not work: the loop never runs the tracking step, and even when it does, the tracker's camera matrix is wrong for the sim camera, so the head settles ~45° away from the face. The sim camera can only show the rendered scene | The bridge detects faces itself in the sim's camera stream and its tracker aims with the sim camera's true geometry: the head turns onto a face and settles on it as on a robot. Every sim the bridge starts runs through its own launcher, which can use your **webcam** as the robot's camera, so the simulated robot sees and follows you (see [The simulator](#the-simulator)) |
 | **Testing** | Needs a daemon: the sim or the robot, and a person in front of the camera to test face tracking | An offline `fake` backend that records every command, for fast unit tests. A pytest plugin for live tests that checks what the target can actually do (motion, audio, camera, gravity compensation, faces) and skips a test instead of failing it. Its sim includes a portrait a test can show, move and hide, so face tracking is tested without a person |
 
 ## What's in the repo
 
 | Path | What it is |
 |---|---|
-| [src/reachy_mini_bridge/](src/reachy_mini_bridge/) | The library: `api.py` (the verbs), `config.py`, `audio.py` (speech out, mic in), `motion.py` (the motion loop: presence, breathing, emotions), `daemon.py` (daemon lifecycle), `head_tracking.py` (the head tracker: a face to a look-at aim), `face_detection.py` (the detection loop behind `faces`), `sim_daemon.py` (the sim launcher: face-detection fix, webcam camera), `robot.py` + `fake_reachy_mini.py` (the backend seam), `testing/` (a pytest harness for your own e2e tests), `tools.py` (placeholder) |
+| [src/reachy_mini_bridge/](src/reachy_mini_bridge/) | The library: `api.py` (the verbs), `config.py`, `audio.py` (speech out, mic in), `motion.py` (the motion loop: presence, breathing, emotions), `daemon.py` (daemon lifecycle), `head_tracking.py` (the head tracker: a face to a look-at aim), `face_detection.py` (the detection loop behind `faces`), `yunet.py` (the shipped face detector), `sim_daemon.py` (the sim launcher: webcam camera, viewer overlay), `robot.py` + `fake_reachy_mini.py` (the backend seam), `testing/` (a pytest harness for your own e2e tests), `tools.py` (placeholder) |
 | [config.example.json](config.example.json) | Every config field with placeholder values |
 | [specs/](specs/) | Design docs, one per concept, each with a status — the source of truth for how things are meant to work |
 | [plans/](plans/) | Implementation plans that turned those specs into code |
@@ -113,7 +113,7 @@ All verbs are `async`; units are human (degrees, seconds, named emotions). The u
 | Staying alive | `set_presence(enabled)` / `presence`, `set_idle("breathing" | "hold" | "custom")` / `idle`, `set_idle_move(factory)` / `idle_move` — the idle behaviour between verbs; set by the config's `motion` block |
 | Mic in | `audio_input(mono=True)` async iterator of int16 PCM bytes, plus `mic_sample_rate` / `mic_channels` |
 | Camera | `camera` — the camera feed, the one reader of the robot's camera: `camera.latest()` is the newest `CameraFrame` (`frame_id`, `ts`, `image` as a raw BGR `ndarray`, `head_pose`) or `None` when no frame is available; a property any number of consumers sample without taking frames from one another |
-| Faces | `faces` — an observable report of the faces in front of the robot: `faces.value`, `faces.changes()` (wakes when the number of faces changes, never when one moves), `faces.wait_for(predicate)`; `set_face_detection(enabled)` / `face_detection` — on by default (the config's `faces` block), and running whenever tracking is; `set_face_detector(factory)` / `face_detector` — your own detector for the `custom` source |
+| Faces | `faces` — an observable report of the faces in front of the robot: `faces.value`, `faces.changes()` (wakes when the number of faces changes, never when one moves), `faces.wait_for(predicate)`; `set_face_detection(enabled)` / `face_detection` — off unless the config's `faces` block turns it on, and running whenever tracking is; needs a detector named in the config (`"yunet"`, the shipped one, or `"custom"`); `set_face_detector(factory)` / `face_detector` — your own detector for `"custom"` |
 
 Verbs that move the robot require motors `enabled` and raise `MotorsNotEnabledError` otherwise. The errors a caller catches — `BridgeError` (the base), `MotorsNotEnabledError`, `GravityCompensationUnsupportedError`, `ConfigError` — import from `reachy_mini_bridge`, next to `ReachyMiniApi`, `ReachyMiniConfig`, `SpeechSynthesizer` and `TTSEngineSynthesizer`; `DaemonError` lives in `reachy_mini_bridge.errors`.
 
@@ -127,7 +127,7 @@ Verbs that move the robot require motors `enabled` and raise `MotorsNotEnabledEr
 hands = HandStage(api.camera, target_fps=30)  # any latest-value graph whose upstream has latest() → frame_id, ts, image
 ```
 
-**Your own face detector.** The bridge ships no vision code: `faces.detector: "daemon"` (the default) reads the daemon's own detector, and `"custom"` runs yours on the camera feed — an object with `detect(frame_bgr, ts)` returning `PixelFace`s, registered as a factory with `FaceSettings(face_detector=MyDetector)` or `set_face_detector(MyDetector)`. The bridge runs it once per new frame off the event loop, selects the target face and aims the head at it. Upstream's own YuNet detector is a valid custom detector in a few lines: [docs/custom-face-detector.md](docs/custom-face-detector.md).
+**Face detection is opt-in, and the detector is yours to pick.** `faces.detector: "yunet"` runs the shipped detector — upstream's own YuNet model, wrapped by the bridge, no new dependency, the weights downloaded into the Hugging Face cache on first use. `"custom"` runs yours on the camera feed — an object with `detect(frame_bgr, ts)` returning `PixelFace`s, registered as a factory with `FaceSettings(face_detector=MyDetector)` or `set_face_detector(MyDetector)`. Either way the bridge runs it once per new frame off the event loop, selects the target face and aims the head at it. With no detector named (the default) nothing is detected and nothing tracks. The shipped wrapper is the worked example of a custom one: [docs/custom-face-detector.md](docs/custom-face-detector.md).
 
 **Listening.** The bridge does no speech recognition. It exposes the robot's echo-cancelled microphone as a stream and you feed it to the ASR of your choice:
 
@@ -153,7 +153,7 @@ Routing both directions through the bridge is what keeps the robot's hardware ec
 
 The `sim` backend is upstream's MuJoCo simulation, started through the bridge's own launcher, `python -m reachy_mini_bridge.sim_daemon` (a config with `"daemon": {"spawn": "auto"}` does it for you). The launcher runs upstream's daemon unchanged apart from these additions ([specs/sim_daemon.md](specs/sim_daemon.md)):
 
-- **Face tracking works.** Upstream's sim never runs its tracking step, so the daemon never reports the faces its detector sees; the launcher fixes that (a bug in the upstream simulator). The aim is the bridge's own tracker's, with a pinhole of the sim's eye camera — upstream's camera matrix for the sim is scaled for the real robot's sensor and would put the head about 45° off the face. With the viewer open, the head turns onto a face and settles on it, breathing. The tracker's convergence is pinned by fast offline tests that project the test scene's portrait through the sim camera, and by the live tests below.
+- **Face tracking works.** The bridge detects faces itself, in the camera stream the daemon serves, and aims with its own tracker and a pinhole of the sim's eye camera — upstream's daemon-side tracking, which the sim never steps and whose camera matrix would put the head about 45° off the face, is left as upstream ships it and never armed. With the viewer open and `"faces": {"detector": "yunet"}`, the head turns onto a face and settles on it, breathing. The tracker's convergence is pinned by fast offline tests that project the test scene's portrait through the sim camera, and by the live tests below.
 - **Your webcam as the robot's camera.** With `"daemon": {"camera": {"source": "webcam"}}`, the sim's camera shows your computer's webcam instead of the rendered scene. Face tracking, `api.camera` and the control panel then see you, with or without the viewer window. The bridge's tracker treats the webcam as fixed where the robot's eye rests, so the head follows you without drifting. On macOS, the terminal or editor that starts the daemon needs camera permission.
 - **See what it sees.** With `"daemon": {"headless": false, "sim_displays": {"camera_overlay": true}}`, the viewer window shows the camera stream in its top-right corner — your webcam, or the rendered eye camera. The example config has it on.
 - **A face to test with.** The testing package can write a scene with a portrait that a test shows, moves and hides while the daemon runs ([specs/sim_scene.md](specs/sim_scene.md)). The pytest plugin's sim always runs on it.
@@ -189,7 +189,7 @@ A sim started by hand with upstream's `reachy-mini-daemon --sim` works for motio
   },
 
   "faces": {
-    "detector": "daemon",
+    "detector": "yunet",
     "detection": true
   },
 
@@ -300,19 +300,19 @@ Omit the block and `say` raises unless you pass your own `SpeechSynthesizer`. A 
 
 | Field | Default | What it does | Runtime verb |
 |---|---|---|---|
-| `detector` | `"daemon"` | Where faces come from: `daemon` reads the daemon's own face detector over its HTTP API; `custom` runs your own detector on the camera feed's frames — registered from code, `FaceSettings(face_detector=...)` or `set_face_detector(...)` (see [docs/custom-face-detector.md](docs/custom-face-detector.md)); session entry refuses `custom` with none registered | `set_face_detector` |
-| `detection` | `true` | Runs the detection loop from session entry, so `api.faces` reports who is there. Needs no motors. The loop also runs whenever `motion.tracking` is on, whatever this says | `set_face_detection` |
+| `detector` | `null` | Which detector the bridge runs on the camera feed's frames: `null` none (no detection, no tracking — `detection` or `tracking` on is then a config error); `yunet` the shipped detector, upstream's model run by the bridge (nothing to install; the weights download into the Hugging Face cache on first use); `custom` your own, registered from code with `FaceSettings(face_detector=...)` or `set_face_detector(...)` (see [docs/custom-face-detector.md](docs/custom-face-detector.md)); session entry refuses `custom` with none registered | `set_face_detector` |
+| `detection` | `false` | Runs the detection loop from session entry, so `api.faces` reports who is there. Needs no motors, needs a `detector`. The loop also runs whenever `motion.tracking` is on, whatever this says | `set_face_detection` |
 
 ### `motion` — what the robot does at rest
 
-The three switches default to `true` and `idle` to `"breathing"`, and each has a runtime verb that changes it while the session is entered.
+`presence` and `wobbling` default to `true`, `tracking` to `false` (it needs a `faces.detector`) and `idle` to `"breathing"`; each has a runtime verb that changes it while the session is entered.
 
 | Field | Default | What it does | Runtime verb |
 |---|---|---|---|
 | `presence` | `true` | Fills every idle moment with the idle move, so the robot never looks dead between verbs. `false` commands the head only while a verb runs — for a caller driving the head itself. Emotions play either way | `set_presence` |
 | `idle` | `"breathing"` | Which idle move presence plays: `breathing` (slow breaths with rests, the head roaming, the antennas flicking), `hold` (a still neutral) or `custom` (your own `IdleMove`, registered from code with `MotionSettings(idle_move=...)` or `set_idle_move`; the hold until one is registered). Ignored while `presence` is off | `set_idle` / `set_idle_move` |
 | `wobbling` | `true` | Sways the head with every sound the robot plays. `false` keeps it still while audio plays | `set_wobbling` |
-| `tracking` | `true` | The bridge's tracker keeps the reported face in view from session entry, the head breathing while it looks. Needs no motors (the head moves once they are `enabled`). `false` leaves it off until you call `start_head_tracking()` | `start_head_tracking` / `stop_head_tracking` |
+| `tracking` | `false` | The bridge's tracker keeps the reported face in view from session entry, the head breathing while it looks. Needs no motors (the head moves once they are `enabled`) but a `faces.detector` (`true` with none is a config error). `false` leaves it off until you call `start_head_tracking()` | `start_head_tracking` / `stop_head_tracking` |
 
 Validation rules and the reasoning behind each block: [specs/config.md](specs/config.md), [specs/daemon.md](specs/daemon.md), [docs/running-the-sim-daemon.md](docs/running-the-sim-daemon.md).
 
@@ -346,7 +346,6 @@ uv run pyright
 uv run pytest            # fast offline tier only
 uv run pytest tests-e2e -rs                                  # live tier, headless sim: motion + audio
 REACHY_MINI_E2E_SIM_VIEWER=1 uv run pytest tests-e2e -rs     # + camera and face tracking (unlocked GUI session)
-REACHY_MINI_E2E_SIM_VIEWER=1 REACHY_MINI_E2E_FACE_DETECTOR=yunet uv run pytest tests-e2e -rs -k custom  # + your-own-detector path, on upstream's YuNet
 REACHY_MINI_E2E_TARGET=real uv run pytest tests-e2e -rs      # a robot plugged in over USB
 ```
 

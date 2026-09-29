@@ -47,15 +47,15 @@ def _yaw_deg(head: npt.NDArray[np.float64]) -> float:
 
 def _report(x: float, y: float, ts: float) -> FaceReport:
     return FaceReport(
-        faces=(Face(x=x, y=y, roll=None, size=None),),
+        faces=(Face(x=x, y=y, roll=None, size=0.2),),
         ts=ts,
-        source="daemon",
+        source="yunet",
         active=True,
     )
 
 
 def _nobody() -> FaceReport:
-    return FaceReport(faces=(), ts=time.monotonic(), source="daemon", active=True)
+    return FaceReport(faces=(), ts=time.monotonic(), source="yunet", active=True)
 
 
 def _project(
@@ -76,11 +76,11 @@ async def _closed_loop(
     seconds: float,
     *,
     frame_delay_s: float = 0.0,
-    same_host: bool = True,
 ) -> tuple[list[float], tuple[float, float], float]:
     """Track ``face`` for ``seconds``: every detection projects it from the head pose
     of ``frame_delay_s`` ago — when its frame was taken — and is stamped *now*, as the
-    daemon stamps a detection when it finishes, so the tracker is never told the delay.
+    camera feed stamps a frame with its arrival time, so the tracker is never told the
+    delay.
     The commanded yaw at every poll, where the face projects at the end, and the
     tracker's delay estimate."""
     robot = FakeReachyMini()
@@ -90,7 +90,6 @@ async def _closed_loop(
             camera,
             history=session.head_pose_history,
             set_gaze=session.set_gaze,
-            same_host=same_host,
         )
         session.resume()
         yaws: list[float] = []
@@ -148,22 +147,47 @@ def test_the_head_converges_on_the_face_ahead_and_to_either_side() -> None:
 
 
 def test_an_unreported_frame_delay_is_learned_and_the_head_still_settles() -> None:
-    """The frame is 0.3 s older than its timestamp says — the viewer sim's figure — on
-    the same host and on another (where only the receipt time is known): the tracker
-    learns the delay from its first turn and the head settles on the face."""
+    """The frame is 0.3 s older than its timestamp says — a frame stamped with its
+    arrival time, as the live backends' are: the tracker learns the delay from its first
+    turn and the head settles on the face."""
     face = _face_at(0.15)
+    yaws, centre, delay = asyncio.run(_closed_loop(face, 5.0, frame_delay_s=0.3))
+    assert delay == pytest.approx(0.3, abs=0.1)
+    _assert_converged(yaws, centre, 0.15)
 
-    async def run() -> list[tuple[list[float], tuple[float, float], float]]:
-        return list(
-            await asyncio.gather(
-                _closed_loop(face, 5.0, frame_delay_s=0.3),
-                _closed_loop(face, 5.0, frame_delay_s=0.3, same_host=False),
-            )
-        )
 
-    for yaws, centre, delay in asyncio.run(run()):
-        assert delay == pytest.approx(0.3, abs=0.1)
-        _assert_converged(yaws, centre, 0.15)
+def _jumping_face_while_turning() -> float:
+    """The delay estimate after 2 s of a face jumping from side to side while the head
+    turns 30 deg over the window — a scene no delay explains."""
+    now = time.monotonic()
+    times = now - 3.0 + np.arange(0.0, 3.001, 0.02)
+    poses = np.stack([_turned(yaw) for yaw in np.linspace(0.0, 30.0, len(times))])
+    tracker = HeadTracker(
+        CameraModel.for_sim(SimCameraSettings()),
+        history=lambda: (times, poses),
+        set_gaze=lambda aim, *, focus=False: None,
+    )
+    for k in range(20):
+        tracker.observe(_report(0.5 if k % 2 else -0.5, 0.0, ts=now - 2.0 + 0.1 * k))
+    return tracker.delay_s
+
+
+def test_a_face_moving_while_the_head_turns_leaves_the_estimate_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fit is taken only when distinct (specs/head_tracking.md "The delay estimate"):
+    a face that jumps about while the head turns fits no delay — every delay spreads the
+    directions alike — so the estimate holds. Without the contrast rule (every fit taken)
+    the same scene moves it: a flat score's minimum is noise."""
+    assert _jumping_face_while_turning() == head_tracking.DELAY_PRIOR_S
+    monkeypatch.setattr(head_tracking, "DELAY_MAX_CONTRAST", 1.0)
+    assert _jumping_face_while_turning() != head_tracking.DELAY_PRIOR_S
+
+
+def _turned(yaw_deg: float) -> npt.NDArray[np.float64]:
+    pose = np.eye(4)
+    pose[:3, :3] = Rotation.from_euler("z", yaw_deg, degrees=True).as_matrix()
+    return pose
 
 
 def test_the_estimate_holds_while_the_head_is_still() -> None:
@@ -172,7 +196,6 @@ def test_the_estimate_holds_while_the_head_is_still() -> None:
         CameraModel.for_sim(SimCameraSettings()),
         history=lambda: (np.array([time.monotonic()]), np.eye(4)[np.newaxis]),
         set_gaze=lambda aim, *, focus=False: None,
-        same_host=True,
     )
     for k in range(20):
         tracker.observe(_report(0.1 * math.sin(k), 0.0, ts=time.monotonic()))
@@ -188,7 +211,6 @@ def test_a_report_carrying_its_frame_pose_is_aimed_against_it() -> None:
         CameraModel.for_sim(SimCameraSettings()),
         history=lambda: (np.array([time.monotonic()]), np.eye(4)[np.newaxis]),
         set_gaze=lambda aim, *, focus=False: sent.append(aim),
-        same_host=True,
     )
     turned = Rotation.from_euler("z", 20.0, degrees=True).as_matrix()
     pose = np.eye(4)
@@ -206,7 +228,6 @@ async def _constant_observation(camera: CameraModel, seconds: float) -> list[flo
             camera,
             history=session.head_pose_history,
             set_gaze=session.set_gaze,
-            same_host=True,
         )
         session.resume()
         yaws: list[float] = []
@@ -248,7 +269,6 @@ def test_the_aim_is_withdrawn_once_nobody_is_seen_and_returns_with_a_face(
         CameraModel.for_sim(SimCameraSettings()),
         history=lambda: (np.array([time.monotonic()]), np.eye(4)[np.newaxis]),
         set_gaze=lambda aim, *, focus=False: sent.append(aim),
-        same_host=True,
     )
     tracker.observe(_report(0.0, 0.0, ts=time.monotonic()))
     assert tracker.engaged and len(sent) == 1 and sent[0] is not None
@@ -269,7 +289,6 @@ def test_focus_goes_with_every_aim_and_stop_withdraws_it() -> None:
         CameraModel.for_sim(SimCameraSettings()),
         history=lambda: (np.array([time.monotonic()]), np.eye(4)[np.newaxis]),
         set_gaze=lambda aim, *, focus=False: sent.append((aim, focus)),
-        same_host=True,
     )
     tracker.observe(_report(0.0, 0.0, ts=time.monotonic()))
     tracker.focus = True

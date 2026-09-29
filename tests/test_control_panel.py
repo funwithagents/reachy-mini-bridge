@@ -24,8 +24,13 @@ from examples.control_panel.controller import (
     PanelState,
     draw_faces,
 )
-from reachy_mini_bridge import BridgeError, MotorsNotEnabledError, ReachyMiniConfig
-from reachy_mini_bridge.config import MotionSettings
+from reachy_mini_bridge import (
+    BridgeError,
+    MotorsNotEnabledError,
+    PixelFace,
+    ReachyMiniConfig,
+)
+from reachy_mini_bridge.config import FaceSettings, MotionSettings
 from reachy_mini_bridge.fake_reachy_mini import FakeReachyMini
 
 
@@ -38,6 +43,39 @@ class _SlowSynth:
         for _ in range(10):
             yield np.full(1600, 0.2, dtype=np.float32)
             await asyncio.sleep(0.01)
+
+
+class _Scene:
+    """The fake's stand-in for a person (specs/user_perception.md "`fake` backend
+    support"): a stub detector's faces on the fake's 64x48 frame, shown and hidden."""
+
+    def __init__(self) -> None:
+        self.faces: list[PixelFace] = []
+
+    def detector(self) -> _Scene:
+        return self
+
+    def detect(self, frame_bgr: npt.NDArray[np.uint8], ts: float) -> list[PixelFace]:
+        return list(self.faces)
+
+    def show(self, x: float = 0.0, y: float = 0.0) -> None:
+        u = (x + 1.0) / 2.0 * 63
+        v = (y + 1.0) / 2.0 * 47
+        self.faces[:] = [PixelFace(bbox=(u - 5, v - 8, 10, 16), nose=(u, v))]
+
+    def hide(self) -> None:
+        self.faces.clear()
+
+
+def _faces_config(scene: _Scene, *, tracking: bool = True) -> ReachyMiniConfig:
+    """A fake config detecting through ``scene`` (detection on; tracking as asked)."""
+    return ReachyMiniConfig(
+        backend="fake",
+        faces=FaceSettings(
+            detector="custom", detection=True, face_detector=scene.detector
+        ),
+        motion=MotionSettings(tracking=tracking),
+    )
 
 
 def _fake(controller: ControlPanelController) -> FakeReachyMini:
@@ -129,8 +167,8 @@ def test_instant_verbs_dispatch_and_errors_propagate() -> None:
 
 
 def test_snapshot_reflects_the_modes_and_the_camera_is_rgb() -> None:
-    config = ReachyMiniConfig(backend="fake", motion=MotionSettings(tracking=False))
-    with ControlPanelController(config) as controller:
+    scene = _Scene()
+    with ControlPanelController(_faces_config(scene, tracking=False)) as controller:
         state = controller.snapshot()
         assert isinstance(state, PanelState)
         assert state.backend == "fake"
@@ -151,9 +189,9 @@ def test_snapshot_reflects_the_modes_and_the_camera_is_rgb() -> None:
         assert (state.presence, state.idle, state.wobbling) == (False, "hold", False)
         assert state.tracking is True
         assert state.attention == "watching"  # nobody there yet
-        _fake(controller).show_face(0.2, 0.0)
+        scene.show(0.2, 0.0)
         _wait_until(lambda: controller.snapshot().attention == "engaged")
-        _fake(controller).hide_face()
+        scene.hide()
         assert controller.api.tracking_focus is True
 
         controller.set_head_tracking(False, focus=True)  # the Tracking box unticked
@@ -164,7 +202,7 @@ def test_snapshot_reflects_the_modes_and_the_camera_is_rgb() -> None:
 
         assert state.face_detection is True
         _wait_until(lambda: controller.snapshot().faces == 0)  # active, nobody there
-        _fake(controller).show_face()
+        scene.show()
         _wait_until(lambda: controller.snapshot().faces == 1)
         controller.set_face_detection(False)
         state = controller.snapshot()
@@ -265,10 +303,11 @@ def test_build_app_constructs_the_blocks_and_refresh_reads_the_state() -> None:
     gr = pytest.importorskip("gradio")
     from examples.control_panel.app import build_app, refresh, refresh_camera
 
-    with ControlPanelController("fake") as controller:
+    scene = _Scene()
+    with ControlPanelController(_faces_config(scene)) as controller:
         demo = build_app(controller)
         assert isinstance(demo, gr.Blocks)
-        _fake(controller).show_face(0.5, -0.5)
+        scene.show(0.5, -0.5)
         _wait_until(lambda: controller.snapshot().faces == 1)
         table, mic_level, log_text = refresh(controller, [])
         assert "fake" in table and "presence" in table
@@ -289,23 +328,26 @@ def test_build_app_constructs_the_blocks_and_refresh_reads_the_state() -> None:
 
 
 def test_snapshot_reports_face_positions_and_the_update_rate() -> None:
-    with ControlPanelController("fake") as controller:
+    scene = _Scene()
+    with ControlPanelController(_faces_config(scene)) as controller:
         _wait_until(lambda: controller.snapshot().face_rate is not None)
-        fake = _fake(controller)
-        # A detector reporting at ~20 Hz: each show_face is a new observation (new ts).
-        # The detection loop polls at 30 Hz, so the bridge sees about 20 a second.
-        deadline = time.monotonic() + 2.5
-        while time.monotonic() < deadline:
-            fake.show_face(0.25, -0.1)
-            time.sleep(0.05)
+        # The detector runs once per frame of the fake's camera (10 fps), so the meter
+        # reads the feed's rate: about ten observations a second, face or not.
+        scene.show(0.25, -0.1)
+        time.sleep(2.5)
         state = controller.snapshot()
         assert state.faces == 1
-        assert state.face_positions == [(0.25, -0.1)]
-        assert state.face_rate is not None and 12.0 <= state.face_rate <= 21.0
+        assert len(state.face_positions) == 1
+        x, y = state.face_positions[0]
+        assert (x, y) == (pytest.approx(0.25, abs=0.02), pytest.approx(-0.1, abs=0.03))
+        assert state.face_rate is not None and 7.0 <= state.face_rate <= 13.0
 
-        fake.hide_face()  # one last observation, then nothing new
-        time.sleep(2.5)
-        assert controller.snapshot().face_rate == 0.0
+        scene.hide()  # an empty room still reports at the detector's rate
+        _wait_until(lambda: controller.snapshot().faces == 0)
+        time.sleep(1.0)
+        state = controller.snapshot()
+        assert state.face_positions == []
+        assert state.face_rate is not None and 7.0 <= state.face_rate <= 13.0
 
         controller.stop_head_tracking()
         controller.set_face_detection(False)

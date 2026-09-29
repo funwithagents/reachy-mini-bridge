@@ -14,11 +14,12 @@ here are what it runs, for when you want to start a daemon by hand.
 
 **Every sim the bridge starts runs through its own launcher**, `python -m
 reachy_mini_bridge.sim_daemon` ([../specs/sim_daemon.md](../specs/sim_daemon.md)):
-upstream's daemon plus the corrections that make face tracking work in the sim (upstream's
-MuJoCo loop never steps tracking, and its tracker's intrinsics put the head ~45° off the
-face), and a choice of camera source. It takes upstream's flags. Start the sim through it
-when you start one by hand for the bridge to borrow; upstream's `reachy-mini-daemon --sim`
-below works for motion and audio but not for face tracking.
+upstream's daemon plus a choice of camera source (the rendered eye camera, or your webcam)
+and the viewer's camera overlay. It takes upstream's flags. Faces are detected by the
+bridge itself, on the host, from the camera stream the daemon serves — the daemon's own
+face tracking is left as upstream ships it and never armed — so upstream's
+`reachy-mini-daemon --sim` below works for the bridge too; the launcher is what adds the
+webcam and the overlay.
 
 ### Headless sim — CI (motion + audio, no camera)
 
@@ -26,7 +27,7 @@ Real MuJoCo physics, no viewer, no display — runs anywhere:
 
 ```
 uv run python -m reachy_mini_bridge.sim_daemon --headless --preload-datasets
-# upstream alone, without the tracking corrections:
+# upstream alone, without the webcam source and the overlay:
 reachy-mini-daemon --sim --headless --preload-datasets
 ```
 
@@ -40,7 +41,7 @@ Drop `--headless` to open the MuJoCo viewer. The viewer supplies a **GL context*
 
 ```
 mjpython -m reachy_mini_bridge.sim_daemon --scene minimal --preload-datasets
-# upstream alone, without the tracking corrections:
+# upstream alone, without the webcam source and the overlay:
 mjpython -m reachy_mini.daemon.app.main --sim --scene minimal --preload-datasets
 ```
 
@@ -77,7 +78,7 @@ write_test_scene("/tmp/scene")  # -> /tmp/scene/scene.xml (the face starts hidde
 mjpython -m reachy_mini_bridge.testing.sim_scene --scene-path /tmp/scene/scene.xml --preload-datasets
 ```
 
-It is the sim daemon launcher with the scene added, so the head converges on the face. Then, from any process: `SimSceneClient().show("face")` to bring it into view, `.place("face", (0.45, 0.15, 0.20), duration=1.5)` to move it, `.hide("face")` to take it away again — or `curl -X POST localhost:8000/api/sim-scene/bodies/face -H 'Content-Type: application/json' -d '{"visible": true}'`. A `ReachyMiniConfig` whose `daemon.scene` is that `.xml` path does the launch for you (`"headless": false` — the face needs the viewer's camera to be seen). The e2e harness runs every sim it spawns on this scene.
+It is the sim daemon launcher with the scene added; a bridge configured with the `yunet` detector then finds the face in the rendered camera and the head converges on it. Then, from any process: `SimSceneClient().show("face")` to bring it into view, `.place("face", (0.45, 0.15, 0.20), duration=1.5)` to move it, `.hide("face")` to take it away again — or `curl -X POST localhost:8000/api/sim-scene/bodies/face -H 'Content-Type: application/json' -d '{"visible": true}'`. A `ReachyMiniConfig` whose `daemon.scene` is that `.xml` path does the launch for you (`"headless": false` — the face needs the viewer's camera to be seen). The e2e harness runs every sim it spawns on this scene.
 
 ### You in front of the sim (a webcam as the camera)
 

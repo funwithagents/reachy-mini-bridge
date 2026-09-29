@@ -105,7 +105,7 @@ daemon at setup:
 | `audio` | recording yields a mic sample | ✅ | ✅ | ✅ |
 | `camera` | a camera frame comes back (needs a GL context) | ⚠️ not on headless macOS | ✅ | ✅ |
 | `gravity_compensation` | hardware daemon on the Placo kinematics engine | ❌ | ❌ | ✅ with `reachy-mini[placo_kinematics]` |
-| `faces` | the daemon runs the bridge's test scene (every sim the harness spawns does), which has a `face` body — hidden until shown | ✅ (nothing looks at it) | ✅ | ❌ |
+| `faces` | the daemon runs the bridge's test scene (every sim the harness spawns does), which has a `face` body — hidden until shown; the bridge's `yunet` detector, which `live_api` configures, finds it in the rendered camera | ✅ (nothing looks at it: no camera) | ✅ | ❌ |
 | `doa` | mic-array direction of arrival | ❌ | ❌ | ✅ (reserved) |
 
 Capabilities are **probed, not assumed** from the backend type — environment quirks decide
@@ -128,17 +128,16 @@ The `live_api` fixture reads the same knobs the bridge's own tier uses:
 | `REACHY_MINI_HOST` | `127.0.0.1` | daemon host (borrow one already running, or your robot; loopback lets the harness start a USB robot's daemon) |
 | `REACHY_MINI_PORT` | `8000` | daemon port |
 | `REACHY_MINI_E2E_SIM_VIEWER` | unset | `1` to launch the headfull MuJoCo viewer (local; needs a GUI/GL context) |
-| `REACHY_MINI_E2E_FACE_DETECTOR` | unset | `yunet` runs the bridge's opt-in custom-detector test (`tests-e2e/test_custom_faces.py`): upstream's YuNet as a custom `FaceDetector` on the viewer sim's camera, in a session of its own; the model downloads into the Hugging Face cache on first use ([custom-face-detector.md](custom-face-detector.md)) |
 
 **Testing tracking without a person.** Every sim the harness spawns runs the bridge's test
 scene: upstream's empty scene plus a portrait that stays hidden until a test shows it, so
 tests that don't use it are unaffected, and `faces` is probed on every spawned sim. With
 `REACHY_MINI_E2E_SIM_VIEWER=1` (the camera needs the viewer), the `sim_scene` fixture (from the same
 plugin module) hands you a `SimSceneClient` to show, place, move and hide it while your
-code runs — the daemon's real face detector and tracking do the rest, and the head
-converges on the face as a robot's does (the sim runs through the bridge's launcher, which
-corrects upstream's sim tracking — [specs/sim_daemon.md](../specs/sim_daemon.md)), so a
-test can assert how the head moves and where it settles, not only that it moved:
+code runs — the bridge's own detector (the `yunet` detector `live_api` configures) finds
+it in the rendered camera stream and the bridge's tracker does the rest, so the head
+converges on the face as a robot's does and a test can assert how the head moves and where
+it settles, not only that it moved:
 
 ```python
 def test_it_looks_at_whoever_is_there(live_api, sim_scene):
@@ -147,7 +146,7 @@ def test_it_looks_at_whoever_is_there(live_api, sim_scene):
     sim_scene.place("face", (0.45, 0.15, 0.20))  # 18.4° to the robot's left
     sim_scene.show("face")
     ...  # the head turns left, past the face by a few degrees, and settles at ~+18° yaw
-    # with get_tracked_face() near (0, 0)
+    # with the target face of api.faces.value near (0, 0)
     sim_scene.hide("face")  # nobody there: the head is handed back to the idle move
 ```
 

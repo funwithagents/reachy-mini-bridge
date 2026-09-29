@@ -41,7 +41,7 @@ def test_fetch_daemon_json_gets_the_path_from_the_client_host_and_port() -> None
     class _Daemon(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
             requested.append(self.path)
-            body = json.dumps({"status": "ok", "face_target": {"detected": False}})
+            body = json.dumps({"status": "ok", "kinematics_engine": "Placo"})
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -57,12 +57,12 @@ def test_fetch_daemon_json_gets_the_path_from_the_client_host_and_port() -> None
         robot = SimpleNamespace(
             client=SimpleNamespace(host="127.0.0.1", port=server.server_address[1])
         )
-        payload = fetch_daemon_json(robot, "/api/media/tracking/face")  # pyright: ignore[reportArgumentType]
+        payload = fetch_daemon_json(robot, "/api/kinematics/info")  # pyright: ignore[reportArgumentType]
     finally:
         server.shutdown()
         server.server_close()
-    assert requested == ["/api/media/tracking/face"]
-    assert payload == {"status": "ok", "face_target": {"detected": False}}
+    assert requested == ["/api/kinematics/info"]
+    assert payload == {"status": "ok", "kinematics_engine": "Placo"}
 
 
 def test_context_manager_records_teardown() -> None:
@@ -83,8 +83,6 @@ _CONSUMED_SLICE: list[tuple[str, type, str]] = [
             "set_target",
             "get_current_head_pose",
             "get_current_joint_positions",
-            "start_head_tracking",
-            "stop_head_tracking",
             "enable_wobbling",
             "disable_wobbling",
             "enable_motors",

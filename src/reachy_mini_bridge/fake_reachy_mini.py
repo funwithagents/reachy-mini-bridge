@@ -64,18 +64,6 @@ class _FakeStatus:
         self.mockup_sim_enabled = mockup_sim_enabled
 
 
-def _face_target(
-    *,
-    detected: bool,
-    x: float | None = None,
-    y: float | None = None,
-    roll: float | None = None,
-    ts: float | None = None,
-) -> dict[str, Any]:
-    """The ``face_target`` dict of the daemon's ``GET /api/media/tracking/face``."""
-    return {"detected": detected, "x": x, "y": y, "roll": roll, "ts": ts}
-
-
 class _FakeDaemonClient:
     """Stand-in for ``ReachyMini.client`` (the daemon client).
 
@@ -93,10 +81,6 @@ class _FakeDaemonClient:
         self.kinematics_engine = "Placo"
         self.simulation_enabled = False
         self.mockup_sim_enabled = False
-        # The daemon's current face target, as its REST endpoint serves it
-        # (specs/user_perception.md "Detection sources"); driven by the fake's
-        # show_face / hide_face.
-        self.face_target: dict[str, Any] = _face_target(detected=False)
 
     def get_status(self) -> _FakeStatus:
         return _FakeStatus(
@@ -324,26 +308,6 @@ class FakeReachyMini:
     def get_current_joint_positions(self) -> tuple[list[float], list[float]]:
         # Upstream: seven head joints, body yaw first; the fake does no kinematics.
         return [self._body_yaw, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], list(self._antennas)
-
-    def start_head_tracking(self, weight: float = 1.0) -> None:
-        self.commands.append(("start_head_tracking", {"weight": weight}))
-
-    def stop_head_tracking(self) -> None:
-        self.commands.append(("stop_head_tracking", {}))
-
-    # --- the scene in front of the camera (fake-only: a test's stand-in for a person) ---
-    def show_face(
-        self, x: float = 0.0, y: float = 0.0, roll: float | None = None
-    ) -> None:
-        """A face in view of the daemon's detector at normalised ``(x, y)`` (``[-1, 1]``,
-        x right, y down), reported on ``client.face_target`` from now on."""
-        self.client.face_target = _face_target(
-            detected=True, x=x, y=y, roll=roll, ts=time.monotonic()
-        )
-
-    def hide_face(self) -> None:
-        """Nobody in view any more: the face target reads undetected."""
-        self.client.face_target = _face_target(detected=False, ts=time.monotonic())
 
     # --- audio-reactive head wobbling (a mode; moves nothing on the fake) ---
     def enable_wobbling(self) -> None:

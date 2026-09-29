@@ -703,9 +703,9 @@ def test_camera_frame_delivers_a_frame(
 # Runs where the harness probed `camera` (the viewer sim) and `faces` (the bridge's test
 # scene, which every harness-spawned sim runs: specs/sim_scene.md); skips elsewhere — the
 # headless sim renders no camera, a robot has no scriptable face. The portrait plane goes
-# through the daemon's real detection pipeline (render → GStreamer → YuNet) on the
-# bridge's sim daemon launcher, whose correction makes the daemon publish the faces it
-# detects (specs/sim_daemon.md), and the bridge's own tracker aims the head
+# through the real pipeline: rendered by the daemon, streamed to the client, found by the
+# bridge's shipped detector on the camera feed (the `yunet` detector `live_api` configures,
+# specs/user_perception.md), and the bridge's own tracker aims the head
 # (specs/head_tracking.md). So these tests check how the head moves and where it settles:
 # toward the face, past it once by a bounded amount and never oscillating, onto the yaw
 # the face's position implies, with the tracked face at the image centre. Watch the
@@ -717,9 +717,12 @@ def test_camera_frame_delivers_a_frame(
 
 FACE = "face"
 LATERAL_M = 0.15
-# Where the head settles: its yaw averaged over the last SETTLE_WINDOW_S of the track,
-# since the head keeps breathing around the aim (its roaming toned down to a quarter).
-YAW_TOLERANCE_DEG = 3.0
+# Where the head settles: its yaw averaged over the last SETTLE_WINDOW_S of the track.
+# The head keeps breathing around the aim (its roaming toned down to a quarter, about
+# ±2° of yaw on a slow random walk that a 2 s mean does not cancel), so the yaw is a
+# coarse check that the head is on the face; the precise one is the face at the image
+# centre (CENTRED, below), which is what tracking guarantees.
+YAW_TOLERANCE_DEG = 5.0
 SETTLE_WINDOW_S = 2.0
 # Turning onto a face, the head may swing once past it and creep back. Measured on the
 # viewer sim: 3–9.5° with upstream's daemon-side tracking; 0–3° with the bridge's
@@ -729,9 +732,10 @@ SETTLE_WINDOW_S = 2.0
 OVERSHOOT_MAX_DEG = 12.0
 # The settled pitch for a face that only moves sideways (it stays at the same height).
 PITCH_TOLERANCE_DEG = 3.0
-# The tracked face's normalised image position once centred (|x|, |y| in [-1, 1]); the
-# head breathing around the aim moves it a little.
-CENTRED = 0.15
+# The tracked face's normalised image position once centred (|x|, |y| in [-1, 1]): within
+# about 3° of the image centre on the sim's 112° camera. Measured at settle on the viewer
+# sim: |x|, |y| under 0.025 — the head breathing around the aim moves it a little.
+CENTRED = 0.05
 # How far off neutral the head may sit once it has been handed back. The idle move
 # roams in roll/pitch/yaw (specs/motion.md "The moves"): it averages ~6 deg from neutral
 # and reaches 10.3 deg at the corner of its envelope, so this is measured as a mean over
@@ -790,7 +794,9 @@ class _Track:
         self.expected_yaw = expected_yaw
         self.samples: list[tuple[float, float]] = []
         self.times: list[float] = []
-        self.face = face
+        self.face = face  # the target face of `api.faces` once settled, or None
+        self.delay_s: float | None = None  # the tracker's delay estimate once settled
+        self.frame_note = ""  # the camera frame's age and whether it carried a pose
 
     def _settled(self) -> list[tuple[float, float]]:
         """The samples of the track's last SETTLE_WINDOW_S."""
@@ -835,7 +841,7 @@ class _Track:
 
 
 async def _track_onto(
-    robot: Any,
+    api: ReachyMiniApi,
     where: str,
     lateral: float,
     settle_timeout: float = 10.0,
@@ -843,7 +849,8 @@ async def _track_onto(
 ) -> _Track:
     """Sample the head until it holds still (yaw within 1° over a second, and at least
     `min_seconds` in — detection and the gaze layer's fade take a moment to start the
-    head moving), or `settle_timeout`; then read the tracked face."""
+    head moving), or `settle_timeout`; then read the tracked face from `api.faces`."""
+    robot: Any = api.robot
     start_yaw, _ = _yaw_pitch_deg(await asyncio.to_thread(robot.get_current_head_pose))
     track = _Track(where, start_yaw, _expected_yaw_deg(lateral), None)
     started = time.monotonic()
@@ -859,7 +866,18 @@ async def _track_onto(
         if time.monotonic() >= deadline:
             break
         await asyncio.sleep(0.05)
-    track.face = await asyncio.to_thread(robot.get_tracked_face, False)
+    faces = api.faces.value.faces
+    track.face = faces[0] if faces else None
+    tracker = api._tracker  # the estimate the gaze tests print, for the spec's numbers
+    track.delay_s = None if tracker is None else tracker.delay_s
+    frame = api.camera.latest()
+    track.frame_note = (
+        "no frame"
+        if frame is None
+        else f"frame age {time.monotonic() - frame.ts:.3f} s, "
+        f"pose stamped: {frame.head_pose is not None}, "
+        f"report pose: {api.faces.value.head_pose is not None}"
+    )
     return track
 
 
@@ -873,7 +891,8 @@ def _assert_tracked(track: _Track, pitch_ahead: float | None = None) -> None:
         f"\n[e2e] {track.where}: yaw {track.start_yaw:+.1f} -> {track.yaw:+.1f} deg "
         f"(expected {track.expected_yaw:+.1f}, overshoot {track.overshoot_deg:.1f}, "
         f"swing back {track.swing_back_deg:.1f}), "
-        f"pitch {track.pitch:+.1f}, face ({face.x}, {face.y})"
+        f"pitch {track.pitch:+.1f}, face {face}, delay estimate {track.delay_s}, "
+        f"{track.frame_note}"
     )
     assert track.overshoot_deg <= OVERSHOOT_MAX_DEG, (
         f"{track.where}: the head swung {track.overshoot_deg:.1f} deg past the face"
@@ -891,7 +910,7 @@ def _assert_tracked(track: _Track, pitch_ahead: float | None = None) -> None:
             f"{track.where}: pitch {track.pitch:+.1f} deg, {pitch_ahead:+.1f} with the "
             "face ahead at the same height"
         )
-    assert face.detected, f"{track.where}: the daemon reports no tracked face"
+    assert face is not None, f"{track.where}: the bridge reports no tracked face"
     assert abs(face.x) < CENTRED and abs(face.y) < CENTRED, (
         f"{track.where}: the tracked face is not at the image centre "
         f"({face.x:+.2f}, {face.y:+.2f})"
@@ -934,9 +953,8 @@ def test_faces_report_someone_appearing_and_leaving(
     """specs/user_perception.md "The report is an observable": a subscriber of
     `api.faces.changes()` is woken with one face when the portrait is shown, and with
     none once it has been hidden past the absence window. Tracking is stopped for the
-    test (the head stays out of it); the detection loop arms the daemon's detector at
-    DAEMON_DETECT_WEIGHT whatever tracking says — this pins the daemon detecting at that
-    negligible weight ("Detection sources")."""
+    test (the head stays out of it); the detection loop runs the configured `yunet`
+    detector for the caller's switch alone."""
     api, _caps = live_api
 
     async def next_count(changes: AsyncIterator[FaceReport], count: int) -> FaceReport:
@@ -966,7 +984,8 @@ def test_faces_report_someone_appearing_and_leaving(
 
     appeared, left = asyncio.run(scenario())
     print(f"\n[e2e] appeared: {appeared}\n[e2e] left: {left}")
-    assert appeared.source == "daemon"
+    assert appeared.source == "yunet"
+    assert appeared.faces[0].size > 0.05  # the shipped detector reports sizes
     assert all(-1.0 <= v <= 1.0 for v in (appeared.faces[0].x, appeared.faces[0].y))
     assert left.faces == ()
 
@@ -979,7 +998,6 @@ def test_head_tracking_turns_onto_a_face_and_follows_it(
     each time toward the face, past it at most once by a bounded amount, settling at the
     yaw its position implies with the face at the image centre and the pitch unchanged."""
     api, _caps = live_api
-    robot: Any = api.robot
 
     async def scenario() -> list[_Track]:
         await api.set_motors_state("enabled")
@@ -987,11 +1005,11 @@ def test_head_tracking_turns_onto_a_face_and_follows_it(
         await api.start_head_tracking()
         assert api.tracking, "tracking is on by default from the config"
         face_scene.show(FACE)
-        tracks = [await _track_onto(robot, "face ahead", 0.0)]
+        tracks = [await _track_onto(api, "face ahead", 0.0)]
         for lateral in (LATERAL_M, -LATERAL_M, 0.0):
             face_scene.place(FACE, _face_at(lateral), duration=1.0)
             tracks.append(
-                await _track_onto(robot, f"face moved to y={lateral:+.2f} m", lateral)
+                await _track_onto(api, f"face moved to y={lateral:+.2f} m", lateral)
             )
         assert api.attention == "engaged"
         return tracks
@@ -1019,7 +1037,7 @@ def test_attention_hands_the_head_back_and_reengages_on_the_face(
         face_scene.place(FACE, _face_at(LATERAL_M))
         face_scene.show(FACE)
         assert await _wait_for(lambda: api.attention == "engaged", 6.0)
-        first = await _track_onto(robot, "engaged on the face", LATERAL_M)
+        first = await _track_onto(api, "engaged on the face", LATERAL_M)
         face_scene.hide(FACE)
         hand_back = TRACKING_LOST_S + BLEND_S + 4.0
         assert await _wait_for(lambda: api.attention == "watching", hand_back), (
@@ -1032,7 +1050,7 @@ def test_attention_hands_the_head_back_and_reengages_on_the_face(
         face_scene.show(FACE)
         reengaged = await _wait_for(lambda: api.attention == "engaged", 8.0)
         again = await _track_onto(
-            robot, "re-engaged on the face's new position", -LATERAL_M
+            api, "re-engaged on the face's new position", -LATERAL_M
         )
         return first, settled, z_range, api.attention if reengaged else None, again
 
@@ -1073,7 +1091,7 @@ def test_emotion_plays_over_tracking_and_the_head_returns_to_the_face(
         face_scene.place(FACE, _face_at(LATERAL_M))
         face_scene.show(FACE)
         assert await _wait_for(lambda: api.attention == "engaged", 6.0)
-        await _track_onto(robot, "before the emotion", LATERAL_M)
+        await _track_onto(api, "before the emotion", LATERAL_M)
         names = await api.list_emotions()
         assert names, "emotions library loaded but empty"
         emotion = names[0]  # the short move test_play_emotion_plays_a_real_move plays
@@ -1091,7 +1109,7 @@ def test_emotion_plays_over_tracking_and_the_head_returns_to_the_face(
         finally:
             sampler.cancel()
         move_excursion = (max(angles) - min(angles)) if len(angles) > 1 else 0.0
-        after = await _track_onto(robot, "after the emotion", LATERAL_M)
+        after = await _track_onto(api, "after the emotion", LATERAL_M)
         return emotion, move_excursion, after
 
     emotion, move_excursion, after = asyncio.run(scenario())

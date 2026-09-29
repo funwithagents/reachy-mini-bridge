@@ -413,7 +413,7 @@ def test_scene_extension_installs_the_director_once_the_model_exists(
     installed, upstream's backend cannot even load the scene."""
     from reachy_mini.daemon.backend.mujoco.backend import MujocoBackend
 
-    from reachy_mini_bridge.sim_daemon import corrected_backend
+    from reachy_mini_bridge.sim_daemon import bridge_backend
 
     name = upstream_scene_name(scene_path)
     mujoco.set_mjcb_control(lambda m, d: None)
@@ -422,7 +422,7 @@ def test_scene_extension_installs_the_director_once_the_model_exists(
     mujoco.set_mjcb_control(None)
 
     director = SceneDirector()
-    backend = corrected_backend(
+    backend = bridge_backend(
         MujocoBackend, extensions=[sim_scene.scene_extension(director)]
     )(scene=name, headless=True, use_audio=False)
     assert mujoco.get_mjcb_control() is not None

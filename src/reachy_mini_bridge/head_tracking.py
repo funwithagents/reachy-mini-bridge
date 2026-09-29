@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from .robot import AnyReachyMini
 
 __all__ = [
+    "DELAY_MAX_CONTRAST",
     "DELAY_MAX_S",
     "DELAY_MIN_MOTION_DEG",
     "DELAY_PRIOR_S",
@@ -64,16 +65,20 @@ TRACKING_LOST_S = (
     2.0  # no face for this long withdraws the aim (upstream's own timeout)
 )
 # The online delay estimate (specs/head_tracking.md "The aim"): the delay L between an
-# observation's time and the head pose its frame was taken from, fitted over the new
-# detections of the last DELAY_WINDOW_S by the L in [0, DELAY_MAX_S] (DELAY_STEP_S apart)
-# that keeps the face's world direction most constant; refitted on each new detection
-# while the head has turned at least DELAY_MIN_MOTION_DEG over the window, the estimate
-# moving DELAY_SMOOTHING of the way. DELAY_PRIOR_S is where it starts, corrected by the
-# first turn.
+# observation's time — the frame's arrival at the bridge — and the head pose its frame
+# was taken from, fitted over the new detections of the last DELAY_WINDOW_S by the L in
+# [0, DELAY_MAX_S] (DELAY_STEP_S apart) that keeps the face's world direction most
+# constant; refitted on each new detection while the head has turned at least
+# DELAY_MIN_MOTION_DEG over the window and the fit is distinct — the best delay's spread
+# at most DELAY_MAX_CONTRAST of the worst's, since a person moving while the head turns
+# flattens the score and a flat score says nothing — the estimate moving DELAY_SMOOTHING
+# of the way. DELAY_PRIOR_S is where it starts, corrected by the first turn; on the
+# viewer sim the estimate settles between 0.05 and 0.45 s, mostly 0.1–0.25.
 DELAY_WINDOW_S = 3.0
-DELAY_MAX_S = 0.8
+DELAY_MAX_S = 0.5
 DELAY_STEP_S = 0.02
 DELAY_MIN_MOTION_DEG = 4.0
+DELAY_MAX_CONTRAST = 0.5
 DELAY_SMOOTHING = 0.3
 DELAY_PRIOR_S = 0.2
 _DELAY_MIN_DETECTIONS = 8  # a fit needs a few detections across the turn
@@ -166,21 +171,20 @@ class HeadTracker:
 
     ``history()`` is the motion loop's record of the head poses the robot reported
     (``head_pose_history``: monotonic times and 4x4 poses), ``set_gaze(aim, focus=)``
-    its gaze command; ``same_host`` says whether a report's ``ts`` is on this process's
-    monotonic clock. ``focus`` is the caller's, handed over with every aim.
+    its gaze command. A report's ``ts`` is its frame's time on this process's monotonic
+    clock (specs/camera.md). ``focus`` is the caller's, handed over with every aim.
     :meth:`observe` is fed every report of the detection loop.
     """
 
     camera: CameraModel
     history: PoseHistory
     set_gaze: SetGaze
-    same_host: bool
     focus: bool = False
     _engaged: bool = field(default=False, init=False)
     _seen_at: float = field(default=0.0, init=False)
     _delay: float = field(default=DELAY_PRIOR_S, init=False)
     _detections: deque[_Detection] = field(default_factory=deque, init=False)
-    _last_key: object = field(default=None, init=False)
+    _last_ts: float | None = field(default=None, init=False)
     _last_t_obs: float = field(default=0.0, init=False)
 
     @property
@@ -240,11 +244,11 @@ class HeadTracker:
     ) -> npt.NDArray[np.float64]:
         """The reported head pose at the observation's time minus the estimated delay;
         a new detection joins the estimate's window and refits it first."""
-        face = report.faces[0]
-        key: object = report.ts if self.same_host else (face.x, face.y, report.ts)
-        if key != self._last_key:
-            self._last_key = key
-            self._last_t_obs = report.ts if self.same_host and report.ts > 0.0 else now
+        # Only a new detection counts: the loop reports once per new frame, so a new
+        # frame time is a new detection.
+        if report.ts != self._last_ts:
+            self._last_ts = report.ts
+            self._last_t_obs = report.ts if report.ts > 0.0 else now
             self._add_detection(self._last_t_obs, u, v, now)
         times, poses = self.history()
         index = nearest_index(times, np.array([self._last_t_obs - self._delay]))[0]
@@ -273,6 +277,8 @@ class HeadTracker:
             return  # the head held still: every delay fits alike
         directions = np.einsum("mkij,mj->mki", rotations, rays)
         spread = 1.0 - np.linalg.norm(directions.mean(axis=0), axis=-1)
+        if spread.min() > DELAY_MAX_CONTRAST * spread.max():
+            return  # no delay explains the directions: the face itself moved
         best = float(delays[int(np.argmin(spread))])
         self._delay += DELAY_SMOOTHING * (best - self._delay)
 

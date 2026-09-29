@@ -33,36 +33,6 @@ def test_motor_state_transitions() -> None:
     assert mode() == "disabled"
 
 
-def test_motion_commands_are_recorded() -> None:
-    robot = FakeReachyMini()
-    robot.start_head_tracking(weight=0.5)
-
-    names = [name for name, _ in robot.commands]
-    assert names == ["start_head_tracking"]
-
-    tracking_args = robot.commands[0][1]
-    assert tracking_args["weight"] == 0.5
-
-
-def test_show_face_and_hide_face_drive_the_daemon_face_target() -> None:
-    robot = FakeReachyMini()
-    assert robot.client.face_target["detected"] is False
-
-    robot.show_face(0.5, -0.25, roll=0.1)
-    target = robot.client.face_target
-    assert (target["detected"], target["x"], target["y"], target["roll"]) == (
-        True,
-        0.5,
-        -0.25,
-        0.1,
-    )
-    assert target["ts"] is not None
-
-    robot.hide_face()
-    assert robot.client.face_target["detected"] is False
-    assert robot.client.face_target["x"] is None
-
-
 def test_wobbling_toggles_are_recorded() -> None:
     robot = FakeReachyMini()
     robot.enable_wobbling()

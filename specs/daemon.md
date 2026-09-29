@@ -72,7 +72,7 @@ After spawning, `managed_daemon` polls `is_daemon_ready` once per second until `
 
 ### The launch command
 
-`launch_command(config, backend=...)` builds the argv. Every `sim` daemon runs through the bridge's **sim daemon launcher** ([sim_daemon.md](sim_daemon.md)) — upstream's daemon with the corrections that make face tracking converge in the sim, and the choice of camera source — from the recipes in [../docs/running-the-sim-daemon.md](../docs/running-the-sim-daemon.md):
+`launch_command(config, backend=...)` builds the argv. Every `sim` daemon runs through the bridge's **sim daemon launcher** ([sim_daemon.md](sim_daemon.md)) — upstream's daemon with the choice of camera source (rendered eye camera or a host webcam) and the viewer's camera overlay — from the recipes in [../docs/running-the-sim-daemon.md](../docs/running-the-sim-daemon.md):
 
 - **headless** (`config.headless`, the default): `<this interpreter> -m reachy_mini_bridge.sim_daemon --headless --[no-]preload-datasets [--scene <scene>] [camera flags]` — real MuJoCo physics, no viewer, runs anywhere (CI included); with the default `sim` camera there are no frames here (upstream renders the eye camera only under the viewer), with a `webcam` camera the host camera's frames flow headless too.
 - **viewer** (`headless: false`): `mjpython -m reachy_mini_bridge.sim_daemon --[no-]preload-datasets [--scene <scene>] [camera flags] [display flags]` — opens the MuJoCo viewer, which supplies the render's GL context and lets a person watch the sim. It needs an unlocked, interactive GUI session; a locked screen or a non-GUI process tree makes it hang or crash, and the `DaemonError` on that path says so.

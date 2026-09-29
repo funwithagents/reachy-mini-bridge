@@ -30,7 +30,7 @@ from typing import Any
 import pytest
 
 from reachy_mini_bridge.api import ReachyMiniApi, _daemon_kinematics_engine
-from reachy_mini_bridge.config import ReachyMiniConfig
+from reachy_mini_bridge.config import FaceSettings, MotionSettings, ReachyMiniConfig
 from reachy_mini_bridge.errors import SimSceneError
 from reachy_mini_bridge.robot import AnyReachyMini
 from reachy_mini_bridge.testing import _daemon
@@ -172,6 +172,10 @@ def live_api(
     # this harness (`daemon.spawn` stays "never"): the api connects as a plain network
     # client to the daemon `_live_daemon` already manages, so one daemon serves the whole
     # test module. See `_daemon.backend` for why the backend label is safe here.
+    # The live tier's subject is the robot that follows a face, so the config names the
+    # shipped `yunet` detector with detection and tracking on (the defaults run no
+    # detector — specs/user_perception.md "Configuration"). The model downloads into the
+    # Hugging Face cache on the first live run, as the emotions library does.
     api = ReachyMiniApi(
         ReachyMiniConfig(
             backend=_daemon.backend(),
@@ -181,6 +185,8 @@ def live_api(
                 "port": port,
                 "media_backend": "local",
             },
+            faces=FaceSettings(detector="yunet", detection=True),
+            motion=MotionSettings(tracking=True),
         )
     )
     asyncio.run(api.__aenter__())

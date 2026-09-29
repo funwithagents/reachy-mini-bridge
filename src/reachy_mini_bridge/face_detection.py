@@ -1,13 +1,13 @@
-"""Face detection: the detection loop over a pluggable source and the observable face
-report (specs/user_perception.md).
+"""Face detection: the detection loop running one detector over the camera feed and the
+observable face report (specs/user_perception.md).
 
-The loop polls its source at ``FACE_POLL_HZ``, turns each observation into a
-``FaceReport``, ``update``s the api's ``Observable[FaceReport]`` on every poll and
-``set``s it (wakes subscribers) only when the face count changes — a rise at once, a
-drop once it has held for ``FACE_ABSENT_S`` — or when ``active`` flips. The ``daemon``
-source reads the daemon's own detector over its HTTP API; the ``custom`` source samples
-the camera feed ([camera](camera.py)) and hands each new frame to a developer's
-``FaceDetector``, then selects the target face itself. The bridge ships no vision code.
+The loop samples the camera feed ([camera](camera.py)) at ``FACE_POLL_HZ``, hands each
+new frame to its detector — the shipped ``yunet`` ([yunet](yunet.py), upstream's model)
+or a developer's ``custom`` ``FaceDetector`` — selects the target face itself, turns the
+result into a ``FaceReport``, ``update``s the api's ``Observable[FaceReport]`` on every
+observation and ``set``s it (wakes subscribers) only when the face count changes — a rise
+at once, a drop once it has held for ``FACE_ABSENT_S`` — or when ``active`` flips.
+Detection is opt-in: a config names the detector, and with none nothing runs.
 """
 
 from __future__ import annotations
@@ -18,10 +18,7 @@ import math
 import time
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, Protocol
-
-from . import robot as _robot
-from .fake_reachy_mini import FakeReachyMini
+from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -31,11 +28,10 @@ if TYPE_CHECKING:
 
     from .camera import CameraFeed, CameraFrame
     from .observable import Observable
-    from .robot import AnyReachyMini
 
 __all__ = [
-    "DAEMON_DETECT_WEIGHT",
     "FACE_ABSENT_S",
+    "FACE_DETECTOR_NAMES",
     "FACE_POLL_HZ",
     "FACE_SOURCE_DOWN_S",
     "SELECT_MAX_JUMP",
@@ -48,8 +44,6 @@ __all__ = [
     "FaceReport",
     "PixelFace",
     "check_face_detector_factory",
-    "daemon_face_target",
-    "report_from_daemon",
     "report_from_pixels",
 ]
 
@@ -57,27 +51,24 @@ _logger = logging.getLogger(__name__)
 
 # The detection loop's timing (specs/user_perception.md "The detection loop"). Module
 # constants, not config; read at run time so tests can shorten them.
-# Three polls per observation: upstream's detector sees the daemon's local camera feed,
-# capped at 10 fps (media_server.IPC_FPS), and polling that at 10 Hz would add up to a
-# frame's worth of delay and alias; at 30 Hz each observation arrives within ~33 ms, for
-# a sub-millisecond HTTP read on loopback. The `custom` source samples the camera feed
-# at the same rate and runs its detector once per new frame.
+# Three polls per frame: a local daemon's camera feed is capped at 10 fps
+# (media_server.IPC_FPS), and sampling it at 10 Hz would add up to a frame's worth of
+# delay and alias; at 30 Hz a new frame is picked up within ~33 ms, and the detector
+# runs once per new frame whatever the poll rate.
 FACE_POLL_HZ = 30.0
 FACE_ABSENT_S = 0.3  # a drop in the count is published once it has held this long
-FACE_SOURCE_DOWN_S = 5.0  # a source failing this long reads as not looking
-# The weight the `daemon` source arms the daemon's tracker at: the daemon runs its
-# detector only above zero, and blends its own aim into the head by this much.
-DAEMON_DETECT_WEIGHT = 0.001
-# The `custom` source's selection gates (specs/user_perception.md "The pipeline"),
-# upstream's own values so the source behaves like the daemon's: acquire the largest
-# face above this fraction of the frame's area, keep the nearest face within this jump
-# (normalised image units, [-1, 1] across the frame), drop the association after this
-# many consecutive misses.
+FACE_SOURCE_DOWN_S = 5.0  # a detector producing nothing this long reads as not looking
+# The selection gates (specs/user_perception.md "The pipeline"), upstream's own values
+# so the bridge selects as the daemon's tracker does: acquire the largest face above this
+# fraction of the frame's area, keep the nearest face within this jump (normalised image
+# units, [-1, 1] across the frame), drop the association after this many consecutive
+# misses.
 SELECT_MIN_AREA_FRAC = 0.003
 SELECT_MAX_JUMP = 0.5
 SELECT_MAX_MISSES = 20
 
-_DAEMON_FACE_PATH = "/api/media/tracking/face"
+# The detectors a config names (specs/user_perception.md "Detectors"); `None` is none.
+FACE_DETECTOR_NAMES = ("yunet", "custom")
 
 
 @dataclass(frozen=True)
@@ -87,25 +78,22 @@ class Face:
     x: float  # [-1, 1], x right; the nose when known, else the bbox centre
     y: float  # [-1, 1], y down; (0, 0) is the image centre
     roll: float | None  # head roll in radians from the eye line; None when unknown
-    size: (
-        float | None
-    )  # bbox height as a fraction of the frame height; None from the daemon
+    size: float  # bbox height as a fraction of the frame height
 
 
 @dataclass(frozen=True)
 class FaceReport:
     """Who the detection loop sees: the value of ``api.faces``."""
 
-    faces: tuple[Face, ...]  # every face the source reports; the target face first
-    ts: float  # when the observation was made (the source's monotonic clock)
-    source: str  # "daemon" | "custom"
+    faces: tuple[Face, ...]  # every face the detector reports; the target face first
+    ts: float  # the frame's time (the bridge's monotonic clock, specs/camera.md)
+    source: str | None  # the detector's name: "yunet" | "custom"; None when none is set
     active: bool  # a detector is running; False means "unknown", not "nobody"
-    # The head pose the frame was captured from, when the source knows it (a custom
-    # detector's frame); None from the daemon, whose report says only when it detected.
+    # The head pose the frame was captured from, when the camera feed could stamp it.
     head_pose: npt.NDArray[np.float64] | None = field(default=None, compare=False)
 
     @classmethod
-    def inactive(cls, source: str) -> FaceReport:
+    def inactive(cls, source: str | None) -> FaceReport:
         """The report while no detector is looking (before entry, after exit)."""
         return cls(faces=(), ts=0.0, source=source, active=False)
 
@@ -255,8 +243,10 @@ def report_from_pixels(
     size: tuple[int, int],
     frame: CameraFrame,
     target_index: int | None,
+    *,
+    source: str = "custom",
 ) -> FaceReport:
-    """A custom detector's faces on ``frame`` (``size`` = its width, height) as a report:
+    """A detector's faces on ``frame`` (``size`` = its width, height) as a report:
     every face normalised into the tracker's coordinates, its roll from the eyes when
     given, its size as the bbox height over the frame's; the target face first; the
     frame's ``ts`` and ``head_pose`` carried over."""
@@ -277,45 +267,18 @@ def report_from_pixels(
     return FaceReport(
         faces=tuple(reported),
         ts=frame.ts,
-        source="custom",
+        source=source,
         active=True,
         head_pose=frame.head_pose,
     )
 
 
-# --- the daemon source --------------------------------------------------------------------
+def _yunet_factory() -> FaceDetector:
+    """The shipped detector's factory (specs/user_perception.md "The shipped detector");
+    imported here, not at module load, since `yunet.py` imports this module."""
+    from .yunet import YuNetDetector
 
-
-def daemon_face_target(robot: AnyReachyMini) -> dict[str, Any]:
-    """The daemon's current face target — the ``face_target`` dict of its REST payload
-    (``detected``, ``x``, ``y``, ``roll``, ``ts``). Blocking; run it under
-    ``asyncio.to_thread``. The fake serves it from its daemon client stand-in."""
-    if isinstance(robot, FakeReachyMini):
-        return dict(robot.client.face_target)
-    payload = _robot.fetch_daemon_json(robot, _DAEMON_FACE_PATH)
-    return dict(payload["face_target"])
-
-
-def report_from_daemon(target: dict[str, Any], *, active: bool) -> FaceReport:
-    """A daemon face target as a report: one face when detected, none otherwise."""
-    faces: tuple[Face, ...] = ()
-    if target.get("detected"):
-        roll = target.get("roll")
-        faces = (
-            Face(
-                x=float(target["x"]),
-                y=float(target["y"]),
-                roll=None if roll is None else float(roll),
-                size=None,
-            ),
-        )
-    ts = target.get("ts")
-    return FaceReport(
-        faces=faces,
-        ts=0.0 if ts is None else float(ts),
-        source="daemon",
-        active=active,
-    )
+    return YuNetDetector()
 
 
 # --- the loop -------------------------------------------------------------------------------
@@ -323,37 +286,34 @@ def report_from_daemon(target: dict[str, Any], *, active: bool) -> FaceReport:
 
 class FaceDetection:
     """The detection loop (specs/user_perception.md "The detection loop"): one asyncio
-    task polling the source and publishing on ``faces``, restartable.
+    task sampling the camera feed, running one detector once per new frame and
+    publishing on ``faces``, restartable.
 
-    ``on_observation`` receives every poll's report, undebounced (the head tracker's
-    feed). In ``daemon`` mode the loop arms the daemon's detector at
-    ``DAEMON_DETECT_WEIGHT`` when it starts and disarms it when it stops. In ``custom``
-    mode it samples ``feed`` — the camera feed — and runs the detector built by
-    ``detector_factory`` once per new frame, off the event loop; the daemon's tracking
-    is left alone.
+    ``detector`` names what runs — ``"yunet"`` (the shipped detector), ``"custom"`` (the
+    factory registered through ``detector_factory``) or ``None`` (nothing: ``start``
+    refuses). ``on_observation`` receives every observation's report, undebounced (the
+    head tracker's feed). The detector is built from its factory when the loop starts,
+    on a worker thread (a build may load a model); the daemon's own tracking is never
+    touched.
     """
 
     def __init__(
         self,
-        robot: AnyReachyMini,
         *,
-        source: str,
+        detector: str | None,
         faces: Observable[FaceReport],
         on_observation: Callable[[FaceReport], None] | None = None,
         feed: CameraFeed | None = None,
         detector_factory: FaceDetectorFactory | None = None,
     ) -> None:
-        self._robot = robot
-        self._source = source
+        self._name = detector
         self._faces = faces
         self._on_observation = on_observation
         self._feed = feed
         self._detector_factory = detector_factory
         self._task: asyncio.Task[None] | None = None
-        # Whether this loop sent the daemon its detect weight (and so owes the disarm).
-        self._armed = False
-        # The custom source's runner state: the detector in use (rebuilt from the factory
-        # at start and after `restart`), the selector, the last frame handed over.
+        # The runner state: the detector in use (built from the factory at start and
+        # rebuilt after `restart`), the selector, the last frame handed over.
         self._detector: FaceDetector | None = None
         self._selector = _FaceSelector()
         self._last_frame_id = 0
@@ -363,40 +323,53 @@ class FaceDetection:
         """Whether the loop's task is running."""
         return self._task is not None and not self._task.done()
 
-    async def start(self) -> None:
-        """Start polling: arm the daemon's detector (``daemon``) or build the registered
-        detector (``custom``).
-
-        Raises ``ValueError`` for a source this loop cannot run — ``custom`` without a
-        camera feed or a registered detector.
-        """
-        if self.running:
-            return
-        if self._source == "daemon":
-            await self._arm()
-        elif self._source == "custom":
-            if self._feed is None:
-                raise ValueError("the custom detection source needs the camera feed")
+    def _factory(self) -> FaceDetectorFactory:
+        """The factory of the configured detector, or ``ValueError`` when the loop
+        cannot run: no detector named, ``custom`` with none registered, no feed."""
+        if self._name is None:
+            raise ValueError(
+                "no face detector is configured (faces.detector is null): name one — "
+                '"yunet", the shipped detector, or "custom" with a registered factory'
+            )
+        if self._name == "yunet":
+            factory: FaceDetectorFactory = _yunet_factory
+        elif self._name == "custom":
             if self._detector_factory is None:
                 raise ValueError(
                     "faces.detector is 'custom' but no face detector is registered: "
                     "set FaceSettings.face_detector or call set_face_detector(...)"
                 )
-            self._detector = None  # built by the first poll, from the factory
+            factory = self._detector_factory
         else:
-            raise ValueError(f"unknown detection source {self._source!r}")
+            raise ValueError(f"unknown face detector {self._name!r}")
+        if self._feed is None:
+            raise ValueError("the detection loop needs the camera feed")
+        return factory
+
+    async def start(self) -> None:
+        """Build the detector (on a worker thread) and start sampling the feed.
+
+        Raises ``ValueError`` for a detector this loop cannot run (no detector named,
+        ``custom`` with none registered, no camera feed) and whatever the detector's
+        factory raises — a model that cannot load — with the loop left not running.
+        """
+        if self.running:
+            return
+        factory = self._factory()
+        self._detector = await asyncio.to_thread(factory)
+        self._selector = _FaceSelector()
         self._task = asyncio.create_task(self._run(), name="face-detection")
 
     def restart(self, detector_factory: FaceDetectorFactory | None) -> None:
         """Register another detector factory (already checked). While the loop runs in
-        ``custom`` mode the next poll builds the new detector and starts selecting
-        afresh — the swap happens between two polls."""
+        ``custom`` mode the next poll builds the new detector (on a worker thread) and
+        starts selecting afresh — the swap happens between two polls."""
         self._detector_factory = detector_factory
         self._detector = None
 
     async def stop(self) -> None:
-        """Stop polling, disarm the daemon's detector if this loop armed it, and publish
-        the inactive report. A no-op on a loop that never started."""
+        """Stop sampling and publish the inactive report. A no-op on a loop that never
+        started."""
         task = self._task
         self._task = None
         if task is not None and not task.done():
@@ -404,32 +377,21 @@ class FaceDetection:
             with suppress(asyncio.CancelledError):
                 await task
         self._detector = None
-        if self._armed:
-            self._armed = False
-            await asyncio.to_thread(self._robot.stop_head_tracking)
         if task is not None or self._faces.value.active:
-            self._faces.set(FaceReport.inactive(self._source))
-
-    async def _arm(self) -> None:
-        self._armed = True  # set first: a cancelled arm still completes in its thread
-        await asyncio.to_thread(self._robot.start_head_tracking, DAEMON_DETECT_WEIGHT)
+            self._faces.set(FaceReport.inactive(self._name))
 
     async def _poll(self) -> FaceReport | None:
-        """One observation of the source, or ``None`` when it has nothing new (no frame
-        yet, a frame already processed). Raises when the poll fails."""
-        if self._source == "daemon":
-            target = await asyncio.to_thread(daemon_face_target, self._robot)
-            return report_from_daemon(target, active=True)
-        return await self._poll_custom()
-
-    async def _poll_custom(self) -> FaceReport | None:
+        """One observation, or ``None`` when the feed has nothing new (no frame yet, a
+        frame already processed). Raises when the detector fails."""
         feed = self._feed
-        factory = self._detector_factory
-        if feed is None or factory is None:
-            return None  # cleared while running: the api stops the loop right after
+        if feed is None or self._name is None:
+            return None
         detector = self._detector
         if detector is None:
-            detector = self._detector = factory()  # checked at registration
+            factory = self._detector_factory if self._name == "custom" else None
+            if factory is None:
+                return None  # cleared while running: the api stops the loop right after
+            detector = self._detector = await asyncio.to_thread(factory)
             self._selector = _FaceSelector()
         frame = feed.latest()
         if frame is None or frame.frame_id == self._last_frame_id:
@@ -440,7 +402,7 @@ class FaceDetection:
         height, width = frame.image.shape[:2]
         size = (int(width), int(height))
         target = self._selector.select(faces, size)
-        return report_from_pixels(faces, size, frame, target)
+        return report_from_pixels(faces, size, frame, target, source=self._name)
 
     async def _run(self) -> None:
         published: FaceReport | None = None  # the last value `set`
@@ -461,12 +423,13 @@ class FaceDetection:
                 if not down and now - failing_since >= FACE_SOURCE_DOWN_S:
                     down = True
                     _logger.warning(
-                        "face detection: the %s source has produced no observation "
-                        "for %.0f s; reporting detection inactive until it does",
-                        self._source,
+                        "face detection: the %s detector has produced no observation "
+                        "for %.0f s (no camera frame, or it keeps failing); reporting "
+                        "detection inactive until it does",
+                        self._name,
                         FACE_SOURCE_DOWN_S,
                     )
-                    base = last or FaceReport.inactive(self._source)
+                    base = last or FaceReport.inactive(self._name)
                     published = replace(base, active=False)
                     self._faces.set(published)
                     lower_since = None

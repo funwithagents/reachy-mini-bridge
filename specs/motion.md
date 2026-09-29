@@ -43,7 +43,7 @@ Game-animation-style blending, split across two places:
 ```
 
 - **Primary moves are exclusive.** One plays at a time, sequentially, from a queue.
-- **Gaze is a layer of the loop.** The head tracker ([head_tracking.md](head_tracking.md)) hands the loop an aim — the head pose that looks at the tracked face — and the loop composes it into the idle move's pose, so the robot looks at someone *and* breathes ("The gaze layer" below). The daemon's own tracking is not used to steer the head (in `daemon` detection mode it runs at a negligible weight as a detector only).
+- **Gaze is a layer of the loop.** The head tracker ([head_tracking.md](head_tracking.md)) hands the loop an aim — the head pose that looks at the tracked face — and the loop composes it into the idle move's pose, so the robot looks at someone *and* breathes ("The gaze layer" below). The daemon's own tracking is not used to steer the head — the bridge never arms it ([robot.md](robot.md)).
 - **Wobbling is additive, daemon-side.** It composes with whatever target the loop is sending and never enters the loop.
 - **Idle is not a special state.** It is the move that plays when the queue is empty; which move depends on the presence switch and the idle mode.
 

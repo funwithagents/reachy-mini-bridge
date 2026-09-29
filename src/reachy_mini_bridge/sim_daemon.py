@@ -2,16 +2,11 @@
 
 ``python -m reachy_mini_bridge.sim_daemon [--scene NAME] [--headless]
 [--[no-]preload-datasets] [--camera sim|webcam] [--webcam-device D] [--webcam-hfov DEG]
-[--sim-display NAME]... [upstream flags...]`` runs upstream's daemon with the one
-correction that makes its face detection work in the sim, a choice of camera source, and
-the viewer displays.
-
-**Tracking is stepped** on every control tick — upstream's MuJoCo loop never calls
-``step_head_tracking()`` (only the real-robot loop does), so the daemon never publishes
-the faces its detector sees. The bridge reads those faces and aims the head with its own
-tracker (specs/head_tracking.md), so the daemon's aim — computed with mis-scaled
-intrinsics in the sim, and head-mounted geometry for a webcam — is left as upstream has
-it: the bridge arms it at a negligible weight.
+[--sim-display NAME]... [upstream flags...]`` runs upstream's daemon with a choice of
+camera source and the viewer displays. The daemon's own face tracking is left as upstream
+ships it and never armed: the bridge detects faces on the host, from the camera stream the
+daemon serves, and aims the head with its own tracker (specs/user_perception.md,
+specs/head_tracking.md).
 
 ``--camera webcam`` relays a host camera into the stream the MuJoCo daemon's media server
 reads (RTP raw video on UDP 5005) instead of the eye-camera render, so the detector and
@@ -55,7 +50,7 @@ __all__ = [
     "SimDaemonExtension",
     "ViewerOverlay",
     "WebcamRelay",
-    "corrected_backend",
+    "bridge_backend",
     "overlay_rect",
     "relay_pipeline_candidates",
     "resample_nearest",
@@ -774,7 +769,7 @@ def _capture_viewer(overlay: _Overlay, viewer_module: Any | None) -> Iterator[No
         module.launch_passive = original
 
 
-# --- the backend subclass (the correction, camera source wiring) --------------------
+# --- the backend subclass (camera source wiring, the overlay, the hooks) -------------
 
 
 @dataclass(frozen=True)
@@ -788,7 +783,7 @@ class SimDaemonExtension:
 
 
 class _RelayFactory(Protocol):
-    """How ``corrected_backend`` builds the webcam relay (tests substitute their own)."""
+    """How ``bridge_backend`` builds the webcam relay (tests substitute their own)."""
 
     def __call__(
         self, device: str | int | None, *, overlay: _Overlay | None = None
@@ -809,7 +804,7 @@ class _Camera:
     hfov_deg: float = DEFAULT_WEBCAM_HFOV_DEG
 
 
-def corrected_backend(
+def bridge_backend(
     backend_class: type,
     *,
     camera: _Camera | None = None,
@@ -819,11 +814,10 @@ def corrected_backend(
     overlay_factory: Callable[[], _Overlay] = ViewerOverlay,
     viewer_module: Any | None = None,
 ) -> type:
-    """A subclass of upstream's ``MujocoBackend`` carrying the correction.
+    """A subclass of upstream's ``MujocoBackend`` wiring the launcher's additions in
+    (specs/sim_daemon.md "The backend subclass"). It overrides nothing of the daemon's
+    control loop, kinematics or face tracking.
 
-    - ``update_head_kinematics_model`` — which the MuJoCo loop calls once per control
-      tick, where the robot loop calls it — steps tracking right after it, so the daemon
-      publishes the faces its detector sees.
     - ``__init__`` runs each extension's ``on_backend`` once the model exists.
     - With a ``webcam`` camera: the eye-camera render thread does nothing, and the webcam
       relay runs with the loop.
@@ -836,7 +830,7 @@ def corrected_backend(
     displays = _Displays() if displays is None else displays
     webcam = camera.source == "webcam"
 
-    class CorrectedMujocoBackend(backend_class):  # type: ignore[misc, valid-type]
+    class BridgeMujocoBackend(backend_class):  # type: ignore[misc, valid-type]
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             super().__init__(*args, **kwargs)
             self._viewer_overlay: _Overlay | None = (
@@ -845,10 +839,6 @@ def corrected_backend(
             for extension in extensions:
                 if extension.on_backend is not None:
                     extension.on_backend(self)
-
-        def update_head_kinematics_model(self, *args: Any, **kwargs: Any) -> None:
-            super().update_head_kinematics_model(*args, **kwargs)
-            self.step_head_tracking()
 
         if webcam:
 
@@ -883,9 +873,9 @@ def corrected_backend(
                 if overlay is not None:
                     overlay.stop()
 
-    CorrectedMujocoBackend.__name__ = backend_class.__name__
-    CorrectedMujocoBackend.__qualname__ = backend_class.__qualname__
-    return CorrectedMujocoBackend
+    BridgeMujocoBackend.__name__ = backend_class.__name__
+    BridgeMujocoBackend.__qualname__ = backend_class.__qualname__
+    return BridgeMujocoBackend
 
 
 # --- the launcher -----------------------------------------------------------------------
@@ -908,9 +898,9 @@ def _hfov(value: str) -> float:
 def _parser(prog: str) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=prog,
-        description="Run the Reachy Mini MuJoCo daemon with the bridge's face-detection "
-        "correction and camera source (specs/sim_daemon.md). Unrecognised flags go to "
-        "upstream's daemon.",
+        description="Run the Reachy Mini MuJoCo daemon with the bridge's camera source "
+        "and viewer displays (specs/sim_daemon.md). Unrecognised flags go to upstream's "
+        "daemon.",
     )
     parser.add_argument("--scene", help="an upstream scene name (empty, minimal)")
     parser.add_argument("--headless", action="store_true", help="no viewer window")
@@ -956,7 +946,7 @@ def run_sim_daemon(
     extensions: Sequence[SimDaemonExtension] = (),
     prog: str = "python -m reachy_mini_bridge.sim_daemon",
 ) -> None:
-    """Run upstream's MuJoCo daemon with the correction and ``extensions`` installed.
+    """Run upstream's MuJoCo daemon with the bridge's backend and ``extensions`` installed.
 
     Upstream's ``main()`` parses ``sys.argv``; this rewrites it to ``--sim [--scene S]
     [--headless] --[no-]preload-datasets`` plus anything unrecognised, substitutes the
@@ -990,7 +980,7 @@ def run_sim_daemon(
     from reachy_mini.daemon import daemon as upstream_daemon
     from reachy_mini.daemon.app import main as upstream_main
 
-    upstream_daemon.MujocoBackend = corrected_backend(
+    upstream_daemon.MujocoBackend = bridge_backend(
         upstream_daemon.MujocoBackend,
         camera=camera,
         displays=displays,

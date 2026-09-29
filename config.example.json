@@ -33,7 +33,7 @@
     "xvf3800": null
   },
   "faces": {
-    "detector": "daemon",
+    "detector": "yunet",
     "detection": true
   },
   "motion": {
