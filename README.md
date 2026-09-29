@@ -2,6 +2,15 @@
 
 A Python library that sits between the [Reachy Mini](https://github.com/pollen-robotics/reachy_mini) robot and whatever drives it — a script, a service, or an LLM agent. It wraps the upstream `reachy_mini` SDK behind one async, intent-level API (`ReachyMiniApi`) whose verbs speak in human terms — *enable the motors, play "happy", follow my face, say this, give me the mic, give me a camera frame* — and runs the same code unchanged against the real robot, the MuJoCo simulator, or an offline fake.
 
+## Project status
+
+> [!WARNING]
+> - **Under development: the API may change.** The bridge is at version 0.1 and is being shaped as it is used. Verbs, config fields and module layout can change between commits, without a deprecation period. If you depend on it, pin a commit (`reachy-mini-bridge @ git+https://github.com/funwithagents/reachy-mini-bridge@<sha>`).
+> - **Built and tested on a Reachy Mini Lite, not on the wireless Reachy Mini.** Everything described here was exercised on a Lite plugged in over USB, on the MuJoCo simulator and on the offline fake. The wireless code paths exist (`robot.host` pointing at the robot, `daemon.spawn: "never"` since it runs its own daemon) but have never been run against one: the author has no wireless robot yet, so nothing here is guaranteed to work on it. If you try, an issue saying what happened, working or not, is the most useful thing you can send.
+
+> [!TIP]
+> **Feedback is welcome: open an issue.** Bug reports, questions, and what you would want the API or the config to do differently all go to [the issue tracker](https://github.com/funwithagents/reachy-mini-bridge/issues). The project is developed by one person and is not taking pull requests yet; [CONTRIBUTING.md](CONTRIBUTING.md) says why and how to help anyway.
+
 ## What the bridge adds to the SDK
 
 The upstream `reachy_mini` SDK gives full, low-level access to the robot. The bridge keeps that access (`api.robot` is the native `ReachyMini`) and adds what a conversational app otherwise has to build, and get right, itself:
@@ -27,6 +36,7 @@ The upstream `reachy_mini` SDK gives full, low-level access to the robot. The br
 |---|---|
 | [src/reachy_mini_bridge/](src/reachy_mini_bridge/) | The library: `api.py` (the verbs), `config.py`, `audio.py` (speech out, mic in), `motion.py` (the motion loop: presence, breathing, emotions), `daemon.py` (daemon lifecycle), `head_tracking.py` (the head tracker: a face to a look-at aim), `face_detection.py` (the detection loop behind `faces`), `yunet.py` (the shipped face detector), `sim_daemon.py` (the sim launcher: webcam camera, viewer overlay), `robot.py` + `fake_reachy_mini.py` (the backend seam), `testing/` (a pytest harness for your own e2e tests) |
 | [config.example.json](config.example.json) | Every config field with placeholder values |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | How the project is run today: feedback through issues, no external pull requests yet |
 | [specs/](specs/) | Design docs, one per concept in folders named after the subsystem (`core/`, `motion/`, `vision/`, `audio/`, `daemon/`, `testing/`, `examples/`), each with a status — the source of truth for how things are meant to work |
 | [plans/](plans/) | Implementation plans that turned those specs into code |
 | [docs/](docs/) | Reference notes: the upstream SDK, running the sim daemon, testing your project against the bridge |
@@ -180,7 +190,7 @@ Cancelling the task that runs a tool stops the action on the robot (speech flush
 
 | Backend | What it drives | Needs |
 |---|---|---|
-| `real` *(default)* | The physical robot via its daemon | The robot reachable at `host:port`; for a robot plugged in over USB, the bridge can spawn its daemon for you |
+| `real` *(default)* | The physical robot via its daemon | The robot reachable at `host:port`; for a robot plugged in over USB, the bridge can spawn its daemon for you. Tested on a Reachy Mini Lite only; the wireless robot is untested (see [Project status](#project-status)), and it differs in ways the bridge has not been checked against, such as booting asleep with its motors disabled ([docs/reachy-mini-api.md](docs/reachy-mini-api.md)) |
 | `sim` | The upstream MuJoCo mockup | The `sim` extra; a daemon you run, or one the bridge spawns for you |
 | `fake` | A first-party in-process stand-in that records every command and returns synthetic audio and frames | Nothing — offline and deterministic; powers the unit tests |
 

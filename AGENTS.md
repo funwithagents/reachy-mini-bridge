@@ -11,6 +11,7 @@ Where things live. This is a coarse, module-level map — for the full file inve
 | Path | What's there |
 |---|---|
 | `README.md` | Packaging front page — short intro + doc pointers |
+| `CONTRIBUTING.md` | How the project is run today — solo development, feedback through issues, no external pull requests yet |
 | `config.example.json` | Every `ReachyMiniConfig` field with placeholder values — kept in sync with [specs/core/config.md](specs/core/config.md) |
 | `src/reachy_mini_bridge/` | The library itself — one module per core concept (see below) |
 | `specs/` | Pre-implementation design docs, one per concept, each with a `**Status:**` — indexed by [specs/_index.md](specs/_index.md). Grouped in folders named after the subsystem they specify (`core/`, `motion/`, `vision/`, `audio/`, `daemon/`, `testing/`, `examples/`), the same words as the config blocks; the repo-wide `project.md` sits at the root next to the overview and index. Basenames stay unique across folders |
