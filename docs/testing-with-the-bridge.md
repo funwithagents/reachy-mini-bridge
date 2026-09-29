@@ -6,7 +6,7 @@ bridge tests itself: **unit tests against the `fake` backend, e2e tests against 
 (`reachy_mini_bridge.testing`), so you get the daemon lifecycle, its platform gotchas, and
 the capability-gating for free — you don't re-derive any of it.
 
-For the design behind this, see [specs/testing_support.md](../specs/testing_support.md).
+For the design behind this, see [specs/testing/testing_support.md](../specs/testing/testing_support.md).
 
 ## Backends → tiers → extras
 
@@ -150,7 +150,7 @@ def test_it_looks_at_whoever_is_there(live_api, sim_scene):
     sim_scene.hide("face")  # nobody there: the head is handed back to the idle move
 ```
 
-See [specs/sim_scene.md](../specs/sim_scene.md) for the scene's geometry, the endpoint, and
+See [specs/testing/sim_scene.md](../specs/testing/sim_scene.md) for the scene's geometry, the endpoint, and
 the angles the head settles at. For trying things by hand with *yourself* in front of the
 sim, a sim config with `"daemon": {"camera": {"source": "webcam"}}` uses the computer's
 webcam as the robot's camera ([running-the-sim-daemon.md](running-the-sim-daemon.md)).
@@ -158,7 +158,7 @@ webcam as the robot's camera ([running-the-sim-daemon.md](running-the-sim-daemon
 **Own it or borrow it:** the fixture reuses a daemon already reachable at the address
 (never tears it down); otherwise it spawns one and owns its teardown — a MuJoCo daemon for
 `sim`, and for `real` on a loopback address (a robot plugged into this machine over USB)
-the hardware daemon (upstream's `reachy-mini-daemon`, run through the bridge's real daemon launcher — [../specs/real_daemon.md](../specs/real_daemon.md)), which finds the robot's serial port itself, wakes
+the hardware daemon (upstream's `reachy-mini-daemon`, run through the bridge's real daemon launcher — [../specs/daemon/real_daemon.md](../specs/daemon/real_daemon.md)), which finds the robot's serial port itself, wakes
 the robot, and puts it to sleep when the fixture stops it. A wireless robot runs its own
 daemon: point `REACHY_MINI_HOST` at it. When it can't bring one up (missing sim extra, busy
 port, no robot answering), the test **skips** rather than failing.
@@ -176,4 +176,4 @@ macOS viewer notes.
 `ReachyMiniConfig` with `"backend": "sim"` (or `"real"`, for a robot plugged in over USB)
 and `"daemon": {"spawn": "auto"}` makes `async with ReachyMiniApi(config)` spawn (or
 borrow) the daemon itself — see
-[specs/config.md](../specs/config.md) and [specs/daemon.md](../specs/daemon.md).
+[specs/core/config.md](../specs/core/config.md) and [specs/daemon/daemon.md](../specs/daemon/daemon.md).

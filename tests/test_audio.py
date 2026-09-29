@@ -1,4 +1,4 @@
-"""Functional tests for the audio helpers and the media session (specs/audio.md).
+"""Functional tests for the audio helpers and the media session (specs/audio/audio.md).
 
 Driven on the ``fake`` backend with a trivial in-test ``SpeechSynthesizer`` (a tone) —
 no ``reachy_mini``, no ``tts_engine``, no device. Async code runs via ``asyncio.run``,
@@ -495,7 +495,7 @@ def test_clear_player_flushes_speaker() -> None:
     assert any(name == "audio.clear_player" for name, _ in robot.commands)
 
 
-# --- stopping a sound file (specs/audio.md "Stopping a sound file") ---
+# --- stopping a sound file (specs/audio/audio.md "Stopping a sound file") ---
 
 
 def test_stop_sound_on_the_fake_records_the_stop_then_resets_the_wobbler() -> None:
@@ -633,7 +633,7 @@ def test_mic_tap_does_not_busy_poll(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls < 50
 
 
-# --- cancel-safe bring-up steps (specs/api.md "Lifecycle") ---
+# --- cancel-safe bring-up steps (specs/core/api.md "Lifecycle") ---
 
 
 def test_cancel_during_media_open_unwinds_the_started_capture(

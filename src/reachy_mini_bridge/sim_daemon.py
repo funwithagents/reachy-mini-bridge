@@ -1,12 +1,12 @@
-"""The sim daemon launcher: every MuJoCo daemon the bridge starts (specs/sim_daemon.md).
+"""The sim daemon launcher: every MuJoCo daemon the bridge starts (specs/daemon/sim_daemon.md).
 
 ``python -m reachy_mini_bridge.sim_daemon [--scene NAME] [--headless]
 [--[no-]preload-datasets] [--camera sim|webcam] [--webcam-device D] [--webcam-hfov DEG]
 [--sim-display NAME]... [upstream flags...]`` runs upstream's daemon with a choice of
 camera source and the viewer displays. The daemon's own face tracking is left as upstream
 ships it and never armed: the bridge detects faces on the host, from the camera stream the
-daemon serves, and aims the head with its own tracker (specs/user_perception.md,
-specs/head_tracking.md).
+daemon serves, and aims the head with its own tracker (specs/vision/user_perception.md,
+specs/motion/head_tracking.md).
 
 ``--camera webcam`` relays a host camera into the stream the MuJoCo daemon's media server
 reads (RTP raw video on UDP 5005) instead of the eye-camera render, so the detector and
@@ -75,7 +75,7 @@ _STREAM_FPS = 25
 _FRAME_TIMEOUT_S = 5.0
 _RETRY_S = 5.0
 
-# The viewer overlay (specs/sim_daemon.md "Viewer overlay"): the camera stream drawn in
+# The viewer overlay (specs/daemon/sim_daemon.md "Viewer overlay"): the camera stream drawn in
 # the top-right corner of the MuJoCo viewer, this fraction of the view's width, inset by
 # this fraction of it; frames reach the overlay at OVERLAY_SOURCE_SIZE (the relay's second
 # branch scales to it, the renderer tap resamples to it) and are resampled to the
@@ -558,7 +558,7 @@ def _mujoco_version() -> str:
 
 
 class ViewerOverlay:
-    """The camera stream drawn over the MuJoCo viewer (specs/sim_daemon.md "Viewer
+    """The camera stream drawn over the MuJoCo viewer (specs/daemon/sim_daemon.md "Viewer
     overlay").
 
     Frames arrive through ``show`` from whichever thread has them — the webcam relay's
@@ -815,7 +815,7 @@ def bridge_backend(
     viewer_module: Any | None = None,
 ) -> type:
     """A subclass of upstream's ``MujocoBackend`` wiring the launcher's additions in
-    (specs/sim_daemon.md "The backend subclass"). It overrides nothing of the daemon's
+    (specs/daemon/sim_daemon.md "The backend subclass"). It overrides nothing of the daemon's
     control loop, kinematics or face tracking.
 
     - ``__init__`` runs each extension's ``on_backend`` once the model exists.
@@ -899,7 +899,7 @@ def _parser(prog: str) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=prog,
         description="Run the Reachy Mini MuJoCo daemon with the bridge's camera source "
-        "and viewer displays (specs/sim_daemon.md). Unrecognised flags go to upstream's "
+        "and viewer displays (specs/daemon/sim_daemon.md). Unrecognised flags go to upstream's "
         "daemon.",
     )
     parser.add_argument("--scene", help="an upstream scene name (empty, minimal)")

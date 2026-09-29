@@ -1,5 +1,5 @@
 """``Observable[T]`` — a value a caller reads directly and can subscribe to
-(specs/observable.md).
+(specs/core/observable.md).
 
 ``value`` is the current state, readable from any thread; ``changes()`` is an async
 iterator woken on every *published* value; ``wait_for`` waits for a value matching a
@@ -20,7 +20,7 @@ __all__ = ["Observable"]
 
 
 class Observable[T]:
-    """A value read directly and subscribed to (specs/observable.md).
+    """A value read directly and subscribed to (specs/core/observable.md).
 
     ``set`` / ``update`` run on the event-loop thread (they raise ``RuntimeError``
     elsewhere); a producer on another thread marshals through
@@ -55,7 +55,7 @@ class Observable[T]:
         """Yield each value published from the moment the iterator is first driven.
 
         Cancelling the task blocked in ``async for`` ends the iteration and detaches the
-        subscriber (specs/api.md "Cancellation").
+        subscriber (specs/core/api.md "Cancellation").
         """
         return self._subscribe()
 

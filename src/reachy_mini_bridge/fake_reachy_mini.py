@@ -1,6 +1,6 @@
 """First-party fake stand-in for the upstream ``reachy_mini.ReachyMini``.
 
-Specified by [specs/robot.md](../../specs/robot.md). ``FakeReachyMini`` implements the
+Specified by [specs/core/robot.md](../../specs/core/robot.md). ``FakeReachyMini`` implements the
 v1 consumed slice the layers above call, imports no ``reachy_mini`` itself, records
 every command it receives (so tests assert on them), and returns synthetic
 perception/audio. It is the backbone of the deterministic ``tests/`` tier — no daemon,
@@ -22,7 +22,7 @@ import numpy.typing as npt
 __all__ = ["FAKE_FRAME_HZ", "FakeReachyMini"]
 
 # The XVF3800 voice pipeline: 16 kHz float32 stereo capture in 10 ms blocks, as the
-# sim and a real Reachy Mini Lite report (see specs/audio.md). The fake reports these
+# sim and a real Reachy Mini Lite report (see specs/audio/audio.md). The fake reports these
 # via the getters so downstream conversion code reads them rather than hardcoding.
 _SAMPLE_RATE = 16000
 _CHANNELS = 2
@@ -31,13 +31,13 @@ _CHUNK_FRAMES = 160  # 10 ms at 16 kHz
 # Synthetic camera frame size (small; just enough for tests to assert real HxWx3 shape).
 _FRAME_WIDTH = 64
 _FRAME_HEIGHT = 48
-# The fake camera's frame rate (specs/camera.md "`fake` backend support"): upstream's local
+# The fake camera's frame rate (specs/vision/camera.md "`fake` backend support"): upstream's local
 # feed is capped at 10 fps, and the fake's `get_frame` paces itself the same way.
 FAKE_FRAME_HZ = 10.0
 
 # The camera calibration a client reads (``media.camera.camera_specs``): a Lite-like
 # 3840x2592 sensor of ~88° horizontal field of view, streamed uncropped, no distortion —
-# what the head tracker's robot camera model is built from (specs/head_tracking.md).
+# what the head tracker's robot camera model is built from (specs/motion/head_tracking.md).
 _SENSOR_SIZE = (3840, 2592)
 _SENSOR_HFOV_DEG = 88.0
 
@@ -203,7 +203,7 @@ class _FakeMedia:
 
         Fake-only member: it models the `MediaManager.stop_sound()` upstream lacks
         (docs/reachy-mini-api.md "Cancelling a move"); the bridge stops the real backend's
-        playbin itself meanwhile (specs/audio.md "Stopping a sound file").
+        playbin itself meanwhile (specs/audio/audio.md "Stopping a sound file").
         """
         self._commands.append(("media.stop_sound", {}))
 
@@ -214,7 +214,7 @@ class _FakeMedia:
         A deterministic horizontal gradient (not a flat constant) so tests assert real
         structure. Mirrors the upstream ``media.get_frame`` shape; the fake always has a
         frame ready, so unlike the real daemon it never returns ``None``. Paced like the
-        real backend's (specs/camera.md): the first call returns at once, each later call
+        real backend's (specs/vision/camera.md): the first call returns at once, each later call
         blocks until ``1 / FAKE_FRAME_HZ`` has elapsed since the previous frame — the real
         ``get_frame()`` blocks up to 20 ms for the next frame, the fake up to a frame
         period, on the camera feed's thread where it costs nothing. Not recorded as a
@@ -237,7 +237,7 @@ class _FakeMedia:
 class FakeReachyMini:
     """First-party stand-in for ``reachy_mini.ReachyMini`` (imports no ``reachy_mini``).
 
-    Implements the v1 consumed slice (see specs/robot.md), records every command on
+    Implements the v1 consumed slice (see specs/core/robot.md), records every command on
     ``commands`` for tests to assert on, and returns synthetic perception/audio. Motor
     state is reflected on ``client`` (as the real SDK does), not a bespoke getter.
     """
@@ -246,7 +246,7 @@ class FakeReachyMini:
         self.commands: list[tuple[str, dict[str, Any]]] = []
         self.client = _FakeDaemonClient()
         self.media = _FakeMedia(self.commands)
-        # The motion loop's stream (specs/motion.md): recorded here, not on `commands`
+        # The motion loop's stream (specs/motion/motion.md): recorded here, not on `commands`
         # (a 60 Hz stream would swamp it). The readers return the last commanded values.
         self.targets: list[
             tuple[

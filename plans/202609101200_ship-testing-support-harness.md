@@ -2,7 +2,7 @@
 
 **Status:** Done
 
-Implements the settled behavior in `specs/testing_support.md` — promote the bridge's live-tier harness from `tests-e2e/` scaffolding into a shipped `reachy_mini_bridge.testing` package (opt-in pytest plugin, `test` extra) so downstream consumers drive the `fake`/`sim`/`real` backends in their own tests. Delivers the shipped surface + a consumer guide; deliberately leaves the deferred consumer knobs and the optional `fake` helper (spec open questions 3–4) out.
+Implements the settled behavior in `specs/testing/testing_support.md` — promote the bridge's live-tier harness from `tests-e2e/` scaffolding into a shipped `reachy_mini_bridge.testing` package (opt-in pytest plugin, `test` extra) so downstream consumers drive the `fake`/`sim`/`real` backends in their own tests. Delivers the shipped surface + a consumer guide; deliberately leaves the deferred consumer knobs and the optional `fake` helper (spec open questions 3–4) out.
 
 ## Scope
 
@@ -15,7 +15,7 @@ Implements the settled behavior in `specs/testing_support.md` — promote the br
 - `docs/testing-with-the-bridge.md` — new consumer guide: backend→tier/extra table, `pytest_plugins` opt-in line, env vars, `fake` unit-test snippet.
 - `README.md` — link the new guide.
 - `AGENTS.md` — project-map row already added for the package; keep in sync if the internal split changes.
-- `tests/test_testing_support.py` — functional tests (see Verification); add its path to `specs/testing_support.md` frontmatter `tests:`.
+- `tests/test_testing_support.py` — functional tests (see Verification); add its path to `specs/testing/testing_support.md` frontmatter `tests:`.
 
 ## Steps
 
@@ -25,7 +25,7 @@ Implements the settled behavior in `specs/testing_support.md` — promote the br
 4. Add the `test` extra (`pytest>=9.1.1`, matching the dev pin) and wire `reachy-mini-bridge[test]` into the dev group.
 5. Write `docs/testing-with-the-bridge.md` and link it from the README.
 6. Add `tests/test_testing_support.py` (fast tier — no daemon) and record it in the spec frontmatter.
-7. Flip `specs/testing_support.md` Draft → (Stable →) Implemented and this plan → Done once verified; update both `_index.md`s.
+7. Flip `specs/testing/testing_support.md` Draft → (Stable →) Implemented and this plan → Done once verified; update both `_index.md`s.
 
 ## Verification
 

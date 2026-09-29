@@ -1,4 +1,4 @@
-"""Functional tests for the motion loop (specs/motion.md).
+"""Functional tests for the motion loop (specs/motion/motion.md).
 
 Plain-function tests for the moves and the blend helper; ``MotionSession`` tests drive
 it on a bare ``FakeReachyMini`` at real time (the loop runs the same way on both
@@ -214,7 +214,7 @@ def test_breathing_is_continuous_and_pure() -> None:
 
 @pytest.mark.parametrize("seed", range(5))
 def test_head_rotation_roams_within_its_envelope(seed: int) -> None:
-    """specs/motion.md "The moves": the idle head looks about on three independent
+    """specs/motion/motion.md "The moves": the idle head looks about on three independent
     rotation tracks, reaching each axis' limit without ever passing it."""
     move = BreathingMove(random.Random(seed))
     ts = [k / CONTROL_HZ for k in range(int(300 * CONTROL_HZ))]  # 300 s
@@ -231,7 +231,7 @@ def test_head_rotation_roams_within_its_envelope(seed: int) -> None:
 
 @pytest.mark.parametrize("seed", range(5))
 def test_head_rotation_keeps_at_least_one_axis_moving(seed: int) -> None:
-    """specs/motion.md "The moves": three independent tracks mean the head is almost
+    """specs/motion/motion.md "The moves": three independent tracks mean the head is almost
     always doing something — the idle head before them held one fixed heading."""
     move = BreathingMove(random.Random(seed))
     ts = [k / CONTROL_HZ for k in range(int(300 * CONTROL_HZ))]
@@ -243,7 +243,7 @@ def test_head_rotation_keeps_at_least_one_axis_moving(seed: int) -> None:
 
 @pytest.mark.parametrize("seed", range(5))
 def test_antennas_move_fast_enough_to_read_and_flick(seed: int) -> None:
-    """specs/motion.md "The moves": drawing a speed (not a duration) and punctuating the
+    """specs/motion/motion.md "The moves": drawing a speed (not a duration) and punctuating the
     roaming with flicks puts the antennas in the band the emotions library commands.
     A fixed-duration plan over the same window reads 4 deg/s at p90 and 13 at p99."""
     move = BreathingMove(random.Random(seed))
@@ -267,7 +267,7 @@ def test_antennas_move_fast_enough_to_read_and_flick(seed: int) -> None:
     ("lo", "hi"), [(-HEAD_YAW_RAD, HEAD_YAW_RAD), (ANTENNA_MIN_RAD, ANTENNA_MAX_RAD)]
 )
 def test_roam_target_always_travels(lo: float, hi: float) -> None:
-    """specs/motion.md "The moves": a roam target lands inside the range and far enough
+    """specs/motion/motion.md "The moves": a roam target lands inside the range and far enough
     from where the track sits that the move is worth making."""
     rng = random.Random(0)
     span = hi - lo
@@ -625,7 +625,7 @@ def test_a_failing_tick_fails_the_primary_and_keeps_the_loop_alive() -> None:
     assert after > before
 
 
-# --- a lost connection (specs/motion.md "Lifecycle") ---------------------------------
+# --- a lost connection (specs/motion/motion.md "Lifecycle") ---------------------------------
 
 
 @pytest.mark.parametrize(
@@ -689,7 +689,7 @@ def test_lost_connection_logs_once_and_pauses_for_good(
     assert "lost connection" in warnings[0].getMessage()
 
 
-# --- idle offsets, custom idle moves (specs/motion.md "Custom idle moves") -----------
+# --- idle offsets, custom idle moves (specs/motion/motion.md "Custom idle moves") -----------
 
 
 def test_idle_offsets_pose_is_in_human_units_and_scales_to_neutral() -> None:
@@ -943,7 +943,7 @@ def test_clearing_the_idle_move_returns_custom_mode_to_the_hold() -> None:
     assert all(z == pytest.approx(0.0, abs=1e-6) for z in zs[-5:])
 
 
-# --- the gaze layer (specs/motion.md "The gaze layer") ----------------------------------
+# --- the gaze layer (specs/motion/motion.md "The gaze layer") ----------------------------------
 
 
 AIM_YAW_DEG = 30.0

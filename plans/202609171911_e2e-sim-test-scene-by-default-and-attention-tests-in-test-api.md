@@ -2,7 +2,7 @@
 
 **Status:** Done
 
-Implements the review follow-up to [202609171842_sim-daemon-launcher-tracking-corrections-and-webcam.md](202609171842_sim-daemon-launcher-tracking-corrections-and-webcam.md), per [specs/testing_support.md](../specs/testing_support.md), [specs/testing.md](../specs/testing.md) ("E2E targets & capabilities") and [specs/sim_scene.md](../specs/sim_scene.md) ("The testing harness"): a harness-spawned sim always runs the bridge's test scene (the `REACHY_MINI_E2E_SIM_SCENE` knob goes away); the tracking / attention e2e tests move into `tests-e2e/test_api.py`, play the short emotion the other emotion test plays, and check how the head moves, not only where it ends; the README says plainly what the bridge adds to the SDK in the simulator. Leaves the webcam manual checklist to the earlier plan.
+Implements the review follow-up to [202609171842_sim-daemon-launcher-tracking-corrections-and-webcam.md](202609171842_sim-daemon-launcher-tracking-corrections-and-webcam.md), per [specs/testing/testing_support.md](../specs/testing/testing_support.md), [specs/testing/testing.md](../specs/testing/testing.md) ("E2E targets & capabilities") and [specs/testing/sim_scene.md](../specs/testing/sim_scene.md) ("The testing harness"): a harness-spawned sim always runs the bridge's test scene (the `REACHY_MINI_E2E_SIM_SCENE` knob goes away); the tracking / attention e2e tests move into `tests-e2e/test_api.py`, play the short emotion the other emotion test plays, and check how the head moves, not only where it ends; the README says plainly what the bridge adds to the SDK in the simulator. Leaves the webcam manual checklist to the earlier plan.
 
 ## Scope
 

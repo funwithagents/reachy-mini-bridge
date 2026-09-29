@@ -11,7 +11,7 @@ tests:
 
 ## Purpose
 
-`Observable[T]` is a value a caller reads directly and can subscribe to — the C#-style property: `value` for the current state, `changes()` to be woken when it is published. It is the bridge's one event mechanism, generic so every state a caller may want to await uses the same shape. Its first user is the face report ([user_perception.md](user_perception.md)); `attention` and later states follow.
+`Observable[T]` is a value a caller reads directly and can subscribe to — the C#-style property: `value` for the current state, `changes()` to be woken when it is published. It is the bridge's one event mechanism, generic so every state a caller may want to await uses the same shape. Its first user is the face report ([user_perception.md](../vision/user_perception.md)); `attention` and later states follow.
 
 It exists because the bridge otherwise has only two ways to expose state — a read-only property (poll it) and an async stream (`audio_input`, a firehose) — and neither fits a value that changes rarely and matters when it does: a caller wants to read it any time *and* be told when it changes, without polling and without a queue of every intermediate value.
 
@@ -36,7 +36,7 @@ class Observable[T]:
 - **Read any time, subscribe from the event loop.** `value` is a plain attribute read from any thread. `changes()` is an async iterator: one bounded queue per subscriber, created when the iterator is first driven — so a subscriber sees only values published after it subscribed — and removed when the iterator is closed. A subscriber that falls behind gets the **latest** value, not every intermediate one (the value is a state, not a log), and nothing ever blocks the producer.
 - **Cancellation.** A subscription follows [api.md](api.md)'s "Cancellation" contract: cancelling the task blocked in `async for` ends the iteration promptly and detaches the subscriber; the observable keeps serving the others.
 - **Producers marshal onto the loop.** `set` / `update` are called on the event-loop thread and fail loudly elsewhere (no running loop); a producer on another thread — a detector worker, the motion thread — calls them through `loop.call_soon_threadsafe`. Subscribers are woken in publication order.
-- **`update` vs `set` is how the owner defines "a change".** Equality does not decide it; the code that owns the value does. `update` replaces the value for anyone reading it; `set` also wakes the subscribers. The face report, for instance, is `update`d on every poll and `set` only when the number of faces changes or detection starts or stops ([user_perception.md](user_perception.md) "The detection loop").
+- **`update` vs `set` is how the owner defines "a change".** Equality does not decide it; the code that owns the value does. `update` replaces the value for anyone reading it; `set` also wakes the subscribers. The face report, for instance, is `update`d on every poll and `set` only when the number of faces changes or detection starts or stops ([user_perception.md](../vision/user_perception.md) "The detection loop").
 - **`wait_for`** returns `value` at once when the predicate already holds, else the first published value that does — the idiom for "wait until someone is there" without a subscription of one's own.
 - **Lifetime.** An observable belongs to the object that exposes it (`api.faces` to the api) and outlives that object's sessions: a caller may keep iterating across sessions and is told, through a published value, when the state resets.
 
@@ -46,7 +46,7 @@ Pure asyncio, so `tests/` pin it directly: reads of the initial and the latest v
 
 ## Relationship to the other specs
 
-- **[user_perception.md](user_perception.md):** `api.faces` is an `Observable[FaceReport]`; the detection loop is its producer.
+- **[user_perception.md](../vision/user_perception.md):** `api.faces` is an `Observable[FaceReport]`; the detection loop is its producer.
 - **[api.md](api.md):** the "Cancellation" contract governs `changes()`.
 
 ## Open questions

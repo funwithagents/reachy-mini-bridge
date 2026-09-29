@@ -1,4 +1,4 @@
-"""Functional tests for FakeReachyMini (specs/robot.md).
+"""Functional tests for FakeReachyMini (specs/core/robot.md).
 
 These exercise the fake directly — the commands it records and the synthetic
 perception/audio it returns — the behavior the deterministic ``tests/`` tier relies

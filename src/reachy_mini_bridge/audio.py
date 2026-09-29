@@ -1,4 +1,4 @@
-"""Audio & media session (specs/audio.md).
+"""Audio & media session (specs/audio/audio.md).
 
 Everything about getting sound into and out of the robot correctly, as a single
 daemon-owned pipeline with the XVF3800 voice processor in the middle:
@@ -53,16 +53,16 @@ __all__ = [
 _logger = logging.getLogger(__name__)
 
 # libsamplerate converter: highest-quality sinc conversion (no boundary clicks on a
-# continuous stream). See specs/audio.md "The robot sink".
+# continuous stream). See specs/audio/audio.md "The robot sink".
 _CONVERTER = "sinc_best"
 
 # Margin added to the estimated playback end before `say` returns: the sink's ring
-# buffer (50 ms on the GStreamer backend) plus device latency. See specs/audio.md
+# buffer (50 ms on the GStreamer backend) plus device latency. See specs/audio/audio.md
 # "`say` completes when the utterance has been heard".
 _PLAYBACK_TAIL_S = 0.1
 
 # How long the mic tap waits before re-reading when the daemon has no sample ready
-# (one 10 ms capture chunk). See specs/audio.md "Mic in".
+# (one 10 ms capture chunk). See specs/audio/audio.md "Mic in".
 _MIC_POLL_INTERVAL_S = 0.01
 
 # Timeout for the one daemon HTTP call the media layer makes (`stop_sound` on webrtc).
@@ -149,7 +149,7 @@ class MediaSession:
     ) -> None:
         self._robot = robot
         # The XVF3800 tuning profile applied on start. Left None by default (firmware
-        # defaults) until the concrete profile settles — specs/audio.md open question 2.
+        # defaults) until the concrete profile settles — specs/audio/audio.md open question 2.
         self._audio_config = audio_config
         # The stops to run at close; the session is open exactly while this is set.
         self._exit_stack: AsyncExitStack | None = None
@@ -278,7 +278,7 @@ class MediaSession:
     def clear_player(self) -> None:
         """Flush already-queued speaker audio (barge-in) and reset the head wobbler.
 
-        See specs/audio.md.
+        See specs/audio/audio.md.
         """
         audio: Any = self._robot.media.audio  # see note in __aenter__ on media.audio
         audio.clear_player()
@@ -289,14 +289,14 @@ class MediaSession:
         An emotion's sidecar sound or a `play_sound` call. Then resets the head wobbler
         through :meth:`clear_player` (the stopped player never reaches the EOS that
         would reset it). A no-op when no sound plays. Works at any time, like
-        :meth:`clear_player`. See specs/audio.md "Stopping a sound file".
+        :meth:`clear_player`. See specs/audio/audio.md "Stopping a sound file".
         """
         _stop_sound_file(self._robot)
         self.clear_player()
 
 
 def _stop_sound_file(robot: AnyReachyMini) -> None:
-    """Backend dispatch behind :meth:`MediaSession.stop_sound` (see specs/audio.md)."""
+    """Backend dispatch behind :meth:`MediaSession.stop_sound` (see specs/audio/audio.md)."""
     if isinstance(robot, FakeReachyMini):
         robot.media.stop_sound()
         return
@@ -349,7 +349,7 @@ async def cancel_safe_step[T](enter: Callable[[], T], undo: Callable[[T], object
     ``asyncio.timeout`` around the api's ``async with``. If ``enter`` itself fails
     during that wait there is nothing to undo and the cancel still propagates. A
     second cancel during the wait abandons the step (accepted, documented in
-    specs/api.md "Lifecycle").
+    specs/core/api.md "Lifecycle").
     """
     step = asyncio.ensure_future(asyncio.to_thread(enter))
     try:

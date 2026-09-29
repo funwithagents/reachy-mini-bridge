@@ -1,5 +1,5 @@
 """Head tracking: the bridge's own tracker, turning the target face into the aim the
-motion loop composes (specs/head_tracking.md).
+motion loop composes (specs/motion/head_tracking.md).
 
 The tracker takes the detection loop's every report, turns the target face into a
 look-at head pose with upstream's geometry — the face's pixel through a camera model,
@@ -59,12 +59,12 @@ __all__ = [
 
 _logger = logging.getLogger(__name__)
 
-# The tracker's timing (specs/head_tracking.md "Easing, loss, focus"). Module constants,
+# The tracker's timing (specs/motion/head_tracking.md "Easing, loss, focus"). Module constants,
 # read at run time so tests can shorten them.
 TRACKING_LOST_S = (
     2.0  # no face for this long withdraws the aim (upstream's own timeout)
 )
-# The online delay estimate (specs/head_tracking.md "The aim"): the delay L between an
+# The online delay estimate (specs/motion/head_tracking.md "The aim"): the delay L between an
 # observation's time — the frame's arrival at the bridge — and the head pose its frame
 # was taken from, fitted over the new detections of the last DELAY_WINDOW_S by the L in
 # [0, DELAY_MAX_S] (DELAY_STEP_S apart) that keeps the face's world direction most
@@ -106,7 +106,7 @@ def sim_hfov_deg(fovy_deg: float, width: int, height: int) -> float:
 
 @dataclass(frozen=True)
 class CameraModel:
-    """The active camera as the tracker needs it (specs/head_tracking.md "The aim"):
+    """The active camera as the tracker needs it (specs/motion/head_tracking.md "The aim"):
     intrinsics ``K`` and distortion ``D`` at a frame of ``size`` (width, height), and
     whether it is ``fixed`` — a camera that does not turn with the head."""
 
@@ -167,12 +167,12 @@ class _Detection:
 
 @dataclass
 class HeadTracker:
-    """Turns the reported target face into the gaze layer's aim (specs/head_tracking.md).
+    """Turns the reported target face into the gaze layer's aim (specs/motion/head_tracking.md).
 
     ``history()`` is the motion loop's record of the head poses the robot reported
     (``head_pose_history``: monotonic times and 4x4 poses), ``set_gaze(aim, focus=)``
     its gaze command. A report's ``ts`` is its frame's time on this process's monotonic
-    clock (specs/camera.md). ``focus`` is the caller's, handed over with every aim.
+    clock (specs/vision/camera.md). ``focus`` is the caller's, handed over with every aim.
     :meth:`observe` is fed every report of the detection loop.
     """
 

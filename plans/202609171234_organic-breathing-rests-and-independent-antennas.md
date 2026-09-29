@@ -2,11 +2,11 @@
 
 **Status:** Done
 
-Implements [specs/motion.md](../specs/motion.md) "The moves" — the randomised `BreathingMove` (rest-to-rest segments: raised-cosine breaths separated by random 1–5 s rests on the head's z axis, and two independent antenna tracks that roam from the neutral lean to ~25° outward from vertical) and the "Leaving breathing mid-plan" fade-out. Replaces the fixed-cycle sine idle that plan [202609162000](202609162000_motion-loop-presence-and-breathing.md) step 3 built; that plan's step 8 on-robot checklist already carries one item for this behaviour and otherwise stands. Deliberately leaves out config knobs for the new parameters (they are module constants, like today's), the listening antenna cue (spec open question 3), and the deferred emotion-preempts-breathing handoff (spec open question 1).
+Implements [specs/motion/motion.md](../specs/motion/motion.md) "The moves" — the randomised `BreathingMove` (rest-to-rest segments: raised-cosine breaths separated by random 1–5 s rests on the head's z axis, and two independent antenna tracks that roam from the neutral lean to ~25° outward from vertical) and the "Leaving breathing mid-plan" fade-out. Replaces the fixed-cycle sine idle that plan [202609162000](202609162000_motion-loop-presence-and-breathing.md) step 3 built; that plan's step 8 on-robot checklist already carries one item for this behaviour and otherwise stands. Deliberately leaves out config knobs for the new parameters (they are module constants, like today's), the listening antenna cue (spec open question 3), and the deferred emotion-preempts-breathing handoff (spec open question 1).
 
 ## How to work this plan
 
-- **Read first:** [AGENTS.md](../AGENTS.md) ("Commands", "Verification", "Keeping statuses current"), then [specs/motion.md](../specs/motion.md) — the sections "Toggle semantics", "The moves" and "`fake` backend support". The spec is the design; **do not redesign it**. If the code below and the spec disagree, the spec wins — fix the code and note it here.
+- **Read first:** [AGENTS.md](../AGENTS.md) ("Commands", "Verification", "Keeping statuses current"), then [specs/motion/motion.md](../specs/motion/motion.md) — the sections "Toggle semantics", "The moves" and "`fake` backend support". The spec is the design; **do not redesign it**. If the code below and the spec disagree, the spec wins — fix the code and note it here.
 - **Do the steps in order.** Every step ends with the same check; run it and fix everything red before starting the next step:
 
   ```
@@ -92,7 +92,7 @@ ANTENNA_HZ = 0.5
 Replace with:
 
 ```python
-# BreathingMove parameters (specs/motion.md "The moves"). The peaks are the conversation
+# BreathingMove parameters (specs/motion/motion.md "The moves"). The peaks are the conversation
 # app's, seen on hardware; the rests and the independent antennas are what make the idle
 # read as organic rather than mechanical.
 BREATH_Z_M = 0.005  # a breath peaks this far above neutral, then returns to it
@@ -134,7 +134,7 @@ class _Segment:
     """One rest-to-rest piece of a scalar track: a hold, a breath or a minjerk move.
 
     Every shape has zero slope at both ends, so consecutive segments hand off with
-    continuous velocity whatever their order (specs/motion.md "The moves").
+    continuous velocity whatever their order (specs/motion/motion.md "The moves").
     """
 
     start: float  # value at the segment's start
@@ -184,7 +184,7 @@ def _breath() -> _Segment:
 
 
 class BreathingMove(Move):
-    """The idle move with breathing on (specs/motion.md "The moves"): a randomised plan
+    """The idle move with breathing on (specs/motion/motion.md "The moves"): a randomised plan
     of rest-to-rest segments — raised-cosine breaths separated by random rests on the
     head's z axis, and two independent antenna tracks roaming outward from vertical.
 
@@ -246,7 +246,7 @@ class BreathingMove(Move):
 
 
 class _BreathingFadeOut(Move):
-    """Leaving breathing mid-plan (specs/motion.md "The moves"): keep playing ``move``
+    """Leaving breathing mid-plan (specs/motion/motion.md "The moves"): keep playing ``move``
     from ``t_offset`` while a minjerk envelope scales every track's offset from neutral
     down to zero over ``duration`` — landing at neutral at rest, so whatever follows
     (a blend, or nothing) starts from a source that is actually at rest. A plain blend
@@ -313,7 +313,7 @@ Replace with:
         if not enabled and breathing is not None:
             # Fade the plan's offsets out rather than handing a track caught
             # mid-segment (a nonzero velocity) straight to a fresh blend, which assumes
-            # rest (specs/motion.md "Leaving breathing mid-plan").
+            # rest (specs/motion/motion.md "Leaving breathing mid-plan").
             move, elapsed = breathing
             self._playing = _Playing(
                 stages=[_BreathingFadeOut(move, t_offset=elapsed)],
@@ -580,9 +580,9 @@ The breathing test must pass (it takes ~20 s now); write the printed `[e2e] brea
 
 ### Step 4 — Docs and statuses
 
-- Re-read [specs/motion.md](../specs/motion.md) "The moves" once against the code; if something differs, fix the **code** (the spec is the design).
+- Re-read [specs/motion/motion.md](../specs/motion/motion.md) "The moves" once against the code; if something differs, fix the **code** (the spec is the design).
 - Set this plan's `**Status:**` to `Done` and change its row in [_index.md](_index.md) to `Done`.
-- Do **not** change `specs/motion.md`'s status: it stays `Stable`. Its promotion to `Implemented` is gated by plan 202609162000's on-robot checklist, which already carries the organic-breathing item.
+- Do **not** change `specs/motion/motion.md`'s status: it stays `Stable`. Its promotion to `Implemented` is gated by plan 202609162000's on-robot checklist, which already carries the organic-breathing item.
 
 ## Common pitfalls
 

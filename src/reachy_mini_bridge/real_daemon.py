@@ -1,4 +1,4 @@
-"""The real daemon launcher: every hardware daemon the bridge starts (specs/real_daemon.md).
+"""The real daemon launcher: every hardware daemon the bridge starts (specs/daemon/real_daemon.md).
 
 ``python -m reachy_mini_bridge.real_daemon [--[no-]preload-datasets] [upstream flags...]``
 runs upstream's ``reachy-mini-daemon`` for a robot on this machine's USB, in this
@@ -200,7 +200,7 @@ def _parser(prog: str) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=prog,
         description="Run the Reachy Mini hardware daemon for a robot on this machine's "
-        "USB, with the bridge's macOS camera check (specs/real_daemon.md). Unrecognised "
+        "USB, with the bridge's macOS camera check (specs/daemon/real_daemon.md). Unrecognised "
         "flags go to upstream's daemon.",
     )
     parser.add_argument(

@@ -1,4 +1,4 @@
-"""Functional tests for the camera feed (specs/camera.md) on a scripted reader.
+"""Functional tests for the camera feed (specs/vision/camera.md) on a scripted reader.
 
 The feed runs its real thread over a stub `read_frame` that returns scripted frames,
 `None`s, or raises, and a stub `pose_at`; tests observe what `latest()` publishes.
@@ -233,7 +233,7 @@ def test_start_needs_a_reader_and_bind_gives_one() -> None:
     feed.stop()
 
 
-# --- the shape a vision graph plugs onto (specs/camera.md "A valid upstream") --------
+# --- the shape a vision graph plugs onto (specs/vision/camera.md "A valid upstream") --------
 
 
 @runtime_checkable

@@ -1,11 +1,11 @@
 # Running a Reachy Mini daemon (for e2e / dev)
 
-How to bring up a `reachy_mini` daemon — for the e2e tests, or for developing against a live daemon. Like [reachy-mini-api.md](reachy-mini-api.md), this is a reference note about the upstream SDK, not a spec. It's the operational companion to the e2e **strategy** in [../specs/testing.md](../specs/testing.md) ("E2E targets & capabilities"), which owns the capability matrix; this file records the concrete launch recipes and *why* they work.
+How to bring up a `reachy_mini` daemon — for the e2e tests, or for developing against a live daemon. Like [reachy-mini-api.md](reachy-mini-api.md), this is a reference note about the upstream SDK, not a spec. It's the operational companion to the e2e **strategy** in [../specs/testing/testing.md](../specs/testing/testing.md) ("E2E targets & capabilities"), which owns the capability matrix; this file records the concrete launch recipes and *why* they work.
 
 ## Launch modes
 
 The bridge implements these recipes in `reachy_mini_bridge.daemon` (spec:
-[../specs/daemon.md](../specs/daemon.md)): a `ReachyMiniConfig` with `"backend": "sim"`
+[../specs/daemon/daemon.md](../specs/daemon/daemon.md)): a `ReachyMiniConfig` with `"backend": "sim"`
 and `"daemon": {"spawn": "auto"}` makes `ReachyMiniApi` spawn the headless daemon below
 (or the viewer with `"headless": false`), wait for readiness, and stop it on exit — and the
 e2e harness uses the same code. `"backend": "real"` with the same `daemon` block does the
@@ -13,7 +13,7 @@ same for a robot plugged into this machine over USB (see "Real robot" below). Th
 here are what it runs, for when you want to start a daemon by hand.
 
 **Every sim the bridge starts runs through its own launcher**, `python -m
-reachy_mini_bridge.sim_daemon` ([../specs/sim_daemon.md](../specs/sim_daemon.md)):
+reachy_mini_bridge.sim_daemon` ([../specs/daemon/sim_daemon.md](../specs/daemon/sim_daemon.md)):
 upstream's daemon plus a choice of camera source (the rendered eye camera, or your webcam)
 and the viewer's camera overlay. It takes upstream's flags. Faces are detected by the
 bridge itself, on the host, from the camera stream the daemon serves — the daemon's own
@@ -66,7 +66,7 @@ launchctl asuser $(id -u) \
 
 ### A face in the sim (viewer + scene file)
 
-Upstream's scenes ship nothing to look at. The bridge's shipped testing package can write a **test scene** — hidden-by-default props, a portrait plane today — in front of the robot and run the daemon on it through its own launcher, which lets you show, place, move and hide the props while the daemon runs ([../specs/sim_scene.md](../specs/sim_scene.md)):
+Upstream's scenes ship nothing to look at. The bridge's shipped testing package can write a **test scene** — hidden-by-default props, a portrait plane today — in front of the robot and run the daemon on it through its own launcher, which lets you show, place, move and hide the props while the daemon runs ([../specs/testing/sim_scene.md](../specs/testing/sim_scene.md)):
 
 ```python
 from reachy_mini_bridge.testing.sim_scene import write_test_scene
@@ -82,7 +82,7 @@ It is the sim daemon launcher with the scene added; a bridge configured with the
 
 ### You in front of the sim (a webcam as the camera)
 
-For manual tests of face-driven behaviour, the sim can see through the computer's webcam instead of its rendered eye camera ([../specs/sim_daemon.md](../specs/sim_daemon.md) "Camera sources"): the person in front of the screen is who the simulated robot detects and follows, with or without the viewer.
+For manual tests of face-driven behaviour, the sim can see through the computer's webcam instead of its rendered eye camera ([../specs/daemon/sim_daemon.md](../specs/daemon/sim_daemon.md) "Camera sources"): the person in front of the screen is who the simulated robot detects and follows, with or without the viewer.
 
 ```
 mjpython -m reachy_mini_bridge.sim_daemon --camera webcam [--webcam-device 1] [--webcam-hfov 70] [--sim-display camera_overlay]
@@ -118,7 +118,7 @@ with build_robot(
 
 (Through the api, these go in the config's `robot` block; when the bridge manages the
 daemon itself it fills `connection_mode="network"`, `host`, `port`, and
-`media_backend="local"` in for you — see [../specs/config.md](../specs/config.md).)
+`media_backend="local"` in for you — see [../specs/core/config.md](../specs/core/config.md).)
 
 - **Connect over the network.** The default `auto`/`localhost` path uses an IPC transport an externally-started daemon doesn't serve.
 - **For media (camera/audio), pass `media_backend="local"`** (same machine as the daemon). The default WebRTC path errors with `KeyError: 'Producer reachymini not found.'`.

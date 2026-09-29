@@ -1,5 +1,5 @@
 """Face detection: the detection loop running one detector over the camera feed and the
-observable face report (specs/user_perception.md).
+observable face report (specs/vision/user_perception.md).
 
 The loop samples the camera feed ([camera](camera.py)) at ``FACE_POLL_HZ``, hands each
 new frame to its detector — the shipped ``yunet`` ([yunet](yunet.py), upstream's model)
@@ -49,7 +49,7 @@ __all__ = [
 
 _logger = logging.getLogger(__name__)
 
-# The detection loop's timing (specs/user_perception.md "The detection loop"). Module
+# The detection loop's timing (specs/vision/user_perception.md "The detection loop"). Module
 # constants, not config; read at run time so tests can shorten them.
 # Three polls per frame: a local daemon's camera feed is capped at 10 fps
 # (media_server.IPC_FPS), and sampling it at 10 Hz would add up to a frame's worth of
@@ -58,7 +58,7 @@ _logger = logging.getLogger(__name__)
 FACE_POLL_HZ = 30.0
 FACE_ABSENT_S = 0.3  # a drop in the count is published once it has held this long
 FACE_SOURCE_DOWN_S = 5.0  # a detector producing nothing this long reads as not looking
-# The selection gates (specs/user_perception.md "The pipeline"), upstream's own values
+# The selection gates (specs/vision/user_perception.md "The pipeline"), upstream's own values
 # so the bridge selects as the daemon's tracker does: acquire the largest face above this
 # fraction of the frame's area, keep the nearest face within this jump (normalised image
 # units, [-1, 1] across the frame), drop the association after this many consecutive
@@ -67,7 +67,7 @@ SELECT_MIN_AREA_FRAC = 0.003
 SELECT_MAX_JUMP = 0.5
 SELECT_MAX_MISSES = 20
 
-# The detectors a config names (specs/user_perception.md "Detectors"); `None` is none.
+# The detectors a config names (specs/vision/user_perception.md "Detectors"); `None` is none.
 FACE_DETECTOR_NAMES = ("yunet", "custom")
 
 
@@ -86,7 +86,7 @@ class FaceReport:
     """Who the detection loop sees: the value of ``api.faces``."""
 
     faces: tuple[Face, ...]  # every face the detector reports; the target face first
-    ts: float  # the frame's time (the bridge's monotonic clock, specs/camera.md)
+    ts: float  # the frame's time (the bridge's monotonic clock, specs/vision/camera.md)
     source: str | None  # the detector's name: "yunet" | "custom"; None when none is set
     active: bool  # a detector is running; False means "unknown", not "nobody"
     # The head pose the frame was captured from, when the camera feed could stamp it.
@@ -98,7 +98,7 @@ class FaceReport:
         return cls(faces=(), ts=0.0, source=source, active=False)
 
 
-# --- custom detectors (specs/user_perception.md "Custom detectors") ---------------------
+# --- custom detectors (specs/vision/user_perception.md "Custom detectors") ---------------------
 
 
 @dataclass(frozen=True)
@@ -128,11 +128,11 @@ type FaceDetectorFactory = Callable[[], FaceDetector]
 
 
 def check_face_detector_factory(factory: object) -> None:
-    """Registration-time check (specs/user_perception.md "Custom detectors"):
+    """Registration-time check (specs/vision/user_perception.md "Custom detectors"):
     ``ValueError`` unless ``factory`` is a callable whose result has a callable
     ``detect``. Calls the factory once, on the caller's thread."""
     if not callable(factory):
-        # ValueError, not TypeError: the api's one error for bad input (specs/api.md)
+        # ValueError, not TypeError: the api's one error for bad input (specs/core/api.md)
         raise ValueError(  # noqa: TRY004
             "a face detector factory must be a zero-argument callable returning a "
             "FaceDetector (a class with a `detect(frame_bgr, ts)` method is one), got "
@@ -178,7 +178,7 @@ def _dist2(a: tuple[float, float], b: tuple[float, float]) -> float:
 
 
 class _FaceSelector:
-    """Which of a detector's faces is the target (specs/user_perception.md "The
+    """Which of a detector's faces is the target (specs/vision/user_perception.md "The
     pipeline"): acquire the largest face above the minimum size, then keep the nearest
     to the previous target while it stays within the jump gate, dropping the association
     after a run of misses. Pure geometry, upstream's rule re-implemented; no smoothing —
@@ -274,7 +274,7 @@ def report_from_pixels(
 
 
 def _yunet_factory() -> FaceDetector:
-    """The shipped detector's factory (specs/user_perception.md "The shipped detector");
+    """The shipped detector's factory (specs/vision/user_perception.md "The shipped detector");
     imported here, not at module load, since `yunet.py` imports this module."""
     from .yunet import YuNetDetector
 
@@ -285,7 +285,7 @@ def _yunet_factory() -> FaceDetector:
 
 
 class FaceDetection:
-    """The detection loop (specs/user_perception.md "The detection loop"): one asyncio
+    """The detection loop (specs/vision/user_perception.md "The detection loop"): one asyncio
     task sampling the camera feed, running one detector once per new frame and
     publishing on ``faces``, restartable.
 

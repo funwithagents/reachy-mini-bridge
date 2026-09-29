@@ -2,7 +2,7 @@
 
 **Status:** Done
 
-Implements [specs/testing.md](../specs/testing.md) ("E2E targets & capabilities"): turn the single motion-only `sim_daemon` fixture into a target-selectable, capability-probing e2e harness — `sim` (headless/headfull) and `real` targets, an "own-it-or-borrow-it" daemon lifecycle, runtime capability probing, and a `requires_caps(...)` skip gate. It deliberately leaves the actual `audio`/`camera` e2e *tests* to the `audio.py` / perception work; this plan delivers the harness they'll plug into, plus keeps the existing motion test green. Flips `testing.md` back to `Implemented` when done.
+Implements [specs/testing/testing.md](../specs/testing/testing.md) ("E2E targets & capabilities"): turn the single motion-only `sim_daemon` fixture into a target-selectable, capability-probing e2e harness — `sim` (headless/headfull) and `real` targets, an "own-it-or-borrow-it" daemon lifecycle, runtime capability probing, and a `requires_caps(...)` skip gate. It deliberately leaves the actual `audio`/`camera` e2e *tests* to the `audio.py` / perception work; this plan delivers the harness they'll plug into, plus keeps the existing motion test green. Flips `testing.md` back to `Implemented` when done.
 
 ## Scope
 
@@ -36,4 +36,4 @@ Implements [specs/testing.md](../specs/testing.md) ("E2E targets & capabilities"
 - With `REACHY_MINI_E2E_SIM_VIEWER=1` from a GUI session, the viewer launches and the same test passes (manual check — needs a display).
 - Capability probing is exercised: on headless sim, `motion` (and `audio`, once the fixture runs media-on) are present and a `requires_caps("camera")`/`("doa")` test **skips** cleanly; pointed at a `real` target that's unreachable, the fixture **skips**, never fails.
 - `uv run ruff check .` / `uv run ruff format .` clean; `uv run pyright` clean; `uv run pytest` green (default run still excludes `tests-e2e/`).
-- Flip [specs/testing.md](../specs/testing.md) `Updated → Implemented` (and its index row) once the harness matches the spec. Mark this plan `Done` (here and in [_index.md](_index.md)) only when all pass.
+- Flip [specs/testing/testing.md](../specs/testing/testing.md) `Updated → Implemented` (and its index row) once the harness matches the spec. Mark this plan `Done` (here and in [_index.md](_index.md)) only when all pass.

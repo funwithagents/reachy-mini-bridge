@@ -3,7 +3,7 @@
 
 Resolves the *target* from the environment (`REACHY_MINI_E2E_TARGET` = `sim` default |
 `real`) and the daemon address (`REACHY_MINI_HOST` / `REACHY_MINI_PORT`), then hands the
-daemon work to the library's [daemon.py](../daemon.py) (specs/daemon.md): reuse a daemon
+daemon work to the library's [daemon.py](../daemon.py) (specs/daemon/daemon.md): reuse a daemon
 already ready at the address (never torn down), else spawn one and own its teardown — a
 MuJoCo daemon for `sim`, the hardware daemon for `real` on a loopback address (a USB robot
 on this machine; a remote `real` address skips) — translating a `DaemonError` into a
@@ -72,7 +72,7 @@ def _sim_viewer() -> bool:
 
 @contextmanager
 def _test_scene() -> Iterator[str]:
-    """The bridge's test scene (specs/sim_scene.md), written into a temporary directory
+    """The bridge's test scene (specs/testing/sim_scene.md), written into a temporary directory
     that lives as long as the daemon: every sim the harness spawns runs it. Its props
     start hidden, so a test that never shows one runs on upstream's empty scene."""
     tmp = tempfile.mkdtemp(prefix="reachy-mini-test-scene-")

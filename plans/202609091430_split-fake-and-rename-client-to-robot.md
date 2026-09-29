@@ -2,7 +2,7 @@
 
 **Status:** Done
 
-Implements the module-layout section of [specs/robot.md](../specs/robot.md). Splits the connection seam into two focused modules and renames the "client" concept (a misnomer inherited from upstream, where `ReachyMini` is itself the daemon client) to "robot". No behavior change — a file/name reorganization only.
+Implements the module-layout section of [specs/core/robot.md](../specs/core/robot.md). Splits the connection seam into two focused modules and renames the "client" concept (a misnomer inherited from upstream, where `ReachyMini` is itself the daemon client) to "robot". No behavior change — a file/name reorganization only.
 
 ## Scope
 
@@ -13,8 +13,8 @@ Implements the module-layout section of [specs/robot.md](../specs/robot.md). Spl
 - `tests/test_fake_reachy_mini.py` — **new**: the `FakeReachyMini` behavior tests (motor state, recorded motion/media commands, capture format).
 - `tests/test_audio.py`, `tests/test_api.py` — import `FakeReachyMini` from `.fake`.
 - `tests-e2e/test_robot.py` (renamed from `test_client.py`), `tests-e2e/conftest.py` — import from `.robot`.
-- `specs/robot.md` — **renamed** from `client.md`; title, frontmatter (`code:` = `robot.py` + `fake_reachy_mini.py`; `tests:` = `test_robot.py` + `test_fake_reachy_mini.py`), and a "Module layout" section.
-- `specs/_index.md`, `specs/_overview.md`, `specs/api.md`, `specs/audio.md`, `specs/project.md`, `specs/testing.md`, `docs/reachy-mini-api.md`, `docs/running-the-sim-daemon.md`, `AGENTS.md` — link/name references retargeted.
+- `specs/core/robot.md` — **renamed** from `client.md`; title, frontmatter (`code:` = `robot.py` + `fake_reachy_mini.py`; `tests:` = `test_robot.py` + `test_fake_reachy_mini.py`), and a "Module layout" section.
+- `specs/_index.md`, `specs/_overview.md`, `specs/core/api.md`, `specs/audio/audio.md`, `specs/project.md`, `specs/testing/testing.md`, `docs/reachy-mini-api.md`, `docs/running-the-sim-daemon.md`, `AGENTS.md` — link/name references retargeted.
 
 ## Steps
 
@@ -22,7 +22,7 @@ Implements the module-layout section of [specs/robot.md](../specs/robot.md). Spl
 2. Extract the fake + helpers + audio constants into `fake_reachy_mini.py`; reduce `robot.py` to the alias + factory importing `FakeReachyMini` from `fake_reachy_mini.py`.
 3. Repoint every importer (`api.py`, `audio.py`, tests, e2e).
 4. Split the seam tests: `test_robot.py` keeps `build_robot`/lifecycle; `test_fake_reachy_mini.py` gets the fake-behavior tests.
-5. Update `specs/robot.md` (title, frontmatter, module-layout section) and retarget all `client.md`/`client.py` references across specs, docs, and `AGENTS.md`.
+5. Update `specs/core/robot.md` (title, frontmatter, module-layout section) and retarget all `client.md`/`client.py` references across specs, docs, and `AGENTS.md`.
 
 ## Verification
 

@@ -1,4 +1,4 @@
-"""Fast-tier tests for `reachy_mini_bridge.testing.sim_scene` (specs/sim_scene.md).
+"""Fast-tier tests for `reachy_mini_bridge.testing.sim_scene` (specs/testing/sim_scene.md).
 
 Daemon-free and offline: the generated scene is loaded into MuJoCo (no rendering) to
 check its geometry against the robot's eye camera and to drive the director through real
@@ -105,7 +105,7 @@ def test_face_scene_loads_with_a_mocap_face_in_the_eye_camera_view(
 def test_face_scene_floor_is_not_reflective(model_and_data: tuple[Any, Any]) -> None:
     """A reflective floor mirrors the face plane upside down, and the daemon-side
     detector can lock onto that reflection as readily as the real face (confirmed live
-    on a rendered frame — specs/sim_scene.md "Tracking convergence"). Upstream's own
+    on a rendered frame — specs/testing/sim_scene.md "Tracking convergence"). Upstream's own
     scenes use `reflectance="0.2"`; the generated scene zeroes it."""
     model, _data = model_and_data
     material = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_MATERIAL, "groundplane")

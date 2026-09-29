@@ -2,13 +2,13 @@
 
 **Status:** Done
 
-Implements the settled behavior in `specs/sim_daemon.md` ("Camera sources", "Correction 2") and `specs/daemon.md` ("The child's output reaches the bridge's log"): the `webcam` relay takes whatever resolution a camera offers and centre-crops it into the sim's 1280×720 stream, the tracker's field of view follows the crop, and the spawned daemon's own log lines reach the person running the bridge instead of `/dev/null`.
+Implements the settled behavior in `specs/daemon/sim_daemon.md` ("Camera sources", "Correction 2") and `specs/daemon/daemon.md` ("The child's output reaches the bridge's log"): the `webcam` relay takes whatever resolution a camera offers and centre-crops it into the sim's 1280×720 stream, the tracker's field of view follows the crop, and the spawned daemon's own log lines reach the person running the bridge instead of `/dev/null`.
 
 ## Why
 
-The relay asked the camera for 1280×720 (`{source} ! video/x-raw,width=1280,height=720 ! …`). A camera that does not offer that exact mode cannot negotiate, so the pipeline never reaches `PLAYING` and the camera is never opened. Measured on a Mac whose camera offers only 3840×2592, 3840×2160, 3264×2448 and 1920×1080: `Internal data stream error.`, an `ERROR` every 5 s, no frames ever. `specs/sim_daemon.md` open question 3 deferred this until such a camera was in use; it now is.
+The relay asked the camera for 1280×720 (`{source} ! video/x-raw,width=1280,height=720 ! …`). A camera that does not offer that exact mode cannot negotiate, so the pipeline never reaches `PLAYING` and the camera is never opened. Measured on a Mac whose camera offers only 3840×2592, 3840×2160, 3264×2448 and 1920×1080: `Internal data stream error.`, an `ERROR` every 5 s, no frames ever. `specs/daemon/sim_daemon.md` open question 3 deferred this until such a camera was in use; it now is.
 
-The failure was invisible because the child's stdout/stderr go to `DEVNULL` — the relay's `ERROR` line, which names the cause and the macOS permission hint, reached nobody. That is `specs/daemon.md` open question 1, deferred "until the discard-plus-`DaemonError` path proves insufficient in practice". It has.
+The failure was invisible because the child's stdout/stderr go to `DEVNULL` — the relay's `ERROR` line, which names the cause and the macOS permission hint, reached nobody. That is `specs/daemon/daemon.md` open question 1, deferred "until the discard-plus-`DaemonError` path proves insufficient in practice". It has.
 
 ## Measurements behind the design
 
@@ -32,8 +32,8 @@ Borders are therefore not available without dynamic pipeline surgery (computing 
 - `src/reachy_mini_bridge/daemon.py` — the child's merged output is read by a thread and re-emitted through the bridge's logger; its last lines ride along on a startup `DaemonError`
 - `tests/test_sim_daemon.py` — the pipeline shape, the cropped field of view, the size report, intrinsics end to end
 - `tests/test_daemon.py` — output forwarding levels, and a failed launch carrying the daemon's own words
-- `specs/sim_daemon.md` — "Camera sources" format/field-of-view, "Correction 2", open question 3 retired (`Implemented` → `Updated` → `Implemented`)
-- `specs/daemon.md` — new "The child's output reaches the bridge's log", open question 1 retired (`Implemented` → `Updated` → `Implemented`)
+- `specs/daemon/sim_daemon.md` — "Camera sources" format/field-of-view, "Correction 2", open question 3 retired (`Implemented` → `Updated` → `Implemented`)
+- `specs/daemon/daemon.md` — new "The child's output reaches the bridge's log", open question 1 retired (`Implemented` → `Updated` → `Implemented`)
 
 ## Steps
 

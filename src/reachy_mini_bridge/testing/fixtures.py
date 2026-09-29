@@ -16,7 +16,7 @@ then writes target-agnostic e2e tests that gate on probed capabilities::
 ``live_api`` resolves the target (``REACHY_MINI_E2E_TARGET`` = ``sim`` default | ``real``),
 brings a daemon up under own-it-or-borrow-it (see ``_daemon``), builds a ``ReachyMiniApi``
 over it, *probes* capabilities against the live daemon, and yields ``(api, capabilities)``.
-See ../../../specs/testing_support.md for the strategy and
+See ../../../specs/testing/testing_support.md for the strategy and
 ../../../docs/running-the-sim-daemon.md for the launch recipes.
 """
 
@@ -96,7 +96,7 @@ def _probe_gravity_compensation(robot: AnyReachyMini) -> bool:
 def _probe_faces(host: str, port: int) -> bool:
     """True if the daemon serves the bridge's sim-scene endpoint with a `face` body:
     it was launched on the bridge's test scene (every harness-spawned sim is,
-    specs/sim_scene.md), so tests can show, move and hide a face in front of the eye
+    specs/testing/sim_scene.md), so tests can show, move and hide a face in front of the eye
     camera. A daemon launched any other way lacks it."""
     try:
         return "face" in SimSceneClient(host, port).bodies()
@@ -147,7 +147,7 @@ def _live_daemon() -> Iterator[tuple[str, int]]:
 @pytest.fixture(scope="module")
 def sim_scene(_live_daemon: tuple[str, int]) -> SimSceneClient:
     """A ``SimSceneClient`` on the fixture-managed daemon: show, place, move and hide
-    the scriptable bodies of a bridge scene (specs/sim_scene.md). Only useful where
+    the scriptable bodies of a bridge scene (specs/testing/sim_scene.md). Only useful where
     ``live_api`` probed the ``faces`` capability — gate with ``requires_caps``."""
     host, port = _live_daemon
     return SimSceneClient(host, port)
@@ -160,7 +160,7 @@ def live_api(
     """A connected ``ReachyMiniApi`` + its probed capability set, for the selected target.
 
     Builds the api against the fixture-managed daemon (no robot injection — construction
-    stays backend-string-only per specs/robot.md) and probes capabilities through
+    stays backend-string-only per specs/core/robot.md) and probes capabilities through
     ``api.robot``. The api's async lifecycle is driven on a throwaway loop; tests run
     their own coroutines via ``asyncio.run`` (nothing in the api binds to a loop).
 
@@ -174,7 +174,7 @@ def live_api(
     # test module. See `_daemon.backend` for why the backend label is safe here.
     # The live tier's subject is the robot that follows a face, so the config names the
     # shipped `yunet` detector with detection and tracking on (the defaults run no
-    # detector — specs/user_perception.md "Configuration"). The model downloads into the
+    # detector — specs/vision/user_perception.md "Configuration"). The model downloads into the
     # Hugging Face cache on the first live run, as the emotions library does.
     api = ReachyMiniApi(
         ReachyMiniConfig(

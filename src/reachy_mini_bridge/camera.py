@@ -1,5 +1,5 @@
 """Camera feed: ``CameraFeed`` / ``CameraFrame``, the one reader of the robot's camera
-(specs/camera.md).
+(specs/vision/camera.md).
 
 Upstream hands frames out one at a time — ``media.get_frame()`` returns each frame once,
 then ``None`` until the next arrives — so two readers in one process steal frames from
@@ -41,7 +41,7 @@ __all__ = [
 
 _logger = logging.getLogger(__name__)
 
-# The reader's failure rules (specs/camera.md "The feed"): a read that raises is retried
+# The reader's failure rules (specs/vision/camera.md "The feed"): a read that raises is retried
 # after CAMERA_RETRY_S; one that keeps raising for CAMERA_DOWN_S logs one WARNING (and
 # one INFO when frames return). Module constants, read at run time so tests can shorten.
 CAMERA_RETRY_S = 0.1
@@ -49,7 +49,7 @@ CAMERA_DOWN_S = 5.0
 
 # What the feed reads: the next frame as ``(image, capture_time)`` — ``capture_time`` the
 # frame's time on ``time.monotonic()``'s clock when the backend knows it, ``None`` when
-# only the arrival is known — or ``None`` for no frame yet (specs/camera.md "The frame's
+# only the arrival is known — or ``None`` for no frame yet (specs/vision/camera.md "The frame's
 # time and the head pose": a head pose is attached only to a capture time).
 type FrameReader = Callable[[], tuple[npt.NDArray[np.uint8], float | None] | None]
 # The head pose the robot reported at a monotonic time (the motion loop's head_pose_at).
@@ -58,7 +58,7 @@ type PoseAt = Callable[[float], npt.NDArray[np.float64]]
 
 @dataclass(frozen=True)
 class CameraFrame:
-    """One published frame (specs/camera.md "The frame")."""
+    """One published frame (specs/vision/camera.md "The frame")."""
 
     frame_id: int  # 1, 2, 3, … per feed — the key a result is matched on
     ts: float  # the frame's time on the monotonic clock: capture when known, else arrival
@@ -75,7 +75,7 @@ def frame_reader(robot: AnyReachyMini) -> FrameReader:
 
     The fake synthesises its frame inside the call, so the instant it returns is the
     frame's capture time and a pose can be attached. Upstream's client pipeline knows no
-    capture time (specs/camera.md "The frame's time and the head pose": the appsink's
+    capture time (specs/vision/camera.md "The frame's time and the head pose": the appsink's
     buffers reach the client with their ``pts`` zeroed), so a robot's or the sim's frames
     carry their arrival time only, and the head tracker estimates the delay.
     """
@@ -96,7 +96,7 @@ def frame_reader(robot: AnyReachyMini) -> FrameReader:
 
 
 class CameraFeed:
-    """The one reader of the robot's camera (specs/camera.md "The feed"): ``start()``
+    """The one reader of the robot's camera (specs/vision/camera.md "The feed"): ``start()``
     spawns the reader thread, ``latest()`` is the newest frame from any thread,
     ``stop()`` joins the thread and resets ``latest()`` to ``None``.
 

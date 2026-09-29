@@ -11,7 +11,7 @@ Implements the updated [specs/client.md](../specs/client.md) ("`AnyReachyMini` �
 - `src/reachy_mini_bridge/audio.py` — `MediaSession` typed against `AnyReachyMini`.
 - `tests-e2e/conftest.py`, `tests-e2e/test_client.py` — rename in imports and fixture type hints.
 - `specs/client.md` — rename alias throughout; revise the alias/testability/fake/construction sections for the eager import; add a "Why not `RobotClient`" note.
-- `specs/_overview.md`, `specs/_index.md`, `specs/audio.md`, `specs/testing.md` — rename references.
+- `specs/_overview.md`, `specs/_index.md`, `specs/audio/audio.md`, `specs/testing/testing.md` — rename references.
 - `AGENTS.md` — project-map row for `client.py`.
 
 ## Steps

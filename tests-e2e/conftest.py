@@ -4,7 +4,7 @@
 # run it explicitly with `uv run pytest tests-e2e`.
 #
 # The harness itself is shipped library code — `reachy_mini_bridge.testing` — so consumers
-# of the bridge reuse it (see specs/testing_support.md). The bridge dogfoods its own
+# of the bridge reuse it (see specs/testing/testing_support.md). The bridge dogfoods its own
 # shipped harness here: we pull the `live_api` fixture (and the module-scoped `_live_daemon`
 # it depends on) in from `reachy_mini_bridge.testing.fixtures` rather than defining them.
 # A downstream project instead opts in from its root conftest with
@@ -15,7 +15,7 @@
 # Mirror any isolation fixture the fast tier uses here — tests-e2e/ isn't a package that
 # can import from tests/, so the few lines are duplicated rather than shared. (The library
 # holds no process-global state today, so no reset fixture is needed yet — see
-# specs/testing.md.)
+# specs/testing/testing.md.)
 
 from reachy_mini_bridge.testing.fixtures import (  # noqa: F401
     _live_daemon,

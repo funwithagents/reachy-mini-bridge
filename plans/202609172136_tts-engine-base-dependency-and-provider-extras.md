@@ -2,7 +2,7 @@
 
 **Status:** Done
 
-Implements the updated dependency policy in `specs/project.md` ("Runtime-dependency policy", "Optional extras") and its consequences in `specs/audio.md` ("`tts-engine` is the default adapter"), `specs/config.md` ("`tts` block") and `specs/api.md` ("Constructed from a config"). tts-engine's providers moved behind its own extras (`tts-engine[elevenlabs]`, `tts-engine[pocket]`), so the bridge's `tts` extra now installs a provider-less engine. This plan makes `tts-engine` a base dependency (its base is numpy plus a lazily imported sounddevice the bridge never triggers), replaces the `tts` extra with one extra per provider, and puts the local pocket-tts model in the dev loop so the real-TTS live test runs with no credential. It deliberately leaves the path source in place: the pinned git URL migration stays a separate step.
+Implements the updated dependency policy in `specs/project.md` ("Runtime-dependency policy", "Optional extras") and its consequences in `specs/audio/audio.md` ("`tts-engine` is the default adapter"), `specs/core/config.md` ("`tts` block") and `specs/core/api.md` ("Constructed from a config"). tts-engine's providers moved behind its own extras (`tts-engine[elevenlabs]`, `tts-engine[pocket]`), so the bridge's `tts` extra now installs a provider-less engine. This plan makes `tts-engine` a base dependency (its base is numpy plus a lazily imported sounddevice the bridge never triggers), replaces the `tts` extra with one extra per provider, and puts the local pocket-tts model in the dev loop so the real-TTS live test runs with no credential. It deliberately leaves the path source in place: the pinned git URL migration stays a separate step.
 
 ## Scope
 
@@ -13,7 +13,7 @@ Implements the updated dependency policy in `specs/project.md` ("Runtime-depende
 - `tests/test_api.py` — the "without the extra" test goes; a test pins that a tts-engine-style `ConfigError` from the adapter degrades to no voice.
 - `tests-e2e/test_api.py` — the real-TTS test runs on pocket (no credential; gated on `audio` only; asserts the 24 kHz rate so the resample path is covered); the ElevenLabs test stays, key-gated, as the cloud path.
 - `config.example.json`, `README.md` — the example `tts` block is a pocket block (no key); the extras table lists the two provider extras.
-- `specs/project.md`, `specs/audio.md`, `specs/config.md`, `specs/api.md`, `specs/testing.md`, `AGENTS.md`, `specs/_index.md` — the policy and its consequences, statuses kept honest.
+- `specs/project.md`, `specs/audio/audio.md`, `specs/core/config.md`, `specs/core/api.md`, `specs/testing/testing.md`, `AGENTS.md`, `specs/_index.md` — the policy and its consequences, statuses kept honest.
 - `plans/_index.md` — this plan's row.
 
 ## Steps

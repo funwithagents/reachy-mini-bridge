@@ -2,7 +2,7 @@
 
 **Status:** Done
 
-Implements the settled behavior in [specs/api.md](../specs/api.md) ("v1 scope") and [specs/audio.md](../specs/audio.md) ("Core concepts / Decided"): the async-native `ReachyMiniApi` and the audio media session it depends on, built together because the two are coupled (the api is async-native *because* of audio). Delivers the v1 conversational-presence slice — talk, listen, express, follow a face, manage motors — over the existing `client.py` seam. Deliberately leaves out everything api.md defers to post-v1 (manual gaze/pose, `wake`/`sleep`, antennas, rich perception, true barge-in flush) and everything audio.md defers to hardware (XVF3800 profile tuning, full-vs-half-duplex default, DoA verbs).
+Implements the settled behavior in [specs/core/api.md](../specs/core/api.md) ("v1 scope") and [specs/audio/audio.md](../specs/audio/audio.md) ("Core concepts / Decided"): the async-native `ReachyMiniApi` and the audio media session it depends on, built together because the two are coupled (the api is async-native *because* of audio). Delivers the v1 conversational-presence slice — talk, listen, express, follow a face, manage motors — over the existing `client.py` seam. Deliberately leaves out everything api.md defers to post-v1 (manual gaze/pose, `wake`/`sleep`, antennas, rich perception, true barge-in flush) and everything audio.md defers to hardware (XVF3800 profile tuning, full-vs-half-duplex default, DoA verbs).
 
 ## Scope
 
@@ -16,7 +16,7 @@ The exact files this plan touches, each with a one-line note on what changes:
 - `tests-e2e/conftest.py` — add a `live_api` fixture: builds a `ReachyMiniApi` against the fixture-managed daemon (no robot injection — construction stays backend-string-only per client.md) and probes capabilities through `api.robot`, mirroring `live_robot`.
 - `tests-e2e/test_api.py` *(new)* — opt-in live tests over `live_api`: capability-gated (`requires_caps`) and credential-gated (`require_env`) verification of the real audio format, the mic tap, the say pipeline, and motor state against a live daemon (sim by default, real when targeted).
 - `pyproject.toml` — add `samplerate` as a base runtime dependency; add a `tts` optional extra (`tts-engine`, local path dep now) and pull it into the dev group so the tts adapter is type-checked/tested.
-- `specs/api.md`, `specs/audio.md`, `specs/client.md` — record the resolved error taxonomy in the relevant open questions; fill each spec's `tests:` frontmatter; flip `api.md`/`audio.md` to `Implemented` on completion.
+- `specs/core/api.md`, `specs/audio/audio.md`, `specs/client.md` — record the resolved error taxonomy in the relevant open questions; fill each spec's `tests:` frontmatter; flip `api.md`/`audio.md` to `Implemented` on completion.
 
 ## Steps
 

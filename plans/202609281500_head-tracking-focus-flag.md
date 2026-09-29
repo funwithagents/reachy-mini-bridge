@@ -2,7 +2,7 @@
 
 **Status:** Done
 
-Implements [specs/api.md](../specs/api.md) "Attention / gaze (autonomous)", [specs/head_tracking.md](../specs/head_tracking.md) "Focus" and [specs/motion.md](../specs/motion.md) "The gaze layer" as revised: `start_head_tracking(focus=False)` replaces the daemon-era `weight`. Tracking always composes the aim in full; `focus=True` holds the head exactly on the aim (the idle move's head motion left out) while the antennas keep the idle move's gaze-time motion. The control panel's Gaze group becomes a Tracking checkbox and a Focus checkbox. Leaves the daemon's own `start_head_tracking(weight)` (the detector arming) untouched.
+Implements [specs/core/api.md](../specs/core/api.md) "Attention / gaze (autonomous)", [specs/motion/head_tracking.md](../specs/motion/head_tracking.md) "Focus" and [specs/motion/motion.md](../specs/motion/motion.md) "The gaze layer" as revised: `start_head_tracking(focus=False)` replaces the daemon-era `weight`. Tracking always composes the aim in full; `focus=True` holds the head exactly on the aim (the idle move's head motion left out) while the antennas keep the idle move's gaze-time motion. The control panel's Gaze group becomes a Tracking checkbox and a Focus checkbox. Leaves the daemon's own `start_head_tracking(weight)` (the detector arming) untouched.
 
 ## Scope
 
@@ -11,7 +11,7 @@ Implements [specs/api.md](../specs/api.md) "Attention / gaze (autonomous)", [spe
 - `src/reachy_mini_bridge/api.py` — `start_head_tracking(focus: bool = False)`; no `ValueError`.
 - `examples/control_panel/controller.py`, `app.py` — `start_head_tracking(focus)`; Tracking + Focus checkboxes in place of the slider and buttons.
 - `tests/test_motion.py`, `tests/test_head_tracking.py`, `tests/test_api.py`, `tests/test_control_panel.py` — the weight tests replaced by focus tests.
-- `specs/api.md`, `specs/head_tracking.md`, `specs/motion.md`, `specs/control_panel.md`, `README.md` — the verb and the panel.
+- `specs/core/api.md`, `specs/motion/head_tracking.md`, `specs/motion/motion.md`, `specs/examples/control_panel.md`, `README.md` — the verb and the panel.
 
 ## Steps
 

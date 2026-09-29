@@ -2,7 +2,7 @@
 
 **Status:** Done
 
-Implements [specs/daemon.md](../specs/daemon.md) ("Readiness means the backend is up", "The launch command") and the new [specs/real_daemon.md](../specs/real_daemon.md). Delivers the two bridge-side answers to "sometimes the real robot's camera never starts on macOS": the readiness probe stops making the daemon rebuild its media pipeline, and every hardware daemon the bridge spawns runs through a launcher that verifies which camera `avfvideosrc` opened and rebuilds until it is the robot's. It deliberately leaves the sim launcher's webcam source alone (open question 2 of the new spec) and files nothing upstream — the draft is [docs/upstream-macos-camera-device-index.md](../docs/upstream-macos-camera-device-index.md).
+Implements [specs/daemon/daemon.md](../specs/daemon/daemon.md) ("Readiness means the backend is up", "The launch command") and the new [specs/daemon/real_daemon.md](../specs/daemon/real_daemon.md). Delivers the two bridge-side answers to "sometimes the real robot's camera never starts on macOS": the readiness probe stops making the daemon rebuild its media pipeline, and every hardware daemon the bridge spawns runs through a launcher that verifies which camera `avfvideosrc` opened and rebuilds until it is the robot's. It deliberately leaves the sim launcher's webcam source alone (open question 2 of the new spec) and files nothing upstream — the draft is [docs/upstream-macos-camera-device-index.md](../docs/upstream-macos-camera-device-index.md).
 
 ## Scope
 
@@ -10,7 +10,7 @@ Implements [specs/daemon.md](../specs/daemon.md) ("Readiness means the backend i
 - `src/reachy_mini_bridge/real_daemon.py` — new: `run_real_daemon` (argv rewrite, install, upstream `main()`), `install_macos_camera_check` (wraps `GstMediaServer.start`, idempotent), `select_camera` (the pure decision), `is_robot_camera`, and the GStreamer glue that reads `avfvideosrc`'s `device-name`
 - `tests/test_daemon.py` — the real recipe's new argv; the probe against a scripted `GET /api/daemon/status` (ready, backend `null`, not JSON, 404, closed port); `status_url`
 - `tests/test_real_daemon.py` — new: the selection with scripted names (kept, round-robin rebuilds with the log lines, giving up, an unnamed device), the media-server wiring with a stand-in server, the idempotent install, the argv rewrite
-- `specs/daemon.md`, `specs/real_daemon.md`, `specs/_index.md`, `AGENTS.md` (project map, e2e table), `docs/reachy-mini-api.md`, `docs/running-the-sim-daemon.md`, `docs/testing-with-the-bridge.md`, `specs/testing.md` — the design and the reference notes
+- `specs/daemon/daemon.md`, `specs/daemon/real_daemon.md`, `specs/_index.md`, `AGENTS.md` (project map, e2e table), `docs/reachy-mini-api.md`, `docs/running-the-sim-daemon.md`, `docs/testing-with-the-bridge.md`, `specs/testing/testing.md` — the design and the reference notes
 - `docs/upstream-macos-camera-device-index.md` — the upstream issue draft with the measurements
 
 ## Steps

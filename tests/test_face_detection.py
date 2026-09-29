@@ -1,4 +1,4 @@
-"""Functional tests for the detection loop (specs/user_perception.md) on the fake.
+"""Functional tests for the detection loop (specs/vision/user_perception.md) on the fake.
 
 The loop runs unchanged at real time, with its timing shortened: polls at 20 Hz, a
 drop published after 0.15 s. A test drives a stub detector's scene over the fake's camera
@@ -304,7 +304,7 @@ def test_report_from_pixels_puts_the_target_first_and_carries_the_frame() -> Non
     assert nobody.faces == () and nobody.active is True
 
 
-# --- selection (specs/user_perception.md "The pipeline": no smoothing) ------------------
+# --- selection (specs/vision/user_perception.md "The pipeline": no smoothing) ------------------
 
 
 def test_the_largest_face_above_the_minimum_size_is_acquired() -> None:

@@ -15,7 +15,7 @@ tests:
 
 `ReachyMiniConfig` is the one declarative object that describes everything needed to bring up a `ReachyMiniApi` ([api.md](api.md)): which backend, how to reach — or spawn — its daemon, the default speech synthesizer, and the audio profile. It is buildable from a dict, a JSON string, or a JSON file, so a host application keeps its robot settings in its own configuration next to everything else and constructs a talking robot in one call. The same file switches from the real robot to the simulator to the offline fake by changing one string.
 
-The shape and the constructor trio mirror [`tts-engine`'s configuration](../../tts-engine/specs/configuration.md) (`TTSEngineConfig`), so the two first-party libraries read the same way — and the bridge's `tts` block *is* a tts-engine `engine` block, carried through verbatim.
+The shape and the constructor trio mirror [`tts-engine`'s configuration](../../../tts-engine/specs/configuration.md) (`TTSEngineConfig`), so the two first-party libraries read the same way — and the bridge's `tts` block *is* a tts-engine `engine` block, carried through verbatim.
 
 ## Core concepts / Decided
 
@@ -33,7 +33,7 @@ The shape and the constructor trio mirror [`tts-engine`'s configuration](../../t
 }
 ```
 
-Every block is optional: `ReachyMiniConfig()` is a valid config — the `real` backend, upstream's connection defaults, no daemon management, no default synthesizer, firmware audio defaults, the `faces` defaults (no detector, detection off) and the `motion` defaults (presence and wobbling on, tracking off — it needs a detector — the idle mode `"breathing"`). `config.example.json` in the repo root documents every field with placeholder values and is kept in sync with this spec. It describes the **sim viewer seeing through the host webcam** (`backend: "sim"`, `daemon.spawn: "auto"`, `daemon.headless: false`, `daemon.camera.source: "webcam"`): the configuration that shows the most — the robot moving in the MuJoCo window, and its camera on the person in front of the computer, whom it follows (`faces.detector: "yunet"`, detection and tracking on) — so it is what the README and the [control panel](control_panel.md) start from — with `daemon.sim_displays.camera_overlay` on, so the viewer window also shows what the camera sees. Set `source` to `"sim"` for the rendered eye camera instead.
+Every block is optional: `ReachyMiniConfig()` is a valid config — the `real` backend, upstream's connection defaults, no daemon management, no default synthesizer, firmware audio defaults, the `faces` defaults (no detector, detection off) and the `motion` defaults (presence and wobbling on, tracking off — it needs a detector — the idle mode `"breathing"`). `config.example.json` in the repo root documents every field with placeholder values and is kept in sync with this spec. It describes the **sim viewer seeing through the host webcam** (`backend: "sim"`, `daemon.spawn: "auto"`, `daemon.headless: false`, `daemon.camera.source: "webcam"`): the configuration that shows the most — the robot moving in the MuJoCo window, and its camera on the person in front of the computer, whom it follows (`faces.detector: "yunet"`, detection and tracking on) — so it is what the README and the [control panel](../examples/control_panel.md) start from — with `daemon.sim_displays.camera_overlay` on, so the viewer window also shows what the camera sees. Set `source` to `"sim"` for the rendered eye camera instead.
 
 ```python
 @dataclass
@@ -53,7 +53,7 @@ class ReachyMiniConfig:
     motion: MotionSettings = field(default_factory=MotionSettings)
 ```
 
-The config module (`config.py`) imports neither `tts_engine` nor `reachy_mini` at module load: the raw blocks it carries are consumed by the layer that needs them (`tts` by [audio.md](audio.md)'s adapter, `robot` by [robot.md](robot.md)'s factory). The one upstream lookup — the `robot` key check below — imports `reachy_mini` lazily inside `from_dict`.
+The config module (`config.py`) imports neither `tts_engine` nor `reachy_mini` at module load: the raw blocks it carries are consumed by the layer that needs them (`tts` by [audio.md](../audio/audio.md)'s adapter, `robot` by [robot.md](robot.md)'s factory). The one upstream lookup — the `robot` key check below — imports `reachy_mini` lazily inside `from_dict`.
 
 ### Constructors
 
@@ -76,21 +76,21 @@ One of `"real"`, `"sim"`, `"fake"` (the three backends in [robot.md](robot.md));
 The keyword arguments for upstream's `reachy_mini.ReachyMini(...)` constructor (`robot_name`, `host`, `port`, `connection_mode`, `media_backend`, `timeout`, `automatic_body_yaw`, `log_level`, …), carried as a raw `dict` and forwarded verbatim through `build_robot(backend, **robot)` ([robot.md](robot.md)). The bridge does not re-model these as typed fields: their names, defaults, and deprecations are upstream's, and forwarding them keeps the bridge in step with each upstream release without a mirror to maintain. Upstream's defaults stand for anything not given.
 
 - **Keys are validated against upstream's signature.** `from_dict` checks each key against `inspect.signature(reachy_mini.ReachyMini)` and raises `ConfigError` naming an unknown key — so a typo fails at config time with the key's name rather than as a `TypeError` at connect time. Values are not validated here; upstream checks them when it connects.
-- **Two keys are reserved and rejected:** `use_sim` (the bridge derives it from `backend`) and `spawn_daemon` (the bridge's own `daemon` block manages the daemon — upstream's flag launches the viewer variant with no readiness wait and no environment scrub, which does not work from a process that has imported `reachy_mini`; see [daemon.md](daemon.md)). Either key is a `ConfigError` that points at `backend` / `daemon.spawn`.
+- **Two keys are reserved and rejected:** `use_sim` (the bridge derives it from `backend`) and `spawn_daemon` (the bridge's own `daemon` block manages the daemon — upstream's flag launches the viewer variant with no readiness wait and no environment scrub, which does not work from a process that has imported `reachy_mini`; see [daemon.md](../daemon/daemon.md)). Either key is a `ConfigError` that points at `backend` / `daemon.spawn`.
 - **On `fake`, `robot` is validated but not applied** — `FakeReachyMini()` takes no options — so a config written for `sim` or `real` runs offline by flipping `backend` alone.
-- **When the `daemon` block spawns or borrows a daemon**, the effective options fill in what a locally managed daemon needs unless the caller set them: `host="127.0.0.1"`, `port=8000`, `connection_mode="network"`, `media_backend="local"` (an externally started daemon serves neither the IPC transport nor the WebRTC media path — see [../docs/running-the-sim-daemon.md](../docs/running-the-sim-daemon.md)). `host` must then be a loopback address (`127.0.0.1` / `localhost` / `::1`); anything else is a `ConfigError`.
+- **When the `daemon` block spawns or borrows a daemon**, the effective options fill in what a locally managed daemon needs unless the caller set them: `host="127.0.0.1"`, `port=8000`, `connection_mode="network"`, `media_backend="local"` (an externally started daemon serves neither the IPC transport nor the WebRTC media path — see [../docs/running-the-sim-daemon.md](../../docs/running-the-sim-daemon.md)). `host` must then be a loopback address (`127.0.0.1` / `localhost` / `::1`); anything else is a `ConfigError`.
 
 ### `daemon` block → `DaemonConfig`
 
-How the bridge brings up the daemon the robot client talks to — the MuJoCo daemon for `sim`, the hardware daemon of a robot attached to this machine over USB for `real`. Behavior is specified in [daemon.md](daemon.md); this block is its configuration.
+How the bridge brings up the daemon the robot client talks to — the MuJoCo daemon for `sim`, the hardware daemon of a robot attached to this machine over USB for `real`. Behavior is specified in [daemon.md](../daemon/daemon.md); this block is its configuration.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `spawn` | `"never"` \| `"auto"` \| `"always"` | `"never"` | `never`: connect only, to a daemon someone else runs. `auto`: reuse a daemon already ready at `robot.host:port`, else spawn one and own its teardown. `always`: spawn and own one; the port already in use is an error. |
 | `headless` | bool | `true` | `sim` only. `true` launches the headless MuJoCo daemon (motion + audio; no rendered camera, a `webcam` camera still works); `false` launches the viewer under `mjpython` (adds the render's GL context, so the `sim` camera works; needs an unlocked GUI session). |
-| `scene` | string \| null | `null` | `sim` only. An upstream MuJoCo scene *name* (`empty`, `minimal`), passed as `--scene` when set — or, when it ends in `.xml`, the path of a scene *file* the bridge's own launcher loads (hidden-by-default props — a face today — a test shows/moves from tests: [sim_scene.md](sim_scene.md), written by `write_test_scene`). |
-| `camera` | object → `SimCameraSettings` | `{"source": "sim"}` | `sim` only. What the sim daemon's camera shows ([sim_daemon.md](sim_daemon.md) "Camera sources"): `source` `"sim"` renders the scene from the robot's eye camera (viewer only); `"webcam"` relays a host camera instead — the person in front of the computer is who the simulated robot sees and follows, headless or viewer. See the table below. |
-| `sim_displays` | object → `SimDisplaySettings` | `{}` | `sim` only, viewer only. What the MuJoCo viewer window shows besides the scene: one boolean per display, all off by default — `camera_overlay` today ([sim_daemon.md](sim_daemon.md) "Viewer overlay"). A display on with `headless: true` is a `ConfigError`. See the table below. |
+| `scene` | string \| null | `null` | `sim` only. An upstream MuJoCo scene *name* (`empty`, `minimal`), passed as `--scene` when set — or, when it ends in `.xml`, the path of a scene *file* the bridge's own launcher loads (hidden-by-default props — a face today — a test shows/moves from tests: [sim_scene.md](../testing/sim_scene.md), written by `write_test_scene`). |
+| `camera` | object → `SimCameraSettings` | `{"source": "sim"}` | `sim` only. What the sim daemon's camera shows ([sim_daemon.md](../daemon/sim_daemon.md) "Camera sources"): `source` `"sim"` renders the scene from the robot's eye camera (viewer only); `"webcam"` relays a host camera instead — the person in front of the computer is who the simulated robot sees and follows, headless or viewer. See the table below. |
+| `sim_displays` | object → `SimDisplaySettings` | `{}` | `sim` only, viewer only. What the MuJoCo viewer window shows besides the scene: one boolean per display, all off by default — `camera_overlay` today ([sim_daemon.md](../daemon/sim_daemon.md) "Viewer overlay"). A display on with `headless: true` is a `ConfigError`. See the table below. |
 | `preload_datasets` | bool | `true` | `true` passes `--preload-datasets`: the daemon downloads the recorded-move datasets (emotions, dances) in the background after it starts, so the first `play_emotion` does not wait on a download; readiness is not delayed. `false` passes `--no-preload-datasets` (the datasets then load on first use). |
 | `startup_timeout` | number | `45.0` | Seconds to wait for a spawned or booting daemon to become ready. |
 
@@ -122,13 +122,13 @@ class SimCameraSettings:
     hfov_deg: float = 70.0
 ```
 
-`device` and `hfov_deg` are accepted with `source: "sim"` and play no part there, so a file switches sources by changing `source` alone. The launch flags they produce are [daemon.md](daemon.md)'s.
+`device` and `hfov_deg` are accepted with `source: "sim"` and play no part there, so a file switches sources by changing `source` alone. The launch flags they produce are [daemon.md](../daemon/daemon.md)'s.
 
-The `sim_displays` object (`SimDisplaySettings`, with the same trio) is the home of the viewer's displays: one boolean per display, every one off by default, and `enabled()` lists the names of those that are on. The names are `SIM_DISPLAYS`, the values `--sim-display` takes ([sim_daemon.md](sim_daemon.md)); a new display is one more field and one more name there, nowhere else.
+The `sim_displays` object (`SimDisplaySettings`, with the same trio) is the home of the viewer's displays: one boolean per display, every one off by default, and `enabled()` lists the names of those that are on. The names are `SIM_DISPLAYS`, the values `--sim-display` takes ([sim_daemon.md](../daemon/sim_daemon.md)); a new display is one more field and one more name there, nowhere else.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `camera_overlay` | bool | `false` | Draw the sim daemon's camera stream — the webcam, or the rendered eye camera — as a picture in the top-right corner of the MuJoCo viewer window ([sim_daemon.md](sim_daemon.md) "Viewer overlay"). |
+| `camera_overlay` | bool | `false` | Draw the sim daemon's camera stream — the webcam, or the rendered eye camera — as a picture in the top-right corner of the MuJoCo viewer window ([sim_daemon.md](../daemon/sim_daemon.md) "Viewer overlay"). |
 
 ```python
 @dataclass
@@ -144,10 +144,10 @@ The fields that apply depend on the backend: `spawn`, `preload_datasets` and `st
 
 ### `tts` block — a tts-engine `engine` block, verbatim
 
-The default synthesizer for `say`. When present, it is exactly a tts-engine **`engine` block** (`module` + optional `player`, *not* wrapped under an `"engine"` key), carried as a raw `dict` and handed to `TTSEngineSynthesizer` ([audio.md](audio.md)) at `ReachyMiniApi` construction — which runs it through `TTSEngineConfig.from_dict`, tts-engine's own validation. The config layer checks only the shape it can without importing tts-engine: the block is an object whose `module` is an object with a non-empty string `type`.
+The default synthesizer for `say`. When present, it is exactly a tts-engine **`engine` block** (`module` + optional `player`, *not* wrapped under an `"engine"` key), carried as a raw `dict` and handed to `TTSEngineSynthesizer` ([audio.md](../audio/audio.md)) at `ReachyMiniApi` construction — which runs it through `TTSEngineConfig.from_dict`, tts-engine's own validation. The config layer checks only the shape it can without importing tts-engine: the block is an object whose `module` is an object with a non-empty string `type`.
 
 - The key is `tts`, not `synthesizer`: it configures the shipped tts-engine adapter specifically. A custom `SpeechSynthesizer` is code, passed as `ReachyMiniApi(config, synthesizer=...)`, and an explicit synthesizer wins over the block (the block is then not consumed, and tts-engine is not imported).
-- The extra for the provider `module.type` names must be installed (`reachy-mini-bridge[tts-pocket]` / `[tts-elevenlabs]` / `[tts-gradium]`, see [project.md](project.md)); otherwise the adapter build fails with tts-engine's `ConfigError`, which — like any other adapter-build failure, typically the module's `api_key_env` unset — degrades to no voice, see [api.md](api.md) "Constructed from a config".
+- The extra for the provider `module.type` names must be installed (`reachy-mini-bridge[tts-pocket]` / `[tts-elevenlabs]` / `[tts-gradium]`, see [project.md](../project.md)); otherwise the adapter build fails with tts-engine's `ConfigError`, which — like any other adapter-build failure, typically the module's `api_key_env` unset — degrades to no voice, see [api.md](api.md) "Constructed from a config".
 - `player` is accepted for symmetry with a tts-engine file and has no effect: the bridge feeds tts-engine a robot-speaker sink in place of its local player.
 - No environment variables are read at config time; a module's `api_key_env` is resolved by the module at engine construction, as in tts-engine.
 
@@ -155,7 +155,7 @@ The default synthesizer for `say`. When present, it is exactly a tts-engine **`e
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `xvf3800` | list of `[name, [values…]]` pairs \| null | `null` | The XVF3800 audio-processor profile applied on session start ([audio.md](audio.md) "XVF3800 config applied on session start"). `null` keeps the firmware defaults. |
+| `xvf3800` | list of `[name, [values…]]` pairs \| null | `null` | The XVF3800 audio-processor profile applied on session start ([audio.md](../audio/audio.md) "XVF3800 config applied on session start"). `null` keeps the firmware defaults. |
 
 ```python
 @dataclass
@@ -167,12 +167,12 @@ The value is carried verbatim to `MediaSession(robot, audio_config=...)`, whose 
 
 ### `faces` block → `FaceSettings`
 
-Face detection ([user_perception.md](user_perception.md)): which detector finds the faces and whether the detection loop runs from session entry. Detection is opt-in: with no detector named, nothing is detected and nothing tracks. Each switch has a runtime counterpart — `set_face_detection(enabled)` for the switch, `set_face_detector(factory)` for the custom detector ([api.md](api.md) "Faces").
+Face detection ([user_perception.md](../vision/user_perception.md)): which detector finds the faces and whether the detection loop runs from session entry. Detection is opt-in: with no detector named, nothing is detected and nothing tracks. Each switch has a runtime counterpart — `set_face_detection(enabled)` for the switch, `set_face_detector(factory)` for the custom detector ([api.md](api.md) "Faces").
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `detector` | `null` \| `"yunet"` \| `"custom"` | `null` | The face detector the bridge runs on the camera feed's frames ([camera.md](camera.md)). `null`: none — no detection, no tracking; `detection: true` or `motion.tracking: true` is then a `ConfigError`. `yunet`: the shipped detector, upstream's YuNet model run by the bridge ([user_perception.md](user_perception.md) "The shipped detector"); nothing to install, the weights downloaded into the Hugging Face cache on first use. `custom`: the caller's detector; needs `face_detector`. |
-| `detection` | bool | `false` | Run the detection loop from session entry, so `api.faces` reports who is there. Needs no motors, needs a `detector`. The loop also runs whenever head tracking is on ([user_perception.md](user_perception.md) "Configuration"), whatever this says. |
+| `detector` | `null` \| `"yunet"` \| `"custom"` | `null` | The face detector the bridge runs on the camera feed's frames ([camera.md](../vision/camera.md)). `null`: none — no detection, no tracking; `detection: true` or `motion.tracking: true` is then a `ConfigError`. `yunet`: the shipped detector, upstream's YuNet model run by the bridge ([user_perception.md](../vision/user_perception.md) "The shipped detector"); nothing to install, the weights downloaded into the Hugging Face cache on first use. `custom`: the caller's detector; needs `face_detector`. |
+| `detection` | bool | `false` | Run the detection loop from session entry, so `api.faces` reports who is there. Needs no motors, needs a `detector`. The loop also runs whenever head tracking is on ([user_perception.md](../vision/user_perception.md) "Configuration"), whatever this says. |
 | `face_detector` | a zero-argument callable returning a `FaceDetector`, or `None` — **Python only** | `None` | The custom detector's factory, used when `detector` is `"custom"` (set on the dataclass, as `motion.idle_move` is; a JSON file names the source and code supplies the detector). Checked at session entry: `"custom"` with none registered fails bring-up with `ValueError`. |
 
 ```python
@@ -185,19 +185,19 @@ class FaceSettings:
     face_detector: Callable[[], FaceDetector] | None = None
 ```
 
-`FaceDetector` is [user_perception.md](user_perception.md)'s protocol, imported for type checking only. The valid detector names are the module constant `FACE_DETECTORS = ("yunet", "custom")`; `None` is the absence of one.
+`FaceDetector` is [user_perception.md](../vision/user_perception.md)'s protocol, imported for type checking only. The valid detector names are the module constant `FACE_DETECTORS = ("yunet", "custom")`; `None` is the absence of one.
 
 ### `motion` block → `MotionSettings`
 
-The initial values of everything that shapes the robot's behaviour at rest: the loop's own modes (`presence`, `idle`, `idle_move`, [motion.md](motion.md) "Presence and the idle mode"; `tracking`, the gaze layer — [motion.md](motion.md) "The gaze layer") and the one daemon-side mode the api arms around them (`wobbling`). Applied when the session starts; each has a runtime verb — `set_presence(enabled)` / `set_idle(mode)` / `set_idle_move(factory)` / `set_wobbling(enabled)` / `start_head_tracking(...)` / `stop_head_tracking()` — that changes it while entered ([api.md](api.md)).
+The initial values of everything that shapes the robot's behaviour at rest: the loop's own modes (`presence`, `idle`, `idle_move`, [motion.md](../motion/motion.md) "Presence and the idle mode"; `tracking`, the gaze layer — [motion.md](../motion/motion.md) "The gaze layer") and the one daemon-side mode the api arms around them (`wobbling`). Applied when the session starts; each has a runtime verb — `set_presence(enabled)` / `set_idle(mode)` / `set_idle_move(factory)` / `set_wobbling(enabled)` / `start_head_tracking(...)` / `stop_head_tracking()` — that changes it while entered ([api.md](api.md)).
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `presence` | bool | `true` | The background behaviour: while on, the loop fills every idle moment with the idle move so the robot never goes dead between verbs. `false` makes the bridge command the head only while a verb runs — for a caller driving the head through the raw robot. Emotions play either way. |
-| `idle` | `"breathing"` \| `"hold"` \| `"custom"` | `"breathing"` | Which idle move presence plays: `breathing` is the built-in animation (slow breaths with random rests between them, the head roaming in roll/pitch/yaw, the antennas roaming and flicking independently), `hold` a still neutral, `custom` the caller's own idle move — the one in `idle_move`, or registered later with `set_idle_move`; with none registered `custom` plays the hold ([motion.md](motion.md) "Custom idle moves"). Ignored while `presence` is off. |
-| `idle_move` | a zero-argument callable returning an `IdleMove`, or `None` — **Python only** | `None` | The factory of the custom idle move, stored whatever `idle` is and played whenever `idle` is `"custom"`. It is code, so it is set on the dataclass (`MotionSettings(idle="custom", idle_move=SlowNod)`); a JSON file names the mode and code supplies the move. Checked when the session starts ([motion.md](motion.md) "Custom idle moves"). |
-| `wobbling` | bool | `true` | A robot that talks sways its head while it talks: `ReachyMiniApi` enables upstream's audio-reactive head wobbling on entry and switches it off again on exit whenever it is still on ([api.md](api.md) "Audio-reactive motion (head wobbling)"; mechanism in [audio.md](audio.md) "Head wobbling"). `false` keeps the head still while audio plays (a caller driving the head precisely, or a quiet demo). |
-| `tracking` | bool | `false` | Whether the bridge's head tracker runs from session entry ([api.md](api.md) "Attention / gaze (autonomous)", [head_tracking.md](head_tracking.md)): the robot keeps the tracked face in view, the aim composed into the idle move. It implies detection — the detection loop runs while either `faces.detection` or this is on — and so needs a `faces.detector` (`true` with none is a `ConfigError`). A mode like `presence`: it needs no motors (its aim takes effect once the motion loop runs) and holds until `stop_head_tracking()`. `false` leaves tracking off until `start_head_tracking(...)` is called explicitly. |
+| `idle` | `"breathing"` \| `"hold"` \| `"custom"` | `"breathing"` | Which idle move presence plays: `breathing` is the built-in animation (slow breaths with random rests between them, the head roaming in roll/pitch/yaw, the antennas roaming and flicking independently), `hold` a still neutral, `custom` the caller's own idle move — the one in `idle_move`, or registered later with `set_idle_move`; with none registered `custom` plays the hold ([motion.md](../motion/motion.md) "Custom idle moves"). Ignored while `presence` is off. |
+| `idle_move` | a zero-argument callable returning an `IdleMove`, or `None` — **Python only** | `None` | The factory of the custom idle move, stored whatever `idle` is and played whenever `idle` is `"custom"`. It is code, so it is set on the dataclass (`MotionSettings(idle="custom", idle_move=SlowNod)`); a JSON file names the mode and code supplies the move. Checked when the session starts ([motion.md](../motion/motion.md) "Custom idle moves"). |
+| `wobbling` | bool | `true` | A robot that talks sways its head while it talks: `ReachyMiniApi` enables upstream's audio-reactive head wobbling on entry and switches it off again on exit whenever it is still on ([api.md](api.md) "Audio-reactive motion (head wobbling)"; mechanism in [audio.md](../audio/audio.md) "Head wobbling"). `false` keeps the head still while audio plays (a caller driving the head precisely, or a quiet demo). |
+| `tracking` | bool | `false` | Whether the bridge's head tracker runs from session entry ([api.md](api.md) "Attention / gaze (autonomous)", [head_tracking.md](../motion/head_tracking.md)): the robot keeps the tracked face in view, the aim composed into the idle move. It implies detection — the detection loop runs while either `faces.detection` or this is on — and so needs a `faces.detector` (`true` with none is a `ConfigError`). A mode like `presence`: it needs no motors (its aim takes effect once the motion loop runs) and holds until `stop_head_tracking()`. `false` leaves tracking off until `start_head_tracking(...)` is called explicitly. |
 
 ```python
 @dataclass
@@ -211,7 +211,7 @@ class MotionSettings:
     tracking: bool = False
 ```
 
-`IdleMove` is [motion.md](motion.md)'s base class, imported for type checking only, so the config module still loads without `reachy_mini`. The valid modes are the module constant `IDLE_MODES = ("breathing", "hold", "custom")`.
+`IdleMove` is [motion.md](../motion/motion.md)'s base class, imported for type checking only, so the config module still loads without `reachy_mini`. The valid modes are the module constant `IDLE_MODES = ("breathing", "hold", "custom")`.
 
 It is one block, not several top-level keys, because every field configures the same thing from a caller's perspective — what the robot looks like when nothing else is commanding it — even though four live in the bridge's own loop (`presence`, `idle`, `idle_move`, `tracking`) and one is a daemon-side mode the api merely arms (`wobbling`); more knobs in either category (a listening cue, a tracking weight) would land beside them. Face *detection* is perception, not behaviour at rest, hence its own `faces` block.
 
@@ -227,7 +227,7 @@ All enforced by `ReachyMiniConfig.from_dict` (delegating to `DaemonConfig.from_d
 - The top-level value and the `robot`, `daemon`, `tts`, `audio`, `faces`, and `motion` blocks must be JSON objects (`tts` may be `null`); `backend` is the one top-level scalar. Shape failures raise `ConfigError`, never a raw `AttributeError` / `TypeError`.
 - Unknown top-level keys, and unknown keys inside `daemon` / `daemon.camera` / `daemon.sim_displays` / `audio` / `faces` / `motion`, raise `ConfigError` naming the key (the blocks are ours, so a typo is caught). Unknown keys inside `robot` raise `ConfigError` per the upstream-signature check above; `tts.module` is left to tts-engine.
 - `faces.detector` is `null` or one of {`yunet`, `custom`}; `faces.detection` is a boolean; `faces.face_detector` in a dict / JSON config is a `ConfigError` (it is set from code, as `motion.idle_move` is).
-- `faces.detection: true` or `motion.tracking: true` with `faces.detector` `null` is a `ConfigError` naming both fields — the one cross-block rule, checked by `ReachyMiniConfig.from_dict` once both blocks are built. (A `ReachyMiniConfig` assembled directly in code is not validated; the api raises `ValueError` for the same contradiction at session entry, [user_perception.md](user_perception.md) "Configuration".)
+- `faces.detection: true` or `motion.tracking: true` with `faces.detector` `null` is a `ConfigError` naming both fields — the one cross-block rule, checked by `ReachyMiniConfig.from_dict` once both blocks are built. (A `ReachyMiniConfig` assembled directly in code is not validated; the api raises `ValueError` for the same contradiction at session entry, [user_perception.md](../vision/user_perception.md) "Configuration".)
 - `backend` ∈ {`real`, `sim`, `fake`}; `daemon.spawn` ∈ {`never`, `auto`, `always`}; `daemon.spawn != "never"` requires `backend` `sim` or `real`.
 - `daemon.headless` / `daemon.preload_datasets` are booleans; `daemon.scene` a non-empty string or `null`; `daemon.startup_timeout` a positive number other than `bool`.
 - `daemon.camera` is an object with no unknown keys; `source` ∈ {`sim`, `webcam`}; `device` is `null`, a non-empty string, or a non-negative integer other than `bool`; `hfov_deg` a number other than `bool`, strictly between 1 and 179.
@@ -241,15 +241,15 @@ All enforced by `ReachyMiniConfig.from_dict` (delegating to `DaemonConfig.from_d
 ## Relationship to the other specs
 
 - **[api.md](api.md):** `ReachyMiniApi` is constructed from a `ReachyMiniConfig` (or a backend-string shorthand for one), mirrors the `from_*` trio, applies `motion.wobbling` on entry, starts the detection loop and the head tracker from `faces` and `motion.tracking`, and starts the motion loop with `motion.presence`, `motion.idle` and `motion.idle_move`.
-- **[user_perception.md](user_perception.md):** the `faces` block selects the detector and the detection switch; `motion.tracking` the head tracker; both switches need a detector.
-- **[motion.md](motion.md):** the `motion` block is the initial state of the loop's presence, idle mode, custom idle move and gaze layer (and, for `wobbling`, of the daemon-side mode the api arms around it).
+- **[user_perception.md](../vision/user_perception.md):** the `faces` block selects the detector and the detection switch; `motion.tracking` the head tracker; both switches need a detector.
+- **[motion.md](../motion/motion.md):** the `motion` block is the initial state of the loop's presence, idle mode, custom idle move and gaze layer (and, for `wobbling`, of the daemon-side mode the api arms around it).
 - **[robot.md](robot.md):** the `robot` block is what `build_robot(backend, **robot)` forwards.
-- **[daemon.md](daemon.md):** the `daemon` block configures the bridge-owned daemon lifecycle; `backend` selects its launch recipe.
-- **[sim_daemon.md](sim_daemon.md):** `daemon.camera` selects the sim daemon's camera source; `daemon.sim_displays` turns its viewer displays on.
-- **[audio.md](audio.md):** the `tts` block builds the default `TTSEngineSynthesizer`; `audio.xvf3800` is the session's `audio_config`; `motion.wobbling` arms the head wobbler on the speaker path.
-- **[testing_support.md](testing_support.md):** the `live_api` fixture builds its api from a `ReachyMiniConfig` whose `robot` block carries the harness's connection options.
+- **[daemon.md](../daemon/daemon.md):** the `daemon` block configures the bridge-owned daemon lifecycle; `backend` selects its launch recipe.
+- **[sim_daemon.md](../daemon/sim_daemon.md):** `daemon.camera` selects the sim daemon's camera source; `daemon.sim_displays` turns its viewer displays on.
+- **[audio.md](../audio/audio.md):** the `tts` block builds the default `TTSEngineSynthesizer`; `audio.xvf3800` is the session's `audio_config`; `motion.wobbling` arms the head wobbler on the speaker path.
+- **[testing_support.md](../testing/testing_support.md):** the `live_api` fixture builds its api from a `ReachyMiniConfig` whose `robot` block carries the harness's connection options.
 
 ## Open questions
 
 1. **Environment-variable interpolation in config files.** Whether string values in the file may reference environment variables (e.g. a `${REACHY_MINI_HOST}` for `robot.host`) is deferred until a deployment needs it; tts-engine's modules already resolve their own `*_env` keys.
-2. **Named XVF3800 profiles.** Whether `audio.xvf3800` also accepts a profile *name* (e.g. `"conversation"`) resolving to a bridge-shipped tuned profile is deferred with [audio.md](audio.md) open question 2 — it needs hardware to tune against.
+2. **Named XVF3800 profiles.** Whether `audio.xvf3800` also accepts a profile *name* (e.g. `"conversation"`) resolving to a bridge-shipped tuned profile is deferred with [audio.md](../audio/audio.md) open question 2 — it needs hardware to tune against.

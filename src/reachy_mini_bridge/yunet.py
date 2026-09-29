@@ -1,5 +1,5 @@
 """The shipped face detector: upstream's YuNet as a bridge ``FaceDetector``
-(specs/user_perception.md "The shipped detector — ``yunet.py``").
+(specs/vision/user_perception.md "The shipped detector — ``yunet.py``").
 
 ``faces.detector: "yunet"`` runs :class:`YuNetDetector` on the camera feed's frames —
 ``reachy_mini.vision.face_detector.FaceDetector`` (YuNet on ONNX Runtime, the model the
@@ -56,7 +56,7 @@ class YuNetDetector:
     def detect(
         self, frame_bgr: npt.NDArray[np.uint8], ts: float
     ) -> Sequence[PixelFace]:
-        """Every face in the frame, in pixels of the frame given (specs/user_perception.md
+        """Every face in the frame, in pixels of the frame given (specs/vision/user_perception.md
         "Custom detectors"): detected on a strided subsample about ``DETECT_WIDTH`` wide,
         every point scaled back by the stride."""
         step = max(1, frame_bgr.shape[1] // DETECT_WIDTH)

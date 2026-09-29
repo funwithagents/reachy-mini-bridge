@@ -1,4 +1,4 @@
-"""Daemon lifecycle: bring up / tear down a local ``reachy-mini-daemon`` (specs/daemon.md).
+"""Daemon lifecycle: bring up / tear down a local ``reachy-mini-daemon`` (specs/daemon/daemon.md).
 
 Upstream's ``ReachyMini`` is a client that connects to a separately running daemon in
 its constructor. ``managed_daemon`` sits between "a config that says ``sim``" (or a
@@ -49,7 +49,7 @@ _POLL_INTERVAL_S = 1.0
 _PROBE_TIMEOUT_S = 3.0
 _TERMINATE_GRACE_S = 10.0
 
-# The child's own log lines (specs/daemon.md "The child's output reaches the bridge's log"):
+# The child's own log lines (specs/daemon/daemon.md "The child's output reaches the bridge's log"):
 # re-emitted under this logger, at the level the line carries when it carries one — the
 # daemon logs `name - LEVEL - message` — and at DEBUG otherwise, so a working daemon is
 # quiet while a problem inside it reaches whoever is running the bridge. The last lines ride
@@ -201,16 +201,16 @@ def launch_command(config: DaemonConfig, *, backend: str = "sim") -> list[str]:
     """The argv for a ``backend`` daemon per ``config``.
 
     ``sim`` (docs/running-the-sim-daemon.md) — every recipe runs the bridge's sim daemon
-    launcher (specs/sim_daemon.md: upstream's daemon with its face-tracking corrections and
+    launcher (specs/daemon/sim_daemon.md: upstream's daemon with its face-tracking corrections and
     the ``config.camera`` source): headless ``<this interpreter> -m
     reachy_mini_bridge.sim_daemon --headless --[no-]preload-datasets [--scene S] [camera
     flags]``; viewer ``mjpython -m reachy_mini_bridge.sim_daemon [...] [display flags]``
     (the render's GL context; needs a GUI session; ``--sim-display <name>`` per display
     on in ``config.sim_displays``). A ``config.scene`` ending in ``.xml`` is a scene *file*,
     run by the test scene's launcher (``reachy_mini_bridge.testing.sim_scene``,
-    specs/sim_scene.md) built on it. ``real`` — a USB-attached robot: ``<this interpreter>
+    specs/testing/sim_scene.md) built on it. ``real`` — a USB-attached robot: ``<this interpreter>
     -m reachy_mini_bridge.real_daemon [--kinematics-engine Placo] --[no-]preload-datasets``
-    — the bridge's real daemon launcher (specs/real_daemon.md: upstream's hardware daemon
+    — the bridge's real daemon launcher (specs/daemon/real_daemon.md: upstream's hardware daemon
     with the macOS camera check), Placo whenever it is importable (gravity compensation
     needs it). Media stays on. Raises ``DaemonError`` when a sim launcher is not on
     ``PATH``.
@@ -277,7 +277,7 @@ def _camera_flags(config: DaemonConfig) -> list[str]:
 
 def _scene_is_path(scene: str) -> bool:
     """A ``DaemonConfig.scene`` ending in ``.xml`` is a scene *file* the bridge's own
-    launcher loads (specs/sim_scene.md); anything else is an upstream scene name."""
+    launcher loads (specs/testing/sim_scene.md); anything else is an upstream scene name."""
     return scene.endswith(".xml")
 
 
@@ -299,7 +299,7 @@ def is_daemon_ready(host: str, port: int) -> bool:
     that failed to start (no GL context) leaves it ``None``. A plain HTTP read, with no
     side effect on the daemon: an SDK client built with ``media_backend="no_media"``
     (upstream 1.10 / 1.11) makes the daemon release and re-acquire its media, rebuilding
-    its camera and audio pipelines (specs/daemon.md "Readiness means the backend is
+    its camera and audio pipelines (specs/daemon/daemon.md "Readiness means the backend is
     up"). Any failure ⇒ False.
     """
     try:
@@ -344,7 +344,7 @@ def _spawn(cmd: list[str], env: dict[str, str]) -> _Process:
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         env=env,
-        # Own session => own process group (specs/daemon.md "The child runs in its own
+        # Own session => own process group (specs/daemon/daemon.md "The child runs in its own
         # session"): a terminal's Ctrl+C is a SIGINT to the whole foreground group, and a
         # daemon sharing it would die *with* the bridge instead of last — the api's
         # teardown would then run against a dead server (a warning per motion tick,

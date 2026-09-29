@@ -2,7 +2,7 @@
 
 **Status:** Done
 
-Implements [specs/control_panel.md](../specs/control_panel.md): a Gradio app in `examples/control_panel/` that drives a `ReachyMiniApi` session from a config file — every verb a button, the api's readable state on screen — built as a gradio-free controller (tested on the `fake`) plus a thin Gradio layer. Leaves out the deferred extensions listed in the spec (mic record-and-playback, raw robot readouts, live config switching).
+Implements [specs/examples/control_panel.md](../specs/examples/control_panel.md): a Gradio app in `examples/control_panel/` that drives a `ReachyMiniApi` session from a config file — every verb a button, the api's readable state on screen — built as a gradio-free controller (tested on the `fake`) plus a thin Gradio layer. Leaves out the deferred extensions listed in the spec (mic record-and-playback, raw robot readouts, live config switching).
 
 ## Scope
 

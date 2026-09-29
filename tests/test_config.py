@@ -1,4 +1,4 @@
-"""Functional tests for ReachyMiniConfig (specs/config.md).
+"""Functional tests for ReachyMiniConfig (specs/core/config.md).
 
 Builds configs the way a caller would — from dicts, JSON strings, and files — and pins
 the validation rules and the derived views the api consumes. Imports `reachy_mini` only
@@ -36,7 +36,7 @@ def test_defaults() -> None:
     assert cfg.daemon.spawn == "never"
     assert cfg.tts is None
     assert cfg.audio.xvf3800 is None
-    # Detection is opt-in (specs/user_perception.md): no detector, no detection, and
+    # Detection is opt-in (specs/vision/user_perception.md): no detector, no detection, and
     # tracking off since it needs a detector.
     assert cfg.faces == FaceSettings(detector=None, detection=False)
     assert cfg.motion == MotionSettings()
@@ -54,7 +54,7 @@ def test_from_json_file_round_trips_the_repo_example() -> None:
         "media_backend": "local",
         "timeout": 5.0,
     }
-    # The example is the sim viewer seeing through the host webcam (specs/config.md):
+    # The example is the sim viewer seeing through the host webcam (specs/core/config.md):
     # headless is off and the camera source is `webcam` on purpose.
     assert cfg.daemon == DaemonConfig(
         spawn="auto",
@@ -402,7 +402,7 @@ def test_faces_detector_null_and_absent_both_mean_none() -> None:
     ],
 )
 def test_a_switch_on_without_a_detector_is_a_config_error(data: dict[str, Any]) -> None:
-    """The cross-block rule (specs/config.md): detection and tracking need a detector."""
+    """The cross-block rule (specs/core/config.md): detection and tracking need a detector."""
     with pytest.raises(ConfigError, match=r"faces\.detector") as info:
         ReachyMiniConfig.from_dict(data)
     message = str(info.value)

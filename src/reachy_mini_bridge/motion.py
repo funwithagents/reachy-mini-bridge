@@ -1,4 +1,4 @@
-"""Motion loop, presence & breathing: ``MotionSession`` (specs/motion.md).
+"""Motion loop, presence & breathing: ``MotionSession`` (specs/motion/motion.md).
 
 The one writer of the robot's target pose: a dedicated 60 Hz thread that arbitrates
 one exclusive primary move at a time (an emotion, later a gesture) over an idle move
@@ -61,17 +61,17 @@ __all__ = [
 _logger = logging.getLogger(__name__)
 
 # Not 100 Hz: the conversation app's breathing at ~100 Hz shivers the Stewart platform
-# (specs/motion.md open question 1). 50 Hz was tried on hardware and made it worse
+# (specs/motion/motion.md open question 1). 50 Hz was tried on hardware and made it worse
 # (whole-body shake instead of just the head) — reverted; see the open question.
 CONTROL_HZ = 60.0
-# Every entry into a move is a minjerk blend of this length (specs/motion.md "The loop").
+# Every entry into a move is a minjerk blend of this length (specs/motion/motion.md "The loop").
 BLEND_S = 0.5
-# What upstream raises once the daemon is gone (specs/motion.md "Lifecycle"): the builtin
+# What upstream raises once the daemon is gone (specs/motion/motion.md "Lifecycle"): the builtin
 # ConnectionError from ws_client.send_command after its receive loop noticed the close,
 # and websockets' ConnectionClosed (not a ConnectionError) on the send that races it.
 _LOST_CONNECTION_ERRORS = (ConnectionError, websockets.exceptions.ConnectionClosed)
 _LOST_CONNECTION_MESSAGE = "the motion loop lost its connection to the daemon"
-# BreathingMove parameters (specs/motion.md "The moves"). The peaks are the conversation
+# BreathingMove parameters (specs/motion/motion.md "The moves"). The peaks are the conversation
 # app's, seen on hardware; the rests and the independent antennas are what make the idle
 # read as organic rather than mechanical.
 BREATH_Z_M = 0.005  # a breath peaks this far above neutral, then returns to it
@@ -101,7 +101,7 @@ ANTENNA_FLICK_PROBABILITY = 0.35
 ANTENNA_FLICK_S = (0.25, 0.5)
 ANTENNA_FLICK_RAD = (math.radians(12.0), math.radians(25.0))
 ANTENNA_FLICK_MAX_RAD = math.radians(45.0)
-# The gaze layer (specs/motion.md "The gaze layer"). The loop keeps the head poses the
+# The gaze layer (specs/motion/motion.md "The gaze layer"). The loop keeps the head poses the
 # robot reported over this window, for the head tracker to aim a face against the pose
 # the head had when its frame was taken, and to estimate that delay from them.
 GAZE_HISTORY_S = 4.0
@@ -160,7 +160,7 @@ class _Segment:
     """One rest-to-rest piece of a scalar track: a hold, a breath or a minjerk move.
 
     Every shape has zero slope at both ends, so consecutive segments hand off with
-    continuous velocity whatever their order (specs/motion.md "The moves").
+    continuous velocity whatever their order (specs/motion/motion.md "The moves").
     """
 
     start: float  # value at the segment's start
@@ -214,7 +214,7 @@ def _breath() -> _Segment:
 def _roam_target(rng: random.Random, prev: float, lo: float, hi: float) -> float:
     """A new target in ``[lo, hi]`` at least ``ROAM_MIN_TRAVEL_FRACTION`` of the span
     away from ``prev`` — uniform over the range with the band around ``prev`` removed, so
-    no roam is too small to see (specs/motion.md "The moves").
+    no roam is too small to see (specs/motion/motion.md "The moves").
 
     The two remaining intervals are drawn in proportion to their lengths. They are never
     both empty for a fraction below 0.5, so there is no degenerate case to fall back on.
@@ -229,7 +229,7 @@ def _roam_target(rng: random.Random, prev: float, lo: float, hi: float) -> float
 @dataclass(frozen=True)
 class IdleOffsets:
     """An idle move's signed offsets from neutral at one instant, in human units
-    (specs/motion.md "The moves"). ``IdleOffsets()`` is neutral.
+    (specs/motion/motion.md "The moves"). ``IdleOffsets()`` is neutral.
 
     ``pose(scale)`` is the single place offsets become a pose: at ``1.0`` it is the
     move's pose, at ``0.0`` it is exactly ``NEUTRAL``, and the values between are the
@@ -280,7 +280,7 @@ class IdleOffsets:
 
 
 class IdleMove(Move):
-    """Base class of every animated idle move (specs/motion.md "The moves"): infinite,
+    """Base class of every animated idle move (specs/motion/motion.md "The moves"): infinite,
     and described as offsets from neutral so the loop can fade it out to neutral at
     rest. Subclass it and implement ``offsets`` to write a custom idle move; override
     ``gaze_offsets`` to say what it does while the head tracks a face."""
@@ -295,7 +295,7 @@ class IdleMove(Move):
 
     def gaze_offsets(self, t: float) -> IdleOffsets:
         """The motion while the head tracks a face, as offsets from the aim rather than
-        from neutral (specs/motion.md "The gaze layer"). Neutral by default: the head
+        from neutral (specs/motion/motion.md "The gaze layer"). Neutral by default: the head
         sits on the aim and the antennas rest."""
         return IdleOffsets()
 
@@ -310,13 +310,13 @@ class IdleMove(Move):
 # A zero-argument callable building a fresh idle move; the loop calls it at every idle
 # entry. An ``IdleMove`` subclass is one.
 type IdleMoveFactory = Callable[[], IdleMove]
-# The idle mode (specs/motion.md "Presence and the idle mode"); config.IDLE_MODES holds
+# The idle mode (specs/motion/motion.md "Presence and the idle mode"); config.IDLE_MODES holds
 # the same three values for the config layer, which cannot import this module.
 type IdleMode = Literal["breathing", "hold", "custom"]
 
 
 class BreathingMove(IdleMove):
-    """The idle move with breathing on (specs/motion.md "The moves"): a randomised plan
+    """The idle move with breathing on (specs/motion/motion.md "The moves"): a randomised plan
     of six independent rest-to-rest tracks — raised-cosine breaths separated by random
     rests on the head's z axis, three head rotations roaming about neutral, and two
     antennas roaming and flicking outward from vertical.
@@ -427,7 +427,7 @@ class BreathingMove(IdleMove):
 
 
 class _IdleFadeOut(Move):
-    """Leaving an idle move mid-plan (specs/motion.md "The moves"): keep playing ``move``
+    """Leaving an idle move mid-plan (specs/motion/motion.md "The moves"): keep playing ``move``
     from ``t_offset`` while a minjerk envelope scales every offset from neutral down to
     zero over ``duration`` — landing at neutral at rest, so whatever follows (a blend,
     or nothing) starts from a source that is actually at rest. A plain blend assumes
@@ -506,12 +506,12 @@ def _build_custom_idle(factory: Callable[[], object]) -> IdleMove:
 
 
 def check_idle_move_factory(factory: object) -> None:
-    """Registration-time check (specs/motion.md "Custom idle moves"): ``ValueError``
+    """Registration-time check (specs/motion/motion.md "Custom idle moves"): ``ValueError``
     unless ``factory`` is a callable building an ``IdleMove`` whose ``offsets(0.0)`` and
     ``gaze_offsets(0.0)`` are ``IdleOffsets`` of finite numbers. Runs on the caller's
     thread."""
     if not callable(factory):
-        # ValueError, not TypeError: the api's one error for bad input (specs/api.md)
+        # ValueError, not TypeError: the api's one error for bad input (specs/core/api.md)
         raise ValueError(  # noqa: TRY004
             "an idle move factory must be a zero-argument callable returning an "
             f"IdleMove (an IdleMove subclass is one), got {type(factory).__name__}"
@@ -553,7 +553,7 @@ def nearest_index(
 
 
 def blend_into(source: Pose, move: Move, seconds: float = BLEND_S) -> GotoMove:
-    """A minjerk ``GotoMove`` from ``source`` to ``move.evaluate(0)`` (specs/motion.md:
+    """A minjerk ``GotoMove`` from ``source`` to ``move.evaluate(0)`` (specs/motion/motion.md:
     never snap).
 
     A component the move leaves ``None`` keeps the source value (``GotoMove`` does that).
@@ -616,7 +616,7 @@ class _Playing:
 
 
 class MotionSession:
-    """The one writer of the robot's target: a 60 Hz thread (specs/motion.md).
+    """The one writer of the robot's target: a 60 Hz thread (specs/motion/motion.md).
 
     Started paused; the api resumes it once the motors read ``enabled``. Every public
     method is safe to call from the event loop and returns at once; the thread applies
@@ -643,7 +643,7 @@ class MotionSession:
         self._idle: IdleMode = idle
         self._idle_move = idle_move
         # The registered custom move failed on this thread: play the hold in its place
-        # until another is registered (specs/motion.md "Custom idle moves").
+        # until another is registered (specs/motion/motion.md "Custom idle moves").
         self._idle_move_failed = False
         self._paused = True
         self._lost = False  # the daemon is gone: paused for good (specs "Lifecycle")
@@ -652,7 +652,7 @@ class MotionSession:
         self._queue: list[_Primary] = []  # pending primaries, FIFO
         self._playing: _Playing | None = None
         self._stop = False
-        # The gaze layer (specs/motion.md "The gaze layer"): the latest aim and focus
+        # The gaze layer (specs/motion/motion.md "The gaze layer"): the latest aim and focus
         # the tracker handed over, the eased aim the loop composes, the effective
         # weight's minjerk fade from `_gaze_w_from` to `_gaze_w_to`, begun at
         # `_gaze_w_start`, and focus's own fade (the head's gaze motion faded out).
@@ -685,7 +685,8 @@ class MotionSession:
             primary.done.set_exception(BridgeError(_LOST_CONNECTION_MESSAGE))
             return
         self._queue.append(primary)
-        self._paused = False  # specs/motion.md "Motors": play_emotion resumes the loop
+        # specs/motion/motion.md "Motors": play_emotion resumes the loop.
+        self._paused = False
 
     def set_presence(self, enabled: bool) -> None:
         self._commands.put(lambda: self._on_set_presence(enabled))
@@ -732,7 +733,7 @@ class MotionSession:
         if idle is not None:
             # Fade the plan's offsets out rather than handing a track caught
             # mid-segment (a nonzero velocity) straight to a fresh blend, which assumes
-            # rest (specs/motion.md "Leaving an idle move mid-plan").
+            # rest (specs/motion/motion.md "Leaving an idle move mid-plan").
             move, elapsed = idle
             self._playing = _Playing(
                 stages=[_IdleFadeOut(move, t_offset=elapsed)],
@@ -775,7 +776,7 @@ class MotionSession:
         self, aim: npt.NDArray[np.float64] | None, *, focus: bool = False
     ) -> None:
         """Hand the gaze layer an aim — a 4x4 head pose that looks at the tracked face;
-        ``aim=None`` withdraws it (specs/motion.md "The gaze layer"). With ``focus`` the
+        ``aim=None`` withdraws it (specs/motion/motion.md "The gaze layer"). With ``focus`` the
         head holds exactly on the aim: the idle move's head motion is left out, its
         antennas kept. Accepted whether or not the loop runs: sent before ``start`` it
         waits in the command queue for the first tick, sent after ``close`` it is
@@ -790,7 +791,7 @@ class MotionSession:
     def head_pose_history(
         self,
     ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-        """The recorded head poses (specs/motion.md "A history of head poses"): their
+        """The recorded head poses (specs/motion/motion.md "A history of head poses"): their
         monotonic times ``(N,)``, ascending, and the reported 4x4 poses ``(N, 4, 4)``.
         While nothing is recorded yet (the thread not started), one entry: the pose read
         from the robot, now. Safe from any thread; it never blocks on the robot (the SDK
@@ -1022,7 +1023,7 @@ class MotionSession:
         head: npt.NDArray[np.float64] | None,
         antennas: npt.NDArray[np.float64] | None,
     ) -> tuple[npt.NDArray[np.float64] | None, npt.NDArray[np.float64] | None]:
-        """The gaze layer (specs/motion.md "The gaze layer"): ease the aim, fade the
+        """The gaze layer (specs/motion/motion.md "The gaze layer"): ease the aim, fade the
         effective weight, and compose the aim into an idle stage's pose. A primary
         leaves the layer out and its weight at zero, so the idle re-entry after it fades
         back in from nothing."""
@@ -1109,7 +1110,7 @@ class MotionSession:
         self._playing = None
 
     def _on_custom_idle_failure(self, error: Exception) -> None:
-        """The caller's idle move misbehaved (specs/motion.md "Custom idle moves"): one
+        """The caller's idle move misbehaved (specs/motion/motion.md "Custom idle moves"): one
         warning, then the hold plays in its place until another move is registered."""
         _logger.warning(
             "custom idle move failed; holding neutral until another is registered: %s",
@@ -1122,7 +1123,7 @@ class MotionSession:
             self._stop = True  # nothing left to ease out with: stop now
 
     def _on_lost_connection(self, error: Exception) -> None:
-        """A lost connection is not a bad tick (specs/motion.md "Lifecycle"): one warning,
+        """A lost connection is not a bad tick (specs/motion/motion.md "Lifecycle"): one warning,
         then pause for good — a paused loop sends nothing, so it logs nothing more.
         Upstream's client does not reconnect; the caller exits and re-enters the api."""
         _logger.warning("motion loop paused: lost connection to the daemon: %s", error)

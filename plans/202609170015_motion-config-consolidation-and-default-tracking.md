@@ -2,7 +2,7 @@
 
 **Status:** Done
 
-Implements the settled behavior in `specs/config.md` (`motion` block → `MotionSettings`) and `specs/api.md` ("Attention / gaze (autonomous)", "Lifecycle"): moves the top-level `wobbling` config flag into `MotionSettings` alongside `presence` / `breathing`, adds a new `tracking` field (default `true`) to the same block, and makes the api realize that default — arming face tracking at session entry when motors already read `enabled`, or on the next `set_motors_state("enabled")` otherwise — and stopping it on exit if still on, mirroring `wobbling`. This is a breaking config-schema change (no back-compat shim): a config with a top-level `wobbling` key now fails validation.
+Implements the settled behavior in `specs/core/config.md` (`motion` block → `MotionSettings`) and `specs/core/api.md` ("Attention / gaze (autonomous)", "Lifecycle"): moves the top-level `wobbling` config flag into `MotionSettings` alongside `presence` / `breathing`, adds a new `tracking` field (default `true`) to the same block, and makes the api realize that default — arming face tracking at session entry when motors already read `enabled`, or on the next `set_motors_state("enabled")` otherwise — and stopping it on exit if still on, mirroring `wobbling`. This is a breaking config-schema change (no back-compat shim): a config with a top-level `wobbling` key now fails validation.
 
 ## Scope
 
@@ -21,7 +21,7 @@ Implements the settled behavior in `specs/config.md` (`motion` block → `Motion
    - `start_head_tracking`: after the existing dispatch, set `self._tracking_wanted = True`.
    - `stop_head_tracking`: after the existing dispatch, set `self._tracking_wanted = False`.
    - `__aenter__`: after the existing `if await self.get_motors_state() == "enabled": motion.resume()`, when that condition holds and `self._tracking_wanted` is true, start tracking directly against the robot (weight `1.0`, the verb's own default) and record it on `self._tracking_weight` — bypassing the public verb's own motor-state re-check, since this call just made that read. Register an exit-stack callback (alongside the existing `_disable_wobbling_if_on` one) that stops tracking on teardown if `self._tracking_weight is not None`.
-   - `set_motors_state`: in the `"enabled"` branch, after `self._require_motion().resume()`, if `self._tracking_wanted` and `self._tracking_weight is None`, start tracking the same direct way (no second motor-state poll — see specs/api.md's note on the daemon's ~0.2s status lag).
+   - `set_motors_state`: in the `"enabled"` branch, after `self._require_motion().resume()`, if `self._tracking_wanted` and `self._tracking_weight is None`, start tracking the same direct way (no second motor-state poll — see specs/core/api.md's note on the daemon's ~0.2s status lag).
    - `__aexit__`: reset `self._tracking_wanted = self._config.motion.tracking` alongside the existing `_tracking_weight = None` reset.
 3. `config.example.json` + `README.md`: relocate `wobbling`, add `tracking`, update the prose bullets and verb table rows.
 4. Tests: update existing `wobbling=` config constructions; move/extend the config tests; add the new api-level tracking tests described in Scope above.

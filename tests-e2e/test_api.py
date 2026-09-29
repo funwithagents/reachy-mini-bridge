@@ -1,4 +1,4 @@
-"""E2E tier: ReachyMiniApi over a live daemon (specs/api.md, specs/audio.md).
+"""E2E tier: ReachyMiniApi over a live daemon (specs/core/api.md, specs/audio/audio.md).
 
 Target-agnostic: the shipped `live_api` fixture (reachy_mini_bridge.testing.fixtures,
 wired in via conftest.py) resolves the target
@@ -109,7 +109,7 @@ def test_motor_state_reads_and_dispatches_over_the_live_path(
     async def scenario() -> tuple[str, dict[str, str]]:
         original = await api.get_motors_state()
         # The motion loop would otherwise blend back to neutral the moment each
-        # goto_target ends (specs/motion.md): a caller driving the head directly needs
+        # goto_target ends (specs/motion/motion.md): a caller driving the head directly needs
         # presence off for its own moves to hold.
         await api.set_presence(False)
         try:
@@ -146,7 +146,7 @@ def test_real_audio_format_matches_the_fake_assumptions(
     """The live daemon reports the float32 / channel / 16 kHz facts the fake hardcodes.
 
     This is the check the fast tier structurally cannot make: it confirms the numbers
-    the `fake` backend bakes in are what a real daemon actually reports (specs/audio.md
+    the `fake` backend bakes in are what a real daemon actually reports (specs/audio/audio.md
     "Background": 2 channels, float32, 16 kHz on sim and hardware).
     """
     requires_caps(live_api, "audio")
@@ -274,7 +274,7 @@ async def _peak_deviation_during_loud_say(
 def test_breathing_moves_the_head_and_breathing_off_holds_it(
     live_api: tuple[ReachyMiniApi, frozenset[str]],
 ) -> None:
-    """specs/motion.md: with presence and breathing on, the idle move visibly breathes
+    """specs/motion/motion.md: with presence and breathing on, the idle move visibly breathes
     (slow breaths on the z axis, with random rests between them); `set_idle("hold")`
     holds the head still afterwards."""
     requires_caps(live_api, "motion")
@@ -319,7 +319,7 @@ class _Lift(IdleMove):
 def test_custom_idle_move_drives_the_head(
     live_api: tuple[ReachyMiniApi, frozenset[str]],
 ) -> None:
-    """specs/motion.md "Custom idle moves": a registered `IdleMove` plays in the
+    """specs/motion/motion.md "Custom idle moves": a registered `IdleMove` plays in the
     `custom` idle mode — the head rises to its offset — and leaving the mode brings the
     head back to neutral."""
     requires_caps(live_api, "motion")
@@ -615,7 +615,7 @@ def test_play_emotion_plays_a_real_move(
 def test_cancelled_emotion_stops_motion_and_sound(
     live_api: tuple[ReachyMiniApi, frozenset[str]],
 ) -> None:
-    """specs/api.md "Cancellation": cancelling `play_emotion` 3 s into `dance2` returns
+    """specs/core/api.md "Cancellation": cancelling `play_emotion` 3 s into `dance2` returns
     at once, the joints are still afterwards (no sound left driving the wobbler), and
     the local backend's playbin is cleared. Measured before the fix: the sound played
     its remaining 15 s and the head kept swaying 0.1–0.2 rad per half second."""
@@ -629,7 +629,7 @@ def test_cancelled_emotion_stops_motion_and_sound(
         await api.set_motors_state("enabled")
         await api.set_wobbling(True)
         # The hold keeps the joints still after the return blend; breathing would
-        # otherwise still be moving them when we sample (specs/motion.md).
+        # otherwise still be moving them when we sample (specs/motion/motion.md).
         await api.set_idle("hold")
         try:
             task = asyncio.create_task(api.play_emotion("dance2"))
@@ -672,7 +672,7 @@ def test_camera_frame_delivers_a_frame(
     live_api: tuple[ReachyMiniApi, frozenset[str]],
 ) -> None:
     """The camera feed publishes a live frame: `api.camera.latest()` is a `CameraFrame`
-    whose image is BGR `HxWx3` uint8 (specs/camera.md).
+    whose image is BGR `HxWx3` uint8 (specs/vision/camera.md).
 
     Gated on `camera`, which the fixture probes true only where a GL context is
     available — the headfull sim viewer (`REACHY_MINI_E2E_SIM_VIEWER=1`) or a real
@@ -701,12 +701,12 @@ def test_camera_frame_delivers_a_frame(
 # --- attention / gaze: tracking a face in the sim ---------------------------------------
 #
 # Runs where the harness probed `camera` (the viewer sim) and `faces` (the bridge's test
-# scene, which every harness-spawned sim runs: specs/sim_scene.md); skips elsewhere — the
+# scene, which every harness-spawned sim runs: specs/testing/sim_scene.md); skips elsewhere — the
 # headless sim renders no camera, a robot has no scriptable face. The portrait plane goes
 # through the real pipeline: rendered by the daemon, streamed to the client, found by the
 # bridge's shipped detector on the camera feed (the `yunet` detector `live_api` configures,
-# specs/user_perception.md), and the bridge's own tracker aims the head
-# (specs/head_tracking.md). So these tests check how the head moves and where it settles:
+# specs/vision/user_perception.md), and the bridge's own tracker aims the head
+# (specs/motion/head_tracking.md). So these tests check how the head moves and where it settles:
 # toward the face, past it once by a bounded amount and never oscillating, onto the yaw
 # the face's position implies, with the tracked face at the image centre. Watch the
 # viewer: the head turns onto the portrait, keeps breathing while it looks, follows it,
@@ -727,7 +727,7 @@ SETTLE_WINDOW_S = 2.0
 # Turning onto a face, the head may swing once past it and creep back. Measured on the
 # viewer sim: 3–9.5° with upstream's daemon-side tracking; 0–3° with the bridge's
 # tracker, which aims against the reported head pose of the frame's time with the delay
-# estimated online (specs/head_tracking.md "The aim"). The head never swings back past
+# estimated online (specs/motion/head_tracking.md "The aim"). The head never swings back past
 # the face (no oscillation).
 OVERSHOOT_MAX_DEG = 12.0
 # The settled pitch for a face that only moves sideways (it stays at the same height).
@@ -737,7 +737,7 @@ PITCH_TOLERANCE_DEG = 3.0
 # sim: |x|, |y| under 0.025 — the head breathing around the aim moves it a little.
 CENTRED = 0.05
 # How far off neutral the head may sit once it has been handed back. The idle move
-# roams in roll/pitch/yaw (specs/motion.md "The moves"): it averages ~6 deg from neutral
+# roams in roll/pitch/yaw (specs/motion/motion.md "The moves"): it averages ~6 deg from neutral
 # and reaches 10.3 deg at the corner of its envelope, so this is measured as a mean over
 # a window rather than one sample. A head still locked on the face sits at the face's
 # 18.4 deg, well clear of the threshold.
@@ -920,7 +920,7 @@ def _assert_tracked(track: _Track, pitch_ahead: float | None = None) -> None:
 async def _sample_idle(robot: Any, seconds: float) -> tuple[float, float]:
     """The head's z range and its mean angle from neutral over `seconds` — the two
     things the idle move shows: it breathes on z, and it roams a few degrees about
-    neutral rather than holding one heading (specs/motion.md "The moves")."""
+    neutral rather than holding one heading (specs/motion/motion.md "The moves")."""
     zs: list[float] = []
     angles: list[float] = []
     deadline = time.monotonic() + seconds
@@ -937,7 +937,7 @@ def face_scene(
     live_api: tuple[ReachyMiniApi, frozenset[str]], sim_scene: SimSceneClient
 ) -> Iterator[SimSceneClient]:
     """The face at its default spot, hidden — the scene's props start hidden
-    (specs/sim_scene.md); a test shows it when its scenario needs it, and this fixture
+    (specs/testing/sim_scene.md); a test shows it when its scenario needs it, and this fixture
     hides it again afterwards for whatever runs next."""
     requires_caps(live_api, "camera", "faces")
     sim_scene.place(FACE, DEFAULT_FACE_POS)
@@ -950,7 +950,7 @@ def face_scene(
 def test_faces_report_someone_appearing_and_leaving(
     live_api: tuple[ReachyMiniApi, frozenset[str]], face_scene: SimSceneClient
 ) -> None:
-    """specs/user_perception.md "The report is an observable": a subscriber of
+    """specs/vision/user_perception.md "The report is an observable": a subscriber of
     `api.faces.changes()` is woken with one face when the portrait is shown, and with
     none once it has been hidden past the absence window. Tracking is stopped for the
     test (the head stays out of it); the detection loop runs the configured `yunet`
@@ -993,7 +993,7 @@ def test_faces_report_someone_appearing_and_leaving(
 def test_head_tracking_turns_onto_a_face_and_follows_it(
     live_api: tuple[ReachyMiniApi, frozenset[str]], face_scene: SimSceneClient
 ) -> None:
-    """specs/api.md "Attention / gaze": with tracking on (the config default), the head
+    """specs/core/api.md "Attention / gaze": with tracking on (the config default), the head
     turns onto a face that appears ahead, then follows it 0.15 m to either side and back:
     each time toward the face, past it at most once by a bounded amount, settling at the
     yaw its position implies with the face at the image centre and the pitch unchanged."""
@@ -1023,7 +1023,7 @@ def test_head_tracking_turns_onto_a_face_and_follows_it(
 def test_attention_hands_the_head_back_and_reengages_on_the_face(
     live_api: tuple[ReachyMiniApi, frozenset[str]], face_scene: SimSceneClient
 ) -> None:
-    """specs/api.md "Attention": alone, the robot idles in full. Once the face has been
+    """specs/core/api.md "Attention": alone, the robot idles in full. Once the face has been
     gone for the tracker's loss timeout `attention` reads `watching`, the gaze layer
     fades out, and the head settles back near neutral, breathing. When a face comes back
     on the other side, attention re-engages and the head turns onto its new position."""
@@ -1074,7 +1074,7 @@ def test_attention_hands_the_head_back_and_reengages_on_the_face(
 def test_emotion_plays_over_tracking_and_the_head_returns_to_the_face(
     live_api: tuple[ReachyMiniApi, frozenset[str]], face_scene: SimSceneClient
 ) -> None:
-    """specs/motion.md "Emotions through the loop": an emotion under full-weight tracking
+    """specs/motion/motion.md "Emotions through the loop": an emotion under full-weight tracking
     plays as recorded (the motion loop leaves the gaze layer out of a primary) — the head
     moves through the choreography rather than staying pinned toward the face — and once
     the move ends the layer fades back in and the head turns back onto the still-visible

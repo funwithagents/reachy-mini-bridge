@@ -1,4 +1,4 @@
-"""High-level interaction API (specs/api.md).
+"""High-level interaction API (specs/core/api.md).
 
 ``ReachyMiniApi`` is the intention-level surface for driving the robot in **human
 units** (degrees, seconds, named emotions), orchestrating the lower-level
@@ -18,7 +18,7 @@ emotions and the idle behaviour, with the tracker's aim composed in) in that ord
 v1 is the smallest verb set that makes the robot a conversational, face-following
 presence — talk, listen, express, follow a face, manage motors, and stay visibly alive
 in between. Manual movement/gaze and rich perception are deferred to post-v1 (see
-specs/api.md).
+specs/core/api.md).
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ __all__ = ["ReachyMiniApi"]
 _logger = logging.getLogger(__name__)
 
 # The refusal of a detection or tracking switch without a detector
-# (specs/user_perception.md "Configuration").
+# (specs/vision/user_perception.md "Configuration").
 _NO_DETECTOR_MESSAGE = (
     "face detection and head tracking need a face detector, but faces.detector is "
     'null: name one in the config — "yunet" (the shipped detector) or "custom" '
@@ -200,19 +200,19 @@ class ReachyMiniApi:
         self._recorded_moves_future: asyncio.Future[Any] | None = None
         # The bridge's record of the wobbling mode (upstream has no getter).
         self._wobbling = False
-        # The motion loop's switches (specs/motion.md), initialized from the config and
+        # The motion loop's switches (specs/motion/motion.md), initialized from the config and
         # reset to it on exit; set_presence/set_idle/set_idle_move change them while
         # entered.
         self._presence = self._config.motion.presence
         self._idle: IdleMode = _idle_mode(self._config.motion.idle)
         self._idle_move: IdleMoveFactory | None = self._config.motion.idle_move
-        # Head tracking (specs/head_tracking.md): the caller's switch (the config
+        # Head tracking (specs/motion/head_tracking.md): the caller's switch (the config
         # default, reset on exit) — a mode like presence, needing no motors — and the
         # tracker while entered, built once per session and fed the detection loop's
         # reports while the switch is on.
         self._tracking_wanted = self._config.motion.tracking
         self._tracker: HeadTracker | None = None
-        # Faces (specs/user_perception.md): the report, readable at any time and
+        # Faces (specs/vision/user_perception.md): the report, readable at any time and
         # outliving sessions; the caller's detection switch (config default, reset on
         # exit); and the detection loop while entered.
         self._faces: Observable[FaceReport] = Observable(
@@ -225,7 +225,7 @@ class ReachyMiniApi:
         self._face_detector: FaceDetectorFactory | None = (
             self._config.faces.face_detector
         )
-        # The camera feed (specs/camera.md): the object exists from construction so a
+        # The camera feed (specs/vision/camera.md): the object exists from construction so a
         # consumer wires to it before entry; bound to the robot and started at entry.
         self._camera = CameraFeed()
 
@@ -313,10 +313,10 @@ class ReachyMiniApi:
             self._face_detection_wanted or self._tracking_wanted
         ):
             # A config assembled in code can say what `from_dict` refuses
-            # (specs/config.md "Validation rules"); refused here, before anything starts.
+            # (specs/core/config.md "Validation rules"); refused here, before anything starts.
             raise ValueError(_NO_DETECTOR_MESSAGE)
         if cfg.faces.detector == "custom":
-            # Checked before anything is entered (specs/user_perception.md "Custom
+            # Checked before anything is entered (specs/vision/user_perception.md "Custom
             # detectors"): a bad or missing detector fails bring-up with nothing to undo.
             self._check_face_detector(self._face_detector)
         stack = AsyncExitStack()
@@ -357,7 +357,7 @@ class ReachyMiniApi:
             # Constructed here, before the camera feed, the detection loop and the
             # tracker: the feed stamps frames through its head_pose_at, the tracker is
             # wired to its set_gaze / head_pose_history. Construction starts no thread;
-            # its thread starts below (specs/api.md "Lifecycle") — an aim handed over
+            # its thread starts below (specs/core/api.md "Lifecycle") — an aim handed over
             # meanwhile waits in its command queue.
             motion = MotionSession(
                 robot,
@@ -365,7 +365,7 @@ class ReachyMiniApi:
                 idle=self._idle,
                 idle_move=self._idle_move,
             )
-            # The camera feed (specs/camera.md "Lifecycle"): the one reader of the
+            # The camera feed (specs/vision/camera.md "Lifecycle"): the one reader of the
             # camera, started right after the media session and stopped right before it
             # is torn down; `latest()` reads None again from then on.
             camera = self._camera
@@ -384,7 +384,7 @@ class ReachyMiniApi:
                 history=motion.head_pose_history,
                 set_gaze=motion.set_gaze,
             )
-            # The detection loop (specs/user_perception.md "Lifecycle"), feeding the
+            # The detection loop (specs/vision/user_perception.md "Lifecycle"), feeding the
             # tracker while tracking is on: the configured detector (the shipped
             # `yunet`, or the registered custom one) over the camera feed.
             detection = FaceDetection(
@@ -399,7 +399,7 @@ class ReachyMiniApi:
             stack.push_async_callback(self._stop_detection)
             if self._face_detection_wanted or self._tracking_wanted:
                 await self._start_detection(detection)
-            # Entered after wobbling, exits first (specs/motion.md "Lifecycle"): the
+            # Entered after wobbling, exits first (specs/motion/motion.md "Lifecycle"): the
             # stack unwinds in reverse, so the loop eases to neutral before wobbling
             # (and everything else) tears down.
             await stack.enter_async_context(motion)
@@ -461,7 +461,7 @@ class ReachyMiniApi:
     async def _start_detection(self, detection: FaceDetection) -> None:
         """Start the loop: a detector it cannot run is the caller's ``ValueError``; a
         detector that cannot be built (a model that fails to load) is a ``BridgeError``
-        chaining the cause (specs/user_perception.md "Building the detector")."""
+        chaining the cause (specs/vision/user_perception.md "Building the detector")."""
         try:
             await detection.start()
         except ValueError:
@@ -473,7 +473,7 @@ class ReachyMiniApi:
             ) from e
 
     def _camera_model(self, robot: AnyReachyMini) -> CameraModel:
-        """The tracker's camera (specs/head_tracking.md "The aim"): the bridge's pinhole
+        """The tracker's camera (specs/motion/head_tracking.md "The aim"): the bridge's pinhole
         of the sim's camera source for a `sim` backend, the SDK client's calibration
         otherwise."""
         if self._config.backend == "sim":
@@ -530,7 +530,7 @@ class ReachyMiniApi:
         such a daemon would reject the mode by dropping the connection. A simulation
         ignores motor modes, so there the mode is sent unchecked.
 
-        Also drives the motion loop (specs/motion.md "Motors"): ``enabled`` resumes it
+        Also drives the motion loop (specs/motion/motion.md "Motors"): ``enabled`` resumes it
         — re-anchored on the present pose, so the head eases into the idle move rather
         than snapping, and the tracker's aim, if any, composed into it — and the two
         resting states pause it.
@@ -591,7 +591,7 @@ class ReachyMiniApi:
     async def play_emotion(self, name: str) -> None:
         """Play a named recorded move from the emotions library.
 
-        The move plays through the bridge's motion loop (specs/motion.md "Emotions
+        The move plays through the bridge's motion loop (specs/motion/motion.md "Emotions
         through the loop"), never through upstream's ``async_play_move``: the loop is
         the one writer of the robot's target. Primaries are exclusive and FIFO, so a
         second ``play_emotion`` while one plays waits its turn. The loop blends into
@@ -607,7 +607,7 @@ class ReachyMiniApi:
 
         Cancelling the task stops the emotion — motion and sound — and leaves the head
         where the cancel caught it, with the session still open; the same stop runs
-        when the move fails. See specs/api.md "Cancellation".
+        when the move fails. See specs/core/api.md "Cancellation".
 
         Moves the robot, so it requires motors ``enabled`` (raises
         :class:`MotorsNotEnabledError` otherwise). Raises ``ValueError`` for an unknown
@@ -621,7 +621,7 @@ class ReachyMiniApi:
         robot = self.robot
         sound_path = getattr(move, "sound_path", None)
         # Pause wobbling for the move; restored below on every exit path, to its
-        # *current* record (specs/motion.md "Emotions through the loop").
+        # *current* record (specs/motion/motion.md "Emotions through the loop").
         if self._wobbling:
             await asyncio.to_thread(robot.disable_wobbling)
         future = motion.submit(move, None if sound_path is None else Path(sound_path))
@@ -680,7 +680,7 @@ class ReachyMiniApi:
 
     async def start_head_tracking(self, *, focus: bool = False) -> None:
         """Have the robot autonomously keep the tracked face in view
-        (specs/head_tracking.md): the bridge's tracker aims the face the detection loop
+        (specs/motion/head_tracking.md): the bridge's tracker aims the face the detection loop
         reports, and the motion loop composes that aim into the idle move — the head
         looks at the face and keeps breathing around it. With ``focus`` the head holds
         exactly on the face instead, the idle move's head motion left out (its antennas
@@ -729,7 +729,7 @@ class ReachyMiniApi:
 
     @property
     def attention(self) -> str | None:
-        """Derived from the tracker (specs/api.md "Attention"): ``"engaged"`` while it
+        """Derived from the tracker (specs/core/api.md "Attention"): ``"engaged"`` while it
         holds an aim (a face seen within ``TRACKING_LOST_S``), ``"watching"`` while
         tracking is on and nobody has been seen for longer, ``None`` when tracking is
         off or outside a session."""
@@ -743,7 +743,7 @@ class ReachyMiniApi:
     @property
     def faces(self) -> Observable[FaceReport]:
         """The faces in front of the robot as the detection loop last saw them
-        (specs/user_perception.md): ``faces.value`` is the current :class:`FaceReport`;
+        (specs/vision/user_perception.md): ``faces.value`` is the current :class:`FaceReport`;
         ``async for report in faces.changes()`` wakes when the number of faces changes
         (debounced) or detection starts or stops — never on a face merely moving.
 
@@ -798,7 +798,7 @@ class ReachyMiniApi:
 
     async def set_face_detector(self, factory: FaceDetectorFactory | None) -> None:
         """Register the custom detector for ``faces.detector: "custom"``
-        (specs/user_perception.md "Custom detectors"): a zero-argument callable
+        (specs/vision/user_perception.md "Custom detectors"): a zero-argument callable
         returning an object with ``detect(frame_bgr, ts) -> Sequence[PixelFace]`` — a
         class is one — or ``None`` to clear it.
 
@@ -830,7 +830,7 @@ class ReachyMiniApi:
 
     @property
     def camera(self) -> CameraFeed:
-        """The camera feed (specs/camera.md): the one reader of the robot's camera.
+        """The camera feed (specs/vision/camera.md): the one reader of the robot's camera.
         ``camera.latest()`` is the newest :class:`~reachy_mini_bridge.camera.CameraFrame`
         — ``frame_id``, ``ts``, ``image`` (BGR ``HxWx3`` ``uint8``, shared and
         read-only: copy before drawing), ``head_pose`` — or ``None`` while no frame is
@@ -896,7 +896,7 @@ class ReachyMiniApi:
     # --- presence & the idle move (background motion) ---
 
     async def set_presence(self, enabled: bool) -> None:
-        """Whether the robot stays alive between verbs (specs/motion.md).
+        """Whether the robot stays alive between verbs (specs/motion/motion.md).
 
         On, the motion loop fills every idle moment with the idle move (breathing, a
         still neutral hold, or the caller's own); off, the bridge commands the head only while a verb
@@ -915,7 +915,7 @@ class ReachyMiniApi:
         return self._presence
 
     async def set_idle(self, mode: str) -> None:
-        """Which idle move presence plays (specs/motion.md): ``"breathing"`` (the
+        """Which idle move presence plays (specs/motion/motion.md): ``"breathing"`` (the
         built-in animation), ``"hold"`` (a still neutral) or ``"custom"`` (the move
         registered with :meth:`set_idle_move`; the hold while none is registered).
 
@@ -935,7 +935,7 @@ class ReachyMiniApi:
         return self._idle
 
     async def set_idle_move(self, factory: IdleMoveFactory | None) -> None:
-        """Register the custom idle move (specs/motion.md "Custom idle moves"): a
+        """Register the custom idle move (specs/motion/motion.md "Custom idle moves"): a
         zero-argument callable returning a fresh ``IdleMove`` — a subclass itself, or a
         function — or ``None`` to clear it.
 
@@ -958,7 +958,7 @@ class ReachyMiniApi:
         """Async iterator of echo-cancelled mic PCM (int16 LE) for the caller's own ASR.
 
         ``mono=True`` (default) is the ASR drop-in; ``mono=False`` yields the raw
-        interleaved capture at :attr:`mic_channels` channels. See specs/audio.md.
+        interleaved capture at :attr:`mic_channels` channels. See specs/audio/audio.md.
         """
         return self._require_media().audio_input(mono=mono)
 

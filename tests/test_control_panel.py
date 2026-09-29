@@ -1,5 +1,5 @@
 """Functional tests for the control panel's controller on the fake backend
-(specs/control_panel.md "Tests").
+(specs/examples/control_panel.md "Tests").
 
 Drives `ControlPanelController` from caller threads the way the Gradio app does and
 asserts through the api's escape hatch (`api.robot`, the FakeReachyMini's recorded
@@ -46,7 +46,7 @@ class _SlowSynth:
 
 
 class _Scene:
-    """The fake's stand-in for a person (specs/user_perception.md "`fake` backend
+    """The fake's stand-in for a person (specs/vision/user_perception.md "`fake` backend
     support"): a stub detector's faces on the fake's 64x48 frame, shown and hidden."""
 
     def __init__(self) -> None:

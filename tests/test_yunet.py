@@ -1,4 +1,4 @@
-"""Functional tests for the shipped YuNet wrapper (specs/user_perception.md "The shipped
+"""Functional tests for the shipped YuNet wrapper (specs/vision/user_perception.md "The shipped
 detector"), on a stub in place of upstream's model: no weights, no network."""
 
 from __future__ import annotations

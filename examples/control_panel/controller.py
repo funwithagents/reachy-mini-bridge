@@ -1,5 +1,5 @@
 """The control panel's gradio-free core: one `ReachyMiniApi` session on a background
-event loop, exposed to synchronous callers (specs/control_panel.md "The controller").
+event loop, exposed to synchronous callers (specs/examples/control_panel.md "The controller").
 
 Gradio runs its handlers in worker threads, so the api — async-native, one session
 that must outlive every request — lives on a thread of its own with its own asyncio
@@ -174,7 +174,7 @@ class ControlPanelController:
             self._stop_slot(slot)
         ready = self._ready
         if ready is not None and not ready.done():
-            # Still in bring-up: cancel it (specs/api.md "Bring-up is cancellable").
+            # Still in bring-up: cancel it (specs/core/api.md "Bring-up is cancellable").
             loop.call_soon_threadsafe(task.cancel)
         else:
             loop.call_soon_threadsafe(stop_event.set)
@@ -234,7 +234,7 @@ class ControlPanelController:
             self._face_rate = None
 
     async def _mic_meter(self, api: ReachyMiniApi) -> None:
-        """Keep :attr:`mic_level` from the echo-cancelled mic (specs/control_panel.md)."""
+        """Keep :attr:`mic_level` from the echo-cancelled mic (specs/examples/control_panel.md)."""
         try:
             rate = api.mic_sample_rate
             async for chunk in api.audio_input():
@@ -252,7 +252,7 @@ class ControlPanelController:
 
     async def _face_meter(self, api: ReachyMiniApi) -> None:
         """Keep :attr:`face_rate` — new face observations per second, from the report's
-        timestamps (specs/control_panel.md "The face meter")."""
+        timestamps (specs/examples/control_panel.md "The face meter")."""
         arrivals: deque[float] = deque()
         last_ts: float | None = None
         while True:
@@ -303,7 +303,7 @@ class ControlPanelController:
                 await coro
                 return True
             except asyncio.CancelledError:
-                # The verb has already stopped its effect (specs/api.md "Cancellation");
+                # The verb has already stopped its effect (specs/core/api.md "Cancellation");
                 # report the stop instead of propagating it to the caller thread.
                 return False
 

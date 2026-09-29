@@ -1,4 +1,4 @@
-"""Configuration: ``ReachyMiniConfig`` (specs/config.md).
+"""Configuration: ``ReachyMiniConfig`` (specs/core/config.md).
 
 One declarative object describing everything needed to bring up a ``ReachyMiniApi``:
 the backend, the upstream ``ReachyMini`` connection kwargs (forwarded verbatim), how the
@@ -43,17 +43,17 @@ BACKENDS = ("real", "sim", "fake")
 # The backends with a daemon the bridge can spawn: MuJoCo, or a USB-attached robot.
 DAEMON_BACKENDS = ("sim", "real")
 SPAWN_MODES = ("never", "auto", "always")
-# What the sim daemon's camera stream carries (specs/sim_daemon.md "Camera sources").
+# What the sim daemon's camera stream carries (specs/daemon/sim_daemon.md "Camera sources").
 CAMERA_SOURCES = ("sim", "webcam")
 DEFAULT_WEBCAM_HFOV_DEG = 70.0
-# The MuJoCo viewer's displays (specs/config.md `daemon.sim_displays`; specs/sim_daemon.md
+# The MuJoCo viewer's displays (specs/core/config.md `daemon.sim_displays`; specs/daemon/sim_daemon.md
 # "Viewer overlay"): each name is a field of SimDisplaySettings and a `--sim-display`
 # value of the sim daemon launcher. Add a display here and as a field, nowhere else.
 SIM_DISPLAYS = ("camera_overlay",)
-# The idle modes (specs/motion.md "Presence and the idle mode"); motion.IdleMode is the
+# The idle modes (specs/motion/motion.md "Presence and the idle mode"); motion.IdleMode is the
 # same three values as a type.
 IDLE_MODES = ("breathing", "hold", "custom")
-# The face detection sources (specs/user_perception.md "Detection sources").
+# The face detection sources (specs/vision/user_perception.md "Detection sources").
 FACE_DETECTORS = ("yunet", "custom")
 
 # Upstream kwargs the bridge owns; each maps to the config field that replaces it.
@@ -111,8 +111,8 @@ def _is_number(value: Any) -> bool:
 
 @dataclass
 class SimCameraSettings:
-    """What the sim daemon's camera shows (specs/config.md ``daemon.camera``;
-    specs/sim_daemon.md "Camera sources"): ``source`` ``"sim"`` renders the robot's eye
+    """What the sim daemon's camera shows (specs/core/config.md ``daemon.camera``;
+    specs/daemon/sim_daemon.md "Camera sources"): ``source`` ``"sim"`` renders the robot's eye
     camera, ``"webcam"`` relays a host camera. ``device`` and ``hfov_deg`` apply to a
     webcam only."""
 
@@ -163,10 +163,10 @@ class SimCameraSettings:
 
 @dataclass
 class SimDisplaySettings:
-    """What the MuJoCo viewer window shows besides the scene (specs/config.md
+    """What the MuJoCo viewer window shows besides the scene (specs/core/config.md
     ``daemon.sim_displays``): one boolean per display, every one off by default.
     ``camera_overlay`` draws the sim daemon's camera stream in the top-right corner of
-    the viewer (specs/sim_daemon.md "Viewer overlay"). A display needs the viewer, so
+    the viewer (specs/daemon/sim_daemon.md "Viewer overlay"). A display needs the viewer, so
     ``DaemonConfig.from_dict`` rejects one set with ``headless``."""
 
     camera_overlay: bool = False
@@ -198,7 +198,7 @@ class SimDisplaySettings:
 
 @dataclass
 class DaemonConfig:
-    """How the bridge brings up the daemon the robot client talks to (specs/daemon.md).
+    """How the bridge brings up the daemon the robot client talks to (specs/daemon/daemon.md).
 
     ``headless``, ``scene``, ``camera`` and ``sim_displays`` are MuJoCo knobs: they play
     no part for a ``real`` daemon.
@@ -276,7 +276,7 @@ class DaemonConfig:
 
 @dataclass
 class AudioSettings:
-    """The audio profile applied on media-session start (specs/audio.md)."""
+    """The audio profile applied on media-session start (specs/audio/audio.md)."""
 
     # A list of ``[name, [values...]]`` pairs — upstream's ``AudioConfig`` shape — or
     # ``None`` for the firmware defaults. Carried verbatim.
@@ -320,7 +320,7 @@ class AudioSettings:
 
 @dataclass
 class FaceSettings:
-    """Face detection (specs/user_perception.md): which detector finds the faces and
+    """Face detection (specs/vision/user_perception.md): which detector finds the faces and
     whether the detection loop runs from session entry. Opt-in: with no detector named,
     nothing is detected and nothing tracks."""
 
@@ -367,7 +367,7 @@ class FaceSettings:
 @dataclass
 class MotionSettings:
     """Everything that shapes the robot's behaviour at rest, applied when the session
-    starts (specs/motion.md, specs/api.md): the loop's own idle modes (``presence``,
+    starts (specs/motion/motion.md, specs/core/api.md): the loop's own idle modes (``presence``,
     ``idle``, ``idle_move``) and the daemon-side modes the api arms around them (``wobbling``,
     ``tracking``)."""
 
@@ -426,7 +426,7 @@ class MotionSettings:
 
 @dataclass
 class ReachyMiniConfig:
-    """Everything needed to bring up a ``ReachyMiniApi`` (specs/config.md)."""
+    """Everything needed to bring up a ``ReachyMiniApi`` (specs/core/config.md)."""
 
     # "real" | "sim" | "fake"
     backend: str = "real"
@@ -438,7 +438,7 @@ class ReachyMiniConfig:
     audio: AudioSettings = field(default_factory=AudioSettings)
     # face detection: the detector (None / yunet / custom) and whether it runs from entry
     faces: FaceSettings = field(default_factory=FaceSettings)
-    # everything that shapes the robot's behaviour at rest (specs/config.md "motion block")
+    # everything that shapes the robot's behaviour at rest (specs/core/config.md "motion block")
     motion: MotionSettings = field(default_factory=MotionSettings)
 
     @classmethod

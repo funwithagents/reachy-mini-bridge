@@ -2,7 +2,7 @@
 
 **Status:** Todo
 
-Implements the settled behavior in `specs/<spec>.md` ("<section>"). One-sentence statement of what this plan delivers and what it deliberately leaves out.
+Implements the settled behavior in `specs/<folder>/<spec>.md` ("<section>"). One-sentence statement of what this plan delivers and what it deliberately leaves out.
 
 ## Scope
 

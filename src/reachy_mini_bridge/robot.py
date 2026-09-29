@@ -1,6 +1,6 @@
 """Connection seam to the upstream ``reachy_mini`` SDK.
 
-Specified by [specs/robot.md](../../specs/robot.md). ``real``/``sim`` drive the
+Specified by [specs/core/robot.md](../../specs/core/robot.md). ``real``/``sim`` drive the
 upstream ``reachy_mini.ReachyMini`` directly; ``fake`` drives the first-party
 ``FakeReachyMini`` (in [fake_reachy_mini.py](fake_reachy_mini.py)), which imports no
 ``reachy_mini`` and records the commands it receives. ``AnyReachyMini`` is a union

@@ -2,14 +2,14 @@
 
 **Status:** Done
 
-Implements the "Cancellation" contract in [specs/api.md](../specs/api.md) (every async verb is fully cancellable) and the `play_emotion` guarantee it adds, [specs/audio.md](../specs/audio.md) "Stopping a sound file" (`MediaSession.stop_sound()`), and the fake's move timing in [specs/robot.md](../specs/robot.md). It closes the gap measured on a Reachy Mini Lite: a cancelled `play_emotion` stopped commanding the trajectory, but its sound played on for 15 s with the head wobbler swaying the head to it ([docs/reachy-mini-api.md](../docs/reachy-mini-api.md) "Cancelling a move").
+Implements the "Cancellation" contract in [specs/core/api.md](../specs/core/api.md) (every async verb is fully cancellable) and the `play_emotion` guarantee it adds, [specs/audio/audio.md](../specs/audio/audio.md) "Stopping a sound file" (`MediaSession.stop_sound()`), and the fake's move timing in [specs/core/robot.md](../specs/core/robot.md). It closes the gap measured on a Reachy Mini Lite: a cancelled `play_emotion` stopped commanding the trajectory, but its sound played on for 15 s with the head wobbler swaying the head to it ([docs/reachy-mini-api.md](../docs/reachy-mini-api.md) "Cancelling a move").
 
 **Out of scope (do not build):** a stop for `play_sound` (api.md open question 4), `stop_talking()` (deferred), returning the head to its pre-move pose (the contract says no rewind), re-implementing upstream's playback loop, and any change to how or when the emotion's sound *starts*.
 
 ## Read first
 
-1. [specs/api.md](../specs/api.md) — the "Cancellation" section and the `play_emotion` bullet under "Expression".
-2. [specs/audio.md](../specs/audio.md) — the "Stopping a sound file" bullet under "Shared", and the lifecycle paragraph of "One media session".
+1. [specs/core/api.md](../specs/core/api.md) — the "Cancellation" section and the `play_emotion` bullet under "Expression".
+2. [specs/audio/audio.md](../specs/audio/audio.md) — the "Stopping a sound file" bullet under "Shared", and the lifecycle paragraph of "One media session".
 3. [docs/reachy-mini-api.md](../docs/reachy-mini-api.md) "Cancelling a move" — why the SDK's own `cancel_move()` must **not** be used.
 4. The code you will change: [`src/reachy_mini_bridge/audio.py`](../src/reachy_mini_bridge/audio.py), [`src/reachy_mini_bridge/api.py`](../src/reachy_mini_bridge/api.py), [`src/reachy_mini_bridge/fake_reachy_mini.py`](../src/reachy_mini_bridge/fake_reachy_mini.py), and their tests `tests/test_audio.py`, `tests/test_api.py`, `tests/test_robot.py`, `tests-e2e/test_api.py`.
 
@@ -29,7 +29,7 @@ Implements the "Cancellation" contract in [specs/api.md](../specs/api.md) (every
 - `src/reachy_mini_bridge/fake_reachy_mini.py` — `async_play_move` sleeps the move's `duration`; `_FakeMedia.stop_sound()` records a command.
 - `tests/test_audio.py`, `tests/test_api.py`, `tests/test_robot.py`, `tests/test_fake_reachy_mini.py` — new tests listed per step; one existing assertion updated.
 - `tests-e2e/test_api.py` — one new live test, and the emotions-library download block factored into a helper.
-- `README.md`, `specs/api.md`, `specs/audio.md`, `specs/robot.md`, `specs/_index.md`, `specs/_overview.md`, `plans/_index.md` — statuses and one README sentence (step 8).
+- `README.md`, `specs/core/api.md`, `specs/audio/audio.md`, `specs/core/robot.md`, `specs/_index.md`, `specs/_overview.md`, `plans/_index.md` — statuses and one README sentence (step 8).
 
 Test helpers that already exist and you should reuse: in `tests/test_api.py` — `_fake(api)` (the `FakeReachyMini` behind an api), `_command_names(api)`, `_ToneSynth` (a synthesizer yielding one 400-frame chunk); in `tests/test_audio.py` — `_command_names(robot)`, `_pushed_frames(robot)`, `_ToneSynth(sample_rate, chunks=, block=)`. Every recorded command is a `(name, args)` tuple on `robot.commands`.
 
@@ -47,7 +47,7 @@ Do the steps in order; run `uv run pytest` after each one.
 
         Fake-only member: it models the `MediaManager.stop_sound()` upstream lacks
         (docs/reachy-mini-api.md "Cancelling a move"); the bridge stops the real backend's
-        playbin itself meanwhile (specs/audio.md "Stopping a sound file").
+        playbin itself meanwhile (specs/audio/audio.md "Stopping a sound file").
         """
         self._commands.append(("media.stop_sound", {}))
 ```
@@ -61,7 +61,7 @@ Do the steps in order; run `uv run pytest` after each one.
         An emotion's sidecar sound or a `play_sound` call. Then resets the head wobbler
         through :meth:`clear_player` (the stopped player never reaches the EOS that
         would reset it). A no-op when no sound plays. Works at any time, like
-        :meth:`clear_player`. See specs/audio.md "Stopping a sound file".
+        :meth:`clear_player`. See specs/audio/audio.md "Stopping a sound file".
         """
         _stop_sound_file(self._robot)
         self.clear_player()
@@ -71,7 +71,7 @@ and these module-level functions (below the `MediaSession` class):
 
 ```python
 def _stop_sound_file(robot: AnyReachyMini) -> None:
-    """Backend dispatch behind :meth:`MediaSession.stop_sound` (see specs/audio.md)."""
+    """Backend dispatch behind :meth:`MediaSession.stop_sound` (see specs/audio/audio.md)."""
     if isinstance(robot, FakeReachyMini):
         robot.media.stop_sound()
         return
@@ -127,7 +127,7 @@ Importing `reachy_mini.media.*` in `tests/` is fine: `tests/test_robot.py` alrea
 
 ```python
 def test_local_audio_backend_keeps_the_playbin_the_bridge_stops() -> None:
-    """The bridge's one reach into SDK internals (specs/audio.md "Stopping a sound
+    """The bridge's one reach into SDK internals (specs/audio/audio.md "Stopping a sound
     file"): `GStreamerAudio` must keep the play_sound playbin as `_playbin`."""
     from reachy_mini.media.audio_gstreamer import GStreamerAudio
 
@@ -142,7 +142,7 @@ Do **not** add `stop_sound` to `_CONSUMED_SLICE` (upstream `MediaManager` has no
 **2a. `fake_reachy_mini.py`** — `import asyncio` at the top; in `FakeReachyMini.async_play_move`, after the `self.commands.append(...)`, add:
 
 ```python
-        # The fake keeps the move's timing (specs/robot.md) so a cancel has something
+        # The fake keeps the move's timing (specs/core/robot.md) so a cancel has something
         # in flight to interrupt. A move without a duration (a bare name) takes 0 s.
         await asyncio.sleep(float(getattr(move, "duration", 0.0)))
 ```
@@ -274,7 +274,7 @@ async def cancel_safe_step(enter: Callable[[], T], undo: Callable[[T], object]) 
     ``asyncio.timeout`` around the api's ``async with``. If ``enter`` itself fails
     during that wait there is nothing to undo and the cancel still propagates. A
     second cancel during the wait abandons the step (accepted, documented in
-    specs/api.md "Lifecycle").
+    specs/core/api.md "Lifecycle").
     """
     step = asyncio.ensure_future(asyncio.to_thread(enter))
     try:
@@ -333,7 +333,7 @@ In `tests-e2e/test_api.py`, factor the `snapshot_download` block of `test_play_e
 def test_cancelled_emotion_stops_motion_and_sound(
     live_api: tuple[ReachyMiniApi, frozenset[str]],
 ) -> None:
-    """specs/api.md "Cancellation": cancelling `play_emotion` 1 s into `dance2` returns
+    """specs/core/api.md "Cancellation": cancelling `play_emotion` 1 s into `dance2` returns
     at once, the joints are still afterwards (no sound left driving the wobbler), and
     the local backend's playbin is cleared. Measured before the fix: the sound played
     its remaining 15 s and the head kept swaying 0.1–0.2 rad per half second."""
@@ -379,11 +379,11 @@ If the sim turns out to need it, raise the settle sleep (0.5 s → 1.0 s); do no
 
 ### Step 7 — README
 
-In `README.md`, after the sentence ending "cancel the task to stop it (queued audio is flushed).", add: "Cancelling the task is how you interrupt any verb: `play_emotion` stops the motion and the emotion's sound the same way, and the session stays usable for the next verb (see [specs/api.md](specs/api.md) \"Cancellation\")."
+In `README.md`, after the sentence ending "cancel the task to stop it (queued audio is flushed).", add: "Cancelling the task is how you interrupt any verb: `play_emotion` stops the motion and the emotion's sound the same way, and the session stays usable for the next verb (see [specs/core/api.md](../specs/core/api.md) \"Cancellation\")."
 
 ### Step 8 — statuses (only once everything in Verification passes)
 
-- `specs/api.md`, `specs/audio.md`, `specs/robot.md`: the line `**Status:** Updated` → `**Status:** Implemented`.
+- `specs/core/api.md`, `specs/audio/audio.md`, `specs/core/robot.md`: the line `**Status:** Updated` → `**Status:** Implemented`.
 - `specs/_index.md`: the `api.md`, `audio.md`, `robot.md` rows: `| Updated |` → `| Implemented |`.
 - `specs/_overview.md`: delete the sentence "Those three are `Updated` while the cancellation contract (below) is built — see [../plans/_index.md](../plans/_index.md)."
 - This plan and its row in `plans/_index.md`: `Todo` → `Done`.

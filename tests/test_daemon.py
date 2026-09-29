@@ -1,4 +1,4 @@
-"""Functional tests for the daemon lifecycle (specs/daemon.md) — no daemon, no mujoco.
+"""Functional tests for the daemon lifecycle (specs/daemon/daemon.md) — no daemon, no mujoco.
 
 `managed_daemon` resolves its process and probe seams (`_spawn`, `_ready`, `_sleep`,
 `_port_open`, `_placo_available`) at call time, so these tests script them: a `_FakeProc` stands in for the
@@ -99,7 +99,7 @@ def harness(monkeypatch: pytest.MonkeyPatch) -> _Harness:
 
 
 def test_launch_command_headless_and_viewer(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Every sim daemon runs the bridge's sim daemon launcher (specs/sim_daemon.md) —
+    """Every sim daemon runs the bridge's sim daemon launcher (specs/daemon/sim_daemon.md) —
     this interpreter headless, mjpython for the viewer."""
     monkeypatch.setattr(daemon.shutil, "which", lambda name: f"/bin/{name}")
     launcher = [sys.executable, "-m", "reachy_mini_bridge.sim_daemon"]
@@ -209,7 +209,7 @@ def test_launch_command_turns_on_the_viewer_displays(
 def test_launch_command_runs_a_scene_file_through_the_bridge_launcher(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A `scene` ending in `.xml` is a scene *file* (specs/sim_scene.md): the test scene's
+    """A `scene` ending in `.xml` is a scene *file* (specs/testing/sim_scene.md): the test scene's
     launcher module runs the sim daemon on it — under mjpython for the viewer, this
     interpreter headless — with the path made absolute."""
     monkeypatch.setattr(daemon.shutil, "which", lambda name: f"/bin/{name}")
@@ -332,7 +332,7 @@ def test_scrubbed_env_defaults_to_the_process_env(
     assert env["RMB_KEEP_ME"] == "1"
 
 
-# --- the real spawn seam (specs/daemon.md "The child runs in its own session") -------
+# --- the real spawn seam (specs/daemon/daemon.md "The child runs in its own session") -------
 
 _SLEEPER = [sys.executable, "-c", "import time; time.sleep(30)"]
 

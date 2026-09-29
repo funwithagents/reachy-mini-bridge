@@ -2,13 +2,13 @@
 
 **Status:** Done
 
-Implements [specs/motion.md](../specs/motion.md) "The moves" — `BreathingMove` grown from three tracks to six: the head's roll, pitch and yaw roam alongside the breath, and the antennas move at a speed drawn from their travel with quick raised-cosine flicks punctuating the roaming. The plan's `_Segment` / `_Track` model and the rest-to-rest contract are unchanged; what changes is how many tracks feed a pose, how a roam target is drawn, how an antenna segment's duration is decided, and that the fade-out now scales rotation too.
+Implements [specs/motion/motion.md](../specs/motion/motion.md) "The moves" — `BreathingMove` grown from three tracks to six: the head's roll, pitch and yaw roam alongside the breath, and the antennas move at a speed drawn from their travel with quick raised-cosine flicks punctuating the roaming. The plan's `_Segment` / `_Track` model and the rest-to-rest contract are unchanged; what changes is how many tracks feed a pose, how a roam target is drawn, how an antenna segment's duration is decided, and that the fade-out now scales rotation too.
 
-Deliberately leaves out: config knobs for any of it (module constants, as today — the "keep module constants" decision), lateral head translation and body yaw in the idle (rotation only), correlated antennas (the two stay independent), and the listening antenna cue ([specs/motion.md](../specs/motion.md) open question 3).
+Deliberately leaves out: config knobs for any of it (module constants, as today — the "keep module constants" decision), lateral head translation and body yaw in the idle (rotation only), correlated antennas (the two stay independent), and the listening antenna cue ([specs/motion/motion.md](../specs/motion/motion.md) open question 3).
 
 ## How to work this plan
 
-- **Read first:** [AGENTS.md](../AGENTS.md) ("Commands", "Verification", "Keeping statuses current"), then [specs/motion.md](../specs/motion.md) "The moves" and "Leaving breathing mid-plan". The spec is the design; do not redesign it. If code and spec disagree, the spec wins.
+- **Read first:** [AGENTS.md](../AGENTS.md) ("Commands", "Verification", "Keeping statuses current"), then [specs/motion/motion.md](../specs/motion/motion.md) "The moves" and "Leaving breathing mid-plan". The spec is the design; do not redesign it. If code and spec disagree, the spec wins.
 - **Do the steps in order**, ending each with:
 
   ```
@@ -78,7 +78,7 @@ Add, next to `_breath()`:
 def _roam_target(rng: random.Random, prev: float, lo: float, hi: float) -> float:
     """A new target in ``[lo, hi]`` at least ``ROAM_MIN_TRAVEL_FRACTION`` of the span
     away from ``prev`` — uniform over the range with the band around ``prev`` removed,
-    so no roam is too small to see (specs/motion.md "The moves")."""
+    so no roam is too small to see (specs/motion/motion.md "The moves")."""
 ```
 
 Implementation: `min_travel = ROAM_MIN_TRAVEL_FRACTION * (hi - lo)`; `low = max(0.0, (prev - min_travel) - lo)`; `high = max(0.0, hi - (prev + min_travel))`; draw `u = rng.uniform(0.0, low + high)`; return `lo + u` when `u < low`, else `prev + min_travel + (u - low)`. `low + high` is at least `(hi - lo) * (1 - 2 * ROAM_MIN_TRAVEL_FRACTION)` when both sides are open and at least `(hi - lo) * (1 - ROAM_MIN_TRAVEL_FRACTION)` when one is closed, so it is never zero for a fraction below 0.5 — no fallback branch is needed.
@@ -91,7 +91,7 @@ A frozen dataclass holding one instant of the plan, and the single place a pose 
 @dataclass(frozen=True)
 class _IdleOffsets:
     """Every idle track's signed offset from neutral at one instant, and the pose they
-    make (specs/motion.md "The moves")."""
+    make (specs/motion/motion.md "The moves")."""
 
     z_m: float
     rpy_rad: npt.NDArray[np.float64]        # roll, pitch, yaw from neutral
@@ -146,15 +146,15 @@ Loop-level tests keep their existing sleep budget and assert only bounds/sign/co
 
 In `test_attention_hands_the_head_back_and_reengages_on_the_face`, the head no longer holds still near neutral once handed back — it roams. Turn `_sample_z_range` into `_sample_idle(robot, seconds) -> tuple[float, float]` returning the z range **and** the mean angle from neutral over the same window, and take `settled` from that mean instead of one instantaneous pose read just after the hand-back.
 
-Raise `NEUTRAL_THRESHOLD_DEG` from `5.0` to `12.0`, with the comment that the idle roam averages ~6° from neutral and peaks at 10.3° (`specs/motion.md` "The moves"), while a head still locked on the face sits at the face's 18.4° — so the assertion still separates the two. Update the printed `[e2e]` line to say it is a mean.
+Raise `NEUTRAL_THRESHOLD_DEG` from `5.0` to `12.0`, with the comment that the idle roam averages ~6° from neutral and peaks at 10.3° (`specs/motion/motion.md` "The moves"), while a head still locked on the face sits at the face's 18.4° — so the assertion still separates the two. Update the printed `[e2e]` line to say it is a mean.
 
 Leave the other e2e tests alone: they either turn breathing off first, or run at tracking weight 1.0 where the daemon discards the head target.
 
 ### Step 8 — Docs and statuses
 
-- Re-read [specs/motion.md](../specs/motion.md) "The moves" against the code; if they differ, fix the code.
+- Re-read [specs/motion/motion.md](../specs/motion/motion.md) "The moves" against the code; if they differ, fix the code.
 - Set this plan `Done` here and in [_index.md](_index.md).
-- `specs/motion.md` stays `Stable` — its promotion to `Implemented` is gated by plan [202609162000](202609162000_motion-loop-presence-and-breathing.md)'s on-robot checklist, which covers the idle behaviour. Add the new behaviour to that checklist's idle item: the head visibly looks about without drifting, the antennas flick, and no segment boundary snaps.
+- `specs/motion/motion.md` stays `Stable` — its promotion to `Implemented` is gated by plan [202609162000](202609162000_motion-loop-presence-and-breathing.md)'s on-robot checklist, which covers the idle behaviour. Add the new behaviour to that checklist's idle item: the head visibly looks about without drifting, the antennas flick, and no segment boundary snaps.
 
 ## Verification
 

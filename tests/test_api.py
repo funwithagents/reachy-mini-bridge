@@ -1,4 +1,4 @@
-"""Functional tests for ReachyMiniApi on the fake backend (specs/api.md).
+"""Functional tests for ReachyMiniApi on the fake backend (specs/core/api.md).
 
 Drives the public api the way a caller would and asserts through the escape hatch
 (`api.robot`, the FakeReachyMini) and its recorded commands. No network, no daemon,
@@ -1091,7 +1091,7 @@ def test_set_wobbling_requires_entry() -> None:
         asyncio.run(ReachyMiniApi("fake").set_wobbling(True))
 
 
-# --- attention / gaze: opt-in, needing a detector (specs/api.md, specs/config.md) ----
+# --- attention / gaze: opt-in, needing a detector (specs/core/api.md, specs/core/config.md) ----
 
 
 def test_tracking_property_reads_the_config() -> None:
@@ -1101,7 +1101,7 @@ def test_tracking_property_reads_the_config() -> None:
 
 
 def test_the_default_config_runs_no_detector_and_the_switches_refuse() -> None:
-    """specs/user_perception.md "Detectors": with `faces.detector` null nothing is
+    """specs/vision/user_perception.md "Detectors": with `faces.detector` null nothing is
     detected and nothing tracks; the switches raise, and the session works otherwise."""
     api = ReachyMiniApi("fake")
 
@@ -1212,7 +1212,7 @@ def test_a_detector_that_cannot_be_built_leaves_a_switch_as_it_was() -> None:
     assert asyncio.run(run()) == (False, False, False)
 
 
-# --- attention (specs/api.md "Attention"), derived from the tracker -----------------
+# --- attention (specs/core/api.md "Attention"), derived from the tracker -----------------
 
 
 @pytest.fixture
@@ -1308,7 +1308,7 @@ def test_tracking_started_without_motors_aims_once_they_are_enabled(
     assert yaw < -5.0
 
 
-# --- faces (specs/user_perception.md) -----------------------------------------------
+# --- faces (specs/vision/user_perception.md) -----------------------------------------------
 
 
 @pytest.fixture
@@ -1475,7 +1475,7 @@ def test_set_face_detection_requires_entry() -> None:
 
 
 def test_a_custom_source_without_a_detector_fails_before_anything_is_entered() -> None:
-    """specs/user_perception.md "Custom detectors": `custom` with nothing registered
+    """specs/vision/user_perception.md "Custom detectors": `custom` with nothing registered
     (or a bad factory) is refused at the top of bring-up — no daemon, no robot."""
     robots: list[FakeReachyMini] = []
 
@@ -1733,7 +1733,7 @@ def test_exit_leaves_the_head_at_neutral() -> None:
     assert antennas == pytest.approx(NEUTRAL_ANTENNAS, abs=1e-3)
 
 
-# --- perception (camera): the feed (specs/camera.md) ---------------------------------
+# --- perception (camera): the feed (specs/vision/camera.md) ---------------------------------
 
 
 async def _first_frame(api: ReachyMiniApi, timeout: float = 0.5) -> Any:
@@ -1800,7 +1800,7 @@ def test_camera_frame_ids_count_on_across_sessions() -> None:
     assert asyncio.run(run()) >= 2
 
 
-# --- faces: the custom detection source (specs/user_perception.md) --------------------
+# --- faces: the custom detection source (specs/vision/user_perception.md) --------------------
 
 
 class _Scene:
@@ -1840,7 +1840,7 @@ def _custom_config(
     scene: _Scene | None, *, detection: bool = True, **motion: Any
 ) -> ReachyMiniConfig:
     """A fake with a stub detector registered through the `custom` path — the fake's
-    stand-in for a person (specs/user_perception.md "`fake` backend support"); detection
+    stand-in for a person (specs/vision/user_perception.md "`fake` backend support"); detection
     and tracking on unless told otherwise."""
     motion.setdefault("tracking", True)
     return ReachyMiniConfig(
@@ -1943,5 +1943,5 @@ def test_the_head_turns_toward_a_custom_detectors_face() -> None:
     assert yaw < -5.0  # negative yaw is to the right
     assert attention == "engaged"
     # The fake's frames carry their capture pose, so the tracker aims against it exactly
-    # and its delay estimate is never exercised (specs/head_tracking.md "The aim").
+    # and its delay estimate is never exercised (specs/motion/head_tracking.md "The aim").
     assert with_pose and delay == head_tracking_module.DELAY_PRIOR_S

@@ -1,4 +1,4 @@
-"""Functional tests for the bridge's head tracker (specs/head_tracking.md).
+"""Functional tests for the bridge's head tracker (specs/motion/head_tracking.md).
 
 Offline and daemon-free: the geometry is upstream's pure helpers, and the closed loop is
 the real ``MotionSession`` on a ``FakeReachyMini`` at real time, fed by a "detector" that
@@ -175,7 +175,7 @@ def _jumping_face_while_turning() -> float:
 def test_a_face_moving_while_the_head_turns_leaves_the_estimate_alone(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The fit is taken only when distinct (specs/head_tracking.md "The delay estimate"):
+    """The fit is taken only when distinct (specs/motion/head_tracking.md "The delay estimate"):
     a face that jumps about while the head turns fits no delay — every delay spreads the
     directions alike — so the estimate holds. Without the contrast rule (every fit taken)
     the same scene moves it: a flat score's minimum is noise."""

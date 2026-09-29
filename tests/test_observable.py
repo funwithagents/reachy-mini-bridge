@@ -1,4 +1,4 @@
-"""Functional tests for Observable[T] (specs/observable.md): pure asyncio, no robot."""
+"""Functional tests for Observable[T] (specs/core/observable.md): pure asyncio, no robot."""
 
 from __future__ import annotations
 

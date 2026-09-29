@@ -1,4 +1,4 @@
-"""Fast-tier tests for `reachy_mini_bridge.sim_daemon` (specs/sim_daemon.md).
+"""Fast-tier tests for `reachy_mini_bridge.sim_daemon` (specs/daemon/sim_daemon.md).
 
 Daemon-free, camera-free and offline: the backend subclass's hooks are exercised on the
 real upstream `MujocoBackend` (no render, no network), the camera-source wiring and the
@@ -85,7 +85,7 @@ def test_on_backend_runs_once_the_model_exists(mujoco: Any, scene_name: str) -> 
 def test_the_subclass_leaves_the_control_loop_and_tracking_to_upstream() -> None:
     """The launcher changes what the camera stream carries and what the viewer shows,
     nothing of the daemon's control loop, kinematics or face tracking
-    (specs/sim_daemon.md "The backend subclass")."""
+    (specs/daemon/sim_daemon.md "The backend subclass")."""
     subclass = bridge_backend(_StubBackend)
     own = set(vars(subclass))  # `run` is wrapped for the overlay's sake; nothing else
     assert not own & {

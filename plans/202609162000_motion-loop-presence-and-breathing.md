@@ -2,13 +2,13 @@
 
 **Status:** In progress — steps 1–7 done (lint/type-check/tests all green, including the
 live sim tier); step 8 (the on-robot checklist) needs actual hardware and has not been
-walked, so the plan and `specs/motion.md` stay short of `Done`/`Implemented`.
+walked, so the plan and `specs/motion/motion.md` stay short of `Done`/`Implemented`.
 
-Implements [specs/motion.md](../specs/motion.md) in full, and the `Updated` gaps it opened in [specs/api.md](../specs/api.md) ("Presence & breathing", `play_emotion` through the loop, tracking / wobbling paused around a move, `set_motors_state` pausing the loop, lifecycle order), [specs/config.md](../specs/config.md) (the `motion` block) and [specs/robot.md](../specs/robot.md) (the consumed slice: `set_target` + pose readers in, `async_play_move` out). Delivers a 60 Hz `MotionSession` thread that is the only `set_target` writer, breathing / hold idle moves with blended transitions, `play_emotion` re-based on it, and the `presence` / `breathing` switches. Deliberately leaves out the manual movement verbs (they queue into the same loop later) and any listening cue.
+Implements [specs/motion/motion.md](../specs/motion/motion.md) in full, and the `Updated` gaps it opened in [specs/core/api.md](../specs/core/api.md) ("Presence & breathing", `play_emotion` through the loop, tracking / wobbling paused around a move, `set_motors_state` pausing the loop, lifecycle order), [specs/core/config.md](../specs/core/config.md) (the `motion` block) and [specs/core/robot.md](../specs/core/robot.md) (the consumed slice: `set_target` + pose readers in, `async_play_move` out). Delivers a 60 Hz `MotionSession` thread that is the only `set_target` writer, breathing / hold idle moves with blended transitions, `play_emotion` re-based on it, and the `presence` / `breathing` switches. Deliberately leaves out the manual movement verbs (they queue into the same loop later) and any listening cue.
 
 ## How to work this plan
 
-- **Read first, in this order:** [AGENTS.md](../AGENTS.md) (commands, status discipline), [specs/motion.md](../specs/motion.md) (the design you are building — do not redesign it), then the "Emotions through the loop" / "Motors" / "Lifecycle" sections again while doing steps 4–5. Skim [specs/api.md](../specs/api.md) "Cancellation" and "Lifecycle".
+- **Read first, in this order:** [AGENTS.md](../AGENTS.md) (commands, status discipline), [specs/motion/motion.md](../specs/motion/motion.md) (the design you are building — do not redesign it), then the "Emotions through the loop" / "Motors" / "Lifecycle" sections again while doing steps 4–5. Skim [specs/core/api.md](../specs/core/api.md) "Cancellation" and "Lifecycle".
 - **Do the steps in order.** Each step ends with a runnable check. Run `uv run ruff check . && uv run ruff format . && uv run pyright && uv run pytest` after every step and fix what breaks before moving on. Never leave a step with red tests.
 - **Copy existing patterns**, named in each step, rather than inventing new ones. The codebase is small and consistent; matching it is the goal.
 - **Code style:** async-native api, `from __future__ import annotations`, full type hints (pyright `standard` mode type-checks `tests/` and `tests-e2e/` too), module docstrings that point at the spec (see `src/reachy_mini_bridge/audio.py`'s header). Comments explain *why*, never restate the code.
@@ -33,7 +33,7 @@ Implements [specs/motion.md](../specs/motion.md) in full, and the `Updated` gaps
 - `src/reachy_mini_bridge/motion.py` — replaces the placeholder: constants, `HoldMove`, `BreathingMove`, `blend_into`, `MotionSession`.
 - `src/reachy_mini_bridge/api.py` — `play_emotion` via the session; `set_presence` / `presence`, `set_breathing` / `breathing`; tracking-weight record; `set_motors_state` pause / resume; lifecycle; `_FakeRecordedMove` becomes a real `Move`.
 - `tests/test_config.py`, `tests/test_robot.py`, `tests/test_motion.py` (new), `tests/test_api.py`, `tests-e2e/test_api.py`.
-- `specs/motion.md` frontmatter (`tests/test_motion.py`), the four spec statuses + `specs/_index.md`, `AGENTS.md` and `README.md` wording, this plan's status.
+- `specs/motion/motion.md` frontmatter (`tests/test_motion.py`), the four spec statuses + `specs/_index.md`, `AGENTS.md` and `README.md` wording, this plan's status.
 
 ## Steps
 
@@ -49,7 +49,7 @@ Copy the `AudioSettings` pattern (same file, "`audio` block" section) exactly:
 
 @dataclass
 class MotionSettings:
-    """The motion loop's switches, applied when the session starts (specs/motion.md)."""
+    """The motion loop's switches, applied when the session starts (specs/motion/motion.md)."""
 
     # The background behaviour: idle moments are filled with the idle move.
     presence: bool = True
@@ -100,7 +100,7 @@ Add to `config.example.json`, after `"wobbling": true,`:
 In `FakeReachyMini.__init__` add:
 
 ```python
-# The motion loop's stream (specs/motion.md): recorded here, not on `commands`
+# The motion loop's stream (specs/motion/motion.md): recorded here, not on `commands`
 # (a 60 Hz stream would swamp it). The readers return the last commanded values.
 self.targets: list[tuple[npt.NDArray[np.float64] | None, npt.NDArray[np.float64] | None, float | None]] = []
 self._head = np.eye(4)
@@ -185,9 +185,9 @@ if TYPE_CHECKING:
     import numpy.typing as npt
 
 # Not 100 Hz: the conversation app's breathing at ~100 Hz shivers the Stewart platform
-# (specs/motion.md open question 1).
+# (specs/motion/motion.md open question 1).
 CONTROL_HZ = 60.0
-# Every entry into a move is a minjerk blend of this length (specs/motion.md "The loop").
+# Every entry into a move is a minjerk blend of this length (specs/motion/motion.md "The loop").
 BLEND_S = 0.5
 # BreathingMove parameters — the conversation app's, seen on hardware.
 BREATH_Z_M = 0.005
@@ -232,7 +232,7 @@ class BreathingMove(Move):
 
 
 def blend_into(source: Pose, move: Move, seconds: float = BLEND_S) -> GotoMove:
-    """A minjerk `GotoMove` from `source` to `move.evaluate(0)` (specs/motion.md: never snap).
+    """A minjerk `GotoMove` from `source` to `move.evaluate(0)` (specs/motion/motion.md: never snap).
 
     A component the move leaves `None` keeps the source value (GotoMove does that).
     """
@@ -300,7 +300,7 @@ class _Playing:
 
 
 class MotionSession:
-    """The one writer of the robot's target: a 60 Hz thread (specs/motion.md).
+    """The one writer of the robot's target: a 60 Hz thread (specs/motion/motion.md).
 
     Started paused; the api resumes it once the motors read ``enabled``. Every public
     method is safe to call from the event loop and returns at once; the thread applies
@@ -405,7 +405,7 @@ def _drain_commands(self) -> None:
 
 ```python
 async def set_presence(self, enabled: bool) -> None:
-    """..."""  # docstring from specs/api.md "Presence & breathing"
+    """..."""  # docstring from specs/core/api.md "Presence & breathing"
     self._presence = enabled
     self._require_motion().set_presence(enabled)
 
@@ -421,7 +421,7 @@ media = self._require_media()
 motion = self._require_motion()
 robot = self.robot
 sound_path = getattr(move, "sound_path", None)
-# Pause the two daemon-side layers for the move (specs/motion.md "Emotions through
+# Pause the two daemon-side layers for the move (specs/motion/motion.md "Emotions through
 # the loop"); restored below on every exit path, to their *current* record.
 if self._tracking_weight is not None:
     await asyncio.to_thread(robot.start_head_tracking, 0.0)
@@ -456,7 +456,7 @@ async def _restore_layers_after_move(self) -> None:
 ```
    (Write it as two plain `if` blocks if the tuple-of-lambdas reads badly; pyright must be happy.) Note the `await` inside `finally` after a cancel: the task's `CancelledError` has already been delivered, so these awaits run; a *second* cancel during the restore is acceptable (the mode is then left off, and a warning is logged where possible).
 7. **The offline library:** turn `_FakeRecordedMove` into a `Move` subclass (a plain class, since `sound_path` is a property on `Move`): `__init__(self, name, sound_path=None)`, `duration` `0.3`, `sound_path` returning the ctor value, `evaluate(t)`: neutral with `head[2, 3] = 0.01 * math.sin(math.pi * t / self.duration)` (a small rise-and-fall so tests can spot it), neutral antennas, yaw `0.0`. Keep `_FakeRecordedMoves.get` raising `ValueError` on an unknown name and `"sad"` soundless.
-8. Update the module docstring (the api now has two sessions) and the `play_emotion` docstring from `specs/api.md`.
+8. Update the module docstring (the api now has two sessions) and the `play_emotion` docstring from `specs/core/api.md`.
 
 **Done when:** `uv run pyright` is clean and `uv run pytest tests/test_api.py` runs (failures in the old emotion tests are expected until step 6).
 
@@ -528,11 +528,11 @@ On a Reachy Mini Lite over USB (`REACHY_MINI_E2E_TARGET=real uv run pytest tests
 - [ ] `set_motors_state("disabled")`, push the head down by hand, `set_motors_state("enabled")`: the head eases into the idle move, no snap.
 - [ ] Leaving `async with` leaves the robot at neutral with motors enabled; a daemon the bridge spawned then puts it to sleep.
 
-If micro-vibration shows at 60 Hz: try `CONTROL_HZ = 50.0`, then a longer `BLEND_S`, before touching amplitudes; record what worked in `specs/motion.md` open question 1 (and keep the constant that worked).
+If micro-vibration shows at 60 Hz: try `CONTROL_HZ = 50.0`, then a longer `BLEND_S`, before touching amplitudes; record what worked in `specs/motion/motion.md` open question 1 (and keep the constant that worked).
 
 ### Step 9 — Statuses and docs
 
-- `specs/motion.md`: add `tests/test_motion.py` under `tests:` in the frontmatter; if step 8 changed a constant, update the number in the spec too. **Done.**
+- `specs/motion/motion.md`: add `tests/test_motion.py` under `tests:` in the frontmatter; if step 8 changed a constant, update the number in the spec too. **Done.**
 - Flip statuses, both in each file's `**Status:**` line and in `specs/_index.md`. Correction to this plan (AGENTS.md's discipline wins: `Implemented` requires a `Done` plan, and this plan's own Verification below gates `Done` on the step 8 hardware checklist): `motion.md` `Draft` → `Stable` now (design settled, code matches it, only genuine deferrals left as open questions) — **done**; `motion.md` and `api.md` / `config.md` / `robot.md` `Updated` → `Implemented` only once this plan is `Done`.
 - `AGENTS.md` project map and `README.md`: drop "(placeholder; Draft)" / "placeholder" for `motion.py` — **done**; add a "Staying alive" row to the README feature table (SDK alone: nothing; bridge: breathing / neutral hold between verbs, emotions blended in and out, one writer of the target) — **done**.
 - Mark this plan `Done` here and in [_index.md](_index.md) — **not yet**: see Verification.

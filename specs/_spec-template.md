@@ -15,7 +15,7 @@ What this concept is and why it exists — the problem it solves for the rest of
 
 ## Core concepts / Decided
 
-The settled design. Prefer concrete, testable statements over prose — data shapes, the public API surface, invariants, the decisions that later code and reviewers can hold you to. Link to related specs with `[other-spec.md](other-spec.md)`.
+The settled design. Prefer concrete, testable statements over prose — data shapes, the public API surface, invariants, the decisions that later code and reviewers can hold you to. Link to related specs with a relative path — `[other-spec.md](other-spec.md)` inside the same folder, `[api.md](../core/api.md)` across folders.
 
 ## Open questions
 

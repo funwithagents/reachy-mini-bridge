@@ -2,14 +2,14 @@
 
 **Status:** Done
 
-Implements [specs/control_panel.md](../specs/control_panel.md) "The controller" (`snapshot()`'s `face_positions` / `face_rate`, the face meter, `draw_faces`) and "The UI" (the camera refreshed at 0.2 s with a marker per face, the positions and the rate in the state table). Panel-only: nothing in `src/` changes — the panel reads `api.faces` as any caller would.
+Implements [specs/examples/control_panel.md](../specs/examples/control_panel.md) "The controller" (`snapshot()`'s `face_positions` / `face_rate`, the face meter, `draw_faces`) and "The UI" (the camera refreshed at 0.2 s with a marker per face, the positions and the rate in the state table). Panel-only: nothing in `src/` changes — the panel reads `api.faces` as any caller would.
 
 ## Scope
 
 - `examples/control_panel/controller.py` — `PanelState.face_positions` / `face_rate`; a face meter task on the loop (samples `api.faces.value` at `FACE_METER_HZ` = 50, counts distinct report timestamps over `FACE_RATE_WINDOW_S`); `draw_faces(frame, positions)`.
 - `examples/control_panel/app.py` — a second `gr.Timer` (`CAMERA_REFRESH_S = 0.2`) for the annotated camera frame; the faces line under the camera (count, positions, update rate) on the same timer.
 - `tests/test_control_panel.py` — positions and rate after the fake's `show_face`; `draw_faces` marks the right pixels.
-- `specs/control_panel.md`, `specs/_index.md`, this file, [_index.md](_index.md) — status.
+- `specs/examples/control_panel.md`, `specs/_index.md`, this file, [_index.md](_index.md) — status.
 
 ## Steps
 

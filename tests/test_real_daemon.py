@@ -1,4 +1,4 @@
-"""Functional tests for the real daemon launcher (specs/real_daemon.md) — no daemon, no
+"""Functional tests for the real daemon launcher (specs/daemon/real_daemon.md) — no daemon, no
 robot, no GStreamer pipeline: the selection is driven with scripted device names, the
 media-server wiring with a stand-in server, and the launcher with upstream's ``main()``
 replaced by a recorder.

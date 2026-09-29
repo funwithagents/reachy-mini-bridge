@@ -8,7 +8,7 @@ run it:
 - `requires_caps(...)` — a test needs a robot capability (`motion`, `audio`, `camera`,
   …); it *skips* when the current target didn't probe that capability. The probed set
   rides along in the `live_api` fixture value, so a test passes that value in:
-  `requires_caps(live_api, "audio")` — see specs/testing_support.md.
+  `requires_caps(live_api, "audio")` — see specs/testing/testing_support.md.
 """
 
 import os

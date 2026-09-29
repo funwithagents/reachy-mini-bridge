@@ -2,7 +2,7 @@
 
 **Status:** Done
 
-Implements `specs/api.md` (a new "Front door" bullet) and `specs/robot.md` ("The consumed slice", "A checked slice"), clearing the no-design cleanups in [specs/_analysis.md](../specs/_analysis.md): replaces uv's generated `hello()` with a package front door, trims the uncalled `goto_target` from `FakeReachyMini`, and aligns the fake's `apply_audio_config` default with upstream — pinned by a new signature-parity test so the fake can't silently drift from upstream defaults again. Deliberately leaves out the media-session lifecycle work ([202609161520_media-session-lifecycle-hardening.md](202609161520_media-session-lifecycle-hardening.md)).
+Implements `specs/core/api.md` (a new "Front door" bullet) and `specs/core/robot.md` ("The consumed slice", "A checked slice"), clearing the no-design cleanups in [specs/_analysis.md](../specs/_analysis.md): replaces uv's generated `hello()` with a package front door, trims the uncalled `goto_target` from `FakeReachyMini`, and aligns the fake's `apply_audio_config` default with upstream — pinned by a new signature-parity test so the fake can't silently drift from upstream defaults again. Deliberately leaves out the media-session lifecycle work ([202609161520_media-session-lifecycle-hardening.md](202609161520_media-session-lifecycle-hardening.md)).
 
 ## Design decisions (settled with the user)
 
@@ -13,8 +13,8 @@ Implements `specs/api.md` (a new "Front door" bullet) and `specs/robot.md` ("The
 
 ## Scope
 
-- `specs/api.md` — add a **Front door** bullet to "Core concepts / Decided" (affirmative, current-state wording: "`from reachy_mini_bridge import ReachyMiniApi` …", listing the eight re-exported names); add `src/reachy_mini_bridge/__init__.py` to its frontmatter `code:`. Status `Implemented → Updated`, back to `Implemented` on completion.
-- `specs/robot.md` — "The consumed slice": the Motion / expression line lists `async_play_move` and `start_head_tracking` / `stop_head_tracking` only (drop the `goto_target` parenthetical). After "Signatures mirror the installed `reachy_mini` (1.10)", state that a parity test in `tests/test_robot.py` compares each consumed member's parameter names and defaults against upstream. Status `Implemented → Updated → Implemented`.
+- `specs/core/api.md` — add a **Front door** bullet to "Core concepts / Decided" (affirmative, current-state wording: "`from reachy_mini_bridge import ReachyMiniApi` …", listing the eight re-exported names); add `src/reachy_mini_bridge/__init__.py` to its frontmatter `code:`. Status `Implemented → Updated`, back to `Implemented` on completion.
+- `specs/core/robot.md` — "The consumed slice": the Motion / expression line lists `async_play_move` and `start_head_tracking` / `stop_head_tracking` only (drop the `goto_target` parenthetical). After "Signatures mirror the installed `reachy_mini` (1.10)", state that a parity test in `tests/test_robot.py` compares each consumed member's parameter names and defaults against upstream. Status `Implemented → Updated → Implemented`.
 - `specs/_index.md` — keep both rows' Status in sync.
 - `src/reachy_mini_bridge/__init__.py` — extend the existing front door (docstring + `ReachyMiniApi` / `ReachyMiniConfig` / `ConfigError`) with the five remaining re-exports in `__all__`.
 - `src/reachy_mini_bridge/fake_reachy_mini.py` — delete `goto_target`; `write_settle_seconds: float = 0.1`.
@@ -28,7 +28,7 @@ Implements `specs/api.md` (a new "Front door" bullet) and `specs/robot.md` ("The
 
 ## Steps
 
-1. **Specs first.** Edit `specs/api.md` and `specs/robot.md` as scoped above; set both `**Status:**` lines to `Updated` and sync [specs/_index.md](../specs/_index.md).
+1. **Specs first.** Edit `specs/core/api.md` and `specs/core/robot.md` as scoped above; set both `**Status:**` lines to `Updated` and sync [specs/_index.md](../specs/_index.md).
 2. **Parity test (red first).** In `tests/test_robot.py`, add `test_fake_signatures_match_upstream`, parametrized over a table of `(fake attribute path, upstream class, method name)`:
    - `FakeReachyMini` vs `reachy_mini.ReachyMini`: `async_play_move`, `start_head_tracking`, `stop_head_tracking`, `enable_motors`, `disable_motors`, `enable_gravity_compensation`;
    - `FakeReachyMini().media` vs `reachy_mini.media.media_manager.MediaManager`: `start_recording`, `stop_recording`, `get_audio_sample`, `get_input_audio_samplerate`, `get_input_channels`, `start_playing`, `stop_playing`, `push_audio_sample`, `get_output_audio_samplerate`, `get_output_channels`, `play_sound`, `get_frame`;
@@ -40,7 +40,7 @@ Implements `specs/api.md` (a new "Front door" bullet) and `specs/robot.md` ("The
 5. **Front-door test.** In `tests/test_api.py`, add `test_package_front_door_drives_the_fake`: `import reachy_mini_bridge as rmb`; assert every name in `rmb.__all__` resolves; then `async with rmb.ReachyMiniApi("fake") as api:` assert `await api.say("hi")` raises `rmb.BridgeError` (no synthesizer) that `await api.play_emotion("happy")` raises `rmb.MotorsNotEnabledError` (the fake boots `disabled`), and — after setting `api.robot.client.kinematics_engine = "AnalyticalKinematics"` — that `await api.set_motors_state("gravity_compensation")` raises `rmb.GravityCompensationUnsupportedError` — the front-door names are the ones a caller catches.
 6. **Docs.** `README.md`: add a short "Usage" section after the intro with a 5–8 line `async with ReachyMiniApi("fake") as api:` example imported from `reachy_mini_bridge`. `docs/testing-with-the-bridge.md`: switch `from reachy_mini_bridge.api import ReachyMiniApi` to `from reachy_mini_bridge import ReachyMiniApi` (leave the `FakeReachyMini` module import as is).
 7. **Analysis.** Delete from [specs/_analysis.md](../specs/_analysis.md) the items this plan clears (`apply_audio_config` default, `goto_target`; the `hello()` item is already gone if the config plan ran first).
-8. **Statuses.** Once verification passes, flip `specs/api.md` and `specs/robot.md` back to `Implemented` (file + `_index.md`) and set this plan to `Done` here and in [_index.md](_index.md). If the lifecycle-hardening plan also has `api.md` at `Updated`, it returns to `Implemented` only once both plans are `Done`.
+8. **Statuses.** Once verification passes, flip `specs/core/api.md` and `specs/core/robot.md` back to `Implemented` (file + `_index.md`) and set this plan to `Done` here and in [_index.md](_index.md). If the lifecycle-hardening plan also has `api.md` at `Updated`, it returns to `Implemented` only once both plans are `Done`.
 
 ## Verification
 

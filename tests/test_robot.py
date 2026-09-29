@@ -1,4 +1,4 @@
-"""Functional tests for the connection seam (specs/robot.md).
+"""Functional tests for the connection seam (specs/core/robot.md).
 
 These drive ``build_robot`` on the ``fake`` backend only — no daemon, no hardware.
 The real/sim construction path is exercised end-to-end by the opt-in
@@ -72,7 +72,7 @@ def test_context_manager_records_teardown() -> None:
     assert robot.commands[-1][0] == "__exit__"
 
 
-# The consumed slice (specs/robot.md): (path from the fake robot, upstream class, member).
+# The consumed slice (specs/core/robot.md): (path from the fake robot, upstream class, member).
 # pyright checks call compatibility through the `AnyReachyMini` union, not parameter
 # defaults, so the defaults are compared here. Lifecycle stays out: its parameter names
 # differ by design and pyright covers it.
@@ -137,7 +137,7 @@ def test_fake_signatures_match_upstream(path: str, upstream: type, name: str) ->
 
 
 def test_local_audio_backend_keeps_the_playbin_the_bridge_stops() -> None:
-    """The bridge's one reach into SDK internals (specs/audio.md "Stopping a sound
+    """The bridge's one reach into SDK internals (specs/audio/audio.md "Stopping a sound
     file"): `GStreamerAudio` must keep the play_sound playbin as `_playbin`."""
     from reachy_mini.media.audio_gstreamer import GStreamerAudio
 

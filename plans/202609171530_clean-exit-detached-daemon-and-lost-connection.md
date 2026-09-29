@@ -2,7 +2,7 @@
 
 **Status:** Done
 
-Implements [specs/daemon.md](../specs/daemon.md) "The child runs in its own session" (and the orphan trade-off under "Teardown stops what the bridge started") and [specs/motion.md](../specs/motion.md) "Lifecycle" (the lost-connection bullet). Delivers a Ctrl+C that no longer floods the console and no longer leaves the robot wherever a killed daemon dropped it: the bridge-spawned daemon runs in its own session so a terminal `SIGINT` reaches the bridge process only, and the api's ordered teardown then runs against a live daemon (motion eases to neutral, tracking and wobbling are switched off, media and the client close, and only then is the daemon terminated and given its grace to put the robot to sleep). As defence in depth, a motion loop whose `set_target` hits a lost connection logs once and pauses instead of logging sixty lines a second until the app exits. Deliberately leaves out a parent-death watchdog for the orphaned-daemon case (documented, deferred), rate-limiting of *non*-connection tick faults (deferred), and any change to the downstream app.
+Implements [specs/daemon/daemon.md](../specs/daemon/daemon.md) "The child runs in its own session" (and the orphan trade-off under "Teardown stops what the bridge started") and [specs/motion/motion.md](../specs/motion/motion.md) "Lifecycle" (the lost-connection bullet). Delivers a Ctrl+C that no longer floods the console and no longer leaves the robot wherever a killed daemon dropped it: the bridge-spawned daemon runs in its own session so a terminal `SIGINT` reaches the bridge process only, and the api's ordered teardown then runs against a live daemon (motion eases to neutral, tracking and wobbling are switched off, media and the client close, and only then is the daemon terminated and given its grace to put the robot to sleep). As defence in depth, a motion loop whose `set_target` hits a lost connection logs once and pauses instead of logging sixty lines a second until the app exits. Deliberately leaves out a parent-death watchdog for the orphaned-daemon case (documented, deferred), rate-limiting of *non*-connection tick faults (deferred), and any change to the downstream app.
 
 Origin: the handoff note `specs/_clean_exit.md` (diagnosis from `reachy-mini-interaction-wica`), folded into the two specs above and deleted by this plan.
 
@@ -20,7 +20,7 @@ Origin: the handoff note `specs/_clean_exit.md` (diagnosis from `reachy-mini-int
 - `src/reachy_mini_bridge/motion.py` — a lost-connection state: `_LOST_CONNECTION_ERRORS`, `_on_lost_connection`; `_on_submit` / `_on_resume` honour it.
 - `tests/test_motion.py` — lost-connection tests against the fake (both exception types).
 - `pyproject.toml`, `uv.lock` — `websockets` declared.
-- `specs/daemon.md` (`Implemented` → `Updated` → `Implemented`), `specs/motion.md` (stays `Stable`: it is not yet `Implemented`, gated by plan [202609162000](202609162000_motion-loop-presence-and-breathing.md)), `specs/_index.md`, `plans/_index.md`, this file.
+- `specs/daemon/daemon.md` (`Implemented` → `Updated` → `Implemented`), `specs/motion/motion.md` (stays `Stable`: it is not yet `Implemented`, gated by plan [202609162000](202609162000_motion-loop-presence-and-breathing.md)), `specs/_index.md`, `plans/_index.md`, this file.
 - `specs/_clean_exit.md` — deleted once folded in.
 
 ## Steps
@@ -33,8 +33,8 @@ Origin: the handoff note `specs/_clean_exit.md` (diagnosis from `reachy-mini-int
 
 Fold the note into the specs (done before any code, per AGENTS.md):
 
-- `specs/daemon.md`: new subsection "The child runs in its own session" after "The child's environment is scrubbed"; the orphan trade-off and how to stop one under "Teardown stops what the bridge started"; the seam test under "Testable without a daemon"; open question 2 (parent-death watchdog, deferred). Status → `Updated`.
-- `specs/motion.md`: "Lifecycle" — the last bullet distinguishes a lost connection from a bad tick; open question 4 (rate-limiting non-connection faults, deferred). Status stays `Stable`.
+- `specs/daemon/daemon.md`: new subsection "The child runs in its own session" after "The child's environment is scrubbed"; the orphan trade-off and how to stop one under "Teardown stops what the bridge started"; the seam test under "Testable without a daemon"; open question 2 (parent-death watchdog, deferred). Status → `Updated`.
+- `specs/motion/motion.md`: "Lifecycle" — the last bullet distinguishes a lost connection from a bad tick; open question 4 (rate-limiting non-connection faults, deferred). Status stays `Stable`.
 - `specs/_index.md` rows for both.
 
 ### Step 2 — Detach the daemon (`daemon.py`)
@@ -65,7 +65,7 @@ with a comment stating why (a terminal's Ctrl+C is a `SIGINT` to the whole foreg
 - Module level: `import websockets.exceptions` and
 
   ```python
-  # What upstream raises when the daemon is gone (specs/motion.md "Lifecycle"): the
+  # What upstream raises when the daemon is gone (specs/motion/motion.md "Lifecycle"): the
   # builtin ConnectionError from ws_client.send_command once its receive loop noticed
   # the close, and websockets' ConnectionClosed (not a ConnectionError) on the send
   # that races the close.
@@ -94,7 +94,7 @@ with a comment stating why (a terminal's Ctrl+C is a `SIGINT` to the whole foreg
 ### Step 5 — Live tier, statuses, cleanup
 
 - `uv run pytest tests-e2e -rs` on the headless sim: the harness now spawns the daemon through the detached `_spawn`, and the module teardown must still stop it (`pgrep -f reachy-mini-daemon` finds nothing after the run).
-- Delete `specs/_clean_exit.md`. Flip this plan to `Done` (here and in `_index.md`) and `specs/daemon.md` back to `Implemented` (file and index).
+- Delete `specs/_clean_exit.md`. Flip this plan to `Done` (here and in `_index.md`) and `specs/daemon/daemon.md` back to `Implemented` (file and index).
 
 ## Verification
 

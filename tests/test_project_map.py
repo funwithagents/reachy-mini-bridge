@@ -68,7 +68,7 @@ _LIST_ITEM = re.compile(r"^\s*-\s+(.+?)\s*$")
 
 def _spec_files() -> list[Path]:
     # Concept specs only — skip index/template/scratch files (`_index.md`, `_spec-template.md`, ...).
-    return sorted(p for p in _SPECS_DIR.glob("*.md") if not p.name.startswith("_"))
+    return sorted(p for p in _SPECS_DIR.rglob("*.md") if not p.name.startswith("_"))
 
 
 def _parse_frontmatter(path: Path) -> dict[str, list[str]]:

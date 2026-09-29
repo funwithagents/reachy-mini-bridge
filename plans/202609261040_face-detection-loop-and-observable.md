@@ -2,13 +2,13 @@
 
 **Status:** Done
 
-Implements [specs/observable.md](../specs/observable.md) in full and [specs/user_perception.md](../specs/user_perception.md) "The face report", "The report is an observable", "The detection loop", "Detection sources" (the `daemon` source), "Configuration" (the `faces` block) and "Lifecycle", with the consumed-slice change in [specs/robot.md](../specs/robot.md) (the REST read replaces `get_tracked_face`; the fake's `show_face` / `hide_face`). Delivers `Observable[T]`, the `Face` / `FaceReport` types, a detection loop polling the daemon's `GET /api/media/tracking/face` and publishing `api.faces` with the count-change debounce, the `faces` config block and the `set_face_detection` verb — and re-bases the existing attention loop on the detection loop's observations, so it stops polling the 1 Hz status stream. Deliberately leaves out the bridge's head tracker (the daemon still steers the head in this plan — [202609261041](202609261041_bridge-head-tracker-and-gaze-layer.md)) and the `custom` source ([202609291000](202609291000_camera-feed-and-custom-face-detectors.md)); a config naming `custom` is rejected at session entry until then.
+Implements [specs/core/observable.md](../specs/core/observable.md) in full and [specs/vision/user_perception.md](../specs/vision/user_perception.md) "The face report", "The report is an observable", "The detection loop", "Detection sources" (the `daemon` source), "Configuration" (the `faces` block) and "Lifecycle", with the consumed-slice change in [specs/core/robot.md](../specs/core/robot.md) (the REST read replaces `get_tracked_face`; the fake's `show_face` / `hide_face`). Delivers `Observable[T]`, the `Face` / `FaceReport` types, a detection loop polling the daemon's `GET /api/media/tracking/face` and publishing `api.faces` with the count-change debounce, the `faces` config block and the `set_face_detection` verb — and re-bases the existing attention loop on the detection loop's observations, so it stops polling the 1 Hz status stream. Deliberately leaves out the bridge's head tracker (the daemon still steers the head in this plan — [202609261041](202609261041_bridge-head-tracker-and-gaze-layer.md)) and the `custom` source ([202609291000](202609291000_camera-feed-and-custom-face-detectors.md)); a config naming `custom` is rejected at session entry until then.
 
 First of three plans; the other two build on it in order.
 
 ## How to work this plan
 
-- **Read first:** [AGENTS.md](../AGENTS.md); [specs/user_perception.md](../specs/user_perception.md) in full (the design — do not redesign it); [specs/api.md](../specs/api.md) "Faces (perception)", "Attention / gaze" and "Lifecycle"; [specs/config.md](../specs/config.md) "`faces` block"; [specs/robot.md](../specs/robot.md) "The consumed slice"; [docs/reachy-mini-api.md](../docs/reachy-mini-api.md) "Face tracking" for the daemon facts.
+- **Read first:** [AGENTS.md](../AGENTS.md); [specs/vision/user_perception.md](../specs/vision/user_perception.md) in full (the design — do not redesign it); [specs/core/api.md](../specs/core/api.md) "Faces (perception)", "Attention / gaze" and "Lifecycle"; [specs/core/config.md](../specs/core/config.md) "`faces` block"; [specs/core/robot.md](../specs/core/robot.md) "The consumed slice"; [docs/reachy-mini-api.md](../docs/reachy-mini-api.md) "Face tracking" for the daemon facts.
 - **Do the steps in order.** Each ends with the same check; fix everything red before the next step:
 
   ```
@@ -16,7 +16,7 @@ First of three plans; the other two build on it in order.
   ```
 
   (`ruff format .` also reflows the Python blocks in `plans/*.md` — format the code directories only.)
-- **Tests are functional:** assert on `api.faces.value`, on what a `changes()` subscriber receives, on the fake's recorded commands (`start_head_tracking` weights) and on the `attention` property — never on internals. Keep fake-tier tests fast: monkeypatch `FACE_POLL_HZ`, `FACE_ABSENT_S` and `ATTENTION_GRACE_S` to tenths of a second; sleeps ≤ 1.5 s. Every stream added here gets a cancel-mid-flight test ([specs/api.md](../specs/api.md) "Cancellation").
+- **Tests are functional:** assert on `api.faces.value`, on what a `changes()` subscriber receives, on the fake's recorded commands (`start_head_tracking` weights) and on the `attention` property — never on internals. Keep fake-tier tests fast: monkeypatch `FACE_POLL_HZ`, `FACE_ABSENT_S` and `ATTENTION_GRACE_S` to tenths of a second; sleeps ≤ 1.5 s. Every stream added here gets a cancel-mid-flight test ([specs/core/api.md](../specs/core/api.md) "Cancellation").
 - **Do not commit** unless asked. Do not touch `docs/upstream-*.md` beyond what a step says.
 
 ## Facts you must not violate (daemon, SDK 1.10)
@@ -24,7 +24,7 @@ First of three plans; the other two build on it in order.
 1. The daemon runs its face detector **only while tracking is enabled at a requested weight above zero**; `enable_head_tracking(0.0)` pauses the detector and clears the face target. Any weight above zero also blends the daemon's own aim into the head by that weight. So in this plan the daemon's tracker is armed by **whoever needs it**: the attention loop's weight when tracking is on (unchanged behaviour), `DAEMON_DETECT_WEIGHT` (0.001) when only detection wants it. The two never fight: the detection loop arms ε only while `api.tracking` is off, and the attention loop's `stop_head_tracking` re-arms ε when detection is still wanted.
 2. The daemon's status stream is published at **1 Hz**; the face target read through `GET /api/media/tracking/face` is the backend's current one. The endpoint answers `503` until the backend is ready. The payload is `{"status": "ok", "face_target": {"detected": bool, "x": float|null, "y": float|null, "roll": float|null, "ts": float|null}}`, `ts` from the daemon's `time.monotonic()`.
 3. `x`, `y` are the face's nose in normalised image coordinates, `[-1, 1]`, x right, y down.
-4. In the sim, the daemon updates its face target only through the launcher's stepping correction ([specs/sim_daemon.md](../specs/sim_daemon.md)); nothing in this plan changes the launcher.
+4. In the sim, the daemon updates its face target only through the launcher's stepping correction ([specs/daemon/sim_daemon.md](../specs/daemon/sim_daemon.md)); nothing in this plan changes the launcher.
 5. `_fetch_json` is patched by existing tests (`tests/test_api.py`, the testing harness) — keep a patchable seam when you move it.
 
 ## Scope
@@ -43,7 +43,7 @@ First of three plans; the other two build on it in order.
 - `tests/test_api.py` — faces tests; attention tests re-based on `show_face` / `hide_face`.
 - `src/reachy_mini_bridge/__init__.py` — export `Face`, `FaceReport`, `Observable`.
 - `tests/test_project_map.py` — nothing; `AGENTS.md` — the `observable.py` row loses its placeholder note.
-- `examples/control_panel/controller.py`, `examples/control_panel/app.py`, `tests/test_control_panel.py` — `faces` count and `face_detection` in the snapshot and the state panel, the Detection checkbox, as [specs/control_panel.md](../specs/control_panel.md) already describes (it reads `Updated` for this).
+- `examples/control_panel/controller.py`, `examples/control_panel/app.py`, `tests/test_control_panel.py` — `faces` count and `face_detection` in the snapshot and the state panel, the Detection checkbox, as [specs/examples/control_panel.md](../specs/examples/control_panel.md) already describes (it reads `Updated` for this).
 - `docs/reachy-mini-api.md` — the 1 Hz status cadence and the REST endpoint recorded under "Face tracking".
 - `README.md` — the "Following a face" row and the Gaze row of the verb table.
 - `tests-e2e/test_api.py` — an *appeared* / *left* test on `faces.changes()` over the sim scene's show / hide.
@@ -57,7 +57,7 @@ Run the check command. Everything must be green before you change anything.
 
 ### Step 1 — `Observable[T]`
 
-**File:** `src/reachy_mini_bridge/observable.py` (replace the placeholder's body; keep a module docstring pointing at `specs/observable.md`).
+**File:** `src/reachy_mini_bridge/observable.py` (replace the placeholder's body; keep a module docstring pointing at `specs/core/observable.md`).
 
 ```python
 class Observable[T]:
@@ -92,7 +92,7 @@ built from `robot.client.host` / `robot.client.port` with `urllib.request.urlope
 
 **File:** `src/reachy_mini_bridge/face_detection.py` (replace the placeholder's body).
 
-- `Face`, `FaceReport` exactly as [specs/user_perception.md](../specs/user_perception.md) "The face report" (frozen dataclasses; `FaceReport.inactive(source)` classmethod for the `((), 0.0, source, False)` value).
+- `Face`, `FaceReport` exactly as [specs/vision/user_perception.md](../specs/vision/user_perception.md) "The face report" (frozen dataclasses; `FaceReport.inactive(source)` classmethod for the `((), 0.0, source, False)` value).
 - Constants: `FACE_POLL_HZ = 10.0`, `FACE_ABSENT_S = 0.3`, `FACE_SOURCE_DOWN_S = 5.0`, `DAEMON_DETECT_WEIGHT = 0.001`.
 - `daemon_face_target(robot: AnyReachyMini) -> dict[str, Any]` — the REST payload's `face_target` dict: `fetch_daemon_json(robot, "/api/media/tracking/face")["face_target"]` on a `ReachyMini`, `robot.client.face_target` on the fake (the same `isinstance(robot, FakeReachyMini)` branch as the kinematics read). Blocking; callers run it under `asyncio.to_thread`.
 - `report_from_daemon(target: dict, *, active: bool) -> FaceReport` — `detected` true → one `Face(x, y, roll, size=None)`; `ts` from the payload (`0.0` when null).
@@ -107,7 +107,7 @@ built from `robot.client.host` / `robot.client.port` with `urllib.request.urlope
 
 ### Step 5 — The `faces` config block
 
-**File:** `src/reachy_mini_bridge/config.py`. `FaceSettings` as in [specs/config.md](../specs/config.md) "`faces` block" (`FaceDetector` imported under `TYPE_CHECKING` from `.face_detection` — a forward reference until the third plan fills it in; define a placeholder `FaceDetector` `Protocol` in `face_detection.py` now, with the `detect` signature from the spec, so the import is real), `FACE_DETECTORS = ("daemon", "custom")`, `from_dict` / `from_json` / `from_json_file` in the style of `MotionSettings` (rejects `face_detector` in a dict — "set from code"), `ReachyMiniConfig.faces` wired in `from_dict` (`faces` added to the known top-level keys). `config.example.json`: add `"faces": {"detector": "daemon", "detection": true}` between `audio` and `motion`.
+**File:** `src/reachy_mini_bridge/config.py`. `FaceSettings` as in [specs/core/config.md](../specs/core/config.md) "`faces` block" (`FaceDetector` imported under `TYPE_CHECKING` from `.face_detection` — a forward reference until the third plan fills it in; define a placeholder `FaceDetector` `Protocol` in `face_detection.py` now, with the `detect` signature from the spec, so the import is real), `FACE_DETECTORS = ("daemon", "custom")`, `from_dict` / `from_json` / `from_json_file` in the style of `MotionSettings` (rejects `face_detector` in a dict — "set from code"), `ReachyMiniConfig.faces` wired in `from_dict` (`faces` added to the known top-level keys). `config.example.json`: add `"faces": {"detector": "daemon", "detection": true}` between `audio` and `motion`.
 
 **Tests** (`tests/test_config.py`): defaults; a full block round-trips; unknown key, bad `detector`, non-bool `detection`, `face_detector` in JSON each raise `ConfigError` naming the field; the example file still loads (the existing test).
 
@@ -149,7 +149,7 @@ class FaceDetection:
 
 ### Step 8 — Control panel
 
-`PanelState` gains `faces: int` (`len(api.faces.value.faces)`, `-1` when inactive → shown as `—`) and `face_detection: bool`; the state panel shows both; a Detection checkbox under Modes calls the controller's new `set_face_detection(on)`. Extend the panel's fake-backed tests with one snapshot assertion after `show_face`. This is what [specs/control_panel.md](../specs/control_panel.md) specifies; it goes back to `Implemented` in Step 10.
+`PanelState` gains `faces: int` (`len(api.faces.value.faces)`, `-1` when inactive → shown as `—`) and `face_detection: bool`; the state panel shows both; a Detection checkbox under Modes calls the controller's new `set_face_detection(on)`. Extend the panel's fake-backed tests with one snapshot assertion after `show_face`. This is what [specs/examples/control_panel.md](../specs/examples/control_panel.md) specifies; it goes back to `Implemented` in Step 10.
 
 ### Step 9 — Docs and live tier
 
@@ -160,7 +160,7 @@ class FaceDetection:
 
 ### Step 10 — Statuses
 
-Mark this plan `Done` here and in [_index.md](_index.md). [specs/observable.md](../specs/observable.md) is built in full by this plan: `Stable` → `Implemented` (in the file and in `specs/_index.md`); [specs/control_panel.md](../specs/control_panel.md) matches its code again: `Updated` → `Implemented`. [specs/user_perception.md](../specs/user_perception.md) stays `Stable` until the third plan lands (its code still lags the tracker and the custom source).
+Mark this plan `Done` here and in [_index.md](_index.md). [specs/core/observable.md](../specs/core/observable.md) is built in full by this plan: `Stable` → `Implemented` (in the file and in `specs/_index.md`); [specs/examples/control_panel.md](../specs/examples/control_panel.md) matches its code again: `Updated` → `Implemented`. [specs/vision/user_perception.md](../specs/vision/user_perception.md) stays `Stable` until the third plan lands (its code still lags the tracker and the custom source).
 
 ## Verification
 

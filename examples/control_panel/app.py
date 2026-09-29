@@ -1,4 +1,4 @@
-"""The Gradio layer of the control panel (specs/control_panel.md "The UI").
+"""The Gradio layer of the control panel (specs/examples/control_panel.md "The UI").
 
 `build_app(controller)` wires components to `ControlPanelController` calls and adds
 nothing the controller cannot do; `main(argv)` is the `python -m examples.control_panel`
@@ -271,7 +271,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--config",
         type=Path,
-        help="JSON config file (specs/config.md). Without it: the offline fake.",
+        help="JSON config file (specs/core/config.md). Without it: the offline fake.",
     )
     parser.add_argument("--host", default="127.0.0.1", help="web server address")
     parser.add_argument("--port", type=int, default=7860, help="web server port")

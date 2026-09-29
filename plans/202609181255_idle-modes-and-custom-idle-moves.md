@@ -2,15 +2,15 @@
 
 **Status:** Done
 
-Implements the `idle` mode and custom idle moves of [specs/motion.md](../specs/motion.md) ("Presence and the idle mode", "The moves", "Custom idle moves"), [specs/config.md](../specs/config.md) ("`motion` block") and [specs/api.md](../specs/api.md) ("Presence & the idle move"), plus the control panel's Idle radio ([specs/control_panel.md](../specs/control_panel.md)). The `breathing` on/off switch becomes an `idle` mode with three values — `"breathing"`, `"hold"`, `"custom"` — and a caller can register their own idle move (an `IdleMove` subclass, built by a factory) that plays in the `"custom"` mode.
+Implements the `idle` mode and custom idle moves of [specs/motion/motion.md](../specs/motion/motion.md) ("Presence and the idle mode", "The moves", "Custom idle moves"), [specs/core/config.md](../specs/core/config.md) ("`motion` block") and [specs/core/api.md](../specs/core/api.md) ("Presence & the idle move"), plus the control panel's Idle radio ([specs/examples/control_panel.md](../specs/examples/control_panel.md)). The `breathing` on/off switch becomes an `idle` mode with three values — `"breathing"`, `"hold"`, `"custom"` — and a caller can register their own idle move (an `IdleMove` subclass, built by a factory) that plays in the `"custom"` mode.
 
-Deliberately leaves out: naming a custom move from a JSON file by import path, and a bridge-side amplitude clamp on custom offsets (both are open questions in `specs/motion.md`); any change to `BreathingMove`'s animation; a backward-compatible `breathing` alias (the old key and verbs are removed, not deprecated).
+Deliberately leaves out: naming a custom move from a JSON file by import path, and a bridge-side amplitude clamp on custom offsets (both are open questions in `specs/motion/motion.md`); any change to `BreathingMove`'s animation; a backward-compatible `breathing` alias (the old key and verbs are removed, not deprecated).
 
 **Every code block in this plan was run**: the final state and the intermediate state after step 1 both pass `ruff`, `pyright` and the full fast test suite, and the live tests in step 3 pass on the headless sim. Copy the blocks as they are.
 
 ## How to work this plan
 
-- **Read first:** [AGENTS.md](../AGENTS.md) ("Commands", "Verification", "Keeping statuses current"), then [specs/motion.md](../specs/motion.md) sections "Presence and the idle mode", "The moves" and "Custom idle moves". The specs are **already updated** for this plan: they are the design. Do not edit `specs/` except for the status changes in step 5. If this plan and a spec disagree, the spec wins; note it in this file.
+- **Read first:** [AGENTS.md](../AGENTS.md) ("Commands", "Verification", "Keeping statuses current"), then [specs/motion/motion.md](../specs/motion/motion.md) sections "Presence and the idle mode", "The moves" and "Custom idle moves". The specs are **already updated** for this plan: they are the design. Do not edit `specs/` except for the status changes in step 5. If this plan and a spec disagree, the spec wins; note it in this file.
 - **Do the steps in order.** Each step ends green. After each step run:
 
   ```
@@ -44,7 +44,7 @@ Deliberately leaves out: naming a custom move from a JSON file by import path, a
 7. **Setting the same idle mode is a no-op. Registering an idle move always re-enters the custom idle** (even the same factory) and clears the failed mark.
 8. **An emotion is never interrupted**: with a primary playing, `_reenter_idle()` does nothing; the change applies when the queue drains.
 9. **`config.py` must still import without `reachy_mini`**: `IdleMove` is imported there under `TYPE_CHECKING` only.
-10. **Bad input is `ValueError`** (specs/api.md "Errors"), a malformed config is `ConfigError` (a `ValueError` subclass).
+10. **Bad input is `ValueError`** (specs/core/api.md "Errors"), a malformed config is `ConfigError` (a `ValueError` subclass).
 
 ## Scope
 
@@ -57,7 +57,7 @@ Deliberately leaves out: naming a custom move from a JSON file by import path, a
 - `tests/test_motion.py`, `tests/test_config.py`, `tests/test_api.py`, `tests/test_control_panel.py`, `tests-e2e/test_api.py` — renames plus the new tests below.
 - `README.md`, `AGENTS.md` — wording.
 - `plans/202609162000_motion-loop-presence-and-breathing.md` — its still-open on-robot checklist uses the new verbs and gains one custom-idle line.
-- `specs/control_panel.md` + `specs/_index.md` — status `Updated` → `Implemented` (step 5). `plans/_index.md` and this file — status.
+- `specs/examples/control_panel.md` + `specs/_index.md` — status `Updated` → `Implemented` (step 5). `plans/_index.md` and this file — status.
 
 ## Steps
 
@@ -89,7 +89,7 @@ __all__ = [
 @dataclass(frozen=True)
 class IdleOffsets:
     """An idle move's signed offsets from neutral at one instant, in human units
-    (specs/motion.md "The moves"). ``IdleOffsets()`` is neutral.
+    (specs/motion/motion.md "The moves"). ``IdleOffsets()`` is neutral.
 
     ``pose(scale)`` is the single place offsets become a pose: at ``1.0`` it is the
     move's pose, at ``0.0`` it is exactly ``NEUTRAL``, and the values between are the
@@ -121,7 +121,7 @@ class IdleOffsets:
 
 
 class IdleMove(Move):
-    """Base class of every animated idle move (specs/motion.md "The moves"): infinite,
+    """Base class of every animated idle move (specs/motion/motion.md "The moves"): infinite,
     and described as offsets from neutral so the loop can fade it out to neutral at
     rest. Subclass it and implement ``offsets`` to write a custom idle move."""
 
@@ -144,7 +144,7 @@ class IdleMove(Move):
 # A zero-argument callable building a fresh idle move; the loop calls it at every idle
 # entry. An ``IdleMove`` subclass is one.
 type IdleMoveFactory = Callable[[], IdleMove]
-# The idle mode (specs/motion.md "Presence and the idle mode"); config.IDLE_MODES holds
+# The idle mode (specs/motion/motion.md "Presence and the idle mode"); config.IDLE_MODES holds
 # the same three values for the config layer, which cannot import this module.
 type IdleMode = Literal["breathing", "hold", "custom"]
 ```
@@ -173,7 +173,7 @@ type IdleMode = Literal["breathing", "hold", "custom"]
 
 ```python
 class _IdleFadeOut(Move):
-    """Leaving an idle move mid-plan (specs/motion.md "The moves"): keep playing ``move``
+    """Leaving an idle move mid-plan (specs/motion/motion.md "The moves"): keep playing ``move``
     from ``t_offset`` while a minjerk envelope scales every offset from neutral down to
     zero over ``duration`` — landing at neutral at rest, so whatever follows (a blend,
     or nothing) starts from a source that is actually at rest. A plain blend assumes
@@ -242,11 +242,11 @@ def _build_custom_idle(factory: Callable[[], object]) -> IdleMove:
 
 
 def check_idle_move_factory(factory: object) -> None:
-    """Registration-time check (specs/motion.md "Custom idle moves"): ``ValueError``
+    """Registration-time check (specs/motion/motion.md "Custom idle moves"): ``ValueError``
     unless ``factory`` is a callable building an ``IdleMove`` whose ``offsets(0.0)`` is
     an ``IdleOffsets`` of finite numbers. Runs on the caller's thread."""
     if not callable(factory):
-        # ValueError, not TypeError: the api's one error for bad input (specs/api.md)
+        # ValueError, not TypeError: the api's one error for bad input (specs/core/api.md)
         raise ValueError(  # noqa: TRY004
             "an idle move factory must be a zero-argument callable returning an "
             f"IdleMove (an IdleMove subclass is one), got {type(factory).__name__}"
@@ -293,7 +293,7 @@ Also fix the one remaining mention: in `_fade_in`'s docstring, `_BreathingFadeOu
         self._idle: IdleMode = idle
         self._idle_move = idle_move
         # The registered custom move failed on this thread: play the hold in its place
-        # until another is registered (specs/motion.md "Custom idle moves").
+        # until another is registered (specs/motion/motion.md "Custom idle moves").
         self._idle_move_failed = False
         self._paused = True
 ```
@@ -333,7 +333,7 @@ Also fix the one remaining mention: in `_fade_in`'s docstring, `_BreathingFadeOu
         if idle is not None:
             # Fade the plan's offsets out rather than handing a track caught
             # mid-segment (a nonzero velocity) straight to a fresh blend, which assumes
-            # rest (specs/motion.md "Leaving an idle move mid-plan").
+            # rest (specs/motion/motion.md "Leaving an idle move mid-plan").
             move, elapsed = idle
             self._playing = _Playing(
                 stages=[_IdleFadeOut(move, t_offset=elapsed)],
@@ -416,7 +416,7 @@ Also fix the one remaining mention: in `_fade_in`'s docstring, `_BreathingFadeOu
 
 ```python
     def _on_custom_idle_failure(self, error: Exception) -> None:
-        """The caller's idle move misbehaved (specs/motion.md "Custom idle moves"): one
+        """The caller's idle move misbehaved (specs/motion/motion.md "Custom idle moves"): one
         warning, then the hold plays in its place until another move is registered."""
         _logger.warning(
             "custom idle move failed; holding neutral until another is registered: %s",
@@ -470,7 +470,7 @@ def _rpy_rad(move: BreathingMove, t: float) -> npt.NDArray[np.float64]:
 **1m. `tests/test_motion.py` — new tests.** Append at the end of the file:
 
 ```python
-# --- idle offsets, custom idle moves (specs/motion.md "Custom idle moves") -----------
+# --- idle offsets, custom idle moves (specs/motion/motion.md "Custom idle moves") -----------
 
 
 def test_idle_offsets_pose_is_in_human_units_and_scales_to_neutral() -> None:
@@ -746,7 +746,7 @@ All of this lands in one step because the `breathing` → `idle` rename crosses 
 - After `DEFAULT_WEBCAM_HFOV_DEG = 70.0` add:
 
   ```python
-  # The idle modes (specs/motion.md "Presence and the idle mode"); motion.IdleMode is the
+  # The idle modes (specs/motion/motion.md "Presence and the idle mode"); motion.IdleMode is the
   # same three values as a type.
   IDLE_MODES = ("breathing", "hold", "custom")
   ```
@@ -757,7 +757,7 @@ All of this lands in one step because the `breathing` → `idle` rename crosses 
 @dataclass
 class MotionSettings:
     """Everything that shapes the robot's behaviour at rest, applied when the session
-    starts (specs/motion.md, specs/api.md): the loop's own idle modes (``presence``,
+    starts (specs/motion/motion.md, specs/core/api.md): the loop's own idle modes (``presence``,
     ``idle``, ``idle_move``) and the daemon-side modes the api arms around them (``wobbling``,
     ``tracking``)."""
 
@@ -855,7 +855,7 @@ def _idle_mode(value: str) -> IdleMode:
 
 ```python
     async def set_idle(self, mode: str) -> None:
-        """Which idle move presence plays (specs/motion.md): ``"breathing"`` (the
+        """Which idle move presence plays (specs/motion/motion.md): ``"breathing"`` (the
         built-in animation), ``"hold"`` (a still neutral) or ``"custom"`` (the move
         registered with :meth:`set_idle_move`; the hold while none is registered).
 
@@ -875,7 +875,7 @@ def _idle_mode(value: str) -> IdleMode:
         return self._idle
 
     async def set_idle_move(self, factory: IdleMoveFactory | None) -> None:
-        """Register the custom idle move (specs/motion.md "Custom idle moves"): a
+        """Register the custom idle move (specs/motion/motion.md "Custom idle moves"): a
         zero-argument callable returning a fresh ``IdleMove`` — a subclass itself, or a
         function — or ``None`` to clear it.
 
@@ -1095,7 +1095,7 @@ def test_a_bad_idle_move_in_the_config_fails_bring_up() -> None:
         asyncio.run(run())
 ```
 
-  `set_idle` and `set_idle_move` are **instant verbs** (specs/api.md "Cancellation"): they hand one command to the loop and return, so they need no mid-flight cancellation test.
+  `set_idle` and `set_idle_move` are **instant verbs** (specs/core/api.md "Cancellation"): they hand one command to the loop and return, so they need no mid-flight cancellation test.
 
 **2h. `tests-e2e/test_api.py` — renames.** Replace all 4 `api.set_breathing(False)` with `api.set_idle("hold")` and all 4 `api.set_breathing(True)` with `api.set_idle("breathing")`; in the breathing test's docstring `` `set_breathing(False)` holds`` → `` `set_idle("hold")` holds``.
 
@@ -1128,7 +1128,7 @@ class _Lift(IdleMove):
 def test_custom_idle_move_drives_the_head(
     live_api: tuple[ReachyMiniApi, frozenset[str]],
 ) -> None:
-    """specs/motion.md "Custom idle moves": a registered `IdleMove` plays in the
+    """specs/motion/motion.md "Custom idle moves": a registered `IdleMove` plays in the
     `custom` idle mode — the head rises to its offset — and leaving the mode brings the
     head back to neutral."""
     requires_caps(live_api, "motion")
@@ -1189,7 +1189,7 @@ Every motion test must **pass**. Read the skips (`-rs`): camera / faces tests sk
   - After the verbs-table paragraphs (next to **Talking.** / **Listening.**) add a short paragraph:
 
     ```
-    **Your own idle move.** Subclass `IdleMove` and return the pose as offsets from neutral in human units: `IdleOffsets(z_mm=…, roll_deg=…, pitch_deg=…, yaw_deg=…, antenna_right_deg=…, antenna_left_deg=…)`. Register the class (a factory: the loop builds a fresh move at every idle entry, with `t` starting at 0) and select the `custom` mode, in either order: `await api.set_idle_move(SlowNod)` then `await api.set_idle("custom")`, or `MotionSettings(idle="custom", idle_move=SlowNod)` in the config. `offsets(t)` runs at 60 Hz on the motion thread, so keep it fast and start it at rest. See [specs/motion.md](specs/motion.md) "Custom idle moves".
+    **Your own idle move.** Subclass `IdleMove` and return the pose as offsets from neutral in human units: `IdleOffsets(z_mm=…, roll_deg=…, pitch_deg=…, yaw_deg=…, antenna_right_deg=…, antenna_left_deg=…)`. Register the class (a factory: the loop builds a fresh move at every idle entry, with `t` starting at 0) and select the `custom` mode, in either order: `await api.set_idle_move(SlowNod)` then `await api.set_idle("custom")`, or `MotionSettings(idle="custom", idle_move=SlowNod)` in the config. `offsets(t)` runs at 60 Hz on the motion thread, so keep it fast and start it at rest. See [specs/motion/motion.md](../specs/motion/motion.md) "Custom idle moves".
     ```
 
 - `AGENTS.md`, project map, `motion.py` row: "over the idle move (breathing / neutral hold / nothing)" → "over the idle move (breathing / neutral hold / a caller's custom `IdleMove` / nothing)", and "the `presence` and `breathing` switches" → "the `presence` switch and the `idle` mode".
@@ -1199,8 +1199,8 @@ Every motion test must **pass**. Read the skips (`-rs`): camera / faces tests sk
 
 ### Step 5 — Statuses
 
-- `specs/control_panel.md`: `**Status:** Updated` → `**Status:** Implemented`, and the same in its `specs/_index.md` row.
-- **Leave** `specs/motion.md` at `Stable` and `specs/api.md` / `specs/config.md` / `specs/robot.md` at `Updated`: they wait on the on-robot checklist of [202609162000_motion-loop-presence-and-breathing.md](202609162000_motion-loop-presence-and-breathing.md), not on this plan.
+- `specs/examples/control_panel.md`: `**Status:** Updated` → `**Status:** Implemented`, and the same in its `specs/_index.md` row.
+- **Leave** `specs/motion/motion.md` at `Stable` and `specs/core/api.md` / `specs/core/config.md` / `specs/core/robot.md` at `Updated`: they wait on the on-robot checklist of [202609162000_motion-loop-presence-and-breathing.md](202609162000_motion-loop-presence-and-breathing.md), not on this plan.
 - In `specs/_overview.md`, "Roadmap": delete item 4 (the **Todo** item that links this plan) and renumber the two items after it (5 → 4, 6 → 5).
 - This plan: `**Status:** Done`, and its row in [_index.md](_index.md).
 

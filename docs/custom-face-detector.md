@@ -2,7 +2,7 @@
 
 How to run a face detector of your own inside the bridge: the head follows the faces it
 finds and `api.faces` reports them, exactly as with the shipped detector. Design:
-[specs/user_perception.md](../specs/user_perception.md) "Custom detectors".
+[specs/vision/user_perception.md](../specs/vision/user_perception.md) "Custom detectors".
 
 You need this only when the shipped detector is not what you want. `"faces": {"detector":
 "yunet"}` runs upstream's own YuNet model, wrapped by the bridge — nothing to install, the
@@ -103,7 +103,7 @@ target, dropped after a run of misses), and publishes a `FaceReport` on `api.fac
 face in normalised image coordinates, the target first, with the frame's time and — when
 the feed knows it — the head pose the frame was taken from, so the tracker aims each face
 against the pose it was actually seen from. `source` reads `"custom"`. The report's fields
-are in [specs/user_perception.md](../specs/user_perception.md) "The face report".
+are in [specs/vision/user_perception.md](../specs/vision/user_perception.md) "The face report".
 
 The live test [tests-e2e/test_custom_faces.py](../tests-e2e/test_custom_faces.py) registers
 the shipped `YuNetDetector` through this path on the viewer sim's camera and checks the
@@ -129,4 +129,4 @@ When the graph runs its own face detector, register a thin detector that returns
 graph's latest faces for the frame's `frame_id`: it still feeds the head. The feed is what
 lets the two coexist — every consumer samples the same frames and takes none from the
 others, which two callers of upstream's one-shot `get_frame()` would
-([specs/camera.md](../specs/camera.md) "A valid upstream for a vision graph").
+([specs/vision/camera.md](../specs/vision/camera.md) "A valid upstream for a vision graph").

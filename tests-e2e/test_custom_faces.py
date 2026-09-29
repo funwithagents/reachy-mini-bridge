@@ -1,5 +1,5 @@
-"""E2E tier: the `custom` detection path on a live daemon (specs/user_perception.md
-"Custom detectors", specs/camera.md).
+"""E2E tier: the `custom` detection path on a live daemon (specs/vision/user_perception.md
+"Custom detectors", specs/vision/camera.md).
 
 It registers the bridge's shipped detector class through the `custom` path — as a
 developer registers a wrapper of their own — on the camera feed of the viewer sim, and
