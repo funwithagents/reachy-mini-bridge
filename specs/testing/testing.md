@@ -22,8 +22,8 @@ Tests split into two directories, and the split is structural — a directory bo
 | Unit / integration | `tests/` | never | yes | **yes** |
 | Live / e2e | `tests-e2e/` | real service | no | **no** |
 
-- **`tests/` is the normal dev loop.** Fast, deterministic, no real network, no credentials. `pyproject.toml`'s `testpaths = ["tests"]` points the default `uv run pytest` here, so this is what runs on every change and what any contributor or CI can run with zero credentials.
-- **`tests-e2e/` is opt-in.** It calls a real external service — network, credentials, non-deterministic output — so it is deliberately *not* collected by the default run. Because `testpaths` already excludes it, no pytest marker or `--run-e2e` flag is needed: the physical separation is the whole mechanism. Run it explicitly (`uv run pytest tests-e2e`).
+- **`tests/` is the normal dev loop.** Fast, deterministic, no real network, no credentials. `pyproject.toml`'s `testpaths = ["tests"]` points the default `uv run pytest` here, so this is what runs on every change and what any contributor or CI can run with zero credentials. It runs **in parallel** on up to eight of the machine's cores (pytest-xdist, `-n auto` capped by `--maxprocesses 8`, since each worker is a whole interpreter with the package's imports loaded and the tier gains little past eight): the tier is sleep-bound, not CPU-bound — the motion loop and the fake run at real time ([../motion/motion.md](../motion/motion.md), [../core/robot.md](../core/robot.md)), so most of its tests wait through real blends, breaths and tracking convergences, about three minutes of waiting in all that spread over eight workers takes about half a minute. The default is `addopts` in `pyproject.toml` (`-n auto --maxprocesses 8`); an explicit `-n` on the command line wins, and `-n 0` runs the tier serially — the check to make when a timing assertion looks flaky, since a late tick under load is the one way parallelism can change what a test sees. Every test must therefore be independent of the others' process: no shared port, file or global.
+- **`tests-e2e/` is opt-in.** It calls a real external service — network, credentials, non-deterministic output — so it is deliberately *not* collected by the default run. Because `testpaths` already excludes it, no pytest marker or `--run-e2e` flag is needed: the physical separation is the whole mechanism. Run it explicitly (`uv run pytest tests-e2e`). It runs **serially**: every module borrows or spawns the one daemon at the configured address, so `tests-e2e/conftest.py` forces the worker count to zero — it loads only when `tests-e2e` is among the collected paths, overriding the `addopts` default there and nowhere else — rather than let workers spawn, borrow and tear down each other's daemon.
 
 The `tests/` tier mirrors the `src/reachy_mini_bridge/` module layout (`test_<module>.py`, plus the `test_project_map.py` drift-guard); `tests-e2e/` is organized around live scenarios rather than modules.
 
@@ -96,7 +96,7 @@ A live test needs real credentials, and it must **skip — never fail** — when
 
 ## Tooling
 
-- **`pytest`** is the runner; **`ruff`** lints/formats; **`pyright`** (`standard` mode) type-checks. All three are the gate after any change — lint, type check, and tests must pass before work is considered done (see [AGENTS.md](../../AGENTS.md), "Verification").
+- **`pytest`** is the runner (with **`pytest-xdist`** for the fast tier's parallel run, above); **`ruff`** lints/formats; **`pyright`** (`standard` mode) type-checks. All three are the gate after any change — lint, type check, and tests must pass before work is considered done (see [AGENTS.md](../../AGENTS.md), "Verification").
 - **`pyright` covers test code too:** its `include` is `src`, `tests`, and `tests-e2e`, so tests are type-checked alongside the library rather than being a blind spot.
 
 ## Open questions

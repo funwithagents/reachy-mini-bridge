@@ -82,6 +82,7 @@ dev = [
     # Pull the test extra into the dev env so the shipped harness type-checks and the
     # bridge dogfoods it in tests-e2e/; stays optional for consumers.
     "reachy-mini-bridge[test]",
+    "pytest-xdist>=3.8.0",
 ]
 # The Gradio control panel in examples/control_panel (specs/examples/control_panel.md): a
 # manual test/demo app, not part of the package. Its own group so a consumer or CI
@@ -117,6 +118,12 @@ target-version = "py312"  # keep in sync with requires-python
 [tool.pytest.ini_options]
 # Only the fast, deterministic tier is collected by default; tests-e2e/ is opt-in.
 testpaths = ["tests"]
+# The fast tier runs in parallel (pytest-xdist): it is sleep-bound — the motion loop and
+# the fake run at real time, so most tests wait through real blends and breaths — and
+# spread over eight workers its ~3 min of waiting takes ~30 s. Capped at eight: each
+# worker is a whole interpreter with the package imported. `-n 0` on the command line
+# runs it serially. tests-e2e/conftest.py forces the live tier serial (one shared daemon).
+addopts = ["-n", "auto", "--maxprocesses", "8"]
 # Lets tests/ import the example app (`examples.control_panel...`, specs/examples/control_panel.md).
 pythonpath = ["."]
 

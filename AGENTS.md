@@ -83,6 +83,7 @@ The mapping is **many-to-many**: a file can be governed by several specs, so the
 - Avoid trivial/tautological tests — e.g. asserting a constant, asserting an object is not `None`, asserting a mock was called. If a test would pass for a broken implementation, it's not worth writing.
 - Prefer driving the public API the way a real caller would over asserting on internals.
 - Every async verb whose effect spans time (`say`, `play_emotion`, the mic stream, session bring-up) is fully cancellable — [specs/core/bridge.md](specs/core/bridge.md) "Cancellation" defines what that means. When you add or change one, add a test on the `fake` that cancels it mid-flight and asserts the effect stopped and the session still works; the fake keeps real timing for these verbs precisely so there is a mid-flight to cancel in.
+- The fast tier runs in parallel by default (`-n auto --maxprocesses 8` in `addopts`; pytest-xdist in the dev group) because its tests wait through the loop's real blends and breaths — about three minutes of sleeping that spread over eight workers takes about half a minute. `uv run pytest -n 0` runs it serially, the thing to try when a timing assertion looks flaky. `tests-e2e/` stays serial — its conftest forces the worker count to zero, its modules share one daemon.
 
 ### Live/e2e tests
 

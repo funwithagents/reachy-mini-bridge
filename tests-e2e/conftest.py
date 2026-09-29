@@ -17,8 +17,21 @@
 # holds no process-global state today, so no reset fixture is needed yet — see
 # specs/testing/testing.md.)
 
+import pytest
+
 from reachy_mini_bridge.testing.fixtures import (  # noqa: F401
     _live_daemon,
     live_bridge,
     sim_scene,
 )
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_cmdline_main(config: pytest.Config) -> None:
+    """Run this tier serially, overriding the ``-n auto`` the fast tier sets in
+    ``addopts``: every module borrows or spawns the one daemon at
+    ``REACHY_MINI_HOST:REACHY_MINI_PORT``, and xdist workers would race to spawn it,
+    borrow each other's, and tear it down under one another. This conftest loads only
+    when ``tests-e2e`` is among the paths collected, so the fast tier keeps its
+    workers; forcing zero is harmless wherever it runs, controller or worker."""
+    config.option.numprocesses = 0
