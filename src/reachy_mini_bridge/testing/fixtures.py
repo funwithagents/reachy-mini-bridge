@@ -94,12 +94,13 @@ def _probe_gravity_compensation(robot: AnyReachyMini) -> bool:
 
 
 def _probe_faces(host: str, port: int) -> bool:
-    """True if the daemon serves the bridge's sim-scene endpoint with a `face` body:
-    it was launched on the bridge's test scene (every harness-spawned sim is,
-    specs/testing/sim_scene.md), so tests can show, move and hide a face in front of the eye
-    camera. A daemon launched any other way lacks it."""
+    """True if the daemon serves the bridge's sim-scene endpoint with a portrait (a body
+    of kind `face`): it was launched on the bridge's test scene (every harness-spawned sim
+    is, specs/testing/sim_scene.md), so tests can spawn, move and despawn faces in front of
+    the eye camera. A daemon launched any other way lacks it."""
     try:
-        return "face" in SimSceneClient(host, port).bodies()
+        bodies = SimSceneClient(host, port).bodies().values()
+        return any(state.kind == "face" for state in bodies)
     except SimSceneError:
         return False
 

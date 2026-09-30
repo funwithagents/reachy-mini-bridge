@@ -728,7 +728,6 @@ def test_camera_frame_delivers_a_frame(
 # `live_bridge` is module-scoped, so each test re-arms tracking at its start
 # (`stop_head_tracking()` then `start_head_tracking()`), withdrawing any aim left over.
 
-FACE = "face"
 LATERAL_M = 0.15
 # Where the head settles: its yaw averaged over the last SETTLE_WINDOW_S of the track.
 # The head keeps breathing around the aim (its roaming toned down to a quarter, about
@@ -956,15 +955,14 @@ async def _sample_idle(robot: Any, seconds: float) -> tuple[float, float]:
 def face_scene(
     live_bridge: tuple[ReachyMiniBridge, frozenset[str]], sim_scene: SimSceneClient
 ) -> Iterator[SimSceneClient]:
-    """The face at its default spot, hidden — the scene's props start hidden
-    (specs/testing/sim_scene.md); a test shows it when its scenario needs it, and this fixture
-    hides it again afterwards for whatever runs next."""
+    """The scene with nobody in view — its pool of portraits hidden
+    (specs/testing/sim_scene.md "A pool of portraits"); a test spawns the portraits its
+    scenario needs, and this fixture clears them again afterwards for whatever runs
+    next."""
     requires_caps(live_bridge, "camera", "faces")
-    sim_scene.place(FACE, DEFAULT_FACE_POS)
-    sim_scene.hide(FACE)
+    sim_scene.clear()
     yield sim_scene
-    sim_scene.hide(FACE)
-    sim_scene.place(FACE, DEFAULT_FACE_POS)
+    sim_scene.clear()
 
 
 def test_faces_report_someone_appearing_and_leaving(
@@ -991,9 +989,9 @@ def test_faces_report_someone_appearing_and_leaving(
         try:
             appeared = asyncio.ensure_future(next_count(changes, 1))
             await asyncio.sleep(0)  # subscribed before the face shows
-            face_scene.show(FACE)
+            face = face_scene.spawn(DEFAULT_FACE_POS)
             first = await asyncio.wait_for(appeared, 3.0)
-            face_scene.hide(FACE)
+            face_scene.despawn(face)
             left = await asyncio.wait_for(next_count(changes, 0), FACE_ABSENT_S + 3.0)
         finally:
             await changes.aclose()  # type: ignore[attr-defined]
@@ -1008,6 +1006,40 @@ def test_faces_report_someone_appearing_and_leaving(
     assert appeared.faces[0].size > 0.05  # the shipped detector reports sizes
     assert all(-1.0 <= v <= 1.0 for v in (appeared.faces[0].x, appeared.faces[0].y))
     assert left.faces == ()
+
+
+def test_faces_report_two_portraits_spawned_side_by_side(
+    live_bridge: tuple[ReachyMiniBridge, frozenset[str]], face_scene: SimSceneClient
+) -> None:
+    """specs/testing/sim_scene.md "A pool of portraits": two portraits spawned from the
+    pool at once are both in view — `bridge.faces` reports two faces — and despawning one
+    leaves one. Tracking is stopped (the head stays ahead, both portraits in frame)."""
+    bridge, _caps = live_bridge
+
+    async def scenario() -> tuple[FaceReport, FaceReport]:
+        await bridge.set_motors_state("enabled")
+        await bridge.set_face_detection(True)
+        await bridge.stop_head_tracking()
+        try:
+            left = face_scene.spawn(_face_at(LATERAL_M))
+            face_scene.spawn(_face_at(-LATERAL_M))
+            both = await asyncio.wait_for(
+                bridge.faces.wait_for(lambda r: r.active and len(r.faces) == 2), 5.0
+            )
+            face_scene.despawn(left)
+            one = await asyncio.wait_for(
+                bridge.faces.wait_for(lambda r: r.active and len(r.faces) == 1),
+                FACE_ABSENT_S + 3.0,
+            )
+        finally:
+            await bridge.start_head_tracking()  # the module's default state
+        return both, one
+
+    both, one = asyncio.run(scenario())
+    print(f"\n[e2e] two portraits: {both}\n[e2e] one despawned: {one}")
+    xs = sorted(face.x for face in both.faces)
+    assert xs[0] < 0.0 < xs[1], "the two portraits are not on either side of the image"
+    assert len(one.faces) == 1
 
 
 def test_head_tracking_turns_onto_a_face_and_follows_it(
@@ -1031,10 +1063,10 @@ def test_head_tracking_turns_onto_a_face_and_follows_it(
         await bridge.start_head_tracking(focus=True)
         assert bridge.tracking, "tracking is on by default from the config"
         assert bridge.tracking_focus
-        face_scene.show(FACE)
+        face = face_scene.spawn(DEFAULT_FACE_POS)
         tracks = [await _track_onto(bridge, "face ahead", 0.0)]
         for lateral in (LATERAL_M, -LATERAL_M, 0.0):
-            face_scene.place(FACE, _face_at(lateral), duration=1.0)
+            face_scene.place(face, _face_at(lateral), duration=1.0)
             # A face that glides over 1 s is followed with a lag the head creeps out of
             # slowly; give the tail time before calling the head settled.
             tracks.append(
@@ -1068,11 +1100,10 @@ def test_attention_hands_the_head_back_and_reengages_on_the_face(
         await bridge.set_motors_state("enabled")
         await bridge.stop_head_tracking()
         await bridge.start_head_tracking()
-        face_scene.place(FACE, _face_at(LATERAL_M))
-        face_scene.show(FACE)
+        face = face_scene.spawn(_face_at(LATERAL_M))
         assert await _wait_for(lambda: bridge.attention == "engaged", 6.0)
         first = await _track_onto(bridge, "engaged on the face", LATERAL_M)
-        face_scene.hide(FACE)
+        face_scene.despawn(face)
         hand_back = TRACKING_LOST_S + BLEND_S + 4.0
         assert await _wait_for(lambda: bridge.attention == "watching", hand_back), (
             f"attention still {bridge.attention!r} {hand_back:.0f}s after the face left"
@@ -1080,8 +1111,7 @@ def test_attention_hands_the_head_back_and_reengages_on_the_face(
         # long enough to always contain a whole breath, wherever the sample starts;
         # `settled` is the mean over that window, since the idle move roams
         z_range, settled = await _sample_idle(robot, BREATH_S + BREATH_REST_S[1] + 1.0)
-        face_scene.place(FACE, _face_at(-LATERAL_M))
-        face_scene.show(FACE)
+        face_scene.spawn(_face_at(-LATERAL_M))
         reengaged = await _wait_for(lambda: bridge.attention == "engaged", 8.0)
         again = await _track_onto(
             bridge, "re-engaged on the face's new position", -LATERAL_M
@@ -1122,8 +1152,7 @@ def test_emotion_plays_over_tracking_and_the_head_returns_to_the_face(
         await bridge.set_motors_state("enabled")
         await bridge.stop_head_tracking()
         await bridge.start_head_tracking()
-        face_scene.place(FACE, _face_at(LATERAL_M))
-        face_scene.show(FACE)
+        face_scene.spawn(_face_at(LATERAL_M))
         assert await _wait_for(lambda: bridge.attention == "engaged", 6.0)
         await _track_onto(bridge, "before the emotion", LATERAL_M)
         names = await bridge.list_emotions()

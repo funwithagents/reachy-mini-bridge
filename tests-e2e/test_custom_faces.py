@@ -35,7 +35,6 @@ from reachy_mini_bridge.testing.fixtures import _probe_capabilities
 from reachy_mini_bridge.testing.sim_scene import DEFAULT_FACE_POS, SimSceneClient
 from reachy_mini_bridge.yunet import YuNetDetector
 
-FACE = "face"
 LATERAL_M = 0.15
 YAW_TOLERANCE_DEG = 5.0
 SETTLE_WINDOW_S = 2.0
@@ -111,11 +110,9 @@ def face_scene(
     sim_scene: SimSceneClient,
 ) -> Iterator[SimSceneClient]:
     requires_caps(live_bridge_custom_faces, "camera", "faces")
-    sim_scene.place(FACE, DEFAULT_FACE_POS)
-    sim_scene.hide(FACE)
+    sim_scene.clear()  # nobody in view (specs/testing/sim_scene.md "A pool of portraits")
     yield sim_scene
-    sim_scene.hide(FACE)
-    sim_scene.place(FACE, DEFAULT_FACE_POS)
+    sim_scene.clear()
 
 
 def test_custom_detector_converges_on_the_face(
@@ -134,9 +131,9 @@ def test_custom_detector_converges_on_the_face(
         await bridge.set_motors_state("enabled")
         await bridge.stop_head_tracking()
         await bridge.start_head_tracking()
-        face_scene.show(FACE)
+        face = face_scene.spawn(DEFAULT_FACE_POS)
         ahead = await _settled_yaw(robot)
-        face_scene.place(FACE, (x, LATERAL_M, z), duration=1.0)
+        face_scene.place(face, (x, LATERAL_M, z), duration=1.0)
         aside = await _settled_yaw(robot)
         report = bridge.faces.value
         seen = {report.ts}

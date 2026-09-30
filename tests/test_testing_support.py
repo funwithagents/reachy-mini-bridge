@@ -21,6 +21,7 @@ from reachy_mini_bridge import robot as robot_module
 from reachy_mini_bridge.config import DaemonConfig
 from reachy_mini_bridge.errors import DaemonError, SimSceneError
 from reachy_mini_bridge.testing import _daemon, fixtures, require_env, requires_caps
+from reachy_mini_bridge.testing.sim_scene import BodyState
 from reachy_mini_bridge.testing.support import (
     require_env as support_require_env,
 )
@@ -205,7 +206,7 @@ def test_a_spawned_sim_runs_the_test_scene_for_the_daemon_lifetime(
     assert config.scene is not None and config.scene.endswith("scene.xml")
     scene = Path(config.scene)
     assert scene.is_file()
-    assert 'name="face"' in scene.read_text(encoding="utf-8")
+    assert 'name="face_1"' in scene.read_text(encoding="utf-8")
     with pytest.raises(StopIteration):
         next(lifecycle)
     assert not scene.exists()
@@ -225,16 +226,22 @@ def test_a_daemon_that_cannot_start_skips(monkeypatch: pytest.MonkeyPatch):
 def test_faces_probe_needs_a_face_body_on_the_sim_scene_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ):
+    """The `faces` capability is a portrait in the scene: any body of kind `face`
+    (specs/testing/sim_scene.md "The testing harness")."""
+
     class _Client:
         def __init__(self, host: str, port: int) -> None:
             self.address = (host, port)
 
-        def bodies(self) -> dict[str, object]:
+        def bodies(self) -> dict[str, BodyState]:
             return answers[self.address]
 
-    answers: dict[tuple[str, int], dict[str, object]] = {
-        ("127.0.0.1", 8000): {"face": object()},
-        ("127.0.0.1", 8001): {"duck": object()},
+    def body(name: str, kind: str) -> BodyState:
+        return BodyState(name, (0, 0, 0), (1, 0, 0, 0), False, False, kind)
+
+    answers: dict[tuple[str, int], dict[str, BodyState]] = {
+        ("127.0.0.1", 8000): {"face_2": body("face_2", "face")},
+        ("127.0.0.1", 8001): {"duck_1": body("duck_1", "duck")},
     }
     monkeypatch.setattr(fixtures, "SimSceneClient", _Client)
     assert fixtures._probe_faces("127.0.0.1", 8000)

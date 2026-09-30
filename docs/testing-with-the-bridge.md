@@ -105,7 +105,7 @@ daemon at setup:
 | `audio` | recording yields a mic sample | ✅ | ✅ | ✅ |
 | `camera` | a camera frame comes back (needs a GL context) | ⚠️ not on headless macOS | ✅ | ✅ |
 | `gravity_compensation` | hardware daemon on the Placo kinematics engine | ❌ | ❌ | ✅ with `reachy-mini[placo_kinematics]` |
-| `faces` | the daemon runs the bridge's test scene (every sim the harness spawns does), which has a `face` body — hidden until shown; the bridge's `yunet` detector, which `live_bridge` configures, finds it in the rendered camera | ✅ (nothing looks at it: no camera) | ✅ | ❌ |
+| `faces` | the daemon runs the bridge's test scene (every sim the harness spawns does), which has a pool of portraits (bodies of kind `face`) — hidden until spawned; the bridge's `yunet` detector, which `live_bridge` configures, finds it in the rendered camera | ✅ (nothing looks at it: no camera) | ✅ | ❌ |
 | `doa` | mic-array direction of arrival | ❌ | ❌ | ✅ (reserved) |
 
 Capabilities are **probed, not assumed** from the backend type — environment quirks decide
@@ -130,12 +130,13 @@ The `live_bridge` fixture reads the same knobs the bridge's own tier uses:
 | `REACHY_MINI_E2E_SIM_VIEWER` | unset | `1` to launch the headfull MuJoCo viewer (local; needs a GUI/GL context) |
 
 **Testing tracking without a person.** Every sim the harness spawns runs the bridge's test
-scene: upstream's empty scene plus a portrait that stays hidden until a test shows it, so
+scene: upstream's empty scene plus a pool of portraits (`face_1` … `face_3`) that stay hidden until a test spawns them, so
 tests that don't use it are unaffected, and `faces` is probed on every spawned sim. With
 `REACHY_MINI_E2E_SIM_VIEWER=1` (the camera needs the viewer), the `sim_scene` fixture (from the same
-plugin module) hands you a `SimSceneClient` to show, place, move and hide it while your
-code runs — the bridge's own detector (the `yunet` detector `live_bridge` configures) finds
-it in the rendered camera stream and the bridge's tracker does the rest, so the head
+plugin module) hands you a `SimSceneClient` to spawn portraits — as many at once as the
+pool holds — move and despawn them while your code runs, and `clear()` the scene between
+tests; the bridge's own detector (the `yunet` detector `live_bridge` configures) finds
+them in the rendered camera stream and the bridge's tracker does the rest, so the head
 converges on the face as a robot's does and a test can assert how the head moves and where
 it settles, not only that it moved:
 
@@ -143,15 +144,18 @@ it settles, not only that it moved:
 def test_it_looks_at_whoever_is_there(live_bridge, sim_scene):
     requires_caps(live_bridge, "camera", "faces")
     bridge, _caps = live_bridge
-    sim_scene.place("face", (0.45, 0.15, 0.20))  # 18.4° to the robot's left
-    sim_scene.show("face")
+    sim_scene.clear()  # nobody in view to start with
+    face = sim_scene.spawn((0.45, 0.15, 0.20))  # 18.4° to the robot's left -> "face_1"
     ...  # the head turns left, past the face by a few degrees, and settles at ~+18° yaw
-    # with the target face of bridge.faces.value near (0, 0)
-    sim_scene.hide("face")  # nobody there: the head is handed back to the idle move
+    # with the tracked face of bridge.faces.value near (0, 0)
+    sim_scene.place(face, (0.45, -0.15, 0.20), duration=1.0)  # it walks to the right
+    sim_scene.spawn((0.60, 0.0, 0.20))  # a second, smaller (farther) face joins
+    sim_scene.despawn(face)  # the first leaves; the pool gets it back
+    sim_scene.clear()  # nobody there: the head is handed back to the idle move
 ```
 
-See [specs/testing/sim_scene.md](../specs/testing/sim_scene.md) for the scene's geometry, the endpoint, and
-the angles the head settles at. For trying things by hand with *yourself* in front of the
+See [specs/testing/sim_scene.md](../specs/testing/sim_scene.md) for the scene's geometry, the pool, the endpoint,
+and the angles the head settles at. For trying things by hand with *yourself* in front of the
 sim, a sim config with `"daemon": {"camera": {"source": "webcam"}}` uses the computer's
 webcam as the robot's camera ([running-the-sim-daemon.md](running-the-sim-daemon.md)).
 
