@@ -12,7 +12,7 @@ tests:
 
 # Head tracking (`head_tracking.py`)
 
-**Status:** Implemented
+**Status:** Updated
 
 ## Purpose
 
@@ -26,7 +26,19 @@ Upstream tracks daemon-side, with the client able only to switch it on and off: 
 
 - **In:** the detection loop's per-poll observations — every `FaceReport`, not the debounced count events — through `observe(report)`; the motion loop's history of the head poses the robot reported, through `head_pose_history()` (the times and poses, for the delay estimate to index); the camera model of the active camera (below); the caller's `focus`.
 - **Out:** `motion.set_gaze(aim, focus=…)` — an aim (a 4×4 head pose) or `None` to withdraw it, and whether the head holds exactly on it. The tracker never touches the robot; the loop is the one writer.
+- **Out, for callers:** its state as an observable, `bridge.head_tracking` ("The head tracking report" below) — which face the head follows, by `track_id`, and the attention it derives.
 - It runs whenever tracking is on (`motion.tracking` at entry, `start_head_tracking` / `stop_head_tracking` while entered), built once per session by the bridge.
+
+### Whom the head follows
+
+The face report lists everyone in view, each under a `track_id` that stays the same while the detection loop keeps seeing that person ([user_perception.md](../vision/user_perception.md) "Tracks"); the tracker chooses one to follow and holds on to it — the robot looks at a person, not at whichever face is largest on a given frame. On every observation:
+
+1. **Following, and the face is reported.** The tracker keeps following its `track_id` and aims that face, whatever other faces appear — a larger one included.
+2. **Following, and the face is missing.** The previous aim stands: the head keeps looking where the face was last seen (the aim is a head pose in the world frame, so the head holds that direction while the idle move and the body stay free). The face coming back — under the same `track_id`, within the detection loop's miss window — is followed again at once, as if it had never left.
+3. **Switching.** Once the followed face has been missing for `TRACKING_SWITCH_S = 1.0` s, the tracker switches to the **biggest** face in view (largest `size`) of at least `TRACKING_MIN_SIZE = 0.07` of the frame's height — about upstream's acquisition gate, 0.3 % of a 16:9 frame's area for a square face. With none that large, it keeps holding and switches to the first one that shows, until the loss below.
+4. **Acquiring.** Following nobody — tracking just started, or after a loss — the tracker follows the biggest face of at least `TRACKING_MIN_SIZE` on the first observation that shows one, at once.
+
+The minimum size gates switching and acquiring only: a followed face moving away stays followed while it is detected. The wait before a switch is what keeps a detector's flicker, a turned head or a hand in front of a face from sending the head to someone else; the hold toward the last position is what makes that wait look like attention rather than a freeze. The times are in seconds of the tracker's clock, so they hold whatever the detection rate (`target_fps`).
 
 ### The aim
 
@@ -43,14 +55,32 @@ Upstream tracks daemon-side, with the client able only to switch it on and off: 
 ### Easing, loss, focus
 
 - **Easing** is the loop's: the tracker publishes a new aim per observation with a face, and the loop eases toward it per tick ([motion.md](motion.md) `GAZE_ALPHA`), so an aim arriving at the detector's rate — 10 a second, upstream's camera-feed cap — never steps the head.
-- **Loss.** When no face has been seen for `TRACKING_LOST_S = 2.0` s (upstream's own lost-face timeout), the tracker withdraws the aim (`None`) and the loop fades the gaze layer out — the head eases back onto the idle move, at or near neutral, and the robot idles in full. The next face publishes an aim again and the layer fades back in. The grace the attention loop used to keep (3 s, longer than the daemon's recentre) has no reason left: there is no daemon recentre to wait out.
+- **Loss.** When the followed face has been missing for `TRACKING_LOST_S = 2.0` s (upstream's own lost-face timeout) and no face has been large enough to switch to, the tracker follows nobody and withdraws the aim (`None`) and the loop fades the gaze layer out — the head eases back onto the idle move, at or near neutral, and the robot idles in full. The next face large enough is acquired, publishes an aim again and the layer fades back in. The grace the attention loop used to keep (3 s, longer than the daemon's recentre) has no reason left: there is no daemon recentre to wait out.
 - **Focus.** `start_head_tracking(focus=…)`'s flag, held by the tracker and handed to the loop with every aim. Off (the default), the head is the aim with the idle move's own gaze-time motion composed on top (its `gaze_offsets`, [motion.md](motion.md) "The gaze layer" — breathing keeps its breath and antennas and tones its roaming down; a custom move that defines none is still on the aim). On, the head holds exactly on the aim — the idle move's head motion is left out, its antennas kept, so the robot stares but still looks alive. There is no blend weight: the daemon's tracker blended its aim with the client's target by one, which the bridge's gaze layer has no use for (the aim is always composed in full, faded in and out over `BLEND_S`). `stop_head_tracking()` withdraws the aim.
-- **`attention` is derived**, no longer a loop of its own: `"engaged"` while the tracker holds an aim (a face seen within `TRACKING_LOST_S`), `"watching"` while tracking is on and nobody has been seen for longer, `None` when tracking is off ([bridge.md](../core/bridge.md) "Attention / gaze").
+- **`attention` is derived**, no longer a loop of its own: `"engaged"` while the tracker follows a face (its aim held, the face reported or missing for less than the loss time), `"watching"` while tracking is on and it follows nobody, `None` when tracking is off ([bridge.md](../core/bridge.md) "Attention / gaze").
+
+### The head tracking report
+
+What the head is doing about the people in front of it is the tracker's state, not the detection's: the face report says who is there ([user_perception.md](../vision/user_perception.md)), this report says whom the head follows. The tracker publishes it as an observable ([observable.md](../core/observable.md)), `bridge.head_tracking: Observable[HeadTrackingReport]`, defined in `head_tracking.py`:
+
+```python
+@dataclass(frozen=True)
+class HeadTrackingReport:
+    active: bool            # the tracker is running (tracking on, inside a session)
+    focus: bool             # it holds the head exactly on the face (start_head_tracking's focus)
+    attention: str | None   # "engaged" | "watching" | None — the derived state above
+    track_id: int | None    # the track of the face the head follows; None unless engaged
+    ts: float               # the time of the face report behind the last aim; 0.0 before any
+```
+
+- **`track_id`** is the `track_id` of the face the tracker follows ("Whom the head follows"). It stays through the followed face's absence while the head holds toward its last position, changes when the tracker switches, and is `None` once attention is `"watching"` or tracking is off. A client that recognises people joins its identities to the face report by `track_id` ([user_perception.md](../vision/user_perception.md) "The face report") and reads here which of them the head follows.
+- **Published changes.** The tracker `set`s the report when any of `active`, `focus`, `attention` or `track_id` changes — so `async for report in bridge.head_tracking.changes()` wakes on *tracking started / stopped*, *focus switched*, *the head engaged someone / handed the head back*, *the head now follows someone else* — and `update`s it on every other aimed observation (a fresh `ts`), never waking a subscriber on a face moving.
+- **Outside a session**, and while tracking is off, the value is `HeadTrackingReport(active=False, focus=False, attention=None, track_id=None, ts=0.0)`, reset through `set` at stop so a subscriber learns tracking ended; the observable itself outlives the session, as `bridge.faces` does. The bridge's `tracking_focus` and `attention` properties read the same state; `tracking` stays the mode's record (the config's value outside a session).
 
 ### Configuration and verbs
 
 - `motion.tracking` ([config.md](../core/config.md), default `false`) — whether the tracker runs from session entry; `start_head_tracking(focus=False)` / `stop_head_tracking()` / `tracking` / `tracking_focus` while entered ([bridge.md](../core/bridge.md)). It lives in the `motion` block because the gaze is a layer of the motion loop.
-- **Tracking implies detection, and needs a detector.** The tracker is a client of the detection loop ([user_perception.md](../vision/user_perception.md) "The detection loop"), which runs while either `faces.detection` or tracking is on; starting tracking starts detection if it is not already running. With no detector configured (`faces.detector` `null`) tracking cannot run: `true` in the config is a `ConfigError`, `start_head_tracking()` a `ValueError`.
+- **Tracking implies detection, and needs a detector.** The tracker is a client of the detection loop ([user_perception.md](../vision/user_perception.md) "The detection loop"), which runs while either `face_detection.enabled` or tracking is on; starting tracking starts detection if it is not already running. With no detector configured (`face_detection.detector` `null`) tracking cannot run: `true` in the config is a `ConfigError`, `start_head_tracking()` a `ValueError`.
 - **A mode, not a move.** Tracking moves the head only through the motion loop, which is paused without motors and emits nothing with presence off, so `start_head_tracking` is a mode switch like `set_presence`: it needs no motors and raises nothing about them ([bridge.md](../core/bridge.md) "Motors" — this changes the verb's former contract, which also took a weight).
 - **Detectors are not the tracker's concern.** Which detector produced a report — the shipped YuNet or a developer's ([user_perception.md](../vision/user_perception.md) "Detectors") — the tracker neither knows nor cares: the head is steered from the reports alone. The daemon's own tracking is never armed ([robot.md](../core/robot.md)).
 
@@ -60,13 +90,14 @@ Built by `ReachyMiniBridge.start()` together with the detection loop, when `moti
 
 ### `fake` backend support
 
-Nothing tracker-specific is needed on the fake beyond what perception and motion provide ([user_perception.md](../vision/user_perception.md) "`fake` backend support": a stub detector registered through the `custom` path, showing and hiding a face on the fake's frames; [motion.md](motion.md): recorded `targets`) and a `media.camera.camera_specs` stand-in carrying a Lite-like `K` / `D`, so `CameraModel.for_robot` runs offline. The whole pipeline then runs on the fake at real time — through the exact-pose path, since the fake's frames carry their capture pose: `tests/` observe the recorded head targets turning toward a face shown at `x = 0.5` and easing back once it is hidden for the loss timeout, an emotion playing through unchanged with a face shown and the head returning to it afterwards, and `attention` moving through `watching` → `engaged` → `watching` → `None`. The geometry itself is pinned offline with no daemon: a closed loop that projects the test scene's portrait through the sim camera's pinhole from the head pose, feeds the tracker, and asserts the head converges within 3° of `atan2(y, x)` with at most one bounded overshoot — with a frame taken 0.3 s before its `ts` says, whose delay the tracker must learn (the estimate converging near 0.3 s), and with a fixed camera that must settle rather than run away. The fake reports the pose it was last commanded, so its actual head has no lag; the offline loop models the frame's delay instead.
+Nothing tracker-specific is needed on the fake beyond what perception and motion provide ([user_perception.md](../vision/user_perception.md) "`fake` backend support": a stub detector registered through the `custom` path, showing and hiding a face on the fake's frames; [motion.md](motion.md): recorded `targets`) and a `media.camera.camera_specs` stand-in carrying a Lite-like `K` / `D`, so `CameraModel.for_robot` runs offline. The whole pipeline then runs on the fake at real time — through the exact-pose path, since the fake's frames carry their capture pose: `tests/` observe the recorded head targets turning toward a face shown at `x = 0.5` and easing back once it is hidden for the loss timeout, an emotion playing through unchanged with a face shown and the head returning to it afterwards, and `attention` moving through `watching` → `engaged` → `watching` → `None` — each step published on `bridge.head_tracking` with the followed face's `track_id` while engaged, and none while a face merely moves. The choice is pinned the same way, with a stub scripting faces: the biggest face acquired; a bigger face appearing beside the followed one leaving the head where it is; the followed face hidden for less than `TRACKING_SWITCH_S` with another in view — the recorded targets holding toward its last position, the same `track_id` followed when it returns; hidden longer — one `set` naming the biggest remaining face's `track_id` and the head turning to it; a face below `TRACKING_MIN_SIZE` never acquired; the followed face alone and hidden past `TRACKING_LOST_S` — the aim withdrawn, `"watching"`. The geometry itself is pinned offline with no daemon: a closed loop that projects the test scene's portrait through the sim camera's pinhole from the head pose, feeds the tracker, and asserts the head converges within 3° of `atan2(y, x)` with at most one bounded overshoot — with a frame taken 0.3 s before its `ts` says, whose delay the tracker must learn (the estimate converging near 0.3 s), and with a fixed camera that must settle rather than run away. The fake reports the pose it was last commanded, so its actual head has no lag; the offline loop models the frame's delay instead.
 
 ## Relationship to the other specs
 
 - **[user_perception.md](../vision/user_perception.md):** the reports the tracker consumes, every observation; tracking implies detection and needs a detector.
+- **[observable.md](../core/observable.md):** `bridge.head_tracking` is an `Observable[HeadTrackingReport]`; the tracker is its producer.
 - **[motion.md](motion.md):** `set_gaze` and `head_pose_history` (the reported head poses and their times); the gaze layer composes, eases and fades what the tracker hands it.
-- **[bridge.md](../core/bridge.md):** the tracking verbs and `attention`, re-based on the tracker; the attention loop and `play_emotion`'s daemon-weight dip are gone.
+- **[bridge.md](../core/bridge.md):** the tracking verbs, `attention` and the `head_tracking` observable, re-based on the tracker; the attention loop and `play_emotion`'s daemon-weight dip are gone.
 - **[config.md](../core/config.md):** `motion.tracking`; `daemon.camera` selects the sim's camera model.
 - **[robot.md](../core/robot.md):** `media.camera.camera_specs` is the one member the tracker reads; the daemon's own tracking is not consumed.
 - **[sim_daemon.md](../daemon/sim_daemon.md):** the launcher carries no tracking geometry; the sim camera's pinhole and the fixed-camera rule for a webcam live here.
@@ -76,6 +107,6 @@ Nothing tracker-specific is needed on the fake beyond what perception and motion
 
 1. **The webcam's cropped field of view.** The sim launcher's relay narrows a wide camera's field of view when it crops to 16:9 and knows the negotiated width only inside the daemon; the tracker uses the config's `hfov_deg`. A daemon endpoint reporting the effective field of view would close the gap; deferred until a camera's aim error is measured to matter.
 2. **Webcam calibration.** An ideal pinhole from `hfov_deg` follows a person by eye; a calibrated matrix and distortion (upstream ships a calibration tool for the robot's camera) would make the aim precise. Deferred until a manual test needs better than a few degrees.
-3. **Numbers.** `TRACKING_LOST_S`, the delay estimate's window, range, motion threshold, contrast and smoothing here, and `GAZE_ALPHA` in the loop are tuned on the viewer sim (2026-09-29: the estimate settles between 0.05 and 0.45 s against the frame's arrival time, mostly 0.1–0.25, so the 0.2 s prior stands; the range's cap and the contrast rule come from the same measurement) and still to be judged on a robot with a person in front of it.
+3. **Numbers.** `TRACKING_SWITCH_S`, `TRACKING_MIN_SIZE`, `TRACKING_LOST_S`, the delay estimate's window, range, motion threshold, contrast and smoothing here, and `GAZE_ALPHA` in the loop are tuned on the viewer sim (2026-09-29: the estimate settles between 0.05 and 0.45 s against the frame's arrival time, mostly 0.1–0.25, so the 0.2 s prior stands; the range's cap and the contrast rule come from the same measurement) and still to be judged on a robot with a person in front of it.
 5. **Frames that carry their capture time.** The exact aim for every backend is upstream's to enable: a capture timestamp on the client's frames ([camera.md](../vision/camera.md) open question 1, the ask drafted in [../docs/upstream-camera-frame-timestamp.md](../../docs/upstream-camera-frame-timestamp.md)); the feed then stamps every frame with its pose and the delay estimate becomes dormant, with no change here.
 4. **A bearing for the report.** Once the tracker's camera model is shared with the face report, `Face` can carry yaw / pitch in degrees ([user_perception.md](../vision/user_perception.md) open question 2).

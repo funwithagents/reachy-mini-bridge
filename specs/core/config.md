@@ -9,7 +9,7 @@ tests:
 
 # Configuration (`ReachyMiniConfig`)
 
-**Status:** Implemented
+**Status:** Updated
 
 ## Purpose
 
@@ -28,12 +28,12 @@ The shape and the constructor trio mirror [`tts-engine`'s configuration](../../.
   "daemon": { "spawn": "auto", "headless": false, "camera": { "source": "webcam" } },
   "tts":    { "module": { "type": "elevenlabs", "api_key_env": "ELEVENLABS_API_KEY", "voice_id": "..." } },
   "audio":  { "xvf3800": null },
-  "faces":  { "detector": "yunet", "detection": true },
+  "face_detection": { "detector": "yunet", "enabled": true, "width": null, "target_fps": null },
   "motion": { "presence": true, "idle": "breathing", "wobbling": true, "tracking": true }
 }
 ```
 
-Every block is optional: `ReachyMiniConfig()` is a valid config — the `real` backend, upstream's connection defaults, no daemon management, no default synthesizer, firmware audio defaults, the `faces` defaults (no detector, detection off) and the `motion` defaults (presence and wobbling on, tracking off — it needs a detector — the idle mode `"breathing"`). `config.example.json` in the repo root documents every field with placeholder values and is kept in sync with this spec. It describes the **sim viewer seeing through the host webcam** (`backend: "sim"`, `daemon.spawn: "auto"`, `daemon.headless: false`, `daemon.camera.source: "webcam"`): the configuration that shows the most — the robot moving in the MuJoCo window, and its camera on the person in front of the computer, whom it follows (`faces.detector: "yunet"`, detection and tracking on) — so it is what the README and the [control panel](../examples/control_panel.md) start from — with `daemon.sim_displays.camera_overlay` on, so the viewer window also shows what the camera sees. Set `source` to `"sim"` for the rendered eye camera instead.
+Every block is optional: `ReachyMiniConfig()` is a valid config — the `real` backend, upstream's connection defaults, no daemon management, no default synthesizer, firmware audio defaults, the `face_detection` defaults (no detector, detection off, each detector at its own width, no rate ceiling) and the `motion` defaults (presence and wobbling on, tracking off — it needs a detector — the idle mode `"breathing"`). `config.example.json` in the repo root documents every field with placeholder values and is kept in sync with this spec. It describes the **sim viewer seeing through the host webcam** (`backend: "sim"`, `daemon.spawn: "auto"`, `daemon.headless: false`, `daemon.camera.source: "webcam"`): the configuration that shows the most — the robot moving in the MuJoCo window, and its camera on the person in front of the computer, whom it follows (`face_detection.detector: "yunet"`, detection and tracking on) — so it is what the README and the [control panel](../examples/control_panel.md) start from — with `daemon.sim_displays.camera_overlay` on, so the viewer window also shows what the camera sees. Set `source` to `"sim"` for the rendered eye camera instead.
 
 ```python
 @dataclass
@@ -46,8 +46,8 @@ class ReachyMiniConfig:
     # a tts-engine `engine` block, verbatim
     tts: dict[str, Any] | None = None
     audio: AudioSettings = field(default_factory=AudioSettings)
-    # face detection: the detector (none / yunet / custom) and whether it runs from entry
-    faces: FaceSettings = field(default_factory=FaceSettings)
+    # face detection: the detector (none / yunet / custom), whether it runs from entry, its cost knobs
+    face_detection: FaceDetectionSettings = field(default_factory=FaceDetectionSettings)
     # everything that shapes the robot's behaviour at rest: the loop's own modes
     # (presence, idle, idle_move, tracking) and the daemon-side mode the bridge arms (wobbling)
     motion: MotionSettings = field(default_factory=MotionSettings)
@@ -57,7 +57,7 @@ The config module (`config.py`) imports neither `tts_engine` nor `reachy_mini` a
 
 ### Constructors
 
-Both config classes that a caller builds directly (`ReachyMiniConfig`, and `DaemonConfig` / `SimCameraSettings` / `AudioSettings` / `FaceSettings` / `MotionSettings` for the nested blocks) expose the same symmetric trio as tts-engine, layered file → json → dict so all three share one validation path:
+Both config classes that a caller builds directly (`ReachyMiniConfig`, and `DaemonConfig` / `SimCameraSettings` / `AudioSettings` / `FaceDetectionSettings` / `MotionSettings` for the nested blocks) expose the same symmetric trio as tts-engine, layered file → json → dict so all three share one validation path:
 
 | Constructor | Input | Notes |
 |---|---|---|
@@ -165,22 +165,28 @@ class AudioSettings:
 
 The value is carried verbatim to `MediaSession(robot, audio_config=...)`, whose upstream target is `apply_audio_config(config: Sequence[tuple[str, Sequence[AudioControlValue]]])` — a JSON list of two-item lists satisfies that `Sequence` shape directly. The config layer checks the shape: a list whose items are two-item lists with a string first item.
 
-### `faces` block → `FaceSettings`
+### `face_detection` block → `FaceDetectionSettings`
 
-Face detection ([user_perception.md](../vision/user_perception.md)): which detector finds the faces and whether the detection loop runs from session entry. Detection is opt-in: with no detector named, nothing is detected and nothing tracks. Each switch has a runtime counterpart — `set_face_detection(enabled)` for the switch, `set_face_detector(factory)` for the custom detector ([bridge.md](bridge.md) "Faces").
+Face detection ([user_perception.md](../vision/user_perception.md)): which detector finds the faces, whether the detection loop runs from session entry, and what the detector may cost. Detection is opt-in: with no detector named, nothing is detected and nothing tracks. The block is named for the module and the verb (`face_detection.py`, `set_face_detection`); `bridge.faces` is its output. Each switch has a runtime counterpart — `set_face_detection(enabled)` for the switch, `set_face_detector(factory)` for the custom detector ([bridge.md](bridge.md) "Faces"); `width` and `target_fps` are read when the loop starts.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `detector` | `null` \| `"yunet"` \| `"custom"` | `null` | The face detector the bridge runs on the camera feed's frames ([camera.md](../vision/camera.md)). `null`: none — no detection, no tracking; `detection: true` or `motion.tracking: true` is then a `ConfigError`. `yunet`: the shipped detector, upstream's YuNet model run by the bridge ([user_perception.md](../vision/user_perception.md) "The shipped detector"); nothing to install, the weights downloaded into the Hugging Face cache on first use. `custom`: the caller's detector; needs `face_detector`. |
-| `detection` | bool | `false` | Run the detection loop from session entry, so `bridge.faces` reports who is there. Needs no motors, needs a `detector`. The loop also runs whenever head tracking is on ([user_perception.md](../vision/user_perception.md) "Configuration"), whatever this says. |
+| `detector` | `null` \| `"yunet"` \| `"custom"` | `null` | The face detector the bridge runs on the camera feed's frames ([camera.md](../vision/camera.md)). `null`: none — no detection, no tracking; `enabled: true` or `motion.tracking: true` is then a `ConfigError`. `yunet`: the shipped default, upstream's YuNet model run by the bridge ([user_perception.md](../vision/user_perception.md) "The shipped detector — `yunet.py`"); nothing to install, the weights downloaded into the Hugging Face cache on first use. `custom`: the caller's detector — any other model, a vision library's included; needs `face_detector`. |
+| `enabled` | bool | `false` | Run the detection loop from session entry, so `bridge.faces` reports who is there. Needs no motors, needs a `detector`. The loop also runs whenever head tracking is on ([user_perception.md](../vision/user_perception.md) "Configuration"), whatever this says. |
+| `width` | positive integer \| null | `null` | The width in pixels the shipped detector works at: the frame is subsampled by an integer stride to about this width before detection, every point scaled back. `null`: the shipped detector's own width — 320 for `yunet` (upstream's detection width). An integer overrides it; one at least the frame's width gives the full frame. Cost per frame against precision — 640 quadruples YuNet's cost and halves its landmark error. A custom detector's working width is its author's, so the field plays no part with `custom`. |
+| `target_fps` | positive number \| null | `null` | A ceiling on detections per second, enforced by the loop skipping frames, for every detector. `null`: once per new camera frame. A ceiling, not a guarantee: the loop never detects faster than the feed delivers frames or the detector returns. The lever for the wireless robot, whose camera streams at a nominal 30 fps. |
 | `face_detector` | a zero-argument callable returning a `FaceDetector`, or `None` — **Python only** | `None` | The custom detector's factory, used when `detector` is `"custom"` (set on the dataclass, as `motion.idle_move` is; a JSON file names the source and code supplies the detector). Checked at session entry: `"custom"` with none registered fails bring-up with `ValueError`. |
 
 ```python
 @dataclass
-class FaceSettings:
+class FaceDetectionSettings:
     # None | "yunet" | "custom"
     detector: str | None = None
-    detection: bool = False
+    enabled: bool = False
+    # the width the shipped detector works at; None = its own (yunet: 320)
+    width: int | None = None
+    # a ceiling on detections per second; None = once per new frame
+    target_fps: float | None = None
     # Python only: the custom detector's factory
     face_detector: Callable[[], FaceDetector] | None = None
 ```
@@ -197,7 +203,7 @@ The initial values of everything that shapes the robot's behaviour at rest: the 
 | `idle` | `"breathing"` \| `"hold"` \| `"custom"` | `"breathing"` | Which idle move presence plays: `breathing` is the built-in animation (slow breaths with random rests between them, the head roaming in roll/pitch/yaw, the antennas roaming and flicking independently), `hold` a still neutral, `custom` the caller's own idle move — the one in `idle_move`, or registered later with `set_idle_move`; with none registered `custom` plays the hold ([motion.md](../motion/motion.md) "Custom idle moves"). Ignored while `presence` is off. |
 | `idle_move` | a zero-argument callable returning an `IdleMove`, or `None` — **Python only** | `None` | The factory of the custom idle move, stored whatever `idle` is and played whenever `idle` is `"custom"`. It is code, so it is set on the dataclass (`MotionSettings(idle="custom", idle_move=SlowNod)`); a JSON file names the mode and code supplies the move. Checked when the session starts ([motion.md](../motion/motion.md) "Custom idle moves"). |
 | `wobbling` | bool | `true` | A robot that talks sways its head while it talks: `ReachyMiniBridge` enables upstream's audio-reactive head wobbling on entry and switches it off again on exit whenever it is still on ([bridge.md](bridge.md) "Audio-reactive motion (head wobbling)"; mechanism in [audio.md](../audio/audio.md) "Head wobbling"). `false` keeps the head still while audio plays (a caller driving the head precisely, or a quiet demo). |
-| `tracking` | bool | `false` | Whether the bridge's head tracker runs from session entry ([bridge.md](bridge.md) "Attention / gaze (autonomous)", [head_tracking.md](../motion/head_tracking.md)): the robot keeps the tracked face in view, the aim composed into the idle move. It implies detection — the detection loop runs while either `faces.detection` or this is on — and so needs a `faces.detector` (`true` with none is a `ConfigError`). A mode like `presence`: it needs no motors (its aim takes effect once the motion loop runs) and holds until `stop_head_tracking()`. `false` leaves tracking off until `start_head_tracking(...)` is called explicitly. |
+| `tracking` | bool | `false` | Whether the bridge's head tracker runs from session entry ([bridge.md](bridge.md) "Attention / gaze (autonomous)", [head_tracking.md](../motion/head_tracking.md)): the robot keeps the tracked face in view, the aim composed into the idle move. It implies detection — the detection loop runs while either `face_detection.enabled` or this is on — and so needs a `face_detection.detector` (`true` with none is a `ConfigError`). A mode like `presence`: it needs no motors (its aim takes effect once the motion loop runs) and holds until `stop_head_tracking()`. `false` leaves tracking off until `start_head_tracking(...)` is called explicitly. |
 
 ```python
 @dataclass
@@ -213,7 +219,7 @@ class MotionSettings:
 
 `IdleMove` is [motion.md](../motion/motion.md)'s base class, imported for type checking only, so the config module still loads without `reachy_mini`. The valid modes are the module constant `IDLE_MODES = ("breathing", "hold", "custom")`.
 
-It is one block, not several top-level keys, because every field configures the same thing from a caller's perspective — what the robot looks like when nothing else is commanding it — even though four live in the bridge's own loop (`presence`, `idle`, `idle_move`, `tracking`) and one is a daemon-side mode the bridge merely arms (`wobbling`); more knobs in either category (a listening cue, a tracking weight) would land beside them. Face *detection* is perception, not behaviour at rest, hence its own `faces` block.
+It is one block, not several top-level keys, because every field configures the same thing from a caller's perspective — what the robot looks like when nothing else is commanding it — even though four live in the bridge's own loop (`presence`, `idle`, `idle_move`, `tracking`) and one is a daemon-side mode the bridge merely arms (`wobbling`); more knobs in either category (a listening cue, a tracking weight) would land beside them. Face *detection* is perception, not behaviour at rest, hence its own `face_detection` block.
 
 ### `ConfigError`
 
@@ -224,10 +230,10 @@ It is one block, not several top-level keys, because every field configures the 
 All enforced by `ReachyMiniConfig.from_dict` (delegating to `DaemonConfig.from_dict` / `AudioSettings.from_dict`), so every constructor path validates identically:
 
 - Invalid JSON raises `ConfigError` (with the file path from `from_json_file`).
-- The top-level value and the `robot`, `daemon`, `tts`, `audio`, `faces`, and `motion` blocks must be JSON objects (`tts` may be `null`); `backend` is the one top-level scalar. Shape failures raise `ConfigError`, never a raw `AttributeError` / `TypeError`.
-- Unknown top-level keys, and unknown keys inside `daemon` / `daemon.camera` / `daemon.sim_displays` / `audio` / `faces` / `motion`, raise `ConfigError` naming the key (the blocks are ours, so a typo is caught). Unknown keys inside `robot` raise `ConfigError` per the upstream-signature check above; `tts.module` is left to tts-engine.
-- `faces.detector` is `null` or one of {`yunet`, `custom`}; `faces.detection` is a boolean; `faces.face_detector` in a dict / JSON config is a `ConfigError` (it is set from code, as `motion.idle_move` is).
-- `faces.detection: true` or `motion.tracking: true` with `faces.detector` `null` is a `ConfigError` naming both fields — the one cross-block rule, checked by `ReachyMiniConfig.from_dict` once both blocks are built. (A `ReachyMiniConfig` assembled directly in code is not validated; the bridge raises `ValueError` for the same contradiction at session entry, [user_perception.md](../vision/user_perception.md) "Configuration".)
+- The top-level value and the `robot`, `daemon`, `tts`, `audio`, `face_detection`, and `motion` blocks must be JSON objects (`tts` may be `null`); `backend` is the one top-level scalar. Shape failures raise `ConfigError`, never a raw `AttributeError` / `TypeError`.
+- Unknown top-level keys, and unknown keys inside `daemon` / `daemon.camera` / `daemon.sim_displays` / `audio` / `face_detection` / `motion`, raise `ConfigError` naming the key (the blocks are ours, so a typo is caught). Unknown keys inside `robot` raise `ConfigError` per the upstream-signature check above; `tts.module` is left to tts-engine.
+- `face_detection.detector` is `null` or one of {`yunet`, `custom`}; `face_detection.enabled` is a boolean; `face_detection.width` is `null` or a positive integer other than `bool`; `face_detection.target_fps` is `null` or a positive finite number other than `bool`; `face_detection.face_detector` in a dict / JSON config is a `ConfigError` (it is set from code, as `motion.idle_move` is).
+- `face_detection.enabled: true` or `motion.tracking: true` with `face_detection.detector` `null` is a `ConfigError` naming both fields — the one cross-block rule, checked by `ReachyMiniConfig.from_dict` once both blocks are built. (A `ReachyMiniConfig` assembled directly in code is not validated; the bridge raises `ValueError` for the same contradiction at session entry, [user_perception.md](../vision/user_perception.md) "Configuration".)
 - `backend` ∈ {`real`, `sim`, `fake`}; `daemon.spawn` ∈ {`never`, `auto`, `always`}; `daemon.spawn != "never"` requires `backend` `sim` or `real`.
 - `daemon.headless` / `daemon.preload_datasets` are booleans; `daemon.scene` a non-empty string or `null`; `daemon.startup_timeout` a positive number other than `bool`.
 - `daemon.camera` is an object with no unknown keys; `source` ∈ {`sim`, `webcam`}; `device` is `null`, a non-empty string, or a non-negative integer other than `bool`; `hfov_deg` a number other than `bool`, strictly between 1 and 179.
@@ -240,8 +246,8 @@ All enforced by `ReachyMiniConfig.from_dict` (delegating to `DaemonConfig.from_d
 
 ## Relationship to the other specs
 
-- **[bridge.md](bridge.md):** `ReachyMiniBridge` is constructed from a `ReachyMiniConfig` (or a backend-string shorthand for one), mirrors the `from_*` trio, applies `motion.wobbling` on entry, starts the detection loop and the head tracker from `faces` and `motion.tracking`, and starts the motion loop with `motion.presence`, `motion.idle` and `motion.idle_move`.
-- **[user_perception.md](../vision/user_perception.md):** the `faces` block selects the detector and the detection switch; `motion.tracking` the head tracker; both switches need a detector.
+- **[bridge.md](bridge.md):** `ReachyMiniBridge` is constructed from a `ReachyMiniConfig` (or a backend-string shorthand for one), mirrors the `from_*` trio, applies `motion.wobbling` on entry, starts the detection loop and the head tracker from `face_detection` and `motion.tracking`, and starts the motion loop with `motion.presence`, `motion.idle` and `motion.idle_move`.
+- **[user_perception.md](../vision/user_perception.md):** the `face_detection` block selects the detector, the detection switch and the detector's cost knobs; `motion.tracking` the head tracker; both switches need a detector.
 - **[motion.md](../motion/motion.md):** the `motion` block is the initial state of the loop's presence, idle mode, custom idle move and gaze layer (and, for `wobbling`, of the daemon-side mode the bridge arms around it).
 - **[robot.md](robot.md):** the `robot` block is what `build_robot(backend, **robot)` forwards.
 - **[daemon.md](../daemon/daemon.md):** the `daemon` block configures the bridge-owned daemon lifecycle; `backend` selects its launch recipe.

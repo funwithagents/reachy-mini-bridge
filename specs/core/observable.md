@@ -47,6 +47,7 @@ Pure asyncio, so `tests/` pin it directly: reads of the initial and the latest v
 ## Relationship to the other specs
 
 - **[user_perception.md](../vision/user_perception.md):** `bridge.faces` is an `Observable[FaceReport]`; the detection loop is its producer.
+- **[head_tracking.md](../motion/head_tracking.md):** `bridge.head_tracking` is an `Observable[HeadTrackingReport]`; the head tracker is its producer.
 - **[bridge.md](bridge.md):** the "Cancellation" contract governs `changes()`.
 
 ## Open questions

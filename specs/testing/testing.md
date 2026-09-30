@@ -71,7 +71,7 @@ def test_say_is_audible(live_bridge):
 | `audio` | a mic sample arrives on the open media session (never restarted, see [testing_support.md](testing_support.md)) | ✅ software AEC, host device | ✅ | ✅ hardware AEC |
 | `camera` | `get_frame()` returns a frame | ⚠️ needs a GL context (not headless plain-python on macOS) | ✅ | ✅ |
 | `gravity_compensation` | not a simulation, and `GET /api/kinematics/info` reports `engine == "Placo"` | ❌ | ❌ | ✅ with Placo (`reachy-mini[placo_kinematics]`) |
-| `faces` | the daemon's `/api/sim-scene/bodies` lists a `face` body — it runs the bridge's test scene ([sim_scene.md](sim_scene.md)), which every harness-spawned sim does; the face starts hidden and a test shows it | ✅ scene loads (but nothing looks at it: no camera) | ✅ | ❌ |
+| `faces` | the daemon's `/api/sim-scene/bodies` lists a portrait (a body of kind `face`) — it runs the bridge's test scene ([sim_scene.md](sim_scene.md)), which every harness-spawned sim does; its pool of portraits starts hidden and a test spawns the ones it needs | ✅ scene loads (but nothing looks at it: no camera) | ✅ | ❌ |
 | `doa` · hardware-AEC quality · beamforming | — | ❌ | ❌ | ✅ |
 
 The sim covers **motion and audio** (audio via the host's audio device with *software* AEC — the device named "Reachy Mini Audio" when a robot is plugged in over USB, else the machine's default speaker and mic, for the sim daemon's own sounds and the client's alike — only the XVF3800's hardware AEC/beamforming/DoA are robot-only); the sim **camera** needs a GL context, so it works headfull (or with a headless GL backend) but not headless plain-python on macOS.
