@@ -15,7 +15,7 @@ tests:
 
 # Sim scene — faces in the MuJoCo sim (`sim_scene.py`)
 
-**Status:** Updated
+**Status:** Implemented
 
 ## Purpose
 

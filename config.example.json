@@ -32,9 +32,11 @@
   "audio": {
     "xvf3800": null
   },
-  "faces": {
+  "face_detection": {
     "detector": "yunet",
-    "detection": true
+    "enabled": true,
+    "width": null,
+    "target_fps": null
   },
   "motion": {
     "presence": true,

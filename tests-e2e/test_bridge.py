@@ -30,8 +30,12 @@ from reachy_mini import ReachyMini
 from reachy_mini_bridge.audio import TTSEngineSynthesizer
 from reachy_mini_bridge.bridge import ReachyMiniBridge
 from reachy_mini_bridge.errors import GravityCompensationUnsupportedError
-from reachy_mini_bridge.face_detection import FACE_ABSENT_S, FaceReport
-from reachy_mini_bridge.head_tracking import TRACKING_LOST_S
+from reachy_mini_bridge.face_detection import FACE_ABSENT_S, Face, FaceReport
+from reachy_mini_bridge.head_tracking import (
+    TRACKING_LOST_S,
+    TRACKING_SWITCH_S,
+    HeadTrackingReport,
+)
 from reachy_mini_bridge.motion import (
     BLEND_S,
     BREATH_REST_S,
@@ -863,13 +867,19 @@ async def _track_onto(
     lateral: float,
     settle_timeout: float = 10.0,
     min_seconds: float = 2.5,
+    expected_yaw_deg: float | None = None,
 ) -> _Track:
     """Sample the head until it holds still (yaw within 1° over a second, and at least
     `min_seconds` in — detection and the gaze layer's fade take a moment to start the
-    head moving), or `settle_timeout`; then read the tracked face from `bridge.faces`."""
+    head moving), or `settle_timeout`; then read the followed face from `bridge.faces`
+    (the one whose track_id `bridge.head_tracking` reports). The expected yaw is a face
+    at `lateral` at the default distance, unless given."""
     robot: Any = bridge.robot
     start_yaw, _ = _yaw_pitch_deg(await asyncio.to_thread(robot.get_current_head_pose))
-    track = _Track(where, start_yaw, _expected_yaw_deg(lateral), None)
+    expected = (
+        _expected_yaw_deg(lateral) if expected_yaw_deg is None else expected_yaw_deg
+    )
+    track = _Track(where, start_yaw, expected, None)
     started = time.monotonic()
     deadline = started + settle_timeout
     while True:
@@ -883,8 +893,7 @@ async def _track_onto(
         if time.monotonic() >= deadline:
             break
         await asyncio.sleep(0.05)
-    faces = bridge.faces.value.faces
-    track.face = faces[0] if faces else None
+    track.face = _followed_face(bridge)
     tracker = (
         bridge._tracker
     )  # the estimate the gaze tests print, for the spec's numbers
@@ -898,6 +907,12 @@ async def _track_onto(
         f"report pose: {bridge.faces.value.head_pose is not None}"
     )
     return track
+
+
+def _followed_face(bridge: ReachyMiniBridge) -> Face | None:
+    """The face of `bridge.faces` the head follows, by `bridge.head_tracking`'s track_id."""
+    followed = bridge.head_tracking.value.track_id
+    return next((f for f in bridge.faces.value.faces if f.track_id == followed), None)
 
 
 def _assert_tracked(track: _Track, pitch_ahead: float | None = None) -> None:
@@ -1065,6 +1080,14 @@ def test_head_tracking_turns_onto_a_face_and_follows_it(
         assert bridge.tracking_focus
         face = face_scene.spawn(DEFAULT_FACE_POS)
         tracks = [await _track_onto(bridge, "face ahead", 0.0)]
+        followed = bridge.head_tracking.value.track_id
+        assert followed is not None and followed == tracks[0].face.track_id  # type: ignore[union-attr]
+        # the report's frame is the one its faces were found in: the box crops the face
+        report = bridge.faces.value
+        assert report.frame is not None and report.frame_id == report.frame.frame_id
+        x, y, w, h = (round(v) for v in report.faces[0].bbox)
+        crop = report.frame.image[max(y, 0) : y + h, max(x, 0) : x + w]
+        assert crop.size > 0 and crop.std() > 5.0  # a face, not a flat patch
         for lateral in (LATERAL_M, -LATERAL_M, 0.0):
             face_scene.place(face, _face_at(lateral), duration=1.0)
             # A face that glides over 1 s is followed with a lag the head creeps out of
@@ -1078,6 +1101,8 @@ def test_head_tracking_turns_onto_a_face_and_follows_it(
                 )
             )
         assert bridge.attention == "engaged"
+        # one person throughout: the portrait kept its track_id while it moved
+        assert bridge.head_tracking.value.track_id == followed
         return tracks
 
     first, *moves = asyncio.run(scenario())
@@ -1185,3 +1210,224 @@ def test_emotion_plays_over_tracking_and_the_head_returns_to_the_face(
     )
     _assert_tracked(after)
     assert bridge.attention == "engaged"
+
+
+# --- whom the head follows, with several portraits (specs/motion/head_tracking.md "Whom the
+# head follows", specs/testing/sim_scene.md "The testing harness") ---------------------------
+#
+# Portraits from the test scene's pool: near at 0.35 m and far at 0.60 m give the size
+# difference, ±0.15 m to either side. Portraits that must be in view together are spawned
+# with tracking stopped and tracking started once both are reported, so the choice is made
+# with both there. Each asserts through `bridge.head_tracking` and the head's yaw.
+
+NEAR_X, FAR_X = 0.35, 0.60
+FACE_Z = DEFAULT_FACE_POS[2]
+
+
+def _yaw_to(x: float, y: float) -> float:
+    return math.degrees(math.atan2(y, x))
+
+
+class _Changes:
+    """Records what `bridge.head_tracking.changes()` wakes on while it runs."""
+
+    def __init__(self, bridge: ReachyMiniBridge) -> None:
+        self.woken: list[HeadTrackingReport] = []
+        self._task = asyncio.create_task(self._run(bridge))
+
+    async def _run(self, bridge: ReachyMiniBridge) -> None:
+        async for report in bridge.head_tracking.changes():
+            self.woken.append(report)
+
+    def stop(self) -> None:
+        self._task.cancel()
+
+
+async def _both_in_view(bridge: ReachyMiniBridge, count: int = 2) -> None:
+    """Poll the report's value: a face returning within the absence window is a silent
+    `update` (the published count never dropped), which `wait_for` would not see."""
+    deadline = time.monotonic() + 5.0
+    while not (bridge.faces.value.active and len(bridge.faces.value.faces) == count):
+        assert time.monotonic() < deadline, (
+            f"not {count} faces in view after 5 s: {bridge.faces.value.faces}"
+        )
+        await asyncio.sleep(0.05)
+
+
+async def _until(predicate: Callable[[], bool], timeout: float) -> float:
+    """Seconds until `predicate` held (an AssertionError past `timeout`)."""
+    started = time.monotonic()
+    while not predicate():
+        assert time.monotonic() - started < timeout, "condition not met in time"
+        await asyncio.sleep(0.05)
+    return time.monotonic() - started
+
+
+async def _prepare(bridge: ReachyMiniBridge) -> None:
+    await bridge.set_motors_state("enabled")
+    await bridge.set_face_detection(True)
+    await bridge.stop_head_tracking()
+
+
+def test_the_head_follows_the_biggest_of_two_faces(
+    live_bridge: tuple[ReachyMiniBridge, frozenset[str]], face_scene: SimSceneClient
+) -> None:
+    bridge, _caps = live_bridge
+
+    async def scenario() -> tuple[_Track, int, int | None]:
+        await _prepare(bridge)
+        face_scene.spawn((FAR_X, -LATERAL_M, FACE_Z))
+        face_scene.spawn((NEAR_X, LATERAL_M, FACE_Z))
+        await _both_in_view(bridge)
+        near = max(bridge.faces.value.faces, key=lambda f: f.size)
+        await bridge.start_head_tracking()
+        track = await _track_onto(
+            bridge,
+            "the nearer of two faces",
+            LATERAL_M,
+            expected_yaw_deg=_yaw_to(NEAR_X, LATERAL_M),
+        )
+        return track, near.track_id, bridge.head_tracking.value.track_id
+
+    track, near_id, followed = asyncio.run(scenario())
+    _assert_tracked(track)
+    assert followed == near_id
+
+
+def test_a_nearer_face_arriving_does_not_take_the_head(
+    live_bridge: tuple[ReachyMiniBridge, frozenset[str]], face_scene: SimSceneClient
+) -> None:
+    bridge, _caps = live_bridge
+    far_yaw = _yaw_to(FAR_X, -LATERAL_M)
+
+    async def scenario() -> tuple[_Track, _Track, int | None, int | None, list[Any]]:
+        await _prepare(bridge)
+        face_scene.spawn((FAR_X, -LATERAL_M, FACE_Z))
+        await bridge.start_head_tracking()
+        first = await _track_onto(
+            bridge, "the far face, alone", -LATERAL_M, expected_yaw_deg=far_yaw
+        )
+        followed = bridge.head_tracking.value.track_id
+        changes = _Changes(bridge)
+        face_scene.spawn((NEAR_X, LATERAL_M, FACE_Z))
+        await _both_in_view(bridge)
+        await asyncio.sleep(TRACKING_SWITCH_S + 2.0)
+        after = await _track_onto(
+            bridge,
+            "still the far face, a nearer one beside it",
+            -LATERAL_M,
+            expected_yaw_deg=far_yaw,
+            min_seconds=1.0,
+        )
+        changes.stop()
+        return (
+            first,
+            after,
+            followed,
+            bridge.head_tracking.value.track_id,
+            changes.woken,
+        )
+
+    first, after, followed, still, woken = asyncio.run(scenario())
+    _assert_tracked(first)
+    _assert_tracked(after)
+    assert still == followed and woken == []
+
+
+def test_a_face_hidden_briefly_is_waited_for_and_followed_again(
+    live_bridge: tuple[ReachyMiniBridge, frozenset[str]], face_scene: SimSceneClient
+) -> None:
+    """The hold: the followed face gone for half the switch time, the head holds toward
+    where it was — not turning to the other face — and follows it again, same track_id,
+    with nothing published on `bridge.head_tracking` meanwhile."""
+    bridge, _caps = live_bridge
+    robot: Any = bridge.robot
+
+    async def scenario() -> tuple[
+        float, list[float], int | None, int | None, list[Any]
+    ]:
+        await _prepare(bridge)
+        await bridge.start_head_tracking()
+        followed_name = face_scene.spawn(_face_at(LATERAL_M))
+        await _track_onto(bridge, "the first face", LATERAL_M)
+        followed = bridge.head_tracking.value.track_id
+        face_scene.spawn(_face_at(-LATERAL_M))
+        await _both_in_view(bridge)
+        before, _ = _yaw_pitch_deg(await asyncio.to_thread(robot.get_current_head_pose))
+        changes = _Changes(bridge)
+        face_scene.despawn(followed_name)
+        yaws: list[float] = []
+        deadline = time.monotonic() + TRACKING_SWITCH_S / 2
+        while time.monotonic() < deadline:
+            pose = await asyncio.to_thread(robot.get_current_head_pose)
+            yaws.append(_yaw_pitch_deg(pose)[0])
+            await asyncio.sleep(0.05)
+        again = face_scene.spawn(_face_at(LATERAL_M))
+        assert again == followed_name  # the pool hands the same portrait back
+        await _both_in_view(bridge)
+        await asyncio.sleep(1.0)
+        changes.stop()
+        return (
+            before,
+            yaws,
+            followed,
+            bridge.head_tracking.value.track_id,
+            changes.woken,
+        )
+
+    before, yaws, followed, after, woken = asyncio.run(scenario())
+    print(
+        f"\n[e2e] hold: yaw {before:+.1f} deg before, "
+        f"{min(yaws):+.1f}..{max(yaws):+.1f} while the face was gone"
+    )
+    assert all(abs(y - before) < 3.0 for y in yaws), "the head left the vanished face"
+    assert after == followed and woken == []
+
+
+def test_a_face_gone_for_good_hands_over_to_the_other_then_the_head_is_released(
+    live_bridge: tuple[ReachyMiniBridge, frozenset[str]], face_scene: SimSceneClient
+) -> None:
+    """The switch, then the loss: the followed face despawned, the head holds for about
+    `TRACKING_SWITCH_S`, then follows the other face (one change naming it) and turns
+    onto it; that one despawned too, attention reads `watching` after `TRACKING_LOST_S`."""
+    bridge, _caps = live_bridge
+
+    async def scenario() -> tuple[float, _Track, int, list[Any], float]:
+        await _prepare(bridge)
+        await bridge.start_head_tracking()
+        first = face_scene.spawn(_face_at(LATERAL_M))
+        await _track_onto(bridge, "the first face", LATERAL_M)
+        followed = bridge.head_tracking.value.track_id
+        second = face_scene.spawn(_face_at(-LATERAL_M))
+        await _both_in_view(bridge)
+        other = next(f for f in bridge.faces.value.faces if f.track_id != followed)
+        changes = _Changes(bridge)
+        face_scene.despawn(first)
+        switched_after = await _until(
+            lambda: bridge.head_tracking.value.track_id == other.track_id,
+            TRACKING_SWITCH_S + 3.0,
+        )
+        track = await _track_onto(bridge, "switched to the other face", -LATERAL_M)
+        face_scene.despawn(second)
+        lost_after = await _until(
+            lambda: bridge.head_tracking.value.attention == "watching",
+            TRACKING_LOST_S + 3.0,
+        )
+        changes.stop()
+        return switched_after, track, other.track_id, changes.woken, lost_after
+
+    switched_after, track, other_id, woken, lost_after = asyncio.run(scenario())
+    print(
+        f"\n[e2e] switched after {switched_after:.2f} s, released after {lost_after:.2f} s"
+    )
+    _assert_tracked(track)
+    assert switched_after >= TRACKING_SWITCH_S - 0.2  # the head waited first
+    states = [(r.attention, r.track_id) for r in woken]
+    print(f"[e2e] head tracking changes: {states}")
+    # the other face first, the release last; between them only re-engagements — the
+    # detector may re-identify the portrait under a new track_id while the head sweeps
+    # across it, and the tracker then waits and switches to it, as it should
+    assert states[0] == ("engaged", other_id)
+    assert states[-1] == ("watching", None)
+    assert all(attention == "engaged" for attention, _ in states[:-1])
+    assert lost_after >= TRACKING_LOST_S - 0.2

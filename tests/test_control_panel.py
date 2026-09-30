@@ -30,7 +30,7 @@ from reachy_mini_bridge import (
     PixelFace,
     ReachyMiniConfig,
 )
-from reachy_mini_bridge.config import FaceSettings, MotionSettings
+from reachy_mini_bridge.config import FaceDetectionSettings, MotionSettings
 from reachy_mini_bridge.fake_reachy_mini import FakeReachyMini
 
 
@@ -71,8 +71,8 @@ def _faces_config(scene: _Scene, *, tracking: bool = True) -> ReachyMiniConfig:
     """A fake config detecting through ``scene`` (detection on; tracking as asked)."""
     return ReachyMiniConfig(
         backend="fake",
-        faces=FaceSettings(
-            detector="custom", detection=True, face_detector=scene.detector
+        face_detection=FaceDetectionSettings(
+            detector="custom", enabled=True, face_detector=scene.detector
         ),
         motion=MotionSettings(tracking=tracking),
     )

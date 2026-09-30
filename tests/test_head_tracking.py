@@ -15,6 +15,7 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import replace
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -30,6 +31,7 @@ from reachy_mini_bridge.head_tracking import (
     SIM_EYE_CAMERA_FOVY_DEG,
     CameraModel,
     HeadTracker,
+    HeadTrackingReport,
     pinhole_intrinsics,
     sim_hfov_deg,
 )
@@ -308,6 +310,218 @@ def test_focus_goes_with_every_aim_and_stop_withdraws_it() -> None:
     tracker.stop()
     assert [f for _, f in sent] == [False, True, True]
     assert sent[-1][0] is None and not tracker.engaged
+
+
+# --- whom the head follows (specs/motion/head_tracking.md "Whom the head follows") -------
+#
+# Driven directly with scripted reports on a clock the test moves: a fixed (webcam)
+# camera, so an aim needs no pose history and one face always gives the same aim.
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+
+class _Published:
+    """What the tracker publishes on (``value`` / ``set`` / ``update``), recorded; the
+    bridge's ``Observable`` must be driven from the event loop, these tests are not."""
+
+    def __init__(self) -> None:
+        self.value = HeadTrackingReport.inactive()
+        self.sets: list[HeadTrackingReport] = []
+
+    def set(self, value: HeadTrackingReport) -> None:
+        self.value = value
+        self.sets.append(value)
+
+    def update(self, value: HeadTrackingReport) -> None:
+        self.value = value
+
+
+class _Chooser:
+    """A running tracker on a test clock, recording its aims and published reports."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.clock = _Clock()
+        monkeypatch.setattr(
+            head_tracking, "time", SimpleNamespace(monotonic=self.clock.monotonic)
+        )
+        self.aims: list[Any] = []
+        self.report = _Published()
+        self.published = self.report.sets
+        self.tracker = HeadTracker(
+            CameraModel.for_sim(SimCameraSettings(source="webcam")),
+            history=lambda: (np.zeros(0), np.zeros((0, 4, 4))),
+            set_gaze=lambda aim, *, focus=False: self.aims.append(aim),
+            report=self.report,  # type: ignore[arg-type]
+        )
+        self.tracker.start()
+
+    def see(self, *faces: Face, after: float = 0.1) -> None:
+        self.clock.now += after
+        self.tracker.observe(
+            FaceReport(
+                faces=tuple(faces), ts=self.clock.now, source="custom", active=True
+            )
+        )
+
+    def aim_at(self, face: Face) -> Any:
+        """The aim a tracker gives this face alone."""
+        aims: list[Any] = []
+        HeadTracker(
+            self.tracker.camera,
+            history=lambda: (np.zeros(0), np.zeros((0, 4, 4))),
+            set_gaze=lambda aim, *, focus=False: aims.append(aim),
+        ).observe(
+            # the aim depends on the position alone; sized so a fresh tracker acquires it
+            FaceReport(
+                faces=(replace(face, size=1.0),), ts=0.0, source="custom", active=True
+            )
+        )
+        return aims[0]
+
+    def aiming_at(self, face: Face) -> bool:
+        return self.aims[-1] is not None and np.allclose(
+            self.aims[-1], self.aim_at(face)
+        )
+
+
+def _person(track_id: int, x: float, size: float) -> Face:
+    return Face(x=x, y=0.0, roll=None, size=size, track_id=track_id)
+
+
+NEAR = 0.30  # sizes: a face at desk range...
+FAR = 0.12  # ...one further back, still above TRACKING_MIN_SIZE (0.07)
+SPECK = 0.05  # below it
+
+
+def test_the_biggest_eligible_face_is_followed_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chooser = _Chooser(monkeypatch)
+    far, near = _person(1, -0.4, FAR), _person(2, 0.4, NEAR)
+    chooser.see(far, near)
+    assert chooser.tracker.following == 2 and chooser.aiming_at(near)
+    assert chooser.report.value.track_id == 2
+    assert chooser.report.value.attention == "engaged"
+
+
+def test_a_bigger_face_appearing_does_not_take_the_head(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chooser = _Chooser(monkeypatch)
+    far = _person(1, -0.4, FAR)
+    chooser.see(far)
+    for _ in range(30):  # three seconds with a nearer face beside the followed one
+        chooser.see(far, _person(2, 0.4, NEAR))
+    assert chooser.tracker.following == 1 and chooser.aiming_at(far)
+    assert [r.track_id for r in chooser.published] == [None, 1]  # started, engaged
+
+
+def test_a_short_absence_holds_the_aim_and_the_face_is_followed_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(head_tracking, "TRACKING_SWITCH_S", 1.0)
+    chooser = _Chooser(monkeypatch)
+    followed, other = _person(1, -0.4, NEAR), _person(2, 0.4, NEAR)
+    chooser.see(followed, other)
+    aims_before, published_before = len(chooser.aims), len(chooser.published)
+    for _ in range(5):  # half a second without the followed face
+        chooser.see(other)
+    assert len(chooser.aims) == aims_before  # no new aim: the last one stands
+    chooser.see(followed, other)
+    assert chooser.tracker.following == 1 and chooser.aiming_at(followed)
+    assert len(chooser.published) == published_before  # nothing to wake anyone for
+
+
+def test_after_the_switch_time_the_biggest_other_face_is_followed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(head_tracking, "TRACKING_SWITCH_S", 1.0)
+    chooser = _Chooser(monkeypatch)
+    followed = _person(1, 0.0, NEAR)
+    small, big = _person(2, -0.5, FAR), _person(3, 0.5, 0.2)
+    chooser.see(followed, small, big)
+    chooser.see(small, big)  # the followed face goes missing
+    chooser.see(small, big, after=0.5)
+    assert chooser.tracker.following == 1  # still holding at 0.5 s
+    chooser.see(small, big, after=0.5)  # 1.0 s missing: switch
+    assert chooser.tracker.following == 3 and chooser.aiming_at(big)
+    assert [r.track_id for r in chooser.published][-1] == 3
+    assert chooser.published[-1].attention == "engaged"
+
+
+def test_only_specks_in_view_hold_until_the_loss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(head_tracking, "TRACKING_SWITCH_S", 1.0)
+    monkeypatch.setattr(head_tracking, "TRACKING_LOST_S", 2.0)
+    chooser = _Chooser(monkeypatch)
+    followed, speck = _person(1, 0.0, NEAR), _person(2, 0.5, SPECK)
+    chooser.see(followed)
+    chooser.see(speck)
+    chooser.see(speck, after=1.5)  # past the switch time, nobody large enough
+    assert chooser.tracker.following == 1 and chooser.aims[-1] is not None
+    chooser.see(speck, after=0.5)  # 2.0 s: the loss
+    assert chooser.tracker.following is None and chooser.aims[-1] is None
+    assert chooser.report.value == HeadTrackingReport(
+        active=True,
+        focus=False,
+        attention="watching",
+        track_id=None,
+        ts=chooser.report.value.ts,
+    )
+
+
+def test_an_eligible_face_between_the_switch_and_the_loss_is_followed_at_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(head_tracking, "TRACKING_SWITCH_S", 1.0)
+    chooser = _Chooser(monkeypatch)
+    chooser.see(_person(1, 0.0, NEAR))
+    chooser.see()
+    chooser.see(after=1.2)  # nobody at all, past the switch time
+    newcomer = _person(4, 0.3, FAR)
+    chooser.see(newcomer, after=0.3)
+    assert chooser.tracker.following == 4 and chooser.aiming_at(newcomer)
+
+
+def test_a_followed_face_moving_away_stays_followed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chooser = _Chooser(monkeypatch)
+    chooser.see(_person(1, 0.0, NEAR))
+    receding = _person(1, 0.1, SPECK)  # now smaller than the acquisition gate
+    for _ in range(20):
+        chooser.see(receding, _person(2, 0.5, NEAR))
+    assert chooser.tracker.following == 1 and chooser.aiming_at(receding)
+
+
+def test_the_report_wakes_on_state_changes_and_updates_on_aims(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chooser = _Chooser(monkeypatch)
+    face = _person(1, 0.0, NEAR)
+    chooser.see(face)
+    ts_first = chooser.report.value.ts
+    for i in range(5):  # the face moves: fresh ts, nothing published
+        chooser.see(_person(1, 0.05 * i, NEAR))
+    assert chooser.report.value.ts > ts_first
+    chooser.tracker.start(focus=True)
+    chooser.tracker.stop()
+    assert [
+        (r.active, r.focus, r.attention, r.track_id) for r in chooser.published
+    ] == [
+        (True, False, "watching", None),  # started
+        (True, False, "engaged", 1),  # engaged on the face
+        (True, True, "engaged", 1),  # focus switched
+        (False, False, None, None),  # stopped
+    ]
+    assert chooser.report.value == HeadTrackingReport.inactive()
 
 
 def test_the_robot_model_is_the_clients_calibration_at_the_streamed_frame() -> None:

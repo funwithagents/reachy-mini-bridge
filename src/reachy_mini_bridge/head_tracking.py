@@ -1,15 +1,18 @@
-"""Head tracking: the bridge's own tracker, turning the target face into the aim the
-motion loop composes (specs/motion/head_tracking.md).
+"""Head tracking: the bridge's own tracker, choosing whom to follow and turning that face
+into the aim the motion loop composes (specs/motion/head_tracking.md).
 
-The tracker takes the detection loop's every report, turns the target face into a
-look-at head pose with upstream's geometry — the face's pixel through a camera model,
+The tracker takes the detection loop's every report and chooses whom to follow by
+``track_id`` — the biggest face, held while it is reported; a face gone missing held
+toward its last position for ``TRACKING_SWITCH_S`` before switching to the biggest other
+one. It turns the followed face into a look-at head pose with upstream's geometry — the face's pixel through a camera model,
 rotated into the world by the head pose its frame was taken from (or the rest pose, for
 a camera that does not turn with the head) — and hands that aim to the motion loop's
 gaze layer, which eases, fades and composes it. That pose is the report's own when the
 source knows it; otherwise the robot's reported pose at the observation's time minus a
 delay the tracker estimates online, from how the face's world direction holds still
-while the head turns. It never touches the robot; after ``TRACKING_LOST_S`` without a
-face it withdraws the aim and the robot idles in full.
+while the head turns. It never touches the robot; after ``TRACKING_LOST_S`` without the
+followed face and nobody to switch to, it withdraws the aim and the robot idles in full.
+Its state is published as a ``HeadTrackingReport`` (``bridge.head_tracking``).
 """
 
 from __future__ import annotations
@@ -37,7 +40,8 @@ if TYPE_CHECKING:
     import numpy.typing as npt
 
     from .config import SimCameraSettings
-    from .face_detection import FaceReport
+    from .face_detection import Face, FaceReport
+    from .observable import Observable
     from .robot import AnyReachyMini
 
 __all__ = [
@@ -51,8 +55,11 @@ __all__ = [
     "SIM_CAMERA_SIZE",
     "SIM_EYE_CAMERA_FOVY_DEG",
     "TRACKING_LOST_S",
+    "TRACKING_MIN_SIZE",
+    "TRACKING_SWITCH_S",
     "CameraModel",
     "HeadTracker",
+    "HeadTrackingReport",
     "pinhole_intrinsics",
     "sim_hfov_deg",
 ]
@@ -61,9 +68,14 @@ _logger = logging.getLogger(__name__)
 
 # The tracker's timing (specs/motion/head_tracking.md "Easing, loss, focus"). Module constants,
 # read at run time so tests can shorten them.
-TRACKING_LOST_S = (
-    2.0  # no face for this long withdraws the aim (upstream's own timeout)
-)
+# Whom the head follows (specs/motion/head_tracking.md "Whom the head follows"): a followed
+# face missing this long is replaced by the biggest face in view at least this tall (a
+# fraction of the frame's height — about upstream's acquisition gate, 0.3 % of a 16:9
+# frame's area for a square face); missing TRACKING_LOST_S with nobody that large, the
+# aim is withdrawn (upstream's own timeout).
+TRACKING_SWITCH_S = 1.0
+TRACKING_MIN_SIZE = 0.07
+TRACKING_LOST_S = 2.0
 # The online delay estimate (specs/motion/head_tracking.md "The aim"): the delay L between an
 # observation's time — the frame's arrival at the bridge — and the head pose its frame
 # was taken from, fitted over the new detections of the last DELAY_WINDOW_S by the L in
@@ -165,23 +177,55 @@ class _Detection:
     ray: npt.NDArray[np.float64]  # the face's unit ray in the head frame
 
 
+@dataclass(frozen=True)
+class HeadTrackingReport:
+    """The head tracker's state: the value of ``bridge.head_tracking``
+    (specs/motion/head_tracking.md "The head tracking report")."""
+
+    active: bool  # the tracker is running (tracking on, inside a session)
+    focus: bool  # it holds the head exactly on the face (start_head_tracking's focus)
+    attention: str | None  # "engaged" | "watching" | None
+    track_id: int | None  # the track of the face the head follows; None unless engaged
+    ts: float  # the time of the face report behind the last aim; 0.0 before any
+
+    @classmethod
+    def inactive(cls) -> HeadTrackingReport:
+        """The report while tracking is off or outside a session."""
+        return cls(active=False, focus=False, attention=None, track_id=None, ts=0.0)
+
+    def same_state(self, other: HeadTrackingReport) -> bool:
+        """Equal but for ``ts``: what a published change compares."""
+        return (self.active, self.focus, self.attention, self.track_id) == (
+            other.active,
+            other.focus,
+            other.attention,
+            other.track_id,
+        )
+
+
 @dataclass
 class HeadTracker:
-    """Turns the reported target face into the gaze layer's aim (specs/motion/head_tracking.md).
+    """Chooses whom to follow among the reported faces and turns that face into the gaze
+    layer's aim (specs/motion/head_tracking.md).
 
     ``history()`` is the motion loop's record of the head poses the robot reported
     (``head_pose_history``: monotonic times and 4x4 poses), ``set_gaze(aim, focus=)``
     its gaze command. A report's ``ts`` is its frame's time on this process's monotonic
     clock (specs/vision/camera.md). ``focus`` is the caller's, handed over with every aim.
-    :meth:`observe` is fed every report of the detection loop.
+    :meth:`observe` is fed every report of the detection loop while :meth:`start` has
+    it running; its state is published on ``report`` when one is given.
     """
 
     camera: CameraModel
     history: PoseHistory
     set_gaze: SetGaze
     focus: bool = False
-    _engaged: bool = field(default=False, init=False)
-    _seen_at: float = field(default=0.0, init=False)
+    report: Observable[HeadTrackingReport] | None = None
+    _active: bool = field(default=False, init=False)
+    # whom the head follows, by track_id, and since when that face has been missing
+    _following: int | None = field(default=None, init=False)
+    _missing_since: float | None = field(default=None, init=False)
+    _aimed_ts: float = field(default=0.0, init=False)
     _delay: float = field(default=DELAY_PRIOR_S, init=False)
     _detections: deque[_Detection] = field(default_factory=deque, init=False)
     _last_ts: float | None = field(default=None, init=False)
@@ -189,8 +233,13 @@ class HeadTracker:
 
     @property
     def engaged(self) -> bool:
-        """Whether an aim is held: a face was seen within ``TRACKING_LOST_S``."""
-        return self._engaged
+        """Whether the tracker follows a face (its aim held)."""
+        return self._following is not None
+
+    @property
+    def following(self) -> int | None:
+        """The ``track_id`` of the face the head follows, or ``None``."""
+        return self._following
 
     @property
     def delay_s(self) -> float:
@@ -198,29 +247,91 @@ class HeadTracker:
         pose its frame was taken from."""
         return self._delay
 
+    def start(self, *, focus: bool = False) -> None:
+        """Run (or keep running with a new ``focus``): reports are observed from now on,
+        and the state published."""
+        self.focus = focus
+        self._active = True
+        self._publish()
+
     def observe(self, report: FaceReport) -> None:
-        """One report of the detection loop: aim the target face, or withdraw the aim
-        once nobody has been seen for ``TRACKING_LOST_S``."""
+        """One report of the detection loop: choose whom to follow
+        (specs/motion/head_tracking.md "Whom the head follows") and aim that face — or hold
+        the previous aim while the followed face is missing, switch after
+        ``TRACKING_SWITCH_S``, withdraw after ``TRACKING_LOST_S`` with nobody to switch
+        to."""
         now = time.monotonic()
-        if not report.faces:
-            if self._engaged and now - self._seen_at >= TRACKING_LOST_S:
-                self._engaged = False
-                self.set_gaze(None, focus=self.focus)
-            return
-        self._seen_at = now
-        aim = self._aim(report, now)
-        if aim is None:
-            return  # the previous aim stands
-        self._engaged = True
-        self.set_gaze(aim, focus=self.focus)
+        face: Face | None = None
+        if self._following is not None:
+            face = next(
+                (f for f in report.faces if f.track_id == self._following), None
+            )
+            if face is None:
+                if self._missing_since is None:
+                    self._missing_since = now
+                missing = now - self._missing_since
+                if missing >= TRACKING_SWITCH_S:
+                    face = self._biggest(report)
+                if face is None:
+                    if missing >= TRACKING_LOST_S:
+                        self._following = None
+                        self._missing_since = None
+                        self.set_gaze(None, focus=self.focus)
+                        self._publish()
+                    return  # the previous aim stands: the head holds toward the face
+        else:
+            face = self._biggest(report)
+            if face is None:
+                return
+        self._following = face.track_id
+        self._missing_since = None
+        aim = self._aim(face, report, now)
+        if aim is not None:
+            self._aimed_ts = report.ts
+            self.set_gaze(aim, focus=self.focus)
+        self._publish()
 
     def stop(self) -> None:
-        """Withdraw the aim: the gaze layer fades out."""
-        self._engaged = False
+        """Withdraw the aim (the gaze layer fades out), follow nobody, and publish the
+        inactive report."""
+        self._active = False
+        self._following = None
+        self._missing_since = None
         self.set_gaze(None, focus=self.focus)
+        self._publish()
 
-    def _aim(self, report: FaceReport, now: float) -> npt.NDArray[np.float64] | None:
-        face = report.faces[0]
+    @staticmethod
+    def _biggest(report: FaceReport) -> Face | None:
+        """The largest face at least ``TRACKING_MIN_SIZE`` tall, or ``None``."""
+        eligible = [f for f in report.faces if f.size >= TRACKING_MIN_SIZE]
+        return max(eligible, key=lambda f: f.size) if eligible else None
+
+    def _state(self) -> HeadTrackingReport:
+        if not self._active:
+            return HeadTrackingReport.inactive()
+        return HeadTrackingReport(
+            active=True,
+            focus=self.focus,
+            attention="engaged" if self._following is not None else "watching",
+            track_id=self._following,
+            ts=self._aimed_ts,
+        )
+
+    def _publish(self) -> None:
+        """``set`` the report when the state changed, ``update`` it otherwise (a fresh
+        ``ts``): a subscriber wakes on a change, never on a face moving."""
+        observable = self.report
+        if observable is None:
+            return
+        state = self._state()
+        if state.same_state(observable.value):
+            observable.update(state)
+        else:
+            observable.set(state)
+
+    def _aim(
+        self, face: Face, report: FaceReport, now: float
+    ) -> npt.NDArray[np.float64] | None:
         camera = self.camera
         width, height = camera.size
         u = (face.x + 1.0) / 2.0 * (width - 1)

@@ -29,7 +29,7 @@ import pytest
 
 from reachy_mini_bridge import ReachyMiniConfig
 from reachy_mini_bridge.bridge import ReachyMiniBridge
-from reachy_mini_bridge.config import FaceSettings, MotionSettings
+from reachy_mini_bridge.config import FaceDetectionSettings, MotionSettings
 from reachy_mini_bridge.testing import _daemon, requires_caps
 from reachy_mini_bridge.testing.fixtures import _probe_capabilities
 from reachy_mini_bridge.testing.sim_scene import DEFAULT_FACE_POS, SimSceneClient
@@ -76,7 +76,7 @@ def live_bridge_custom_faces(
     _live_daemon: tuple[str, int],
 ) -> Iterator[tuple[ReachyMiniBridge, frozenset[str]]]:
     """`live_bridge`'s twin for the `custom` detection path: the same target, daemon and
-    capability probe, but a config with `faces.detector="custom"` and the shipped
+    capability probe, but a config with `face_detection.detector="custom"` and the shipped
     detector class registered as the custom factory. Its own session, because the
     detector is config-only and two bridge sessions on one daemon would be two motion loops
     writing the head."""
@@ -90,8 +90,8 @@ def live_bridge_custom_faces(
                 "port": port,
                 "media_backend": "local",
             },
-            faces=FaceSettings(
-                detector="custom", detection=True, face_detector=YuNetDetector
+            face_detection=FaceDetectionSettings(
+                detector="custom", enabled=True, face_detector=YuNetDetector
             ),
             motion=MotionSettings(tracking=True),
         )

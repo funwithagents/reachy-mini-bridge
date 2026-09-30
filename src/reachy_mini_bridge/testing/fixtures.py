@@ -30,7 +30,11 @@ from typing import Any
 import pytest
 
 from reachy_mini_bridge.bridge import ReachyMiniBridge, _daemon_kinematics_engine
-from reachy_mini_bridge.config import FaceSettings, MotionSettings, ReachyMiniConfig
+from reachy_mini_bridge.config import (
+    FaceDetectionSettings,
+    MotionSettings,
+    ReachyMiniConfig,
+)
 from reachy_mini_bridge.errors import SimSceneError
 from reachy_mini_bridge.robot import AnyReachyMini
 from reachy_mini_bridge.testing import _daemon
@@ -186,7 +190,7 @@ def live_bridge(
                 "port": port,
                 "media_backend": "local",
             },
-            faces=FaceSettings(detector="yunet", detection=True),
+            face_detection=FaceDetectionSettings(detector="yunet", enabled=True),
             motion=MotionSettings(tracking=True),
         )
     )

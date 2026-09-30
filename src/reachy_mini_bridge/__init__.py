@@ -24,6 +24,7 @@ from .errors import (
     MotorsNotEnabledError,
 )
 from .face_detection import Face, FaceDetector, FaceReport, PixelFace
+from .head_tracking import HeadTrackingReport
 from .motion import IdleMove, IdleOffsets
 from .observable import Observable
 
@@ -35,6 +36,7 @@ __all__ = [
     "FaceDetector",
     "FaceReport",
     "GravityCompensationUnsupportedError",
+    "HeadTrackingReport",
     "IdleMove",
     "IdleOffsets",
     "MotorsNotEnabledError",

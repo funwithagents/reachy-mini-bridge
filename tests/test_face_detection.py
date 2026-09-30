@@ -273,79 +273,109 @@ def _frame(ts: float = 4.5, pose: npt.NDArray[np.float64] | None = None) -> Came
 def test_report_from_pixels_normalises_into_the_trackers_coordinates() -> None:
     size = (WIDTH, HEIGHT)
     centre = report_from_pixels(
-        [_face((WIDTH - 1) / 2, (HEIGHT - 1) / 2, h=24.0)], size, _frame(), 0
+        [_face((WIDTH - 1) / 2, (HEIGHT - 1) / 2, h=24.0)], size, _frame(), [1]
     )
     assert centre.faces[0].x == pytest.approx(0.0)
     assert centre.faces[0].y == pytest.approx(0.0)
     assert centre.faces[0].size == pytest.approx(0.5)  # 24 of 48 rows
     assert centre.faces[0].roll is None
-    corner = report_from_pixels([_face(WIDTH - 1, HEIGHT - 1)], size, _frame(), 0)
+    corner = report_from_pixels([_face(WIDTH - 1, HEIGHT - 1)], size, _frame(), [1])
     assert (corner.faces[0].x, corner.faces[0].y) == (1.0, 1.0)
     # Without a nose the bbox centre is the point; the eyes give the roll.
     eyed = PixelFace(bbox=(0.0, 0.0, WIDTH - 1, HEIGHT - 1), eyes=((10, 10), (20, 20)))
-    report = report_from_pixels([eyed], size, _frame(), 0)
+    report = report_from_pixels([eyed], size, _frame(), [1])
     assert (report.faces[0].x, report.faces[0].y) == (0.0, 0.0)
     assert report.faces[0].roll == pytest.approx(math.pi / 4)
+    assert (report.faces[0].pitch, report.faces[0].yaw) == (None, None)
 
 
-def test_report_from_pixels_puts_the_target_first_and_carries_the_frame() -> None:
+def test_report_from_pixels_orders_by_track_id_and_carries_the_frame() -> None:
+    """specs/vision/user_perception.md "The face report": the faces in track_id order,
+    whatever order the detector returned them in, each with its id and pixel box; the
+    report holds the frame itself (its id delegating to it), its time and pose."""
     pose = np.eye(4)
     pose[0, 3] = 0.42
+    frame = _frame(ts=4.5, pose=pose)
     faces = [_face(10, 10), _face(50, 40), _face(30, 20)]
-    report = report_from_pixels(faces, (WIDTH, HEIGHT), _frame(ts=4.5, pose=pose), 1)
-    assert [round(f.x, 3) for f in report.faces] == [
-        round(50 / 63 * 2 - 1, 3),
-        round(10 / 63 * 2 - 1, 3),
-        round(30 / 63 * 2 - 1, 3),
+    report = report_from_pixels(faces, (WIDTH, HEIGHT), frame, [7, 3, 5])
+    assert [f.track_id for f in report.faces] == [3, 5, 7]
+    assert [f.bbox for f in report.faces] == [
+        faces[1].bbox,
+        faces[2].bbox,
+        faces[0].bbox,
     ]
+    assert report.faces[0].x == pytest.approx(50 / 63 * 2 - 1)
     assert (report.ts, report.source, report.active) == (4.5, "custom", True)
     assert report.head_pose is not None and report.head_pose[0, 3] == 0.42
-    nobody = report_from_pixels([], (WIDTH, HEIGHT), _frame(), None)
+    assert report.frame is frame and report.frame_id == frame.frame_id == 7
+    nobody = report_from_pixels([], (WIDTH, HEIGHT), _frame(), [])
     assert nobody.faces == () and nobody.active is True
+    # equality is on what was seen, not on the frame the report references
+    again = report_from_pixels(faces, (WIDTH, HEIGHT), _frame(ts=4.5), [7, 3, 5])
+    assert again == report
+    assert FaceReport.inactive("custom").frame_id == 0
 
 
-# --- selection (specs/vision/user_perception.md "The pipeline": no smoothing) ------------------
+def test_a_fitted_orientation_is_preferred_over_the_eye_line() -> None:
+    fitted = PixelFace(
+        bbox=(0.0, 0.0, 20.0, 20.0),
+        eyes=((5, 5), (15, 15)),  # an eye line of 45 degrees...
+        orientation=(0.1, -0.2, 0.3),  # ...but the detector fitted the head
+    )
+    face = report_from_pixels([fitted], (WIDTH, HEIGHT), _frame(), [1]).faces[0]
+    assert (face.roll, face.pitch, face.yaw) == (0.1, -0.2, 0.3)
 
 
-def test_the_largest_face_above_the_minimum_size_is_acquired() -> None:
-    selector = fd._FaceSelector()
+# --- tracks (specs/vision/user_perception.md "Tracks": no smoothing, no face singled out) ------
+
+
+def _counter() -> Callable[[], int]:
+    return itertools.count(1).__next__
+
+
+def test_a_moving_face_keeps_its_track_id() -> None:
+    tracks = fd._FaceTracks(_counter())
     size = (WIDTH, HEIGHT)
-    small, big = _face(10, 10, 4, 4), _face(50, 30, 10, 16)
-    assert selector.select([small, big], size) == 1
-    # A speck below 0.3 % of the frame (64 x 48 = 3072 px: under ~9 px) is nobody.
-    assert fd._FaceSelector().select([_face(10, 10, 2, 3)], size) is None
+    ids = [tracks.update([_face(10 + 3 * i, 24)], size) for i in range(10)]
+    assert ids == [[1]] * 10
 
 
-def test_the_nearest_face_is_kept_over_a_larger_newcomer() -> None:
-    selector = fd._FaceSelector()
+def test_two_faces_crossing_in_small_steps_keep_their_ids() -> None:
+    """Two faces swapping sides a few pixels a frame never trade ids: each continues the
+    track nearest to it, pairs taken nearest first."""
+    tracks = fd._FaceTracks(_counter())
     size = (WIDTH, HEIGHT)
-    assert selector.select([_face(20, 24)], size) == 0
-    newcomer = _face(58, 24, 12, 18)  # larger, far to the right
-    assert selector.select([newcomer, _face(22, 24)], size) == 1
-    assert selector.select([_face(24, 25), newcomer], size) == 0
+    left, right = 16.0, 48.0
+    first = tracks.update([_face(left, 20), _face(right, 28)], size)
+    assert first == [1, 2]
+    for step in range(1, 9):
+        a = left + 4 * step  # the first face walks right...
+        b = right - 4 * step  # ...the second left, a little lower
+        # the detector returns them in an arbitrary order
+        ids = tracks.update([_face(b, 28), _face(a, 20)], size)
+        assert ids == [2, 1], (step, ids)
 
 
-def test_a_jump_beyond_the_gate_is_a_miss_and_misses_drop_the_association() -> None:
-    selector = fd._FaceSelector(max_misses=2)
+def test_a_gap_within_the_miss_window_keeps_the_id_and_a_longer_one_does_not() -> None:
     size = (WIDTH, HEIGHT)
-    assert selector.select([_face(8, 24)], size) == 0  # x ≈ -0.75
-    far = _face(60, 24)  # x ≈ +0.9: a jump of 1.65 > 0.5
-    assert selector.select([far], size) is None  # miss 1: the association holds
-    assert selector.select([far], size) is None  # miss 2
-    assert (
-        selector.select([far], size) == 0
-    )  # miss 3 drops it: the far face is acquired
-    # Once acquired, the association follows the new face.
-    assert selector.select([_face(8, 24), _face(58, 26)], size) == 1
-
-
-def test_missing_frames_then_a_return_nearby_keeps_the_target() -> None:
-    selector = fd._FaceSelector(max_misses=5)
-    size = (WIDTH, HEIGHT)
-    assert selector.select([_face(30, 24)], size) == 0
+    tracks = fd._FaceTracks(_counter(), max_misses=3)
+    assert tracks.update([_face(30, 24)], size) == [1]
     for _ in range(3):
-        assert selector.select([], size) is None
-    assert selector.select([_face(50, 24), _face(32, 22)], size) == 1
+        assert tracks.update([], size) == []
+    assert tracks.update([_face(32, 22)], size) == [1]  # back within the window
+    for _ in range(4):  # one miss more than the window
+        tracks.update([], size)
+    assert tracks.update([_face(32, 22)], size) == [2]  # a new id, 1 never reused
+
+
+def test_a_jump_beyond_the_gate_opens_a_new_track() -> None:
+    tracks = fd._FaceTracks(_counter())
+    size = (WIDTH, HEIGHT)
+    assert tracks.update([_face(8, 24)], size) == [1]  # x = -0.75
+    # x = +0.9: a jump of 1.65 > TRACK_MAX_JUMP — someone else, not the same person
+    assert tracks.update([_face(60, 24)], size) == [2]
+    # the first track is still alive within its miss window
+    assert tracks.update([_face(8, 24), _face(60, 24)], size) == [1, 2]
 
 
 # --- the runner over the camera feed ------------------------------------------------------
@@ -372,7 +402,11 @@ POSE[1, 3] = 0.25
 
 @asynccontextmanager
 async def _running_custom(
-    scene: _Scene, *, start: bool = True
+    scene: _Scene,
+    *,
+    start: bool = True,
+    target_fps: float | None = None,
+    factory: Callable[[], fd.FaceDetector] | None = None,
 ) -> AsyncIterator[_CustomLoop]:
     robot = FakeReachyMini()
     feed = CameraFeed(frame_reader(robot), lambda _t: POSE.copy())
@@ -382,7 +416,8 @@ async def _running_custom(
         faces=faces,
         on_observation=None,
         feed=feed,
-        detector_factory=scene.factory,
+        detector_factory=scene.factory if factory is None else factory,
+        target_fps=target_fps,
     )
     loop = _CustomLoop(robot, faces, feed, scene, detection)
     detection._on_observation = loop.observed.append
@@ -426,9 +461,13 @@ def test_the_custom_source_reports_the_detectors_faces_on_the_frame() -> None:
     report, frame, commands = _run(run)
     assert report.source == "custom" and report.active is True
     assert len(report.faces) == 2
-    target = report.faces[0]  # the largest, first
-    assert target.x == pytest.approx(0.5) and target.y == pytest.approx(0.0)
-    assert target.size == pytest.approx(0.5)
+    assert [f.track_id for f in report.faces] == [1, 2]  # new tracks, in detector order
+    big = report.faces[1]
+    assert big.x == pytest.approx(0.5) and big.y == pytest.approx(0.0)
+    assert big.size == pytest.approx(0.5)
+    assert big.bbox == scene.faces[1].bbox
+    # the report carries the frame its faces were found in
+    assert report.frame is not None and report.frame_id == report.frame.frame_id
     # The report's time and pose are its frame's — the pose the frame was taken from.
     assert frame is not None and report.ts <= frame.ts
     assert report.head_pose is not None
@@ -437,6 +476,24 @@ def test_the_custom_source_reports_the_detectors_faces_on_the_frame() -> None:
     assert (
         commands == []
     )  # nothing is sent to the robot: the daemon's tracking is untouched
+
+
+def test_track_ids_keep_counting_across_a_restart_of_the_loop() -> None:
+    """An id is never reused: the counter outlives a stop / start of the loop (the
+    tracks themselves start afresh), as the camera feed's frame_id does."""
+    scene = _Scene([_face(30, 24)])
+
+    async def run() -> tuple[int, int]:
+        async with _running_custom(scene) as loop:
+            await _wait_for(lambda: bool(loop.faces.value.faces))
+            first = loop.faces.value.faces[0].track_id
+            await loop.detection.stop()
+            await loop.detection.start()
+            await _wait_for(lambda: bool(loop.faces.value.faces))
+            return first, loop.faces.value.faces[0].track_id
+
+    first, second = _run(run)
+    assert first == 1 and second == 2
 
 
 def test_the_detector_runs_once_per_frame_not_once_per_poll() -> None:
@@ -599,13 +656,19 @@ def test_the_shipped_detector_is_resolved_by_name(
     """`yunet` builds the shipped detector through its factory (substituted here: the
     real one loads upstream's model) and labels its reports."""
     scene = _Scene([_face(30, 24)])
-    monkeypatch.setattr(fd, "_yunet_factory", scene.factory)
+    widths: list[int | None] = []
+
+    def shipped(width: int | None = None) -> _StubDetector:
+        widths.append(width)
+        return scene.factory()
+
+    monkeypatch.setattr(fd, "_yunet_factory", shipped)
 
     async def run() -> FaceReport:
         robot = FakeReachyMini()
         feed = CameraFeed(frame_reader(robot), None)
         faces: Observable[FaceReport] = Observable(FaceReport.inactive("yunet"))
-        detection = FaceDetection(detector="yunet", faces=faces, feed=feed)
+        detection = FaceDetection(detector="yunet", faces=faces, feed=feed, width=640)
         await feed.start()
         await detection.start()
         try:
@@ -619,6 +682,165 @@ def test_the_shipped_detector_is_resolved_by_name(
     assert report.source == "yunet" and report.active
     assert len(report.faces) == 1 and scene.built_on
     assert report.faces[0].size == pytest.approx(12 / 48)
+    assert widths == [640]  # the config's width reaches the shipped detector
+
+
+# --- the cost knobs and the detector's release (specs/vision/user_perception.md "The detection
+# loop") -------------------------------------------------------------------------------------
+
+
+def test_target_fps_caps_the_detector_below_the_frame_rate(fast_frames: None) -> None:
+    """At 40 fps from the fake, a 2.0 ceiling runs the detector about twice a second —
+    the loop skips the frames, so it holds for any detector."""
+    scene = _Scene([_face(30, 24)])
+
+    async def run(target_fps: float | None) -> int:
+        async with _running_custom(scene, target_fps=target_fps) as loop:
+            await _wait_for(lambda: bool(loop.faces.value.faces))
+            scene.calls.clear()
+            await asyncio.sleep(2.0)
+            return len(scene.calls)
+
+    capped = _run(lambda: run(2.0))
+    uncapped = _run(lambda: run(None))
+    assert 3 <= capped <= 5, capped
+    assert uncapped >= 20, uncapped  # once per new frame without a ceiling
+
+
+def test_a_slow_ceiling_is_not_read_as_a_detector_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(fd, "FACE_SOURCE_DOWN_S", 0.3)
+    scene = _Scene([_face(30, 24)])
+
+    async def run() -> list[bool]:
+        async with _running_custom(scene, target_fps=0.5) as loop:
+            await _wait_for(lambda: bool(loop.faces.value.faces))
+            await asyncio.sleep(1.0)  # past FACE_SOURCE_DOWN_S, frames arriving
+            return [r.active for r in loop.woken]
+
+    assert False not in _run(run)
+
+
+class _ClosingDetector(_StubDetector):
+    """A stub with a ``close()``; ``hold`` blocks ``detect`` until set."""
+
+    def __init__(self, scene: _Scene, closed: list[str], name: str) -> None:
+        super().__init__(scene)
+        self._closed = closed
+        self._name = name
+        self.hold: threading.Event | None = None
+        self.raises_on_close = False
+        self.in_detect = threading.Event()
+
+    def detect(
+        self, frame_bgr: npt.NDArray[np.uint8], ts: float
+    ) -> Sequence[PixelFace]:
+        self.in_detect.set()
+        if self.hold is not None:
+            self.hold.wait(5.0)
+        return super().detect(frame_bgr, ts)
+
+    def close(self) -> None:
+        self._closed.append(self._name)
+        if self.raises_on_close:
+            raise RuntimeError("the session was already gone")
+
+
+def test_close_is_called_at_stop_and_when_a_factory_swap_replaces_the_detector() -> (
+    None
+):
+    scene = _Scene([_face(30, 24)])
+    closed: list[str] = []
+    names = itertools.count(1)
+
+    def factory() -> _ClosingDetector:
+        return _ClosingDetector(scene, closed, f"detector {next(names)}")
+
+    async def run() -> list[str]:
+        async with _running_custom(scene, factory=factory) as loop:
+            await _wait_for(lambda: bool(loop.faces.value.faces))
+            loop.detection.restart(factory)
+            await _wait_for(lambda: closed == ["detector 1"])
+            scene.calls.clear()
+            await _wait_for(lambda: bool(scene.calls))  # the new one runs
+        return closed
+
+    assert _run(run) == ["detector 1", "detector 2"]
+
+
+def test_a_stop_during_detect_closes_once_the_call_has_returned() -> None:
+    """detect runs on in its thread when the loop is cancelled; close waits for it, so a
+    stateful detector is never closed under a running call — and the loop restarts."""
+    scene = _Scene([_face(30, 24)])
+    closed: list[str] = []
+    detectors: list[_ClosingDetector] = []
+
+    def factory() -> _ClosingDetector:
+        detector = _ClosingDetector(scene, closed, "held")
+        detectors.append(detector)
+        return detector
+
+    async def run() -> tuple[list[str], list[str], bool]:
+        async with _running_custom(scene, factory=factory) as loop:
+            await _wait_for(lambda: bool(loop.faces.value.faces))
+            held = threading.Event()
+            detectors[0].hold = held
+            detectors[0].in_detect.clear()
+            await asyncio.to_thread(detectors[0].in_detect.wait, 2.0)
+            stopping = asyncio.create_task(loop.detection.stop())
+            await asyncio.sleep(0.2)
+            while_running = list(closed)
+            held.set()
+            await stopping
+            after = list(closed)
+            await loop.detection.start()  # restartable
+            await _wait_for(lambda: loop.faces.value.active)
+            return while_running, after, loop.detection.running
+
+    while_running, after, running = _run(run)
+    assert while_running == []
+    assert after == ["held"]
+    assert running
+
+
+def test_a_close_that_raises_does_not_break_stop() -> None:
+    scene = _Scene([_face(30, 24)])
+    closed: list[str] = []
+
+    def factory() -> _ClosingDetector:
+        detector = _ClosingDetector(scene, closed, "broken")
+        detector.raises_on_close = True
+        return detector
+
+    async def run() -> FaceReport:
+        async with _running_custom(scene, factory=factory) as loop:
+            await _wait_for(lambda: bool(loop.faces.value.faces))
+            await loop.detection.stop()
+            return loop.faces.value
+
+    assert _run(run) == FaceReport.inactive("custom")
+    assert closed == ["broken"]
+
+
+def test_the_detectors_cost_is_logged_once_per_run(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(fd, "FACE_COST_LOG_S", 0.3)
+    scene = _Scene([_face(30, 24)])
+
+    async def run() -> None:
+        async with _running_custom(scene) as loop:
+            await _wait_for(lambda: bool(loop.faces.value.faces))
+            await asyncio.sleep(0.8)
+
+    with caplog.at_level("INFO", logger=fd.__name__):
+        _run(run)
+    lines = [r.getMessage() for r in caplog.records if "ms a frame" in r.getMessage()]
+    assert len(lines) == 1, lines
+    assert "custom detector" in lines[0] and "its own" in lines[0]
+    rate = float(lines[0].split("average, ")[1].split(" observations")[0])
+    assert rate > 0
 
 
 def test_a_display_sampling_the_feed_costs_the_detector_no_frames() -> None:

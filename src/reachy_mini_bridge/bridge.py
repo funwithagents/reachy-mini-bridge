@@ -44,7 +44,7 @@ from .errors import (
 )
 from .face_detection import FaceDetection, FaceReport, check_face_detector_factory
 from .fake_reachy_mini import FakeReachyMini
-from .head_tracking import CameraModel, HeadTracker
+from .head_tracking import CameraModel, HeadTracker, HeadTrackingReport
 from .motion import NEUTRAL_ANTENNAS, NEUTRAL_BODY_YAW, NEUTRAL_HEAD, MotionSession
 from .observable import Observable
 from .robot import build_robot
@@ -67,7 +67,7 @@ _logger = logging.getLogger(__name__)
 # The refusal of a detection or tracking switch without a detector
 # (specs/vision/user_perception.md "Configuration").
 _NO_DETECTOR_MESSAGE = (
-    "face detection and head tracking need a face detector, but faces.detector is "
+    "face detection and head tracking need a face detector, but face_detection.detector is "
     'null: name one in the config — "yunet" (the shipped detector) or "custom" '
     "with a registered factory"
 )
@@ -214,18 +214,23 @@ class ReachyMiniBridge:
         # reports while the switch is on.
         self._tracking_wanted = self._config.motion.tracking
         self._tracker: HeadTracker | None = None
+        # The tracker's state (specs/motion/head_tracking.md "The head tracking report"):
+        # readable at any time and outliving sessions, published by the tracker.
+        self._head_tracking: Observable[HeadTrackingReport] = Observable(
+            HeadTrackingReport.inactive()
+        )
         # Faces (specs/vision/user_perception.md): the report, readable at any time and
         # outliving sessions; the caller's detection switch (config default, reset on
         # exit); and the detection loop while entered.
         self._faces: Observable[FaceReport] = Observable(
-            FaceReport.inactive(self._config.faces.detector)
+            FaceReport.inactive(self._config.face_detection.detector)
         )
-        self._face_detection_wanted = self._config.faces.detection
+        self._face_detection_wanted = self._config.face_detection.enabled
         self._detection: FaceDetection | None = None
         # The custom detector's factory (config default, reset on exit); set_face_detector
         # changes it while entered.
         self._face_detector: FaceDetectorFactory | None = (
-            self._config.faces.face_detector
+            self._config.face_detection.face_detector
         )
         # The camera feed (specs/vision/camera.md): the object exists from construction so a
         # consumer wires to it before entry; bound to the robot and started at entry.
@@ -316,13 +321,13 @@ class ReachyMiniBridge:
         if self._exit_stack is not None:
             raise BridgeError("ReachyMiniBridge is already running")
         cfg = self._config
-        if cfg.faces.detector is None and (
+        if cfg.face_detection.detector is None and (
             self._face_detection_wanted or self._tracking_wanted
         ):
             # A config assembled in code can say what `from_dict` refuses
             # (specs/core/config.md "Validation rules"); refused here, before anything starts.
             raise ValueError(_NO_DETECTOR_MESSAGE)
-        if cfg.faces.detector == "custom":
+        if cfg.face_detection.detector == "custom":
             # Checked before anything is entered (specs/vision/user_perception.md "Custom
             # detectors"): a bad or missing detector fails bring-up with nothing to undo.
             self._check_face_detector(self._face_detector)
@@ -388,16 +393,21 @@ class ReachyMiniBridge:
                 self._camera_model(robot),
                 history=motion.head_pose_history,
                 set_gaze=motion.set_gaze,
+                report=self._head_tracking,
             )
+            if self._tracking_wanted:
+                self._tracker.start()
             # The detection loop (specs/vision/user_perception.md "Lifecycle"), feeding the
             # tracker while tracking is on: the configured detector (the shipped
             # `yunet`, or the registered custom one) over the camera feed.
             detection = FaceDetection(
-                detector=cfg.faces.detector,
+                detector=cfg.face_detection.detector,
                 faces=self._faces,
                 on_observation=self._on_face_observation,
                 feed=camera,
                 detector_factory=self._face_detector,
+                width=cfg.face_detection.width,
+                target_fps=cfg.face_detection.target_fps,
             )
             self._detection = detection
             # Exits after the motion session, before wobbling's cleanup.
@@ -424,6 +434,7 @@ class ReachyMiniBridge:
             finally:
                 self._wobbling = False
                 self._detection = None
+                self._reset_head_tracking()
             raise
         self._exit_stack = stack.pop_all()
 
@@ -451,11 +462,19 @@ class ReachyMiniBridge:
             self._presence = self._config.motion.presence
             self._idle = _idle_mode(self._config.motion.idle)
             self._idle_move = self._config.motion.idle_move
-            self._face_detection_wanted = self._config.faces.detection
-            self._face_detector = self._config.faces.face_detector
+            self._face_detection_wanted = self._config.face_detection.enabled
+            self._face_detector = self._config.face_detection.face_detector
             self._detection = None
             if self._faces.value.active:  # the loop never stopped cleanly
-                self._faces.set(FaceReport.inactive(self._config.faces.detector))
+                self._faces.set(
+                    FaceReport.inactive(self._config.face_detection.detector)
+                )
+            self._reset_head_tracking()
+
+    def _reset_head_tracking(self) -> None:
+        """Publish the inactive head tracking report, once, when a session ends."""
+        if self._head_tracking.value.active:
+            self._head_tracking.set(HeadTrackingReport.inactive())
 
     @property
     def running(self) -> bool:
@@ -491,7 +510,7 @@ class ReachyMiniBridge:
             raise
         except Exception as e:
             raise BridgeError(
-                f"the face detector {self._config.faces.detector!r} could not be built: "
+                f"the face detector {self._config.face_detection.detector!r} could not be built: "
                 f"{type(e).__name__}: {e}"
             ) from e
 
@@ -712,19 +731,19 @@ class ReachyMiniBridge:
         A mode, not a move: it holds until changed and needs no motors (the motion loop
         is paused without them, so the aim shows once they are enabled). Starts the
         detection loop if it is not already running — so it needs a configured detector
-        (``faces.detector``; ``ValueError`` with none), and a detector that cannot be
+        (``face_detection.detector``; ``ValueError`` with none), and a detector that cannot be
         built raises ``BridgeError`` and leaves tracking off.
         """
         tracker = self._require_tracker()
         self._require_detector()
-        was_focus, was_wanted = tracker.focus, self._tracking_wanted
-        tracker.focus = focus
+        was_wanted = self._tracking_wanted
         self._tracking_wanted = True
         try:
             await self._sync_detection()
         except BaseException:
-            tracker.focus, self._tracking_wanted = was_focus, was_wanted
+            self._tracking_wanted = was_wanted
             raise
+        tracker.start(focus=focus)
 
     async def stop_head_tracking(self) -> None:
         """Stop the head tracker: the aim is withdrawn and the head eases back onto the
@@ -747,19 +766,25 @@ class ReachyMiniBridge:
         """Whether tracking holds the head exactly on the face (``focus``) rather than
         composing it with the idle move — ``False`` while tracking is off and outside a
         session."""
-        tracker = self._tracker
-        return tracker is not None and self._tracking_wanted and tracker.focus
+        return self._head_tracking.value.focus
 
     @property
     def attention(self) -> str | None:
         """Derived from the tracker (specs/core/bridge.md "Attention"): ``"engaged"`` while it
-        holds an aim (a face seen within ``TRACKING_LOST_S``), ``"watching"`` while
-        tracking is on and nobody has been seen for longer, ``None`` when tracking is
-        off or outside a session."""
-        tracker = self._tracker
-        if tracker is None or not self._tracking_wanted:
-            return None
-        return "engaged" if tracker.engaged else "watching"
+        follows a face, ``"watching"`` while tracking is on and it follows nobody, ``None``
+        when tracking is off or outside a session."""
+        return self._head_tracking.value.attention
+
+    @property
+    def head_tracking(self) -> Observable[HeadTrackingReport]:
+        """The head tracker's state (specs/motion/head_tracking.md "The head tracking
+        report"): ``head_tracking.value`` is the current :class:`HeadTrackingReport` —
+        ``active``, ``focus``, ``attention`` and the ``track_id`` of the face the head
+        follows, the link to :attr:`faces`. ``changes()`` wakes when tracking starts or
+        stops, focus switches, attention changes, or the head passes to another person —
+        never on a face merely moving. Readable at any time: outside a session it is the
+        inactive report."""
+        return self._head_tracking
 
     # --- faces (perception) ---
 
@@ -780,7 +805,7 @@ class ReachyMiniBridge:
         """Whether the detection loop runs for the caller's sake.
 
         A mode needing no motors (nothing moves) but a configured detector
-        (``faces.detector``; enabling with none is a ``ValueError``). The loop also runs
+        (``face_detection.detector``; enabling with none is a ``ValueError``). The loop also runs
         whenever head tracking is on, whatever this says; ``faces.value.active`` reports
         what is actually running. Needs an entered session (:class:`BridgeError`
         otherwise); a detector that cannot be built raises ``BridgeError`` and leaves
@@ -802,25 +827,25 @@ class ReachyMiniBridge:
 
     @property
     def face_detection(self) -> bool:
-        """The caller's detection switch — the config's ``faces.detection`` outside a
+        """The caller's detection switch — the config's ``face_detection.enabled`` outside a
         session."""
         return self._face_detection_wanted
 
     def _require_detector(self) -> None:
-        if self._config.faces.detector is None:
+        if self._config.face_detection.detector is None:
             raise ValueError(_NO_DETECTOR_MESSAGE)
 
     @staticmethod
     def _check_face_detector(factory: object) -> None:
         if factory is None:
             raise ValueError(
-                "faces.detector is 'custom' but no face detector is registered: set "
-                "FaceSettings.face_detector or call set_face_detector(...)"
+                "face_detection.detector is 'custom' but no face detector is registered: set "
+                "FaceDetectionSettings.face_detector or call set_face_detector(...)"
             )
         check_face_detector_factory(factory)
 
     async def set_face_detector(self, factory: FaceDetectorFactory | None) -> None:
-        """Register the custom detector for ``faces.detector: "custom"``
+        """Register the custom detector for ``face_detection.detector: "custom"``
         (specs/vision/user_perception.md "Custom detectors"): a zero-argument callable
         returning an object with ``detect(frame_bgr, ts) -> Sequence[PixelFace]`` — a
         class is one — or ``None`` to clear it.
@@ -835,7 +860,7 @@ class ReachyMiniBridge:
             check_face_detector_factory(factory)
         self._face_detector = factory
         detection = self._detection
-        if detection is None or self._config.faces.detector != "custom":
+        if detection is None or self._config.face_detection.detector != "custom":
             return
         detection.restart(factory)
         if factory is None:

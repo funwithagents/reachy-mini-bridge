@@ -203,7 +203,9 @@ def build_app(controller: ControlPanelController) -> gr.Blocks:
                 with gr.Row():
                     wobbling = gr.Checkbox(config.motion.wobbling, label="Wobbling")
                     presence = gr.Checkbox(config.motion.presence, label="Presence")
-                    detection = gr.Checkbox(config.faces.detection, label="Detection")
+                    detection = gr.Checkbox(
+                        config.face_detection.enabled, label="Detection"
+                    )
                     idle = gr.Radio(
                         list(IDLE_MODES), value=config.motion.idle, label="Idle"
                     )

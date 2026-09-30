@@ -28,7 +28,7 @@ from reachy_mini_bridge import robot as robot_module
 from reachy_mini_bridge.bridge import ReachyMiniBridge
 from reachy_mini_bridge.config import (
     DaemonConfig,
-    FaceSettings,
+    FaceDetectionSettings,
     MotionSettings,
     ReachyMiniConfig,
 )
@@ -40,6 +40,7 @@ from reachy_mini_bridge.errors import (
 )
 from reachy_mini_bridge.face_detection import FaceReport, PixelFace
 from reachy_mini_bridge.fake_reachy_mini import FAKE_FRAME_HZ, FakeReachyMini
+from reachy_mini_bridge.head_tracking import HeadTrackingReport
 from reachy_mini_bridge.motion import (
     ANTENNA_MIN_RAD,
     ANTENNA_OUTWARD,
@@ -152,6 +153,7 @@ def test_package_front_door_drives_the_fake() -> None:
         "FaceDetector",
         "FaceReport",
         "GravityCompensationUnsupportedError",
+        "HeadTrackingReport",
         "IdleMove",
         "IdleOffsets",
         "MotorsNotEnabledError",
@@ -1130,7 +1132,7 @@ def test_tracking_property_reads_the_config() -> None:
 
 
 def test_the_default_config_runs_no_detector_and_the_switches_refuse() -> None:
-    """specs/vision/user_perception.md "Detectors": with `faces.detector` null nothing is
+    """specs/vision/user_perception.md "Detectors": with `face_detection.detector` null nothing is
     detected and nothing tracks; the switches raise, and the session works otherwise."""
     bridge = ReachyMiniBridge("fake")
 
@@ -1138,9 +1140,9 @@ def test_the_default_config_runs_no_detector_and_the_switches_refuse() -> None:
         async with bridge:
             await asyncio.sleep(0.2)
             report = bridge.faces.value
-            with pytest.raises(ValueError, match=r"faces\.detector is null"):
+            with pytest.raises(ValueError, match=r"face_detection\.detector is null"):
                 await bridge.start_head_tracking()
-            with pytest.raises(ValueError, match=r"faces\.detector is null"):
+            with pytest.raises(ValueError, match=r"face_detection\.detector is null"):
                 await bridge.set_face_detection(True)
             await bridge.set_face_detection(False)  # off is fine
             await bridge.stop_head_tracking()
@@ -1171,12 +1173,14 @@ def test_a_switch_on_without_a_detector_fails_entry_before_anything_starts() -> 
         ReachyMiniConfig(backend="fake", motion=MotionSettings(tracking=True))
     )
     detection = ReachyMiniBridge(
-        ReachyMiniConfig(backend="fake", faces=FaceSettings(detection=True))
+        ReachyMiniConfig(
+            backend="fake", face_detection=FaceDetectionSettings(enabled=True)
+        )
     )
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(bridge_module, "build_robot", build)
         for bridge in (tracking, detection):
-            with pytest.raises(ValueError, match=r"faces\.detector is null"):
+            with pytest.raises(ValueError, match=r"face_detection\.detector is null"):
                 asyncio.run(bridge.start())
     assert robots == []
 
@@ -1200,7 +1204,9 @@ def test_a_detector_that_cannot_be_built_fails_bring_up_and_unwinds() -> None:
     factory = _FlakyFactory(_Scene([]))
     config = ReachyMiniConfig(
         backend="fake",
-        faces=FaceSettings(detector="custom", detection=True, face_detector=factory),
+        face_detection=FaceDetectionSettings(
+            detector="custom", enabled=True, face_detector=factory
+        ),
     )
     robots: list[Any] = []
     real_build = bridge_module.build_robot
@@ -1249,6 +1255,7 @@ def test_a_detector_that_cannot_be_built_leaves_a_switch_as_it_was() -> None:
 @pytest.fixture
 def fast_attention(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(head_tracking_module, "TRACKING_LOST_S", 0.3)
+    monkeypatch.setattr(head_tracking_module, "TRACKING_SWITCH_S", 0.15)
     monkeypatch.setattr(face_detection_module, "FACE_POLL_HZ", 20.0)
 
 
@@ -1274,8 +1281,150 @@ def test_attention_follows_the_face(fast_attention: None) -> None:
     assert asyncio.run(run()) == ["watching", "engaged", "watching", None]
 
 
+def test_the_configured_width_and_ceiling_reach_the_shipped_detector(
+    monkeypatch: pytest.MonkeyPatch, fast_faces: None
+) -> None:
+    """`face_detection.width` is handed to the shipped detector's constructor, and the
+    loop runs under `target_fps` (specs/vision/user_perception.md "Configuration")."""
+    scene = _Scene([_pixel_face(0.0)])
+    widths: list[int | None] = []
+
+    def shipped(width: int | None = None) -> _StubDetector:
+        widths.append(width)
+        return _StubDetector(scene)
+
+    monkeypatch.setattr(face_detection_module, "_yunet_factory", shipped)
+    config = ReachyMiniConfig(
+        backend="fake",
+        face_detection=FaceDetectionSettings(
+            detector="yunet", enabled=True, width=640, target_fps=2.0
+        ),
+    )
+
+    async def run() -> int:
+        async with ReachyMiniBridge(config) as bridge:
+            await bridge.faces.wait_for(lambda r: bool(r.faces))
+            scene.calls = 0
+            await asyncio.sleep(1.5)
+            return scene.calls
+
+    calls = asyncio.run(run())
+    assert widths == [640]
+    assert 2 <= calls <= 4, calls  # about two a second, under the fake's frame rate
+
+
 def test_attention_is_none_outside_a_session() -> None:
     assert ReachyMiniBridge("fake").attention is None
+
+
+# --- the head tracking report (specs/motion/head_tracking.md "The head tracking report") ----
+
+
+def _state(report: HeadTrackingReport) -> tuple[bool, bool, str | None, int | None]:
+    return (report.active, report.focus, report.attention, report.track_id)
+
+
+def test_the_head_tracking_report_wakes_on_each_change_of_state(
+    fast_attention: None,
+) -> None:
+    """`bridge.head_tracking.changes()` wakes on tracking starting, engaging a face (its
+    track_id, the one `bridge.faces` reports), a focus switch, the loss, and tracking
+    stopping — each once, and never while the face merely moves."""
+    scene = _Scene([])
+    bridge = ReachyMiniBridge(_custom_config(scene, tracking=False))
+    assert bridge.head_tracking.value == HeadTrackingReport.inactive()
+
+    async def run() -> tuple[list[HeadTrackingReport], int, float, float]:
+        woken: list[HeadTrackingReport] = []
+
+        async def subscribe() -> None:
+            async for report in bridge.head_tracking.changes():
+                woken.append(report)
+
+        subscriber = asyncio.create_task(subscribe())
+        await asyncio.sleep(0)
+        async with bridge:
+            await bridge.start_head_tracking()
+            scene.show(0.0)
+            await asyncio.sleep(0.4)
+            face_id = bridge.faces.value.faces[0].track_id
+            ts_before = bridge.head_tracking.value.ts
+            for x in (0.1, 0.2, 0.3):  # the face moves: fresh ts, no wake
+                scene.show(x)
+                await asyncio.sleep(0.15)
+            ts_after = bridge.head_tracking.value.ts
+            await bridge.start_head_tracking(focus=True)
+            await asyncio.sleep(0.05)
+            scene.hide()
+            await asyncio.sleep(0.3 + 0.3)  # TRACKING_LOST_S, and a few frames
+            await bridge.stop_head_tracking()
+            await asyncio.sleep(0.05)
+        await asyncio.sleep(0)
+        subscriber.cancel()
+        return woken, face_id, ts_before, ts_after
+
+    woken, face_id, ts_before, ts_after = asyncio.run(run())
+    assert face_id >= 1
+    assert [_state(r) for r in woken] == [
+        (True, False, "watching", None),  # tracking started
+        (True, False, "engaged", face_id),  # the face engaged
+        (True, True, "engaged", face_id),  # focus switched
+        (True, True, "watching", None),  # the loss
+        (False, False, None, None),  # tracking stopped
+    ]
+    assert ts_after > ts_before
+    assert bridge.head_tracking.value == HeadTrackingReport.inactive()
+
+
+def test_the_head_tracking_report_outlives_sessions(fast_attention: None) -> None:
+    """The observable is the bridge's: tracking on from the config publishes the active
+    report at every entry and the inactive one at every exit, to the same subscriber."""
+    bridge = ReachyMiniBridge(_custom_config(_Scene([])))
+
+    async def run() -> list[tuple[bool, bool, str | None, int | None]]:
+        woken: list[HeadTrackingReport] = []
+
+        async def subscribe() -> None:
+            async for report in bridge.head_tracking.changes():
+                woken.append(report)
+
+        subscriber = asyncio.create_task(subscribe())
+        await asyncio.sleep(0)
+        for _ in range(2):
+            async with bridge:
+                await asyncio.sleep(0.05)
+            await asyncio.sleep(0)
+        subscriber.cancel()
+        return [_state(r) for r in woken]
+
+    assert (
+        asyncio.run(run())
+        == [
+            (True, False, "watching", None),
+            (False, False, None, None),
+        ]
+        * 2
+    )
+
+
+def test_a_head_tracking_subscriber_cancelled_mid_wait_ends_cleanly(
+    fast_attention: None,
+) -> None:
+    async def run() -> bool:
+        async with ReachyMiniBridge(_custom_config(_Scene([]))) as bridge:
+
+            async def wait() -> None:
+                await bridge.head_tracking.wait_for(lambda r: r.track_id == 99)
+
+            waiter = asyncio.create_task(wait())
+            await asyncio.sleep(0.05)
+            waiter.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await waiter
+            await bridge.stop_head_tracking()  # the session still works
+            return bridge.head_tracking.value.active
+
+    assert asyncio.run(run()) is False
 
 
 def test_the_head_turns_toward_a_face_and_back_once_it_is_gone(
@@ -1517,13 +1666,17 @@ def test_a_custom_source_without_a_detector_fails_before_anything_is_entered() -
         return robots[-1]
 
     bridge = ReachyMiniBridge(
-        ReachyMiniConfig(backend="fake", faces=FaceSettings(detector="custom"))
+        ReachyMiniConfig(
+            backend="fake", face_detection=FaceDetectionSettings(detector="custom")
+        )
     )
     not_callable: Any = 42
     bad = ReachyMiniBridge(
         ReachyMiniConfig(
             backend="fake",
-            faces=FaceSettings(detector="custom", face_detector=not_callable),
+            face_detection=FaceDetectionSettings(
+                detector="custom", face_detector=not_callable
+            ),
         )
     )
     with pytest.MonkeyPatch.context() as mp:
@@ -1880,9 +2033,9 @@ def _custom_config(
     motion.setdefault("tracking", True)
     return ReachyMiniConfig(
         backend="fake",
-        faces=FaceSettings(
+        face_detection=FaceDetectionSettings(
             detector="custom",
-            detection=detection,
+            enabled=detection,
             face_detector=None if scene is None else scene.detector,
         ),
         motion=MotionSettings(**motion),

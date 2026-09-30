@@ -3,8 +3,8 @@ observable face report (specs/vision/user_perception.md).
 
 The loop samples the camera feed ([camera](camera.py)) at ``FACE_POLL_HZ``, hands each
 new frame to its detector — the shipped ``yunet`` ([yunet](yunet.py), upstream's model)
-or a developer's ``custom`` ``FaceDetector`` — selects the target face itself, turns the
-result into a ``FaceReport``, ``update``s the bridge's ``Observable[FaceReport]`` on every
+or a developer's ``custom`` ``FaceDetector`` — carries every face's ``track_id`` from
+frame to frame, turns the result into a ``FaceReport``, ``update``s the bridge's ``Observable[FaceReport]`` on every
 observation and ``set``s it (wakes subscribers) only when the face count changes — a rise
 at once, a drop once it has held for ``FACE_ABSENT_S`` — or when ``active`` flips.
 Detection is opt-in: a config names the detector, and with none nothing runs.
@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import threading
 import time
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
@@ -31,12 +32,12 @@ if TYPE_CHECKING:
 
 __all__ = [
     "FACE_ABSENT_S",
+    "FACE_COST_LOG_S",
     "FACE_DETECTOR_NAMES",
     "FACE_POLL_HZ",
     "FACE_SOURCE_DOWN_S",
-    "SELECT_MAX_JUMP",
-    "SELECT_MAX_MISSES",
-    "SELECT_MIN_AREA_FRAC",
+    "TRACK_MAX_JUMP",
+    "TRACK_MAX_MISSES",
     "Face",
     "FaceDetection",
     "FaceDetector",
@@ -58,14 +59,16 @@ _logger = logging.getLogger(__name__)
 FACE_POLL_HZ = 30.0
 FACE_ABSENT_S = 0.3  # a drop in the count is published once it has held this long
 FACE_SOURCE_DOWN_S = 5.0  # a detector producing nothing this long reads as not looking
-# The selection gates (specs/vision/user_perception.md "The pipeline"), upstream's own values
-# so the bridge selects as the daemon's tracker does: acquire the largest face above this
-# fraction of the frame's area, keep the nearest face within this jump (normalised image
-# units, [-1, 1] across the frame), drop the association after this many consecutive
-# misses.
-SELECT_MIN_AREA_FRAC = 0.003
-SELECT_MAX_JUMP = 0.5
-SELECT_MAX_MISSES = 20
+# The detector's cost (mean detect time, observations per second) is logged once per run,
+# this long after its first observation — the numbers `width` / `target_fps` are tuned by.
+FACE_COST_LOG_S = 10.0
+# The tracks' gates (specs/vision/user_perception.md "Tracks"), upstream's association values:
+# a face continues a track whose last centre lies within this jump (normalised image
+# units, [-1, 1] across the frame); a track is dropped after this many consecutive
+# observations without its face. Whom the head follows is the head tracker's choice
+# (specs/motion/head_tracking.md "Whom the head follows").
+TRACK_MAX_JUMP = 0.5
+TRACK_MAX_MISSES = 20
 
 # The detectors a config names (specs/vision/user_perception.md "Detectors"); `None` is none.
 FACE_DETECTOR_NAMES = ("yunet", "custom")
@@ -73,24 +76,47 @@ FACE_DETECTOR_NAMES = ("yunet", "custom")
 
 @dataclass(frozen=True)
 class Face:
-    """One face in front of the robot, in the tracker's normalised image coordinates."""
+    """One face in front of the robot (specs/vision/user_perception.md "The face report"): in
+    the tracker's normalised image coordinates, under the track that follows it."""
 
     x: float  # [-1, 1], x right; the nose when known, else the bbox centre
     y: float  # [-1, 1], y down; (0, 0) is the image centre
-    roll: float | None  # head roll in radians from the eye line; None when unknown
+    # head roll in radians: the detector's fitted orientation when it gives one, else from
+    # the eye line; None when it gives neither
+    roll: float | None
     size: float  # bbox height as a fraction of the frame height
+    # the same positive integer for the same person from frame to frame, never reused
+    # (0 only on a Face built outside the loop)
+    track_id: int = 0
+    # x, y, width, height in pixels of the report's frame
+    bbox: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    # head pitch (positive down) / yaw (positive toward the image's right) in radians,
+    # from a detector that fits a head; None otherwise
+    pitch: float | None = None
+    yaw: float | None = None
 
 
 @dataclass(frozen=True)
 class FaceReport:
     """Who the detection loop sees: the value of ``bridge.faces``."""
 
-    faces: tuple[Face, ...]  # every face the detector reports; the target face first
+    faces: tuple[
+        Face, ...
+    ]  # every face the detector reports, by track_id (oldest first)
     ts: float  # the frame's time (the bridge's monotonic clock, specs/vision/camera.md)
     source: str | None  # the detector's name: "yunet" | "custom"; None when none is set
     active: bool  # a detector is running; False means "unknown", not "nobody"
     # The head pose the frame was captured from, when the camera feed could stamp it.
     head_pose: npt.NDArray[np.float64] | None = field(default=None, compare=False)
+    # The camera frame the faces were found in (shared read-only, specs/vision/camera.md);
+    # None while inactive. Kept by reference until the next observation.
+    frame: CameraFrame | None = field(default=None, compare=False)
+
+    @property
+    def frame_id(self) -> int:
+        """The frame's ``frame_id`` (0 without a frame): what a vision graph node
+        stale-skips on when it samples the bridge's faces."""
+        return 0 if self.frame is None else self.frame.frame_id
 
     @classmethod
     def inactive(cls, source: str | None) -> FaceReport:
@@ -108,6 +134,9 @@ class PixelFace:
     bbox: tuple[float, float, float, float]  # x, y, width, height
     nose: tuple[float, float] | None = None  # the point the head aims at
     eyes: tuple[tuple[float, float], tuple[float, float]] | None = None  # right, left
+    # roll, pitch, yaw in radians from a detector that fits a head, in the report's
+    # convention (specs/vision/user_perception.md "The face report"); preferred over the eyes
+    orientation: tuple[float, float, float] | None = None
 
 
 class FaceDetector(Protocol):
@@ -116,7 +145,8 @@ class FaceDetector(Protocol):
     ``detect`` runs on a worker thread once per new camera frame — the frame is the
     feed's, shared and read-only (copy before drawing) — and returns the faces it sees,
     in any order, within a frame period (a slower call skips frames, never queues them).
-    It never touches the robot or the bridge; its dependencies are its own.
+    It never touches the robot or the bridge; its dependencies are its own. A detector
+    may also have a ``close()``, called on a worker thread when the loop lets go of it.
     """
 
     def detect(
@@ -169,116 +199,131 @@ def _pixel_centre(face: PixelFace) -> tuple[float, float]:
     return (x + w / 2.0, y + h / 2.0)
 
 
-def _area(face: PixelFace) -> float:
-    return face.bbox[2] * face.bbox[3]
-
-
 def _dist2(a: tuple[float, float], b: tuple[float, float]) -> float:
     return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2
 
 
-class _FaceSelector:
-    """Which of a detector's faces is the target (specs/vision/user_perception.md "The
-    pipeline"): acquire the largest face above the minimum size, then keep the nearest
-    to the previous target while it stays within the jump gate, dropping the association
-    after a run of misses. Pure geometry, upstream's rule re-implemented; no smoothing —
-    the tracker smooths the aim in the world frame."""
+@dataclass
+class _Track:
+    track_id: int
+    centre: tuple[float, float]  # normalised, on its last observation
+    misses: int = 0
+
+
+class _FaceTracks:
+    """Every face's ``track_id`` (specs/vision/user_perception.md "Tracks"): each observation's
+    faces continue the tracks whose centres lie nearest, within ``TRACK_MAX_JUMP`` —
+    pairs taken nearest first, each track and face used once; an unmatched face opens a
+    track with ``new_id()``; an unmatched track counts a miss and is dropped after
+    ``TRACK_MAX_MISSES``. Pure geometry, no smoothing, no face singled out — whom the
+    head follows is the head tracker's choice."""
 
     def __init__(
         self,
-        min_area_frac: float = SELECT_MIN_AREA_FRAC,
-        max_jump: float = SELECT_MAX_JUMP,
-        max_misses: int = SELECT_MAX_MISSES,
+        new_id: Callable[[], int],
+        max_jump: float | None = None,
+        max_misses: int | None = None,
     ) -> None:
-        self._min_area_frac = min_area_frac
+        self._new_id = new_id
         self._max_jump = max_jump
         self._max_misses = max_misses
-        self._centre: tuple[float, float] | None = None  # normalised
-        self._misses = 0
+        self._tracks: list[_Track] = []
 
-    def select(self, faces: Sequence[PixelFace], size: tuple[int, int]) -> int | None:
-        """The index of the target face in ``faces``, or ``None`` for no target."""
-        width, height = size
-        candidates = [
-            i
-            for i, face in enumerate(faces)
-            if _area(face) >= self._min_area_frac * width * height
-        ]
-        if not candidates:
-            self._miss()
-            return None
-        if self._centre is not None:
-            centre = self._centre
-            nearest = min(
-                candidates,
-                key=lambda i: _dist2(
-                    _normalised(*_pixel_centre(faces[i]), size), centre
-                ),
-            )
-            if (
-                _dist2(_normalised(*_pixel_centre(faces[nearest]), size), centre)
-                <= self._max_jump**2
-            ):
-                return self._keep(nearest, faces, size)
-            self._miss()
-            if self._centre is not None:
-                return None  # the association holds through the miss
-        return self._keep(max(candidates, key=lambda i: _area(faces[i])), faces, size)
-
-    def _keep(
-        self, index: int, faces: Sequence[PixelFace], size: tuple[int, int]
-    ) -> int:
-        self._centre = _normalised(*_pixel_centre(faces[index]), size)
-        self._misses = 0
-        return index
-
-    def _miss(self) -> None:
-        self._misses += 1
-        if self._misses > self._max_misses:
-            self._centre = None
+    def update(self, faces: Sequence[PixelFace], size: tuple[int, int]) -> list[int]:
+        """The ``track_id`` of each of ``faces``, in their order."""
+        max_jump = TRACK_MAX_JUMP if self._max_jump is None else self._max_jump
+        max_misses = TRACK_MAX_MISSES if self._max_misses is None else self._max_misses
+        centres = [_normalised(*_pixel_centre(face), size) for face in faces]
+        pairs = sorted(
+            (d2, t, f)
+            for t, track in enumerate(self._tracks)
+            for f, centre in enumerate(centres)
+            if (d2 := _dist2(track.centre, centre)) <= max_jump**2
+        )
+        ids: list[int | None] = [None] * len(faces)
+        matched: set[int] = set()
+        for _d2, t, f in pairs:
+            if t in matched or ids[f] is not None:
+                continue
+            track = self._tracks[t]
+            track.centre, track.misses = centres[f], 0
+            ids[f] = track.track_id
+            matched.add(t)
+        survivors: list[_Track] = []
+        for t, track in enumerate(self._tracks):
+            if t not in matched:
+                track.misses += 1
+                if track.misses > max_misses:
+                    continue
+            survivors.append(track)
+        for f, track_id in enumerate(ids):
+            if track_id is None:
+                track = _Track(self._new_id(), centres[f])
+                survivors.append(track)
+                ids[f] = track.track_id
+        self._tracks = survivors
+        return [track_id for track_id in ids if track_id is not None]
 
 
 def report_from_pixels(
     faces: Sequence[PixelFace],
     size: tuple[int, int],
     frame: CameraFrame,
-    target_index: int | None,
+    track_ids: Sequence[int],
     *,
     source: str = "custom",
 ) -> FaceReport:
     """A detector's faces on ``frame`` (``size`` = its width, height) as a report:
-    every face normalised into the tracker's coordinates, its roll from the eyes when
-    given, its size as the bbox height over the frame's; the target face first; the
-    frame's ``ts`` and ``head_pose`` carried over."""
+    every face normalised into the tracker's coordinates under its ``track_id``, its
+    pixel box kept, its roll / pitch / yaw from the detector's ``orientation`` when given
+    (else its roll from the eyes), its size as the bbox height over the frame's; the
+    faces in ``track_id`` order; the frame, its ``ts`` and ``head_pose`` carried over."""
     _width, height = size
-    order = list(range(len(faces)))
-    if target_index is not None:
-        order.remove(target_index)
-        order.insert(0, target_index)
     reported: list[Face] = []
-    for i in order:
-        face = faces[i]
+    for face, track_id in sorted(
+        zip(faces, track_ids, strict=True), key=lambda p: p[1]
+    ):
         x, y = _normalised(*_pixel_centre(face), size)
-        roll = None
-        if face.eyes is not None:
+        roll = pitch = yaw = None
+        if face.orientation is not None:
+            roll, pitch, yaw = (float(a) for a in face.orientation)
+        elif face.eyes is not None:
             (right_x, right_y), (left_x, left_y) = face.eyes
             roll = math.atan2(left_y - right_y, left_x - right_x)
-        reported.append(Face(x=x, y=y, roll=roll, size=face.bbox[3] / max(height, 1)))
+        reported.append(
+            Face(
+                x=x,
+                y=y,
+                roll=roll,
+                size=face.bbox[3] / max(height, 1),
+                track_id=track_id,
+                bbox=(
+                    float(face.bbox[0]),
+                    float(face.bbox[1]),
+                    float(face.bbox[2]),
+                    float(face.bbox[3]),
+                ),
+                pitch=pitch,
+                yaw=yaw,
+            )
+        )
     return FaceReport(
         faces=tuple(reported),
         ts=frame.ts,
         source=source,
         active=True,
         head_pose=frame.head_pose,
+        frame=frame,
     )
 
 
-def _yunet_factory() -> FaceDetector:
-    """The shipped detector's factory (specs/vision/user_perception.md "The shipped detector");
-    imported here, not at module load, since `yunet.py` imports this module."""
+def _yunet_factory(width: int | None = None) -> FaceDetector:
+    """The shipped detector's factory (specs/vision/user_perception.md "The shipped detector"),
+    at the config's ``width`` (``None``: its own); imported here, not at module load,
+    since `yunet.py` imports this module."""
     from .yunet import YuNetDetector
 
-    return YuNetDetector()
+    return YuNetDetector(width=width)
 
 
 # --- the loop -------------------------------------------------------------------------------
@@ -305,18 +350,40 @@ class FaceDetection:
         on_observation: Callable[[FaceReport], None] | None = None,
         feed: CameraFeed | None = None,
         detector_factory: FaceDetectorFactory | None = None,
+        width: int | None = None,
+        target_fps: float | None = None,
     ) -> None:
         self._name = detector
+        self._width = width
+        self._target_fps = target_fps
         self._faces = faces
         self._on_observation = on_observation
         self._feed = feed
         self._detector_factory = detector_factory
         self._task: asyncio.Task[None] | None = None
         # The runner state: the detector in use (built from the factory at start and
-        # rebuilt after `restart`), the selector, the last frame handed over.
+        # rebuilt after `restart`), the tracks, the last frame handed over. Track ids
+        # come from a counter that outlives runs, so an id is never reused.
         self._detector: FaceDetector | None = None
-        self._selector = _FaceSelector()
+        # A detector replaced by `restart`, released before its successor is built.
+        self._retired: FaceDetector | None = None
+        # detect and close never overlap: a stop that cancels the loop mid-detect releases
+        # the detector only once that call has returned (the call runs on in its thread).
+        self._detector_lock = threading.Lock()
+        self._next_track_id = 1
+        self._tracks = _FaceTracks(self._new_track_id)
         self._last_frame_id = 0
+        # target_fps: when the detector last started; the cost log's window.
+        self._last_detect_at: float | None = None
+        self._cost_since: float | None = None
+        self._cost_calls = 0
+        self._cost_total_s = 0.0
+        self._cost_logged = False
+
+    def _new_track_id(self) -> int:
+        track_id = self._next_track_id
+        self._next_track_id += 1
+        return track_id
 
     @property
     def running(self) -> bool:
@@ -328,16 +395,20 @@ class FaceDetection:
         cannot run: no detector named, ``custom`` with none registered, no feed."""
         if self._name is None:
             raise ValueError(
-                "no face detector is configured (faces.detector is null): name one — "
+                "no face detector is configured (face_detection.detector is null): name one — "
                 '"yunet", the shipped detector, or "custom" with a registered factory'
             )
         if self._name == "yunet":
-            factory: FaceDetectorFactory = _yunet_factory
+            width = self._width
+
+            def factory() -> FaceDetector:
+                return _yunet_factory(width)
+
         elif self._name == "custom":
             if self._detector_factory is None:
                 raise ValueError(
-                    "faces.detector is 'custom' but no face detector is registered: "
-                    "set FaceSettings.face_detector or call set_face_detector(...)"
+                    "face_detection.detector is 'custom' but no face detector is registered: "
+                    "set FaceDetectionSettings.face_detector or call set_face_detector(...)"
                 )
             factory = self._detector_factory
         else:
@@ -357,14 +428,20 @@ class FaceDetection:
             return
         factory = self._factory()
         self._detector = await asyncio.to_thread(factory)
-        self._selector = _FaceSelector()
+        self._tracks = _FaceTracks(self._new_track_id)
+        self._last_detect_at = None
+        self._cost_since, self._cost_calls, self._cost_total_s = None, 0, 0.0
+        self._cost_logged = False
         self._task = asyncio.create_task(self._run(), name="face-detection")
 
     def restart(self, detector_factory: FaceDetectorFactory | None) -> None:
         """Register another detector factory (already checked). While the loop runs in
         ``custom`` mode the next poll builds the new detector (on a worker thread) and
-        starts selecting afresh — the swap happens between two polls."""
+        starts its tracks afresh — the swap happens between two polls, the replaced
+        detector released (``close()``) before its successor is built."""
         self._detector_factory = detector_factory
+        if self._detector is not None:
+            self._retired = self._detector
         self._detector = None
 
     async def stop(self) -> None:
@@ -376,9 +453,62 @@ class FaceDetection:
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
-        self._detector = None
+        detector, retired = self._detector, self._retired
+        self._detector = self._retired = None
+        for released in (retired, detector):
+            if released is not None:
+                await self._release(released)
         if task is not None or self._faces.value.active:
             self._faces.set(FaceReport.inactive(self._name))
+
+    async def _release(self, detector: FaceDetector) -> None:
+        """Call the detector's ``close()``, when it has one, on a worker thread — once
+        any ``detect`` in flight has returned. A raise is logged and ignored."""
+        close = getattr(detector, "close", None)
+        if not callable(close):
+            return
+
+        def locked_close() -> None:
+            with self._detector_lock:
+                close()
+
+        try:
+            await asyncio.to_thread(locked_close)
+        except Exception as e:  # noqa: BLE001 - releasing is best effort
+            _logger.debug("face detection: the detector's close() failed: %s", e)
+
+    def _locked_detect(
+        self, detector: FaceDetector, image: npt.NDArray[np.uint8], ts: float
+    ) -> tuple[Sequence[PixelFace], float]:
+        """``detect`` under the lock ``close`` takes, timed."""
+        with self._detector_lock:
+            started = time.monotonic()
+            faces = detector.detect(image, ts)
+            return faces, time.monotonic() - started
+
+    def _account(self, call_s: float) -> None:
+        """The cost log (specs/vision/user_perception.md "The detection loop"): one ``INFO``
+        line, ``FACE_COST_LOG_S`` after the run's first observation."""
+        if self._cost_logged:
+            return
+        now = time.monotonic()
+        if self._cost_since is None:
+            self._cost_since = now
+        self._cost_calls += 1
+        self._cost_total_s += call_s
+        elapsed = now - self._cost_since
+        if elapsed >= FACE_COST_LOG_S:
+            self._cost_logged = True
+            _logger.info(
+                "face detection: the %s detector (width %s, target_fps %s) takes %.1f ms "
+                "a frame on average, %.1f observations/s over %.0f s",
+                self._name,
+                "its own" if self._width is None else self._width,
+                "none" if self._target_fps is None else f"{self._target_fps:g}",
+                1000.0 * self._cost_total_s / self._cost_calls,
+                (self._cost_calls - 1) / elapsed,
+                elapsed,
+            )
 
     async def _poll(self) -> FaceReport | None:
         """One observation, or ``None`` when the feed has nothing new (no frame yet, a
@@ -393,18 +523,34 @@ class FaceDetection:
                 return (
                     None  # cleared while running: the bridge stops the loop right after
                 )
+            retired, self._retired = self._retired, None
+            if retired is not None:
+                await self._release(retired)
             detector = self._detector = await asyncio.to_thread(factory)
-            self._selector = _FaceSelector()
+            self._tracks = _FaceTracks(self._new_track_id)
         frame = feed.latest()
         if frame is None or frame.frame_id == self._last_frame_id:
             return None  # nothing new: the detector runs once per frame
-        # Marked before the detector runs: a frame it raises on is not retried.
+        # Marked before the detector runs: a frame it raises on — or one skipped under
+        # the rate ceiling — is not retried.
         self._last_frame_id = frame.frame_id
-        faces = await asyncio.to_thread(detector.detect, frame.image, frame.ts)
+        now = time.monotonic()
+        target_fps = self._target_fps
+        if (
+            target_fps is not None
+            and self._last_detect_at is not None
+            and now - self._last_detect_at < 1.0 / target_fps
+        ):
+            return None  # under the ceiling: the next frame after the period runs
+        self._last_detect_at = now
+        faces, call_s = await asyncio.to_thread(
+            self._locked_detect, detector, frame.image, frame.ts
+        )
+        self._account(call_s)
         height, width = frame.image.shape[:2]
         size = (int(width), int(height))
-        target = self._selector.select(faces, size)
-        return report_from_pixels(faces, size, frame, target, source=self._name)
+        track_ids = self._tracks.update(faces, size)
+        return report_from_pixels(faces, size, frame, track_ids, source=self._name)
 
     async def _run(self) -> None:
         published: FaceReport | None = None  # the last value `set`
@@ -422,14 +568,17 @@ class FaceDetection:
                 now = time.monotonic()
                 if failing_since is None:
                     failing_since = now
-                if not down and now - failing_since >= FACE_SOURCE_DOWN_S:
+                down_after = FACE_SOURCE_DOWN_S
+                if self._target_fps is not None:  # a slow ceiling is not a failure
+                    down_after = max(down_after, 2.0 / self._target_fps)
+                if not down and now - failing_since >= down_after:
                     down = True
                     _logger.warning(
                         "face detection: the %s detector has produced no observation "
                         "for %.0f s (no camera frame, or it keeps failing); reporting "
                         "detection inactive until it does",
                         self._name,
-                        FACE_SOURCE_DOWN_S,
+                        down_after,
                     )
                     base = last or FaceReport.inactive(self._name)
                     published = replace(base, active=False)

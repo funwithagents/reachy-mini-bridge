@@ -14,7 +14,7 @@ tests:
 
 # User perception — detecting the people in front of the robot (`face_detection.py`, `yunet.py`)
 
-**Status:** Updated
+**Status:** Implemented
 
 ## Purpose
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -32,7 +33,7 @@ if TYPE_CHECKING:
 __all__ = [
     "AudioSettings",
     "DaemonConfig",
-    "FaceSettings",
+    "FaceDetectionSettings",
     "MotionSettings",
     "ReachyMiniConfig",
     "SimCameraSettings",
@@ -315,49 +316,81 @@ class AudioSettings:
         return cls.from_dict(_load_file(path))
 
 
-# --- `faces` block ------------------------------------------------------------------
+# --- `face_detection` block ---------------------------------------------------------
 
 
 @dataclass
-class FaceSettings:
-    """Face detection (specs/vision/user_perception.md): which detector finds the faces and
-    whether the detection loop runs from session entry. Opt-in: with no detector named,
-    nothing is detected and nothing tracks."""
+class FaceDetectionSettings:
+    """Face detection (specs/vision/user_perception.md, specs/core/config.md): which detector
+    finds the faces, whether the detection loop runs from session entry, and what the
+    detector may cost. Opt-in: with no detector named, nothing is detected and nothing
+    tracks."""
 
     # The detector the bridge runs on the camera feed's frames: None (no detection),
     # "yunet" (the shipped detector, upstream's model) or "custom" (the caller's).
     detector: str | None = None
     # Run the detection loop from session entry, so `bridge.faces` reports who is there.
-    detection: bool = False
+    enabled: bool = False
+    # The width the shipped detector works at; None = its own (yunet: 320).
+    width: int | None = None
+    # A ceiling on detections per second; None = once per new camera frame.
+    target_fps: float | None = None
     # Python only: the custom detector's factory, used when detector is "custom".
     face_detector: Callable[[], FaceDetector] | None = None
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> FaceSettings:
-        block = _require_object(data, "faces")
+    def from_dict(cls, data: dict[str, Any]) -> FaceDetectionSettings:
+        block = _require_object(data, "face_detection")
         if "face_detector" in block:
             raise ConfigError(
-                "'faces.face_detector' is set from code, not from a dict / JSON config: "
-                "build FaceSettings(face_detector=...) or call set_face_detector(...)"
+                "'face_detection.face_detector' is set from code, not from a dict / JSON "
+                "config: build FaceDetectionSettings(face_detector=...) or call "
+                "set_face_detector(...)"
             )
-        _reject_unknown_keys(block, "faces", {"detector", "detection"})
+        _reject_unknown_keys(
+            block, "face_detection", {"detector", "enabled", "width", "target_fps"}
+        )
         detector = block.get("detector")
-        detection = block.get("detection", False)
+        enabled = block.get("enabled", False)
+        width = block.get("width")
+        target_fps = block.get("target_fps")
         if detector is not None and detector not in FACE_DETECTORS:
             raise ConfigError(
-                f"'faces.detector' must be null or one of {FACE_DETECTORS}, "
+                f"'face_detection.detector' must be null or one of {FACE_DETECTORS}, "
                 f"got {detector!r}"
             )
-        if not isinstance(detection, bool):
-            raise ConfigError("'faces.detection' must be a boolean")
-        return cls(detector=detector, detection=detection)
+        if not isinstance(enabled, bool):
+            raise ConfigError("'face_detection.enabled' must be a boolean")
+        if width is not None and (
+            isinstance(width, bool) or not isinstance(width, int) or width <= 0
+        ):
+            raise ConfigError(
+                "'face_detection.width' must be null or a positive integer, "
+                f"got {width!r}"
+            )
+        if target_fps is not None and (
+            isinstance(target_fps, bool)
+            or not isinstance(target_fps, int | float)
+            or not math.isfinite(target_fps)
+            or target_fps <= 0
+        ):
+            raise ConfigError(
+                "'face_detection.target_fps' must be null or a positive number, "
+                f"got {target_fps!r}"
+            )
+        return cls(
+            detector=detector,
+            enabled=enabled,
+            width=width,
+            target_fps=None if target_fps is None else float(target_fps),
+        )
 
     @classmethod
-    def from_json(cls, text: str) -> FaceSettings:
+    def from_json(cls, text: str) -> FaceDetectionSettings:
         return cls.from_dict(_loads(text))
 
     @classmethod
-    def from_json_file(cls, path: str | Path) -> FaceSettings:
+    def from_json_file(cls, path: str | Path) -> FaceDetectionSettings:
         return cls.from_dict(_load_file(path))
 
 
@@ -382,7 +415,7 @@ class MotionSettings:
     # Audio-reactive head sway, enabled on entry.
     wobbling: bool = True
     # The bridge's head tracker, on from session entry (a mode: no motors needed, but a
-    # `faces.detector`).
+    # `face_detection.detector`).
     tracking: bool = False
 
     @classmethod
@@ -436,8 +469,9 @@ class ReachyMiniConfig:
     # a tts-engine ``engine`` block, verbatim
     tts: dict[str, Any] | None = None
     audio: AudioSettings = field(default_factory=AudioSettings)
-    # face detection: the detector (None / yunet / custom) and whether it runs from entry
-    faces: FaceSettings = field(default_factory=FaceSettings)
+    # face detection: the detector (None / yunet / custom), whether it runs from entry,
+    # its cost knobs
+    face_detection: FaceDetectionSettings = field(default_factory=FaceDetectionSettings)
     # everything that shapes the robot's behaviour at rest (specs/core/config.md "motion block")
     motion: MotionSettings = field(default_factory=MotionSettings)
 
@@ -448,7 +482,7 @@ class ReachyMiniConfig:
         _reject_unknown_keys(
             top,
             "config",
-            {"backend", "robot", "daemon", "tts", "audio", "faces", "motion"},
+            {"backend", "robot", "daemon", "tts", "audio", "face_detection", "motion"},
         )
 
         backend = top.get("backend", "real")
@@ -486,21 +520,23 @@ class ReachyMiniConfig:
 
         audio = AudioSettings.from_dict(top.get("audio", {}))
 
-        faces = FaceSettings.from_dict(top.get("faces", {}))
+        face_detection = FaceDetectionSettings.from_dict(top.get("face_detection", {}))
 
         motion = MotionSettings.from_dict(top.get("motion", {}))
-        if faces.detector is None and (faces.detection or motion.tracking):
+        if face_detection.detector is None and (
+            face_detection.enabled or motion.tracking
+        ):
             switches = [
                 name
                 for name, on in (
-                    ("faces.detection", faces.detection),
+                    ("face_detection.enabled", face_detection.enabled),
                     ("motion.tracking", motion.tracking),
                 )
                 if on
             ]
             raise ConfigError(
                 f"{' and '.join(repr(s) for s in switches)} need a face detector, but "
-                "'faces.detector' is null: name one (e.g. \"yunet\", the shipped "
+                "'face_detection.detector' is null: name one (e.g. \"yunet\", the shipped "
                 "detector) or turn the switch off"
             )
 
@@ -510,7 +546,7 @@ class ReachyMiniConfig:
             daemon=daemon,
             tts=tts,
             audio=audio,
-            faces=faces,
+            face_detection=face_detection,
             motion=motion,
         )
 
