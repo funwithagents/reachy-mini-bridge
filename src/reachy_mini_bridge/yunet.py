@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from .face_detection import PixelFace
+from .face_detection import DETECT_WIDTH, PixelFace
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -28,12 +28,6 @@ if TYPE_CHECKING:
     import numpy.typing as npt
 
 __all__ = ["DETECT_WIDTH", "YuNetDetector"]
-
-# The detector's own width (``face_detection.width: null``): frames are subsampled to about
-# this width before detection — upstream's own tracker detects at 320 px wide — so the
-# detector keeps up with the feed on one CPU thread whatever the camera's resolution
-# (1280 wide → stride 4, the Lite's 1920 → stride 6).
-DETECT_WIDTH = 320
 
 
 def _upstream_detector() -> Any:
@@ -49,14 +43,17 @@ class YuNetDetector:
     ``detect(frame_bgr) -> faces`` whose faces carry ``bbox``, ``nose``, ``right_eye``
     and ``left_eye`` in pixels; the default builds upstream's ``FaceDetector`` with its
     default thresholds (tests inject a stub so no model loads). ``width`` is the width it
-    detects at (``face_detection.width``): ``None`` is its own ``DETECT_WIDTH``; one at
-    least the frame's width detects on the full frame.
+    detects at (``face_detection.width``), ``DETECT_WIDTH`` by default; ``None`` detects on
+    the full frame.
     """
 
     def __init__(
-        self, upstream: Callable[[], Any] | None = None, *, width: int | None = None
+        self,
+        upstream: Callable[[], Any] | None = None,
+        *,
+        width: int | None = DETECT_WIDTH,
     ) -> None:
-        self._width = DETECT_WIDTH if width is None else width
+        self._width = width
         self._detector = (_upstream_detector if upstream is None else upstream)()
 
     def detect(
@@ -65,7 +62,7 @@ class YuNetDetector:
         """Every face in the frame, in pixels of the frame given (specs/vision/user_perception.md
         "Custom detectors"): detected on a strided subsample about the configured width
         wide, every point scaled back by the stride."""
-        step = max(1, frame_bgr.shape[1] // self._width)
+        step = 1 if self._width is None else max(1, frame_bgr.shape[1] // self._width)
         small = (
             np.ascontiguousarray(frame_bgr[::step, ::step]) if step > 1 else frame_bgr
         )

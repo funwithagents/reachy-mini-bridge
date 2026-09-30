@@ -331,8 +331,9 @@ class FaceDetectionSettings:
     detector: str | None = None
     # Run the detection loop from session entry, so `bridge.faces` reports who is there.
     enabled: bool = False
-    # The width the shipped detector works at; None = its own (yunet: 320).
-    width: int | None = None
+    # The width the shipped detector works at (face_detection.DETECT_WIDTH, upstream's own);
+    # None = the full frame.
+    width: int | None = 320
     # A ceiling on detections per second; None = once per new camera frame.
     target_fps: float | None = None
     # Python only: the custom detector's factory, used when detector is "custom".
@@ -352,7 +353,7 @@ class FaceDetectionSettings:
         )
         detector = block.get("detector")
         enabled = block.get("enabled", False)
-        width = block.get("width")
+        width = block.get("width", 320)
         target_fps = block.get("target_fps")
         if detector is not None and detector not in FACE_DETECTORS:
             raise ConfigError(

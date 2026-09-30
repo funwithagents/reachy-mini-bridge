@@ -838,7 +838,7 @@ def test_the_detectors_cost_is_logged_once_per_run(
         _run(run)
     lines = [r.getMessage() for r in caplog.records if "ms a frame" in r.getMessage()]
     assert len(lines) == 1, lines
-    assert "custom detector" in lines[0] and "its own" in lines[0]
+    assert "custom detector" in lines[0] and "width 320" in lines[0]
     rate = float(lines[0].split("average, ")[1].split(" observations")[0])
     assert rate > 0
 

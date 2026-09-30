@@ -28,12 +28,12 @@ The shape and the constructor trio mirror [`tts-engine`'s configuration](../../.
   "daemon": { "spawn": "auto", "headless": false, "camera": { "source": "webcam" } },
   "tts":    { "module": { "type": "elevenlabs", "api_key_env": "ELEVENLABS_API_KEY", "voice_id": "..." } },
   "audio":  { "xvf3800": null },
-  "face_detection": { "detector": "yunet", "enabled": true, "width": null, "target_fps": null },
+  "face_detection": { "detector": "yunet", "enabled": true, "width": 320, "target_fps": null },
   "motion": { "presence": true, "idle": "breathing", "wobbling": true, "tracking": true }
 }
 ```
 
-Every block is optional: `ReachyMiniConfig()` is a valid config — the `real` backend, upstream's connection defaults, no daemon management, no default synthesizer, firmware audio defaults, the `face_detection` defaults (no detector, detection off, each detector at its own width, no rate ceiling) and the `motion` defaults (presence and wobbling on, tracking off — it needs a detector — the idle mode `"breathing"`). `config.example.json` in the repo root documents every field with placeholder values and is kept in sync with this spec. It describes the **sim viewer seeing through the host webcam** (`backend: "sim"`, `daemon.spawn: "auto"`, `daemon.headless: false`, `daemon.camera.source: "webcam"`): the configuration that shows the most — the robot moving in the MuJoCo window, and its camera on the person in front of the computer, whom it follows (`face_detection.detector: "yunet"`, detection and tracking on) — so it is what the README and the [control panel](../examples/control_panel.md) start from — with `daemon.sim_displays.camera_overlay` on, so the viewer window also shows what the camera sees. Set `source` to `"sim"` for the rendered eye camera instead.
+Every block is optional: `ReachyMiniConfig()` is a valid config — the `real` backend, upstream's connection defaults, no daemon management, no default synthesizer, firmware audio defaults, the `face_detection` defaults (no detector, detection off, a 320 px detection width, no rate ceiling) and the `motion` defaults (presence and wobbling on, tracking off — it needs a detector — the idle mode `"breathing"`). `config.example.json` in the repo root documents every field with placeholder values and is kept in sync with this spec. It describes the **sim viewer seeing through the host webcam** (`backend: "sim"`, `daemon.spawn: "auto"`, `daemon.headless: false`, `daemon.camera.source: "webcam"`): the configuration that shows the most — the robot moving in the MuJoCo window, and its camera on the person in front of the computer, whom it follows (`face_detection.detector: "yunet"`, detection and tracking on) — so it is what the README and the [control panel](../examples/control_panel.md) start from — with `daemon.sim_displays.camera_overlay` on, so the viewer window also shows what the camera sees. Set `source` to `"sim"` for the rendered eye camera instead.
 
 ```python
 @dataclass
@@ -173,7 +173,7 @@ Face detection ([user_perception.md](../vision/user_perception.md)): which detec
 |---|---|---|---|
 | `detector` | `null` \| `"yunet"` \| `"custom"` | `null` | The face detector the bridge runs on the camera feed's frames ([camera.md](../vision/camera.md)). `null`: none — no detection, no tracking; `enabled: true` or `motion.tracking: true` is then a `ConfigError`. `yunet`: the shipped default, upstream's YuNet model run by the bridge ([user_perception.md](../vision/user_perception.md) "The shipped detector — `yunet.py`"); nothing to install, the weights downloaded into the Hugging Face cache on first use. `custom`: the caller's detector — any other model, a vision library's included; needs `face_detector`. |
 | `enabled` | bool | `false` | Run the detection loop from session entry, so `bridge.faces` reports who is there. Needs no motors, needs a `detector`. The loop also runs whenever head tracking is on ([user_perception.md](../vision/user_perception.md) "Configuration"), whatever this says. |
-| `width` | positive integer \| null | `null` | The width in pixels the shipped detector works at: the frame is subsampled by an integer stride to about this width before detection, every point scaled back. `null`: the shipped detector's own width — 320 for `yunet` (upstream's detection width). An integer overrides it; one at least the frame's width gives the full frame. Cost per frame against precision — 640 quadruples YuNet's cost and halves its landmark error. A custom detector's working width is its author's, so the field plays no part with `custom`. |
+| `width` | positive integer \| null | `320` | The width in pixels the shipped detector works at: the frame is subsampled by an integer stride to about this width before detection, every point scaled back. 320 is upstream's own detection width. `null`: the full frame, no subsampling. Cost per frame against precision — 640 quadruples YuNet's cost and halves its landmark error. A custom detector's working width is its author's, so the field plays no part with `custom`. |
 | `target_fps` | positive number \| null | `null` | A ceiling on detections per second, enforced by the loop skipping frames, for every detector. `null`: once per new camera frame. A ceiling, not a guarantee: the loop never detects faster than the feed delivers frames or the detector returns. The lever for the wireless robot, whose camera streams at a nominal 30 fps. |
 | `face_detector` | a zero-argument callable returning a `FaceDetector`, or `None` — **Python only** | `None` | The custom detector's factory, used when `detector` is `"custom"` (set on the dataclass, as `motion.idle_move` is; a JSON file names the source and code supplies the detector). Checked at session entry: `"custom"` with none registered fails bring-up with `ValueError`. |
 
@@ -183,8 +183,8 @@ class FaceDetectionSettings:
     # None | "yunet" | "custom"
     detector: str | None = None
     enabled: bool = False
-    # the width the shipped detector works at; None = its own (yunet: 320)
-    width: int | None = None
+    # the width the shipped detector works at; None = the full frame
+    width: int | None = 320
     # a ceiling on detections per second; None = once per new frame
     target_fps: float | None = None
     # Python only: the custom detector's factory

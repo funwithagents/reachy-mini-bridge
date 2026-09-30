@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from .observable import Observable
 
 __all__ = [
+    "DETECT_WIDTH",
     "FACE_ABSENT_S",
     "FACE_COST_LOG_S",
     "FACE_DETECTOR_NAMES",
@@ -59,6 +60,11 @@ _logger = logging.getLogger(__name__)
 FACE_POLL_HZ = 30.0
 FACE_ABSENT_S = 0.3  # a drop in the count is published once it has held this long
 FACE_SOURCE_DOWN_S = 5.0  # a detector producing nothing this long reads as not looking
+# The width the shipped detector works at by default (`face_detection.width`): frames are
+# subsampled to about this width before detection — upstream's own tracker detects at
+# 320 px wide — so the detector keeps up with the feed on one CPU thread whatever the
+# camera's resolution (1280 wide → stride 4, the Lite's 1920 → stride 6).
+DETECT_WIDTH = 320
 # The detector's cost (mean detect time, observations per second) is logged once per run,
 # this long after its first observation — the numbers `width` / `target_fps` are tuned by.
 FACE_COST_LOG_S = 10.0
@@ -317,9 +323,9 @@ def report_from_pixels(
     )
 
 
-def _yunet_factory(width: int | None = None) -> FaceDetector:
+def _yunet_factory(width: int | None = DETECT_WIDTH) -> FaceDetector:
     """The shipped detector's factory (specs/vision/user_perception.md "The shipped detector"),
-    at the config's ``width`` (``None``: its own); imported here, not at module load,
+    at the config's ``width`` (``None``: the full frame); imported here, not at module load,
     since `yunet.py` imports this module."""
     from .yunet import YuNetDetector
 
@@ -350,7 +356,7 @@ class FaceDetection:
         on_observation: Callable[[FaceReport], None] | None = None,
         feed: CameraFeed | None = None,
         detector_factory: FaceDetectorFactory | None = None,
-        width: int | None = None,
+        width: int | None = DETECT_WIDTH,
         target_fps: float | None = None,
     ) -> None:
         self._name = detector
@@ -503,7 +509,7 @@ class FaceDetection:
                 "face detection: the %s detector (width %s, target_fps %s) takes %.1f ms "
                 "a frame on average, %.1f observations/s over %.0f s",
                 self._name,
-                "its own" if self._width is None else self._width,
+                "full frame" if self._width is None else self._width,
                 "none" if self._target_fps is None else f"{self._target_fps:g}",
                 1000.0 * self._cost_total_s / self._cost_calls,
                 (self._cost_calls - 1) / elapsed,

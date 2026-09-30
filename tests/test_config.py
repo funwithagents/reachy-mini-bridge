@@ -24,6 +24,7 @@ from reachy_mini_bridge.config import (
     SimDisplaySettings,
 )
 from reachy_mini_bridge.errors import ConfigError
+from reachy_mini_bridge.face_detection import DETECT_WIDTH
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -39,7 +40,8 @@ def test_defaults() -> None:
     # Detection is opt-in (specs/vision/user_perception.md): no detector, no detection, and
     # tracking off since it needs a detector.
     assert cfg.face_detection == FaceDetectionSettings(detector=None, enabled=False)
-    assert cfg.face_detection.width is None  # the shipped detector's own width
+    # upstream's own detection width, spelled out; null would be the full frame
+    assert cfg.face_detection.width == DETECT_WIDTH == 320
     assert cfg.face_detection.target_fps is None  # once per new camera frame
     assert cfg.motion == MotionSettings()
     assert cfg.motion.tracking is False

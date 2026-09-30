@@ -75,18 +75,18 @@ def test_the_lites_frame_is_detected_at_stride_six() -> None:
 
 
 def test_the_configured_width_sets_the_stride() -> None:
-    """`face_detection.width`: 640 on a 1280 stream is stride 2; a width at least the
-    frame's detects the full frame; None is the detector's own 320."""
+    """`face_detection.width`: 640 on a 1280 stream is stride 2; None detects the full
+    frame; the default is upstream's own 320."""
     wide = _UpstreamStub([])
     YuNetDetector(upstream=lambda: wide, width=640).detect(_frame(1280, 720), 0.0)
     assert wide.frames[0].shape == (360, 640, 3)
     full = _UpstreamStub([])
     frame = _frame(1920, 1080)
-    YuNetDetector(upstream=lambda: full, width=1920).detect(frame, 0.0)
-    assert full.frames[0] is frame
-    own = _UpstreamStub([])
-    YuNetDetector(upstream=lambda: own, width=None).detect(_frame(1280, 720), 0.0)
-    assert own.frames[0].shape == (180, 320, 3)
+    YuNetDetector(upstream=lambda: full, width=None).detect(frame, 0.0)
+    assert full.frames[0] is frame  # no subsample, no copy
+    default = _UpstreamStub([])
+    YuNetDetector(upstream=lambda: default).detect(_frame(1280, 720), 0.0)
+    assert default.frames[0].shape == (180, 320, 3)
 
 
 def test_a_small_frame_is_detected_whole() -> None:

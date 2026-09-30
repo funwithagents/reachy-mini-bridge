@@ -245,7 +245,7 @@ A sim started by hand with upstream's `reachy-mini-daemon --sim` works for motio
   "face_detection": {
     "detector": "yunet",
     "enabled": true,
-    "width": null,
+    "width": 320,
     "target_fps": null
   },
 
@@ -358,7 +358,7 @@ Omit the block and `say` raises unless you pass your own `SpeechSynthesizer`. A 
 |---|---|---|---|
 | `detector` | `null` | Which detector the bridge runs on the camera feed's frames: `null` none (no detection, no tracking — `enabled` or `tracking` on is then a config error); `yunet` the shipped detector, upstream's model run by the bridge (nothing to install; the weights download into the Hugging Face cache on first use); `custom` your own, registered from code with `FaceDetectionSettings(face_detector=...)` or `set_face_detector(...)` (see [docs/custom-face-detector.md](docs/custom-face-detector.md)); session entry refuses `custom` with none registered | `set_face_detector` |
 | `enabled` | `false` | Runs the detection loop from session entry, so `bridge.faces` reports who is there. Needs no motors, needs a `detector`. The loop also runs whenever `motion.tracking` is on, whatever this says | `set_face_detection` |
-| `width` | `null` | The width the shipped detector works at — its cost per frame against its precision. `null` is its own (320 px for `yunet`); 640 quadruples the cost and halves the landmark error; one at least the frame's width detects on the full frame. A custom detector's width is its author's | — |
+| `width` | `320` | The width the shipped detector works at — its cost per frame against its precision. 320 px is upstream's own; 640 quadruples the cost and halves the landmark error; `null` detects on the full frame. A custom detector's width is its author's | — |
 | `target_fps` | `null` | A ceiling on detections per second, for any detector: the loop skips frames. `null` detects once per new camera frame. The lever for the wireless robot, whose camera streams at 30 fps. The loop logs the detector's mean time and rate once, 10 s in | — |
 
 ### `motion` — what the robot does at rest
