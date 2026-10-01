@@ -128,9 +128,6 @@ _FACE_MARKERS_PATH = "/face_markers"
 # request to the daemon may take.
 _PUBLISH_POLL_HZ = 30.0
 _PUBLISH_TIMEOUT_S = 0.5
-# How long stop() waits for the thread: long enough for an idle one to notice, well
-# short of a request held by the daemon.
-_PUBLISH_STOP_JOIN_S = 0.1
 
 
 # --- the camera overlay -----------------------------------------------------------------
@@ -912,12 +909,11 @@ def fetch_face_markers(
 
 class FaceMarkerPublisher:
     """Sends the faces the bridge detects to the sim's viewer (specs/daemon/sim_displays.md
-    "Bridge -> daemon: the displays route"): a thread that polls ``faces`` — the report
-    is updated, not published, when a face merely moves — and, for each new report,
-    places every face (``face_marker``, with the head pose its frame was taken from)
-    and ``PUT``s the set to ``url``, one request at a time. It is a thread, not a task:
-    it only reads values and blocks on HTTP, and it runs for the whole session whatever
-    event loop the host drives the bridge from.
+    "Bridge -> daemon: the displays route"): a task on the bridge's event loop that
+    polls ``faces`` — the report is updated, not published, when a face merely moves —
+    and, for each new report, places every face (``face_marker``, with the head pose
+    its frame was taken from) and ``PUT``s the set to ``url``, one request at a time.
+    Each request runs on a worker thread, so a slow daemon never holds the loop.
 
     An inactive report sends one empty set. A daemon without the route (404) is one
     ``WARNING`` and the publisher stops; any other failure is one ``WARNING``, then
@@ -947,50 +943,41 @@ class FaceMarkerPublisher:
         self._url = url
         self._send = send
         self._period = 1.0 / poll_hz
-        self._stop: threading.Event | None = None
-        self._thread: threading.Thread | None = None
+        self._task: asyncio.Task[None] | None = None
 
     @property
     def running(self) -> bool:
         """Whether the publisher is still sending (false once stopped, or once the
         daemon turned out to have no route)."""
-        return self._thread is not None and self._thread.is_alive()
+        return self._task is not None and not self._task.done()
 
     async def start(self) -> None:
-        if self._thread is not None:
+        if self.running:
             return
-        self._stop = threading.Event()
-        self._thread = threading.Thread(
-            target=self._run,
-            args=(self._stop,),
-            name="face-marker-publisher",
-            daemon=True,
-        )
-        self._thread.start()
+        self._task = asyncio.create_task(self._run(), name="face-marker-publisher")
 
     async def stop(self) -> None:
-        """Stop the thread. A request in flight is left to end on its own (within its
-        timeout): ``stop`` does not wait for the daemon. Idempotent."""
-        stop, self._stop = self._stop, None
-        thread, self._thread = self._thread, None
-        if stop is None or thread is None:
+        """Cancel the task and wait for it to end. A request in flight is left to end
+        on its own, on its worker thread, within its timeout: ``stop`` does not wait
+        for the daemon. Idempotent."""
+        task, self._task = self._task, None
+        if task is None:
             return
-        stop.set()
-        await asyncio.to_thread(thread.join, _PUBLISH_STOP_JOIN_S)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
-    def _run(self, stop: threading.Event) -> None:
+    async def _run(self) -> None:
         sent: tuple[Any, ...] | None = None
         failed = False
-        while not stop.is_set():
+        while True:
             report = self._faces.value
             key = (report.active, report.frame_id, report.ts)
             if key != sent:
                 sent = key
                 try:
-                    found = self._send(self._url, self._markers(report))
+                    markers = self._markers(report)
+                    found = await asyncio.to_thread(self._send, self._url, markers)
                 except Exception:
-                    if stop.is_set():
-                        return
                     if not failed:
                         failed = True
                         _logger.warning(
@@ -1001,14 +988,14 @@ class FaceMarkerPublisher:
                     else:
                         _logger.debug("face markers: a send failed", exc_info=True)
                 else:
-                    if not found and not stop.is_set():
+                    if not found:
                         _logger.warning(
                             "face markers: the daemon has no %s route — it was not "
                             "started with --sim-display face_markers; nothing is sent",
                             self._url,
                         )
                         return
-            stop.wait(self._period)
+            await asyncio.sleep(self._period)
 
     def _markers(self, report: FaceReport) -> list[FaceMarker]:
         if not report.active or not report.faces:

@@ -953,7 +953,7 @@ def test_the_publisher_keeps_going_through_a_failing_daemon(
 
 def test_the_publisher_stops_mid_request() -> None:
     """Stopping while a request is in flight ends the publisher at once — the request
-    is left to its thread — and it can be started again."""
+    is left to its worker thread — and it can be started again."""
 
     async def run() -> tuple[float, int]:
         sent = _Sent()
@@ -967,12 +967,14 @@ def test_the_publisher_stops_mid_request() -> None:
         sent.answer = slow
         publisher, faces, _ = _publisher(sent)
         await publisher.start()
-        await _until(entered.is_set)
-        started = time.monotonic()
-        await publisher.stop()
-        took = time.monotonic() - started
-        release.set()
-        assert not publisher.running
+        try:
+            await _until(entered.is_set)
+            started = time.monotonic()
+            await publisher.stop()
+            took = time.monotonic() - started
+            assert not publisher.running
+        finally:
+            release.set()  # the loop's shutdown waits for the worker thread
         # A fresh start sends again.
         sent.answer = lambda: True
         await publisher.start()
@@ -984,3 +986,36 @@ def test_the_publisher_stops_mid_request() -> None:
     took, people = asyncio.run(run())
     assert took < 0.5
     assert people == 2
+
+
+def test_a_held_request_does_not_hold_the_loop() -> None:
+    """The publisher runs on the bridge's event loop, and a daemon slow to answer must
+    not stall it: while a request is held, the loop keeps its time."""
+
+    async def run() -> tuple[float, bool]:
+        sent = _Sent()
+        entered, release = threading.Event(), threading.Event()
+
+        def held() -> bool:
+            entered.set()
+            release.wait(5.0)
+            return True
+
+        sent.answer = held
+        publisher, _, _ = _publisher(sent)
+        await publisher.start()
+        try:
+            await _until(entered.is_set)
+            started = time.monotonic()
+            for _ in range(10):
+                await asyncio.sleep(0.01)
+            took = time.monotonic() - started
+            still_sending = publisher.running and not release.is_set()
+        finally:
+            release.set()
+            await publisher.stop()
+        return took, still_sending
+
+    took, still_sending = asyncio.run(run())
+    assert still_sending  # the request was held the whole time
+    assert took < 0.5  # ten 10 ms sleeps, not the 5 s the request would take
