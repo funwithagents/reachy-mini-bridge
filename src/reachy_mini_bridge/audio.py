@@ -32,7 +32,7 @@ import numpy as np
 import numpy.typing as npt
 import samplerate
 
-from .errors import BridgeError
+from .errors import BridgeError, SpeechInterruptedError
 from .fake_reachy_mini import FakeReachyMini
 
 if TYPE_CHECKING:
@@ -153,6 +153,8 @@ class MediaSession:
         self._audio_config = audio_config
         # The stops to run at close; the session is open exactly while this is set.
         self._exit_stack: AsyncExitStack | None = None
+        # The utterance in flight: a new `say` interrupts it (the newest wins).
+        self._saying: _Utterance | None = None
 
     async def start(self) -> None:
         """Open the session: start recording and playback, apply the audio profile.
@@ -248,26 +250,61 @@ class MediaSession:
         speaker audio is flushed with :meth:`clear_player` before the exception
         propagates: ``say`` either plays the whole utterance or leaves the speaker silent.
         Raises :class:`BridgeError` when the session is not open.
+
+        One utterance at a time, the newest wins (specs/audio/audio.md "TTS out"): a
+        ``say`` called while one is in flight flushes it and makes that call raise
+        :class:`SpeechInterruptedError` in its own task, then plays.
         """
         self._require_open("say")
+        previous, utterance = self._saying, _Utterance()
+        self._saying = utterance
+        if previous is not None:
+            _logger.info("say: a new utterance interrupts the one in flight")
+            previous.interrupted.set()
+            self.clear_player()  # the speaker is silent before the new one is queued
+        try:
+            await self._speak(text, synth, utterance)
+        except BaseException:
+            if self._saying is utterance:  # ours to flush; an interrupted one is not
+                self.clear_player()
+            raise
+        finally:
+            if self._saying is utterance:
+                self._saying = None
+
+    async def _speak(
+        self, text: str, synth: SpeechSynthesizer, utterance: _Utterance
+    ) -> None:
+        """Stream ``text`` to the speaker and wait until it is heard, unless a later
+        ``say`` interrupts this one: then stop at once with ``SpeechInterruptedError``."""
+        work = asyncio.ensure_future(self._stream_to_speaker(text, synth))
+        interrupted = asyncio.ensure_future(utterance.interrupted.wait())
+        try:
+            done, _pending = await asyncio.wait(
+                {work, interrupted}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if work in done:
+                work.result()  # a synthesizer failure propagates
+                return
+            raise SpeechInterruptedError("say was interrupted by a later say")
+        finally:
+            for task in (work, interrupted):
+                task.cancel()
+            await asyncio.gather(work, interrupted, return_exceptions=True)
+
+    async def _stream_to_speaker(self, text: str, synth: SpeechSynthesizer) -> None:
         media = self._robot.media
         out_rate = media.get_output_audio_samplerate()
         out_channels = media.get_output_channels()
         resampler = _StreamResampler(synth.sample_rate, out_rate)
         tracker = _PlaybackTracker(out_rate)
-        try:
-            async for chunk in synth.stream(text):
-                mono = resampler.process(
-                    np.asarray(chunk, dtype=np.float32).reshape(-1)
-                )
-                tracker.push(self._push(mono, out_channels))
-            tracker.push(self._push(resampler.flush(), out_channels))
-            remaining = tracker.remaining()
-            if remaining > 0:
-                await asyncio.sleep(remaining)
-        except BaseException:
-            self.clear_player()
-            raise
+        async for chunk in synth.stream(text):
+            mono = resampler.process(np.asarray(chunk, dtype=np.float32).reshape(-1))
+            tracker.push(self._push(mono, out_channels))
+        tracker.push(self._push(resampler.flush(), out_channels))
+        remaining = tracker.remaining()
+        if remaining > 0:
+            await asyncio.sleep(remaining)
 
     def _push(self, mono: npt.NDArray[np.float32], out_channels: int) -> int:
         """Push one mono chunk (fanned out to ``out_channels``); return its frame count."""
@@ -367,6 +404,13 @@ async def cancel_safe_step[T](enter: Callable[[], T], undo: Callable[[T], object
             raise cancel from exc
         await asyncio.to_thread(undo, result)
         raise
+
+
+class _Utterance:
+    """A ``say`` in flight: set ``interrupted`` and it ends at once."""
+
+    def __init__(self) -> None:
+        self.interrupted = asyncio.Event()
 
 
 class _PlaybackTracker:

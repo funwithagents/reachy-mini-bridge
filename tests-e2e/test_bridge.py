@@ -30,7 +30,10 @@ from reachy_mini import ReachyMini
 
 from reachy_mini_bridge.audio import TTSEngineSynthesizer
 from reachy_mini_bridge.bridge import ReachyMiniBridge
-from reachy_mini_bridge.errors import GravityCompensationUnsupportedError
+from reachy_mini_bridge.errors import (
+    GravityCompensationUnsupportedError,
+    SpeechInterruptedError,
+)
 from reachy_mini_bridge.face_detection import FACE_ABSENT_S, Face, FaceReport
 from reachy_mini_bridge.head_tracking import (
     TRACKING_LOST_S,
@@ -231,6 +234,28 @@ def test_say_completes_after_the_utterance_has_played(
     start = time.monotonic()
     live_bridge.run(bridge.say("ignored", _ToneSynth(seconds=1.0)))
     assert time.monotonic() - start >= 1.0
+
+
+def test_a_new_say_interrupts_the_one_playing(live_bridge: LiveBridge) -> None:
+    """The newest `say` wins (specs/audio/audio.md "TTS out"): the one in flight ends
+    at once with SpeechInterruptedError, and the new one plays in full."""
+    requires_caps(live_bridge, "audio")
+    bridge, _caps = live_bridge
+
+    async def scenario() -> tuple[float, float]:
+        first = asyncio.create_task(bridge.say("ignored", _ToneSynth(seconds=2.0)))
+        await asyncio.sleep(0.3)
+        t0 = time.monotonic()
+        second = asyncio.create_task(bridge.say("ignored", _ToneSynth(seconds=0.5)))
+        with pytest.raises(SpeechInterruptedError):
+            await first
+        interrupted_after = time.monotonic() - t0
+        await second
+        return interrupted_after, time.monotonic() - t0
+
+    interrupted_after, total = live_bridge.run(scenario())
+    assert interrupted_after < 0.3
+    assert 0.5 <= total < 1.5
 
 
 def _head_deviation_deg(

@@ -39,6 +39,7 @@ from reachy_mini_bridge.errors import (
     ConfigError,
     GravityCompensationUnsupportedError,
     MotorsNotEnabledError,
+    SpeechInterruptedError,
 )
 from reachy_mini_bridge.face_detection import FaceReport, PixelFace
 from reachy_mini_bridge.fake_reachy_mini import FAKE_FRAME_HZ, FakeReachyMini
@@ -161,6 +162,7 @@ def test_package_front_door_drives_the_fake() -> None:
         "IdleOffsets",
         "MotorsNotEnabledError",
         "Observable",
+        "SpeechInterruptedError",
         "PixelFace",
         "ReachyMiniBridge",
         "ReachyMiniConfig",
@@ -744,6 +746,52 @@ def test_cancelled_play_emotion_stops_the_sound_and_keeps_the_session() -> None:
     assert "media.push_audio_sample" in names[i + 3 :]
 
 
+def test_cancelled_emotion_still_in_its_entry_blend_stops_no_sound() -> None:
+    """The sound starts with the trajectory, after the blend: a cancel before that has
+    no sound to stop (the loop stops only what it started)."""
+
+    async def run() -> list[str]:
+        async with ReachyMiniBridge("fake") as bridge:
+            await bridge.set_motors_state("enabled")
+            task = asyncio.create_task(bridge.play_emotion("happy"))
+            await asyncio.sleep(0.1)  # inside the BLEND_S entry blend
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            return _command_names(bridge)
+
+    names = asyncio.run(run())
+    assert "media.play_sound" not in names and "media.stop_sound" not in names
+
+
+def test_cancelling_a_queued_emotion_leaves_the_playing_ones_sound_alone() -> None:
+    """specs/core/bridge.md "Cancellation": a play_emotion cancelled while it waits in
+    the queue has no effect to undo — the emotion ahead of it plays on, sound included."""
+
+    async def run() -> tuple[list[str], list[str]]:
+        async with ReachyMiniBridge("fake") as bridge:
+            await bridge.set_motors_state("enabled")
+            first = asyncio.create_task(bridge.play_emotion("happy"))
+            await asyncio.sleep(0.05)
+            second = asyncio.create_task(bridge.play_emotion("happy"))
+            while "media.play_sound" not in _command_names(bridge):
+                await asyncio.sleep(0)
+            second.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await second
+            at_cancel = _command_names(bridge)
+            await first
+            await bridge.play_emotion("curious")  # the session plays on
+            return at_cancel, _command_names(bridge)
+
+    at_cancel, final = asyncio.run(run())
+    assert "media.stop_sound" not in at_cancel
+    assert "media.stop_sound" not in final
+    assert (
+        final.count("media.play_sound") == 2
+    )  # the first and the third, never the second
+
+
 def test_cancelled_soundless_emotion_does_not_stop_a_sound() -> None:
     _elapsed, names = asyncio.run(_cancel_emotion_mid_flight("sad"))
 
@@ -841,6 +889,57 @@ def test_play_emotion_pauses_wobbling_and_restores_it() -> None:
     assert "disable_wobbling" in names[:sound_i]
     assert "enable_wobbling" in names[sound_i:]
     assert wobbling is True
+
+
+def test_wobbling_is_paused_once_across_queued_emotions() -> None:
+    """One lease across consecutive emotions: disabled when the first begins, restored
+    when the last one ends — never re-enabled between the two."""
+
+    async def run() -> list[str]:
+        async with ReachyMiniBridge("fake") as bridge:  # wobbling on by default
+            await bridge.set_motors_state("enabled")
+            first = asyncio.create_task(bridge.play_emotion("happy"))
+            await asyncio.sleep(0.05)
+            second = asyncio.create_task(bridge.play_emotion("sad"))
+            await asyncio.gather(first, second)
+            return _command_names(bridge)
+
+    names = asyncio.run(run())
+    calls = [n for n in names if n in ("enable_wobbling", "disable_wobbling")]
+    assert calls == ["enable_wobbling", "disable_wobbling", "enable_wobbling"]
+
+
+def test_a_cancel_caught_inside_the_wobbling_pause_still_restores_it() -> None:
+    """The disable call runs in its thread past the cancel; the release waits for it,
+    so the restore comes after and wobbling is not left off."""
+
+    async def run() -> list[str]:
+        async with ReachyMiniBridge("fake") as bridge:
+            await bridge.set_motors_state("enabled")
+            robot = _fake(bridge)
+            original = robot.disable_wobbling
+
+            def slow_disable() -> None:
+                time.sleep(0.2)
+                original()
+
+            robot.disable_wobbling = slow_disable  # type: ignore[method-assign]
+            task = asyncio.create_task(bridge.play_emotion("happy"))
+            await asyncio.sleep(0.05)  # inside the disable call
+            t0 = time.monotonic()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert time.monotonic() - t0 < 0.1  # the cancel returned promptly
+            await asyncio.sleep(
+                0.3
+            )  # the disable thread finishes, the release restores
+            return _command_names(bridge)
+
+    names = asyncio.run(run())
+    calls = [n for n in names if n in ("enable_wobbling", "disable_wobbling")]
+    assert calls == ["enable_wobbling", "disable_wobbling", "enable_wobbling"]
+    assert "media.play_sound" not in names  # the move never started
 
 
 def test_play_emotion_restores_layers_after_a_cancel() -> None:
@@ -2528,3 +2627,56 @@ def test_a_silent_detector_releases_the_head_reads_inactive_and_re_engages(
     assert down == FaceReport.inactive("custom")  # no stale face while nobody looks
     assert abs(released) < 1.0
     assert again == "engaged"
+
+
+# --- the modes outside a session (specs/core/bridge.md: no side effect on a failed call)
+
+
+def test_set_presence_outside_a_session_raises_and_changes_nothing() -> None:
+    bridge = ReachyMiniBridge("fake")
+    with pytest.raises(BridgeError):
+        asyncio.run(bridge.set_presence(False))
+    assert bridge.presence is True  # the config's value, untouched by the failed call
+
+    async def run() -> tuple[bool, int]:
+        async with bridge:
+            await bridge.set_motors_state("enabled")
+            await asyncio.sleep(0.3)
+            return bridge.presence, len(_fake(bridge).targets)
+
+    presence, targets = asyncio.run(run())
+    assert presence is True and targets > 0  # the next session idles: presence on
+
+
+# --- one say at a time, the newest wins (specs/audio/audio.md "TTS out") -----------------
+
+
+class _SecondSynth:
+    """A SpeechSynthesizer whose utterance is one second of tone, synthesized at once."""
+
+    sample_rate = 16000
+
+    async def stream(self, text: str) -> AsyncIterator[npt.NDArray[np.float32]]:
+        yield np.full(16000, 0.1, dtype=np.float32)
+
+
+def test_a_new_say_interrupts_the_one_playing_and_the_session_plays_on() -> None:
+    async def run() -> tuple[float, float, list[str]]:
+        async with ReachyMiniBridge("fake", synthesizer=_SecondSynth()) as bridge:
+            first = asyncio.create_task(bridge.say("first"))
+            while "media.push_audio_sample" not in _command_names(bridge):
+                await asyncio.sleep(0)
+            t0 = time.monotonic()
+            second = asyncio.create_task(bridge.say("second"))
+            with pytest.raises(SpeechInterruptedError):
+                await first
+            interrupted_after = time.monotonic() - t0
+            await second
+            second_took = time.monotonic() - t0
+            await bridge.say("third")
+            return interrupted_after, second_took, _command_names(bridge)
+
+    interrupted_after, second_took, names = asyncio.run(run())
+    assert interrupted_after < 0.2  # the first ended at once, not after its second
+    assert second_took >= 1.0  # the second played in full
+    assert names.count("audio.clear_player") == 1  # the first's audio flushed, once

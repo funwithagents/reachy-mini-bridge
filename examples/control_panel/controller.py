@@ -31,6 +31,7 @@ from reachy_mini_bridge import (
     BridgeError,
     ReachyMiniBridge,
     ReachyMiniConfig,
+    SpeechInterruptedError,
     SpeechSynthesizer,
 )
 
@@ -310,6 +311,8 @@ class ControlPanelController:
                 # The verb has already stopped its effect (specs/core/bridge.md "Cancellation");
                 # report the stop instead of propagating it to the caller thread.
                 return False
+            except SpeechInterruptedError:
+                return False  # a later say took over: this one stopped
 
         with self._in_flight_lock:
             self._in_flight[slot].append(entry)
@@ -468,12 +471,8 @@ class ControlPanelController:
     # --- spanning verbs ---------------------------------------------------------------
 
     def say(self, text: str) -> bool:
-        """Speak ``text`` and block until heard; ``False`` if stopped.
-
-        A `say` already playing is stopped first (barge-in): two on one media session
-        would interleave.
-        """
-        self.stop_saying()
+        """Speak ``text`` and block until heard; ``False`` if stopped — or interrupted
+        by a later ``say`` (the bridge's rule: the newest ``say`` wins)."""
         return self._run_spanning("say", self._bridge.say(text))
 
     def stop_saying(self) -> int:

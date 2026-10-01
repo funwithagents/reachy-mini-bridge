@@ -17,7 +17,7 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pytest
@@ -463,7 +463,7 @@ def test_presence_off_goes_quiet_when_idle() -> None:
             session.resume()
             await asyncio.sleep(0.3)
             idle_count = len(robot.targets)
-            future = session.submit(_TestPrimary(0.15, 0.01), None)
+            future = session.submit(_TestPrimary(0.15, 0.01), None).done
             await asyncio.wrap_future(future)
             after_count = len(robot.targets)
             await asyncio.sleep(0.2)
@@ -484,7 +484,7 @@ def test_primary_plays_after_a_blend_then_idle_resumes() -> None:
         ) as session:
             session.resume()
             t0 = time.monotonic()
-            future = session.submit(_TestPrimary(0.3, 0.03), None)
+            future = session.submit(_TestPrimary(0.3, 0.03), None).done
             await asyncio.wrap_future(future)
             elapsed = time.monotonic() - t0
             mid_zs = _head_zs(robot)
@@ -506,7 +506,7 @@ def test_sound_starts_with_the_trajectory_not_the_blend() -> None:
         ) as session:
             session.resume()
             t0 = time.monotonic()
-            future = session.submit(_TestPrimary(0.2, 0.02), Path("x.ogg"))
+            future = session.submit(_TestPrimary(0.2, 0.02), Path("x.ogg")).done
             while not any(name == "media.play_sound" for name, _ in robot.commands):
                 await asyncio.sleep(0.01)
             sound_elapsed = time.monotonic() - t0
@@ -524,8 +524,8 @@ def test_primaries_are_fifo_and_exclusive() -> None:
             MotionSession(robot, presence=True, idle="breathing")
         ) as session:
             session.resume()
-            f1 = session.submit(_TestPrimary(0.15, 0.02), Path("one.ogg"))
-            f2 = session.submit(_TestPrimary(0.15, 0.03), Path("two.ogg"))
+            f1 = session.submit(_TestPrimary(0.15, 0.02), Path("one.ogg")).done
+            f2 = session.submit(_TestPrimary(0.15, 0.03), Path("two.ogg")).done
             await asyncio.wrap_future(f1)
             commands_at_f1_done = len(robot.commands)
             await asyncio.wrap_future(f2)
@@ -547,7 +547,7 @@ def test_cancelled_future_drops_the_primary_within_a_tick() -> None:
             MotionSession(robot, presence=True, idle="breathing")
         ) as session:
             session.resume()
-            future = session.submit(_TestPrimary(2.0, 0.05), None)
+            future = session.submit(_TestPrimary(2.0, 0.05), None).done
             await asyncio.sleep(BLEND_S + 0.15)
             future.cancel()
             await asyncio.sleep(0.08)
@@ -569,7 +569,7 @@ def test_toggle_during_a_primary_is_deferred() -> None:
             MotionSession(robot, presence=True, idle="breathing")
         ) as session:
             session.resume()
-            future = session.submit(_TestPrimary(0.35, 0.02), None)
+            future = session.submit(_TestPrimary(0.35, 0.02), None).done
             await asyncio.sleep(0.15)
             session.set_idle("hold")
             await asyncio.wrap_future(future)  # still completes at its own duration
@@ -590,7 +590,7 @@ def test_pause_fails_in_flight_primaries() -> None:
             MotionSession(robot, presence=True, idle="breathing")
         ) as session:
             session.resume()
-            future = session.submit(_TestPrimary(2.0, 0.02), None)
+            future = session.submit(_TestPrimary(2.0, 0.02), None).done
             await asyncio.sleep(0.2)
             session.pause()
             await asyncio.sleep(0.15)
@@ -643,7 +643,7 @@ def test_a_failing_tick_fails_the_primary_and_keeps_the_loop_alive() -> None:
             MotionSession(robot, presence=True, idle="breathing")
         ) as session:
             session.resume()
-            future = session.submit(_TestPrimary(1.0, 0.02, fail_after=0.1), None)
+            future = session.submit(_TestPrimary(1.0, 0.02, fail_after=0.1), None).done
             exc: BaseException | None = None
             try:
                 await asyncio.wait_for(asyncio.wrap_future(future), timeout=2)
@@ -695,13 +695,13 @@ def test_lost_connection_logs_once_and_pauses_for_good(
         session = MotionSession(robot, presence=True, idle="breathing")
         async with _running(session):
             session.resume()
-            in_flight = session.submit(_TestPrimary(2.0, 0.02), None)
+            in_flight = session.submit(_TestPrimary(2.0, 0.02), None).done
             await asyncio.sleep(BLEND_S + 0.15)  # the trajectory is playing
             daemon_gone = True
             await asyncio.sleep(0.1)
             count_after_loss = len(robot.targets)
             session.resume()  # a motors resume cannot restart a dead stream
-            later = session.submit(_TestPrimary(0.2, 0.01), None)
+            later = session.submit(_TestPrimary(0.2, 0.01), None).done
             await asyncio.sleep(0.2)
             count_later = len(robot.targets)
             t0 = time.monotonic()
@@ -879,7 +879,9 @@ def test_each_idle_entry_builds_a_fresh_custom_move() -> None:
             session.resume()
             await asyncio.sleep(BLEND_S + 0.2)
             before = len(built)
-            await asyncio.wrap_future(session.submit(_TestPrimary(0.15, 0.01), None))
+            await asyncio.wrap_future(
+                session.submit(_TestPrimary(0.15, 0.01), None).done
+            )
             await asyncio.sleep(BLEND_S + 0.2)
             return before
 
@@ -1217,7 +1219,7 @@ def test_a_primary_plays_as_recorded_under_an_aim_then_the_head_returns_to_it() 
             session.set_gaze(_yaw_pose(AIM_YAW_DEG))
             session.resume()
             await asyncio.sleep(BLEND_S + 0.8)
-            future = session.submit(_TestPrimary(duration=0.6, z=0.01), None)
+            future = session.submit(_TestPrimary(duration=0.6, z=0.01), None).done
             await asyncio.sleep(BLEND_S + 0.1)  # the trajectory is playing
             before = len(robot.targets)
             await asyncio.sleep(0.3)
@@ -1308,3 +1310,55 @@ def test_start_twice_raises_and_stop_is_idempotent() -> None:
 
     robot = asyncio.run(run())
     assert robot.targets == []
+
+
+# --- the loop stops the sound it started (specs/motion/motion.md "Emotions through the loop")
+
+
+def test_the_loop_stops_only_the_sound_it_started_and_acknowledges_the_drop() -> None:
+    async def run() -> tuple[int, bool, int, bool]:
+        robot = FakeReachyMini()
+        stops: list[float] = []
+        session = MotionSession(
+            robot,
+            presence=True,
+            idle="breathing",
+            stop_sound=lambda: stops.append(time.monotonic()),
+        )
+        async with _running(session):
+            session.resume()
+            first = session.submit(_TestPrimary(0.6, 0.02), Path("one.ogg"))
+            second = session.submit(_TestPrimary(0.6, 0.02), Path("two.ogg"))
+            while not any(name == "media.play_sound" for name, _ in robot.commands):
+                await asyncio.sleep(0.01)
+            second.done.cancel()  # queued: its sound never started
+            queued_acked = await asyncio.to_thread(second.dropped.wait, 0.5)
+            stops_after_queued = len(stops)
+            first.done.cancel()  # playing, its sound started: stopped by the loop
+            playing_acked = await asyncio.to_thread(first.dropped.wait, 0.5)
+            return stops_after_queued, queued_acked, len(stops), playing_acked
+
+    assert asyncio.run(run()) == (0, True, 1, True)
+
+
+def test_a_failing_primary_has_its_sound_stopped_before_the_failure_is_raised() -> None:
+    class _Boom(_TestPrimary):
+        def evaluate(self, t: float) -> Any:
+            if t > 0.05:
+                raise RuntimeError("boom")
+            return super().evaluate(t)
+
+    async def run() -> tuple[int, bool]:
+        robot = FakeReachyMini()
+        stops: list[float] = []
+        session = MotionSession(
+            robot, presence=True, idle="hold", stop_sound=lambda: stops.append(1.0)
+        )
+        async with _running(session):
+            session.resume()
+            primary = session.submit(_Boom(0.5, 0.02), Path("one.ogg"))
+            with pytest.raises(RuntimeError, match="boom"):
+                await asyncio.wrap_future(primary.done)
+            return len(stops), primary.dropped.is_set()
+
+    assert asyncio.run(run()) == (1, True)

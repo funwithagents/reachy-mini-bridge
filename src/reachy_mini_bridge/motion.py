@@ -594,13 +594,16 @@ class _Fade:
 
 @dataclass
 class _Primary:
-    """A queued primary move and the future the bridge awaits for it."""
+    """A queued primary move, the future the bridge awaits for it, and the loop's
+    acknowledgement that it let the primary go (``dropped``: set once a cancelled or
+    failed primary is out of the queue or no longer playing, its sound stopped)."""
 
     move: Move
     sound_path: Path | None
     done: concurrent.futures.Future[None] = field(
         default_factory=concurrent.futures.Future
     )
+    dropped: threading.Event = field(default_factory=threading.Event)
 
 
 @dataclass
@@ -630,10 +633,16 @@ class MotionSession:
         presence: bool,
         idle: IdleMode,
         idle_move: IdleMoveFactory | None = None,
+        stop_sound: Callable[[], None] | None = None,
     ) -> None:
         if idle_move is not None:
             check_idle_move_factory(idle_move)
         self._robot = robot
+        # Stops the sound file the loop started for a primary (the bridge's
+        # MediaSession.stop_sound): the loop is the one party that started it, so it is
+        # the one that stops it when the primary is cancelled or fails
+        # (specs/motion/motion.md "Emotions through the loop").
+        self._stop_sound = stop_sound
         self._commands: queue.SimpleQueue[Callable[[], None]] = queue.SimpleQueue()
         self._thread = threading.Thread(
             target=self._run, name="reachy-mini-motion", daemon=True
@@ -673,14 +682,20 @@ class MotionSession:
 
     # --- bridge-facing commands (event-loop thread; enqueue and return at once) ---
 
-    def submit(
-        self, move: Move, sound_path: Path | None
-    ) -> concurrent.futures.Future[None]:
-        """Queue ``move`` as the next primary; returns a future resolved when it ends
-        (or fails, or is cancelled). Resumes the loop if it was idle-paused by presence."""
+    def submit(self, move: Move, sound_path: Path | None) -> _Primary:
+        """Queue ``move`` as the next primary; returns its record — ``done``, a future
+        resolved when it ends (or fails, or is cancelled), and ``dropped``, set once the
+        loop has let a cancelled or failed primary go (its sound stopped). Resumes the
+        loop if it was idle-paused by presence."""
         primary = _Primary(move=move, sound_path=sound_path)
+
+        def on_done(future: concurrent.futures.Future[None]) -> None:
+            if future.cancelled():  # the bridge's cancel: drop it at the next tick
+                self._commands.put(lambda: self._on_cancel(primary))
+
+        primary.done.add_done_callback(on_done)
         self._commands.put(lambda: self._on_submit(primary))
-        return primary.done
+        return primary
 
     def _on_submit(self, primary: _Primary) -> None:
         if self._lost:
@@ -689,6 +704,34 @@ class MotionSession:
         self._queue.append(primary)
         # specs/motion/motion.md "Motors": play_emotion resumes the loop.
         self._paused = False
+
+    def _on_cancel(self, primary: _Primary) -> None:
+        """The bridge cancelled ``primary``: out of the queue, or dropped from playing
+        with its sound stopped if the loop had started it; acknowledged."""
+        if primary in self._queue:
+            self._queue.remove(primary)
+        elif self._playing is not None and self._playing.primary is primary:
+            self._drop_playing()
+        primary.dropped.set()
+
+    def _drop_playing(self) -> None:
+        """Let the playing primary go, stopping the sound the loop started for it."""
+        playing = self._playing
+        self._playing = None
+        if (
+            playing is not None
+            and playing.primary is not None
+            and playing.sound_started
+        ):
+            self._stop_primary_sound()
+
+    def _stop_primary_sound(self) -> None:
+        if self._stop_sound is None:
+            return
+        try:
+            self._stop_sound()
+        except Exception as e:  # noqa: BLE001 - the loop must survive a failed stop
+            _logger.warning("could not stop the emotion's sound: %s", e)
 
     def set_presence(self, enabled: bool) -> None:
         self._commands.put(lambda: self._on_set_presence(enabled))
@@ -829,9 +872,13 @@ class MotionSession:
     def _on_close(self) -> None:
         for primary in self._queue:
             primary.done.cancel()
+            primary.dropped.set()
         self._queue.clear()
         if self._playing is not None and self._playing.primary is not None:
-            self._playing.primary.done.cancel()
+            primary = self._playing.primary
+            primary.done.cancel()
+            self._drop_playing()
+            primary.dropped.set()
         if self._presence and self._commanding and not self._paused:
             idle = self._playing_idle()
             exit_stage: Move = (
@@ -958,7 +1005,10 @@ class MotionSession:
         if playing is not None:
             cancelled = playing.primary is not None and playing.primary.done.cancelled()
             preempted = playing.primary is None and bool(self._queue)
-            if cancelled or preempted:
+            if cancelled:
+                self._drop_playing()  # normally already done by _on_cancel
+                playing = None
+            elif preempted:
                 playing = None
                 self._playing = None
 
@@ -1115,11 +1165,13 @@ class MotionSession:
         )
 
     def _fail_current(self, error: Exception) -> None:
-        if self._playing is not None and self._playing.primary is not None:
-            primary = self._playing.primary
+        playing = self._playing
+        self._drop_playing()  # the sound stopped before the failure reaches the verb
+        if playing is not None and playing.primary is not None:
+            primary = playing.primary
             if not primary.done.done():
                 primary.done.set_exception(error)
-        self._playing = None
+            primary.dropped.set()
 
     def _on_custom_idle_failure(self, error: Exception) -> None:
         """The caller's idle move misbehaved (specs/motion/motion.md "Custom idle moves"): one
@@ -1152,3 +1204,4 @@ class MotionSession:
                 failure = BridgeError(_LOST_CONNECTION_MESSAGE)
                 failure.__cause__ = error
                 primary.done.set_exception(failure)
+            primary.dropped.set()  # the daemon is gone: no sound left to stop

@@ -29,7 +29,7 @@ from reachy_mini_bridge.audio import (
     float32_to_int16,
     int16_to_float32,
 )
-from reachy_mini_bridge.errors import BridgeError
+from reachy_mini_bridge.errors import BridgeError, SpeechInterruptedError
 from reachy_mini_bridge.fake_reachy_mini import FakeReachyMini
 
 
@@ -714,3 +714,52 @@ def test_stop_before_start_is_a_noop() -> None:
     session = MediaSession(robot)
     asyncio.run(session.stop())
     assert _command_names(robot) == []
+
+
+# --- one say at a time, the newest wins (specs/audio/audio.md "TTS out") -----------------
+
+
+def test_a_new_say_interrupts_one_waiting_to_be_heard() -> None:
+    robot = FakeReachyMini()
+
+    async def run() -> tuple[float, list[str]]:
+        async with _open(MediaSession(robot)) as session:
+            long = _ToneSynth(16000, chunks=4, block=4000)  # 1 s, pushed at once
+            first = asyncio.create_task(session.say("first", long))
+            while len(_pushed_frames(robot)) < 4:  # queued; now waiting to be heard
+                await asyncio.sleep(0)
+            t0 = time.monotonic()
+            second = asyncio.create_task(
+                session.say("second", _ToneSynth(16000, chunks=2, block=800))
+            )
+            with pytest.raises(SpeechInterruptedError):
+                await first
+            elapsed = time.monotonic() - t0
+            await second
+            await session.say("third", _SilentSynth())  # the session plays on
+            return elapsed, _command_names(robot)
+
+    elapsed, names = asyncio.run(run())
+    assert elapsed < 0.2
+    flush = names.index("audio.clear_player")
+    assert names.count("audio.clear_player") == 1  # the interrupted one, once
+    assert names[:flush].count("media.push_audio_sample") == 4  # the first's audio
+    assert names[flush:].count("media.push_audio_sample") == 2  # then the second's
+
+
+def test_a_new_say_interrupts_one_still_synthesizing() -> None:
+    robot = FakeReachyMini()
+
+    async def run() -> list[str]:
+        async with _open(MediaSession(robot)) as session:
+            first = asyncio.create_task(session.say("first", _StallingSynth()))
+            while not _pushed_frames(robot):
+                await asyncio.sleep(0)
+            await session.say("second", _ToneSynth(16000, chunks=1, block=800))
+            with pytest.raises(SpeechInterruptedError):
+                await first  # its stalled stream was closed
+            return _command_names(robot)
+
+    names = asyncio.run(run())
+    assert names.count("audio.clear_player") == 1
+    assert names.count("media.push_audio_sample") == 2

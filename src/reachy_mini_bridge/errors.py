@@ -17,6 +17,7 @@ __all__ = [
     "GravityCompensationUnsupportedError",
     "MotorsNotEnabledError",
     "SimSceneError",
+    "SpeechInterruptedError",
 ]
 
 
@@ -41,6 +42,14 @@ class GravityCompensationUnsupportedError(BridgeError):
     Placo (or cannot be read): upstream sends the mode fire-and-forget, and such a daemon
     rejects it by closing the client connection. The motor state and the connection are
     left as they were (see specs/core/bridge.md "Motors").
+    """
+
+
+class SpeechInterruptedError(BridgeError):
+    """The ``say`` was interrupted by a later ``say``: the newest call wins, the
+    running utterance is flushed and its call ends with this, in its own task at its
+    next await — the bridge cancels no caller's task (see specs/audio/audio.md "TTS out",
+    specs/core/bridge.md "Cancellation").
     """
 
 

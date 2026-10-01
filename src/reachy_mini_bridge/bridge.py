@@ -65,6 +65,10 @@ __all__ = ["ReachyMiniBridge"]
 
 _logger = logging.getLogger(__name__)
 
+# How long play_emotion waits for the motion loop to acknowledge a cancelled primary
+# (one tick in practice; a bound so a wedged loop never holds the cancel).
+_DROP_ACK_S = 0.5
+
 # The refusal of a detection or tracking switch without a detector
 # (specs/vision/user_perception.md "Configuration").
 _NO_DETECTOR_MESSAGE = (
@@ -203,6 +207,8 @@ class ReachyMiniBridge:
         self._recorded_moves_future: asyncio.Future[Any] | None = None
         # The bridge's record of the wobbling mode (upstream has no getter).
         self._wobbling = False
+        # play_emotion calls in flight: the wobbling pause is held while any is.
+        self._emotion_leases = 0
         # The motion loop's switches (specs/motion/motion.md), initialized from the config and
         # reset to it on exit; set_presence/set_idle/set_idle_move change them while
         # entered.
@@ -375,6 +381,9 @@ class ReachyMiniBridge:
                 presence=self._presence,
                 idle=self._idle,
                 idle_move=self._idle_move,
+                # The loop stops the emotion sound it started (specs/motion/motion.md
+                # "Emotions through the loop"), through the media session's stop.
+                stop_sound=lambda: self._require_media().stop_sound(),
             )
             # The camera feed (specs/vision/camera.md "Lifecycle"): the one reader of the
             # camera, started right after the media session and stopped right before it
@@ -669,13 +678,16 @@ class ReachyMiniBridge:
 
         Around the move, wobbling is paused and restored on every exit path —
         completion, cancel, or failure — because the emotion's own sound would otherwise
-        sway the head on top of the choreography. The motion loop leaves the gaze layer
-        out of the move and fades it back in afterwards, so an emotion plays as recorded
-        whether or not a face is tracked.
+        sway the head on top of the choreography: one pause across consecutive
+        emotions (a lease per call in flight), from the first's start to the last's
+        end. The motion loop leaves the gaze layer out of the move and fades it back in
+        afterwards, so an emotion plays as recorded whether or not a face is tracked.
 
-        Cancelling the task stops the emotion — motion and sound — and leaves the head
-        where the cancel caught it, with the session still open; the same stop runs
-        when the move fails. See specs/core/bridge.md "Cancellation".
+        Cancelling the task stops the emotion — motion and sound, the loop stopping the
+        sound it started for this move and nothing else (a call cancelled while it
+        waits in the queue stops nothing) — and leaves the head where the cancel caught
+        it, with the session still open; the same stop runs when the move fails. See
+        specs/core/bridge.md "Cancellation".
 
         Moves the robot, so it requires motors ``enabled`` (raises
         :class:`MotorsNotEnabledError` otherwise). Raises ``ValueError`` for an unknown
@@ -684,26 +696,52 @@ class ReachyMiniBridge:
         await self._require_motors_enabled("play_emotion")
         moves = await self._get_recorded_moves()
         move = moves.get(name)  # ValueError on unknown name
-        media = self._require_media()
+        self._require_media()
         motion = self._require_motion()
         robot = self.robot
         sound_path = getattr(move, "sound_path", None)
-        # Pause wobbling for the move; restored below on every exit path, to its
-        # *current* record (specs/motion/motion.md "Emotions through the loop").
-        if self._wobbling:
-            await asyncio.to_thread(robot.disable_wobbling)
-        future = motion.submit(move, None if sound_path is None else Path(sound_path))
+        # The wobbling lease (specs/motion/motion.md "Emotions through the loop"): taken
+        # before the disable call is awaited, so a cancel caught inside that call still
+        # releases it below; the pause is one across consecutive emotions.
+        self._emotion_leases += 1
+        pause: asyncio.Future[None] | None = None
+        primary = None
         try:
-            await asyncio.wrap_future(future)
+            if self._emotion_leases == 1 and self._wobbling:
+                # Shielded: a cancel returns at once while the call completes in its
+                # thread, and the release waits for it so the restore comes after.
+                pause = asyncio.ensure_future(asyncio.to_thread(robot.disable_wobbling))
+                await asyncio.shield(pause)
+            primary = motion.submit(
+                move, None if sound_path is None else Path(sound_path)
+            )
+            await asyncio.wrap_future(primary.done)
         except BaseException:
-            future.cancel()  # idempotent; wrap_future already propagated a cancel
-            if sound_path is not None:
-                media.stop_sound()
+            if primary is not None:
+                # The loop drops the primary at its next tick — its sound stopped if
+                # the loop started it — and acknowledges; the effect has stopped when
+                # the exception reaches the caller (specs/core/bridge.md "Cancellation").
+                primary.done.cancel()  # idempotent; wrap_future already propagated a cancel
+                await asyncio.to_thread(primary.dropped.wait, _DROP_ACK_S)
             raise
         finally:
-            await self._restore_layers_after_move()
+            self._emotion_leases -= 1
+            if self._emotion_leases == 0:
+                if pause is not None and not pause.done():
+                    # A cancel caught inside the disable call: it completes in its
+                    # thread while the cancel propagates at once, and the restore
+                    # follows its completion (unless another emotion took the lease
+                    # meanwhile — its own release restores then).
+                    pause.add_done_callback(self._restore_once_released)
+                else:
+                    await self._restore_layers_after_move()
+
+    def _restore_once_released(self, _pause: asyncio.Future[None]) -> None:
+        if self._emotion_leases == 0 and self._exit_stack is not None:
+            asyncio.ensure_future(self._restore_layers_after_move())
 
     async def _restore_layers_after_move(self) -> None:
+        """Release the wobbling pause: restored to the bridge's *current* record."""
         if self._wobbling:
             try:
                 await asyncio.to_thread(self.robot.enable_wobbling)
@@ -988,8 +1026,9 @@ class ReachyMiniBridge:
         usual blend when turning on, at once with no easing when turning off); during
         an emotion it is recorded and applied when the emotion ends.
         """
+        motion = self._require_motion()  # before anything is recorded
+        motion.set_presence(enabled)
         self._presence = enabled
-        self._require_motion().set_presence(enabled)
 
     @property
     def presence(self) -> bool:
