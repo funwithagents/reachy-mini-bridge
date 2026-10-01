@@ -81,9 +81,7 @@ async def main() -> None:
         await bridge.set_motors_state("enabled")
         print(await bridge.list_emotions())  # ['happy', 'sad', 'curious'] on the fake
         await bridge.play_emotion("happy")
-        await bridge.start_head_tracking()
         frame = bridge.camera.latest()  # the newest CameraFrame (BGR image, time, head pose), or None
-        await bridge.stop_head_tracking()
 
 
 asyncio.run(main())
@@ -98,14 +96,7 @@ async with ReachyMiniBridge.from_json_file("robot.json") as bridge:
 
 `from_dict(...)` and `from_json(...)` take the same config as a dict or a JSON string.
 
-`async with` is sugar over the bridge's `start()` / `stop()` pair, and the form to prefer when the session fits in one block: it stops on every way out, a cancel included. A host with lifecycle hooks of its own — a web app's lifespan, a GUI's on-start / on-close, a module-scoped test fixture — calls the pair from its hooks instead:
-
-```python
-bridge = ReachyMiniBridge.from_json_file("robot.json")
-await bridge.start()   # daemon (if managed), connection, audio, camera, motion loop — in order
-...
-await bridge.stop()    # the reverse, every step even when one fails; bridge.running reads False
-```
+Face detection and tracking are opt-in: name a detector in the config's `face_detection` block and the head follows whoever is in view — see [What the API does](#what-the-api-does) and the [configuration reference](#face_detection--who-is-in-front-of-the-robot).
 
 ### Try it from a browser
 
@@ -126,7 +117,7 @@ All verbs are `async`; units are human (degrees, seconds, named emotions). The u
 |---|---|
 | Motors | `get_motors_state()`, `set_motors_state("enabled" \| "disabled" \| "gravity_compensation")` |
 | Expression | `list_emotions()`, `play_emotion(name)` — the upstream recorded-moves library |
-| Gaze | `start_head_tracking(focus=False)`, `stop_head_tracking()`, `tracking`, `tracking_focus` — the bridge's tracker keeps the reported face in view, composed into the idle motion (the head breathes while it looks), or held exactly on the face with `focus=True` (the antennas keep moving); a mode like presence, on by default (the config's `motion.tracking` flag) and needing no motors — the head moves once they are `enabled`; `attention` (`"engaged"` / `"watching"` / `None`) says whether someone is being looked at. The tracker chooses whom to follow — the biggest face, kept while it is seen; a face that vanishes is waited for a second, the head holding toward where it was, before the head turns to the biggest other one. `head_tracking` — an observable `HeadTrackingReport` (`active`, `focus`, `attention`, the `track_id` of the face the head follows), waking when the head engages, switches to someone else or is handed back. Tracking runs the detection loop behind `faces` |
+| Gaze | `start_head_tracking(focus=False)`, `stop_head_tracking()`, `tracking`, `tracking_focus` — the bridge's tracker keeps the reported face in view, composed into the idle motion (the head breathes while it looks), or held exactly on the face with `focus=True` (the antennas keep moving); a mode like presence, off by default (the config's `motion.tracking` flag turns it on at entry; either way it needs a `face_detection.detector`) and needing no motors — the head moves once they are `enabled`; `attention` (`"engaged"` / `"watching"` / `None`) says whether someone is being looked at. The tracker chooses whom to follow — the biggest face, kept while it is seen; a face that vanishes is waited for a second, the head holding toward where it was, before the head turns to the biggest other one. `head_tracking` — an observable `HeadTrackingReport` (`active`, `focus`, `attention`, the `track_id` of the face the head follows), waking when the head engages, switches to someone else or is handed back. Tracking runs the detection loop behind `faces` |
 | Speech out | `say(text, synth=None)`, `play_sound(file)` |
 | Motion while talking | `set_wobbling(enabled)`, `wobbling` — upstream's audio-reactive head sway; on by default, set by the config's `motion.wobbling` flag |
 | Staying alive | `set_presence(enabled)` / `presence`, `set_idle("breathing" | "hold" | "custom")` / `idle`, `set_idle_move(factory)` / `idle_move` — the idle behaviour between verbs; set by the config's `motion` block |

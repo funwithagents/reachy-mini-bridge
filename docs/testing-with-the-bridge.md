@@ -26,9 +26,18 @@ it (see [running-the-sim-daemon.md](running-the-sim-daemon.md) "The MuJoCo versi
 ## Unit tests — the `fake` backend
 
 Construct `ReachyMiniBridge("fake")` directly. The fake records every command it receives on
-`robot.commands` (a list of `(name, args)` tuples) and returns synthetic perception, with no
-daemon, network, or hardware. Assert through the `bridge.robot` escape hatch — narrow it to
-`FakeReachyMini` first, since `bridge.robot` is typed as the real-or-fake union:
+`robot.commands` (a list of `(name, args)` tuples), every pose the motion loop streams to it
+on `robot.targets` (a list of `(head, antennas, body_yaw)` tuples, one per tick), and returns
+synthetic perception, with no daemon, network, or hardware. Assert through the `bridge.robot`
+escape hatch — narrow it to `FakeReachyMini` first, since `bridge.robot` is typed as the
+real-or-fake union.
+
+Motion is asserted on `targets`, never on `commands`: the bridge plays emotions and every
+idle move through its own motion loop, which streams `set_target` at 60 Hz, so no
+`async_play_move` command ever reaches the robot. The fake's emotions are short stand-in
+trajectories (a 0.3 s rise and fall of the head, 10 mm high) — the real recordings only play
+on `sim` / `real` — and its breathing lifts the head at most 5 mm, which is what a test
+measures against:
 
 ```python
 import asyncio
@@ -37,17 +46,27 @@ from reachy_mini_bridge import ReachyMiniBridge
 from reachy_mini_bridge.fake_reachy_mini import FakeReachyMini
 
 
-def test_my_greeting_plays_an_emotion():
-    async def run() -> list[str]:
+async def my_greeting(bridge: ReachyMiniBridge) -> None:
+    await bridge.play_emotion("happy")  # your code under test — whatever greets
+
+
+def test_my_greeting_lifts_the_head():
+    async def run() -> list[float]:
         async with ReachyMiniBridge("fake") as bridge:
             await bridge.set_motors_state("enabled")
-            await my_greeting(bridge)  # your code under test
             robot = bridge.robot  # the escape hatch: the FakeReachyMini
             assert isinstance(robot, FakeReachyMini)  # narrows the union for pyright
-            return [name for name, _args in robot.commands]
+            before = len(robot.targets)
+            await my_greeting(bridge)
+            heads = [head for head, _antennas, _yaw in robot.targets[before:] if head is not None]
+            return [float(head[2, 3]) for head in heads]  # the head's height over the greeting
 
-    assert "async_play_move" in asyncio.run(run())
+    heights = asyncio.run(run())
+    assert max(heights) > 0.008  # the emotion lifted the head; breathing alone never gets there
 ```
+
+`len(robot.targets) > 0` would not do: the idle move streams targets whether or not the
+greeting ran.
 
 The bridge's own fast tier drives coroutines with `asyncio.run` and needs no pytest-asyncio;
 use that plugin if you prefer `async def` tests.

@@ -27,8 +27,8 @@ A consumer's two tiers map onto the bridge's three backends exactly as the bridg
 | Consumer tier | Backend | Extra needed | Daemon |
 |---|---|---|---|
 | Unit / integration | `fake` | none | none — offline, deterministic |
-| Live / e2e | `sim` | `sim` (`reachy-mini[mujoco]`) | MuJoCo, harness-managed |
-| Live / e2e | `real` | none (base only) | robot at host/port — harness-managed for a USB robot on this machine |
+| Live / e2e | `sim` | `sim,test` (`reachy-mini-bridge[sim,test]` — the simulator, which the `sim` extra declares directly ([project.md](../project.md)), and this harness) | MuJoCo, harness-managed |
+| Live / e2e | `real` | `test` (`reachy-mini-bridge[test]` — this harness) | robot at host/port — harness-managed for a USB robot on this machine |
 
 - **Unit tests use `fake`.** The public `ReachyMiniBridge("fake")` ([bridge.md](../core/bridge.md)) already needs no daemon, no network, and no extra — a consumer constructs it directly and asserts through the `bridge.robot` escape hatch on recorded commands / synthetic perception. Importing the package pulls in `reachy_mini` (the base dependency), which needs its native libs installed, **not** a live daemon.
 - **E2E tests use `sim` or `real`** through the shipped `live_bridge` fixture below.

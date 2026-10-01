@@ -24,7 +24,7 @@ The seam delivers two things:
 
 ### `real` and `sim` are the same `ReachyMini`
 
-`real` and `sim` are one upstream class — `ReachyMini(use_sim=False)` and `ReachyMini(use_sim=True)` — each talking to a daemon (hardware, or the MuJoCo mockup). The bridge calls its methods directly; the human-unit surface (degrees, seconds, named emotions) lives one layer up in [bridge.md](bridge.md). `sim` selects the same class with `use_sim=True` and requires the `sim` extra (`reachy_mini[mujoco]`, see [project.md](../project.md)).
+`real` and `sim` are one upstream class — `ReachyMini(use_sim=False)` and `ReachyMini(use_sim=True)` — each talking to a daemon (hardware, or the MuJoCo mockup). The bridge calls its methods directly; the human-unit surface (degrees, seconds, named emotions) lives one layer up in [bridge.md](bridge.md). `sim` selects the same class with `use_sim=True` and requires the bridge's `sim` extra (`reachy-mini-bridge[sim]`, which declares MuJoCo directly — see [project.md](../project.md)).
 
 ### `AnyReachyMini` — a union type alias
 
