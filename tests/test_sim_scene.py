@@ -222,6 +222,10 @@ def test_test_scene_rejects_bad_props(tmp_path: Path) -> None:
         write_test_scene(tmp_path, [])
     with pytest.raises(FileNotFoundError, match="nope.png"):
         write_test_scene(tmp_path, [FacePlane(image=tmp_path / "nope.png")])
+    # The inject router serves bodies/spawn and bodies/clear: no prop may shadow them.
+    for name in ("spawn", "clear"):
+        with pytest.raises(ValueError, match="reserved"):
+            write_test_scene(tmp_path, [FacePlane(name=name)])
 
 
 def test_upstream_scene_name_resolves_back_to_the_file(scene_path: Path) -> None:
@@ -417,14 +421,14 @@ def _free_port() -> int:
 def served_director(
     model_and_data: tuple[Any, Any],
 ) -> Iterator[tuple[SceneDirector, int]]:
-    """The sim-scene router mounted on a FastAPI app served by uvicorn in a thread."""
+    """The inject router mounted on a FastAPI app served by uvicorn in a thread."""
     fastapi = pytest.importorskip("fastapi")
     uvicorn = pytest.importorskip("uvicorn")
     model, data = model_and_data
     director = SceneDirector()
     director.attach(model, data)
     app = fastapi.FastAPI()
-    app.include_router(sim_scene.build_router(director), prefix="/api/sim-scene")
+    app.include_router(sim_scene.build_router(director), prefix="/api/sim/inject")
     port = _free_port()
     server = uvicorn.Server(
         uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
@@ -485,9 +489,11 @@ def test_client_spawns_despawns_and_clears(
     with pytest.raises(SimSceneError, match="nobody"):
         client.spawn((0.5, 0.0, 0.2), image="nobody")
     with pytest.raises(SimSceneError, match="unknown field"):
-        client._request("POST", "/spawn", {"pos": [0.5, 0, 0.2], "colour": "red"})
+        client._request(
+            "POST", "/bodies/spawn", {"pos": [0.5, 0, 0.2], "colour": "red"}
+        )
     with pytest.raises(SimSceneError, match="needs a pos"):
-        client._request("POST", "/spawn", {})
+        client._request("POST", "/bodies/spawn", {})
     cleared = client.clear()
     assert set(cleared) == {"face_1", "face_2", "face_3"}
     assert not any(state.visible for state in client.bodies().values())
@@ -538,7 +544,7 @@ def test_run_daemon_rewrites_argv_installs_the_director_and_mounts_the_router(
 ) -> None:
     """`run_daemon` runs the sim daemon launcher with `--scene <name>` (name resolving to
     the file), forwards every other flag, and its extension installs the control callback
-    once the backend has a model and mounts the sim-scene routes on upstream's own app."""
+    once the backend has a model and mounts the inject routes on upstream's own app."""
     fastapi = pytest.importorskip("fastapi")
     from reachy_mini.daemon import daemon as upstream_daemon
     from reachy_mini.daemon.app import main as upstream_main
@@ -584,9 +590,12 @@ def test_run_daemon_rewrites_argv_installs_the_director_and_mounts_the_router(
     app = upstream_main.create_app(upstream_args, None)
     assert app.title == "upstream"
     testclient = pytest.importorskip("fastapi.testclient")
-    response = testclient.TestClient(app).get("/api/sim-scene/bodies")
+    http = testclient.TestClient(app)
+    response = http.get("/api/sim/inject/bodies")
     assert response.status_code == 200
     assert response.json() == {"attached": False, "bodies": {}}
+    # A clean break: the routes' former home answers nothing.
+    assert http.get("/api/sim-scene/bodies").status_code == 404
 
 
 def test_scene_extension_installs_the_director_once_the_model_exists(

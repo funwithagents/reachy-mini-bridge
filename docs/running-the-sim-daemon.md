@@ -64,6 +64,13 @@ launchctl asuser $(id -u) \
 
 **See what the robot sees.** `--sim-display camera_overlay` draws the camera stream in the top-right corner of the viewer window — the rendered eye camera, or the webcam with `--camera webcam`, mirrored so you see yourself as in a mirror (the stream itself stays as the camera sees) — with the camera's name at the top left. In a config: `"daemon": {"headless": false, "sim_displays": {"camera_overlay": true}}` (the example config has it on). Viewer only: with `--headless` it is an argument error, and the config refuses it with `headless: true`. It needs the MuJoCo the `sim` extra installs (3.3.1 or later, "The MuJoCo version" above); an older one gets one warning and no picture.
 
+**See where it looks and where it places the faces.** Two more sim displays draw in the viewer's 3D scene (spec: [specs/daemon/sim_displays.md](../specs/daemon/sim_displays.md)):
+
+- `--sim-display robot_gaze` draws a blue line along the eye camera's optical axis: where the robot is looking. It is the axis the head tracker aligns with the face it follows, and it turns with the simulated head whatever the camera source.
+- `--sim-display face_markers` draws a flat ellipsoid for each face the bridge detects, where the bridge places it in space: green for the face the head follows, yellow for the others, labelled with the face's track id. A bridge session whose config has `sim_displays.face_markers` on sends them to the daemon (`PUT /api/sim/displays/face_markers`); `curl localhost:8000/api/sim/displays/face_markers` shows what the daemon holds. A marker's direction is the face's pixel; its distance is estimated from the face's size, so it is approximate: one hard-coded face height, calibrated on the test scene's portrait, places every face, and a person in front of a webcam is drawn about a third nearer than they stand.
+
+In a config: `"sim_displays": {"camera_overlay": true, "robot_gaze": true, "face_markers": true}`. The flags repeat: `--sim-display robot_gaze --sim-display face_markers`. Both are viewer only, like the overlay. They are drawn for the viewer alone: the robot's camera, the detector and the camera overlay never see them. Once tracking has settled, the gaze line passes through the followed face's marker.
+
 ### A face in the sim (viewer + scene file)
 
 Upstream's scenes ship nothing to look at. The bridge's shipped testing package can write a **test scene** — hidden-by-default props, a portrait plane today — in front of the robot and run the daemon on it through its own launcher, which lets you show, place, move and hide the props while the daemon runs ([../specs/testing/sim_scene.md](../specs/testing/sim_scene.md)):
@@ -78,7 +85,7 @@ write_test_scene("/tmp/scene")  # -> /tmp/scene/scene.xml (the face starts hidde
 mjpython -m reachy_mini_bridge.testing.sim_scene --scene-path /tmp/scene/scene.xml --preload-datasets
 ```
 
-It is the sim daemon launcher with the scene added; a bridge configured with the `yunet` detector then finds the face in the rendered camera and the head converges on it. Then, from any process: `SimSceneClient().show("face")` to bring it into view, `.place("face", (0.45, 0.15, 0.20), duration=1.5)` to move it, `.hide("face")` to take it away again — or `curl -X POST localhost:8000/api/sim-scene/bodies/face -H 'Content-Type: application/json' -d '{"visible": true}'`. A `ReachyMiniConfig` whose `daemon.scene` is that `.xml` path does the launch for you (`"headless": false` — the face needs the viewer's camera to be seen). The e2e harness runs every sim it spawns on this scene.
+It is the sim daemon launcher with the scene added; a bridge configured with the `yunet` detector then finds the face in the rendered camera and the head converges on it. Then, from any process: `SimSceneClient().show("face_1")` to bring it into view, `.place("face_1", (0.45, 0.15, 0.20), duration=1.5)` to move it, `.hide("face_1")` to take it away again — or `curl -X POST localhost:8000/api/sim/inject/bodies/face_1 -H 'Content-Type: application/json' -d '{"visible": true}'`. A `ReachyMiniConfig` whose `daemon.scene` is that `.xml` path does the launch for you (`"headless": false` — the face needs the viewer's camera to be seen). The e2e harness runs every sim it spawns on this scene.
 
 ### You in front of the sim (a webcam as the camera)
 

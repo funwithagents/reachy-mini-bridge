@@ -33,7 +33,7 @@ The shape and the constructor trio mirror [`tts-engine`'s configuration](../../.
 }
 ```
 
-Every block is optional: `ReachyMiniConfig()` is a valid config — the `real` backend, upstream's connection defaults, no daemon management, no default synthesizer, firmware audio defaults, the `face_detection` defaults (no detector, detection off, a 320 px detection width, no rate ceiling) and the `motion` defaults (presence and wobbling on, tracking off — it needs a detector — the idle mode `"breathing"`). `config.example.json` in the repo root documents every field with placeholder values and is kept in sync with this spec. It describes the **sim viewer seeing through the host webcam** (`backend: "sim"`, `daemon.spawn: "auto"`, `daemon.headless: false`, `daemon.camera.source: "webcam"`): the configuration that shows the most — the robot moving in the MuJoCo window, and its camera on the person in front of the computer, whom it follows (`face_detection.detector: "yunet"`, detection and tracking on) — so it is what the README and the [control panel](../examples/control_panel.md) start from — with `daemon.sim_displays.camera_overlay` on, so the viewer window also shows what the camera sees. Set `source` to `"sim"` for the rendered eye camera instead.
+Every block is optional: `ReachyMiniConfig()` is a valid config — the `real` backend, upstream's connection defaults, no daemon management, no default synthesizer, firmware audio defaults, the `face_detection` defaults (no detector, detection off, a 320 px detection width, no rate ceiling) and the `motion` defaults (presence and wobbling on, tracking off — it needs a detector — the idle mode `"breathing"`). `config.example.json` in the repo root documents every field with placeholder values and is kept in sync with this spec. It describes the **sim viewer seeing through the host webcam** (`backend: "sim"`, `daemon.spawn: "auto"`, `daemon.headless: false`, `daemon.camera.source: "webcam"`): the configuration that shows the most — the robot moving in the MuJoCo window, and its camera on the person in front of the computer, whom it follows (`face_detection.detector: "yunet"`, detection and tracking on, detecting at `width: 640`, twice the default, for a finer roll) — so it is what the README and the [control panel](../examples/control_panel.md) start from — with every sim display on (`daemon.sim_displays`: `camera_overlay`, `robot_gaze`, `face_markers`), so the viewer window also shows what the camera sees, where the robot looks and where the bridge places each face. Set `source` to `"sim"` for the rendered eye camera instead.
 
 ```python
 @dataclass
@@ -90,7 +90,7 @@ How the bridge brings up the daemon the robot client talks to — the MuJoCo dae
 | `headless` | bool | `true` | `sim` only. `true` launches the headless MuJoCo daemon (motion + audio; no rendered camera, a `webcam` camera still works); `false` launches the viewer under `mjpython` (adds the render's GL context, so the `sim` camera works; needs an unlocked GUI session). |
 | `scene` | string \| null | `null` | `sim` only. An upstream MuJoCo scene *name* (`empty`, `minimal`), passed as `--scene` when set — or, when it ends in `.xml`, the path of a scene *file* the bridge's own launcher loads (hidden-by-default props — a face today — a test shows/moves from tests: [sim_scene.md](../testing/sim_scene.md), written by `write_test_scene`). |
 | `camera` | object → `SimCameraSettings` | `{"source": "sim"}` | `sim` only. What the sim daemon's camera shows ([sim_daemon.md](../daemon/sim_daemon.md) "Camera sources"): `source` `"sim"` renders the scene from the robot's eye camera (viewer only); `"webcam"` relays a host camera instead — the person in front of the computer is who the simulated robot sees and follows, headless or viewer. See the table below. |
-| `sim_displays` | object → `SimDisplaySettings` | `{}` | `sim` only, viewer only. What the MuJoCo viewer window shows besides the scene: one boolean per display, all off by default — `camera_overlay` today ([sim_daemon.md](../daemon/sim_daemon.md) "Viewer overlay"). A display on with `headless: true` is a `ConfigError`. See the table below. |
+| `sim_displays` | object → `SimDisplaySettings` | `{}` | `sim` only, viewer only. What the MuJoCo viewer window shows besides the scene: one boolean per display, all off by default — `camera_overlay`, `robot_gaze`, `face_markers` ([sim_displays.md](../daemon/sim_displays.md)). A display on with `headless: true` is a `ConfigError`. See the table below. |
 | `preload_datasets` | bool | `true` | `true` passes `--preload-datasets`: the daemon downloads the recorded-move datasets (emotions, dances) in the background after it starts, so the first `play_emotion` does not wait on a download; readiness is not delayed. `false` passes `--no-preload-datasets` (the datasets then load on first use). |
 | `startup_timeout` | number | `45.0` | Seconds to wait for a spawned or booting daemon to become ready. |
 
@@ -128,12 +128,16 @@ The `sim_displays` object (`SimDisplaySettings`, with the same trio) is the home
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `camera_overlay` | bool | `false` | Draw the sim daemon's camera stream — the webcam, or the rendered eye camera — as a picture in the top-right corner of the MuJoCo viewer window ([sim_daemon.md](../daemon/sim_daemon.md) "Viewer overlay"). |
+| `camera_overlay` | bool | `false` | Draw the sim daemon's camera stream — the webcam, or the rendered eye camera — as a picture in the top-right corner of the MuJoCo viewer window ([sim_displays.md](../daemon/sim_displays.md) "Camera overlay"). |
+| `robot_gaze` | bool | `false` | Draw the robot's gaze — the eye camera's optical axis, the one the head tracker aligns with the followed face — as a line in the viewer's 3D scene ([sim_displays.md](../daemon/sim_displays.md) "The robot's gaze"). |
+| `face_markers` | bool | `false` | Draw an ellipsoid per detected face where the bridge places it in the viewer's 3D scene; the bridge sends them while its detection loop runs ([sim_displays.md](../daemon/sim_displays.md) "The face markers"). Read by both sides: the launch flag, and the bridge's publisher. With no detector configured there is nothing to draw, which is not an error. |
 
 ```python
 @dataclass
 class SimDisplaySettings:
     camera_overlay: bool = False
+    robot_gaze: bool = False
+    face_markers: bool = False
 ```
 
 A display is drawn in the viewer window, so any display on needs `headless: false`; with `headless` at its default `true` the block is a `ConfigError` naming the display and `daemon.headless`, rather than a daemon that silently shows nothing.
@@ -251,7 +255,7 @@ All enforced by `ReachyMiniConfig.from_dict` (delegating to `DaemonConfig.from_d
 - **[motion.md](../motion/motion.md):** the `motion` block is the initial state of the loop's presence, idle mode, custom idle move and gaze layer (and, for `wobbling`, of the daemon-side mode the bridge arms around it).
 - **[robot.md](robot.md):** the `robot` block is what `build_robot(backend, **robot)` forwards.
 - **[daemon.md](../daemon/daemon.md):** the `daemon` block configures the bridge-owned daemon lifecycle; `backend` selects its launch recipe.
-- **[sim_daemon.md](../daemon/sim_daemon.md):** `daemon.camera` selects the sim daemon's camera source; `daemon.sim_displays` turns its viewer displays on.
+- **[sim_daemon.md](../daemon/sim_daemon.md):** `daemon.camera` selects the sim daemon's camera source; `daemon.sim_displays` turns its sim displays on, specified in [sim_displays.md](../daemon/sim_displays.md).
 - **[audio.md](../audio/audio.md):** the `tts` block builds the default `TTSEngineSynthesizer`; `audio.xvf3800` is the session's `audio_config`; `motion.wobbling` arms the head wobbler on the speaker path.
 - **[testing_support.md](../testing/testing_support.md):** the `live_bridge` fixture builds its bridge from a `ReachyMiniConfig` whose `robot` block carries the harness's connection options.
 

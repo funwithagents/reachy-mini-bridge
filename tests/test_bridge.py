@@ -13,6 +13,7 @@ import json
 import threading
 import time
 from collections.abc import AsyncIterator, Callable
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Self
@@ -31,6 +32,7 @@ from reachy_mini_bridge.config import (
     FaceDetectionSettings,
     MotionSettings,
     ReachyMiniConfig,
+    SimDisplaySettings,
 )
 from reachy_mini_bridge.errors import (
     BridgeError,
@@ -51,6 +53,7 @@ from reachy_mini_bridge.motion import (
     IdleMove,
     IdleOffsets,
 )
+from reachy_mini_bridge.sim_displays import FACE_BOX_HEIGHT_M
 
 
 class _ToneSynth:
@@ -1989,6 +1992,160 @@ def test_camera_frame_ids_count_on_across_sessions() -> None:
 
 
 # --- faces: the custom detection source (specs/vision/user_perception.md) --------------------
+
+
+# --- the sim's face markers (specs/daemon/sim_displays.md) ------------------------------------
+
+
+class _DisplaysDaemon:
+    """Stands in for the sim daemon's HTTP port: records every request's method, path
+    and JSON body, and answers 200 — after `hold` is released, when a test holds it."""
+
+    def __init__(self) -> None:
+        self.requests: list[tuple[str, str, Any]] = []
+        self.entered = threading.Event()
+        self.hold = threading.Event()
+        self.hold.set()
+        daemon = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_PUT(self) -> None:
+                length = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(length))
+                daemon.requests.append(("PUT", self.path, body))
+                daemon.entered.set()
+                daemon.hold.wait(5.0)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"markers": 0}')
+
+            def log_message(self, format: str, *args: Any) -> None:
+                pass
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.port = self._server.server_address[1]
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+
+    def marker_sets(self) -> list[list[dict[str, Any]]]:
+        return [body["markers"] for _, _, body in self.requests]
+
+    def close(self) -> None:
+        self.hold.set()
+        self._server.shutdown()
+        self._server.server_close()
+
+
+def _sim_with_face_markers(
+    scene: _Scene, port: int, *, face_markers: bool = True
+) -> ReachyMiniConfig:
+    """A `sim` session on a daemon somebody else runs at `port`, with the face markers
+    display on and a stub detector standing in for the person."""
+    return ReachyMiniConfig(
+        backend="sim",
+        robot={"host": "127.0.0.1", "port": port},
+        daemon=DaemonConfig(
+            headless=False, sim_displays=SimDisplaySettings(face_markers=face_markers)
+        ),
+        face_detection=FaceDetectionSettings(
+            detector="custom", enabled=True, face_detector=scene.detector
+        ),
+        motion=MotionSettings(tracking=True, idle="hold"),
+    )
+
+
+@pytest.fixture
+def displays_daemon(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """A `sim` bridge whose robot is the fake and whose daemon port is a recorder."""
+    monkeypatch.setattr(
+        bridge_module, "build_robot", lambda backend, **kw: FakeReachyMini()
+    )
+    daemon = _DisplaysDaemon()
+    yield daemon
+    daemon.close()
+
+
+async def _wait_until(predicate: Callable[[], bool], timeout: float = 3.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        assert time.monotonic() < deadline, "timed out"
+        await asyncio.sleep(0.01)
+
+
+def test_the_sim_session_sends_its_faces_to_the_viewer(
+    displays_daemon: _DisplaysDaemon,
+) -> None:
+    """With `sim_displays.face_markers` on, a `sim` session sends each face report to
+    the daemon's displays route: the face placed ahead on the side it is seen, marked
+    as followed once the head follows it; an empty set once nobody is there; and
+    nothing after the session stops."""
+    scene = _Scene([_pixel_face(0.4, 0.0)])
+
+    async def run() -> int:
+        config = _sim_with_face_markers(scene, displays_daemon.port)
+        async with ReachyMiniBridge(config) as bridge:
+            sets = displays_daemon.marker_sets
+            await _wait_until(lambda: any(m and m[0]["followed"] for m in sets()))
+            assert bridge.head_tracking.value.track_id is not None
+            scene.hide()
+            await _wait_until(lambda: sets()[-1] == [])
+        stopped = len(displays_daemon.requests)
+        await asyncio.sleep(0.2)
+        return stopped
+
+    stopped = asyncio.run(run())
+    assert len(displays_daemon.requests) == stopped
+    assert {(method, path) for method, path, _ in displays_daemon.requests} == {
+        ("PUT", "/api/sim/displays/face_markers")
+    }
+    (marker,) = next(m for m in displays_daemon.marker_sets() if m)
+    x, y, _ = marker["pos"]
+    # Seen to the image's right of a camera looking along +x: ahead, at negative y.
+    assert x > 0.1 and y < -0.02
+    assert marker["label"].isdigit()  # the face's track id
+    # The rendered eye camera looks at the test scene's portrait: its box height.
+    assert marker["size"][1] == pytest.approx(FACE_BOX_HEIGHT_M)
+
+
+def test_no_face_markers_are_sent_with_the_display_off(
+    displays_daemon: _DisplaysDaemon,
+) -> None:
+    scene = _Scene([_pixel_face(0.4, 0.0)])
+
+    async def run() -> None:
+        config = _sim_with_face_markers(scene, displays_daemon.port, face_markers=False)
+        async with ReachyMiniBridge(config) as bridge:
+            await _wait_until(lambda: len(bridge.faces.value.faces) == 1)
+            await asyncio.sleep(0.2)
+
+    asyncio.run(run())
+    assert displays_daemon.requests == []
+
+
+def test_stopping_the_session_mid_request_leaves_it_usable(
+    displays_daemon: _DisplaysDaemon,
+) -> None:
+    """The daemon holding a face-markers request does not hold the session: `stop()`
+    returns without waiting for it, and the same bridge starts and sends again."""
+    scene = _Scene([_pixel_face(0.4, 0.0)])
+    bridge = ReachyMiniBridge(_sim_with_face_markers(scene, displays_daemon.port))
+
+    async def run() -> float:
+        displays_daemon.hold.clear()
+        await bridge.start()
+        await _wait_until(displays_daemon.entered.is_set)
+        started = time.monotonic()
+        await bridge.stop()
+        took = time.monotonic() - started
+        displays_daemon.hold.set()
+        before = len(displays_daemon.requests)
+        async with bridge:
+            await _wait_until(lambda: len(displays_daemon.requests) > before)
+        return took
+
+    took = asyncio.run(run())
+    assert took < 2.0  # the daemon would have held the request for 5 s
+    assert not bridge.running
 
 
 class _Scene:

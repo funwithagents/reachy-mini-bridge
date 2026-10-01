@@ -31,12 +31,14 @@ import pytest
 
 from reachy_mini_bridge.bridge import ReachyMiniBridge, _daemon_kinematics_engine
 from reachy_mini_bridge.config import (
+    DaemonConfig,
     FaceDetectionSettings,
     MotionSettings,
     ReachyMiniConfig,
 )
 from reachy_mini_bridge.errors import SimSceneError
 from reachy_mini_bridge.robot import AnyReachyMini
+from reachy_mini_bridge.sim_displays import fetch_face_markers
 from reachy_mini_bridge.testing import _daemon
 from reachy_mini_bridge.testing.sim_scene import SimSceneClient
 
@@ -98,7 +100,7 @@ def _probe_gravity_compensation(robot: AnyReachyMini) -> bool:
 
 
 def _probe_faces(host: str, port: int) -> bool:
-    """True if the daemon serves the bridge's sim-scene endpoint with a portrait (a body
+    """True if the daemon serves the bridge's inject endpoint with a portrait (a body
     of kind `face`): it was launched on the bridge's test scene (every harness-spawned sim
     is, specs/testing/sim_scene.md), so tests can spawn, move and despawn faces in front of
     the eye camera. A daemon launched any other way lacks it."""
@@ -109,6 +111,13 @@ def _probe_faces(host: str, port: int) -> bool:
         return False
 
 
+def _probe_face_markers(host: str, port: int) -> bool:
+    """True if the daemon serves the face markers display: a viewer sim launched with
+    ``--sim-display face_markers`` (every viewer sim the harness spawns is,
+    specs/daemon/sim_displays.md), so a test can read back where the bridge places a face."""
+    return fetch_face_markers(host, port) is not None
+
+
 def _probe_capabilities(
     robot: AnyReachyMini, address: tuple[str, int] | None = None
 ) -> frozenset[str]:
@@ -117,7 +126,8 @@ def _probe_capabilities(
     Environment quirks decide: audio needs a recording session (the bridge's), the sim camera
     needs a GL context, gravity compensation needs hardware on the Placo kinematics engine,
     etc. `faces` (probed at `address`, the daemon's HTTP port) means the daemon runs the
-    bridge's generated face scene. `doa` (mic-array direction of arrival) is robot-only
+    bridge's generated face scene; `face_markers` that it draws the faces the bridge
+    sends it. `doa` (mic-array direction of arrival) is robot-only
     and reserved — left unprobed, so `requires_caps("doa")` skips on sim.
     """
     caps: set[str] = set()
@@ -137,6 +147,8 @@ def _probe_capabilities(
         caps.add("gravity_compensation")
     if address is not None and _probe_faces(*address):
         caps.add("faces")
+    if address is not None and _probe_face_markers(*address):
+        caps.add("face_markers")
     return frozenset(caps)
 
 
@@ -156,6 +168,16 @@ def sim_scene(_live_daemon: tuple[str, int]) -> SimSceneClient:
     ``live_bridge`` probed the ``faces`` capability — gate with ``requires_caps``."""
     host, port = _live_daemon
     return SimSceneClient(host, port)
+
+
+def _bridge_daemon_config() -> DaemonConfig:
+    """The bridge's side of the harness's sim displays: on the viewer sim the bridge
+    sends its face markers to the daemon (specs/daemon/sim_displays.md). The daemon stays
+    the harness's (``spawn`` is "never")."""
+    displays = _daemon.sim_displays()
+    if _daemon.backend() != "sim" or not displays.enabled():
+        return DaemonConfig()
+    return DaemonConfig(headless=False, sim_displays=displays)
 
 
 @pytest.fixture(scope="module")
@@ -192,6 +214,7 @@ def live_bridge(
             },
             face_detection=FaceDetectionSettings(detector="yunet", enabled=True),
             motion=MotionSettings(tracking=True),
+            daemon=_bridge_daemon_config(),
         )
     )
     asyncio.run(bridge.start())

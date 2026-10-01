@@ -60,6 +60,7 @@ __all__ = [
     "CameraModel",
     "HeadTracker",
     "HeadTrackingReport",
+    "frame_head_pose",
     "pinhole_intrinsics",
     "sim_hfov_deg",
 ]
@@ -161,6 +162,28 @@ class CameraModel:
 
 
 type PoseHistory = Callable[[], tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]]
+
+
+def frame_head_pose(
+    report: FaceReport,
+    camera: CameraModel,
+    history: PoseHistory,
+    delay: float,
+    now: float,
+) -> npt.NDArray[np.float64]:
+    """The head pose ``report``'s frame was taken from (specs/motion/head_tracking.md "The
+    aim", "One rule, shared"): the neutral pose for a fixed camera, the report's own
+    ``head_pose`` when its frame was stamped, else the reported pose at the report's time
+    (``ts``, or ``now`` when it is unset) minus ``delay``. It reads the history and
+    changes nothing: the tracker's aim and the sim's face markers both place a face with
+    it."""
+    if camera.fixed:
+        return np.asarray(INIT_HEAD_POSE, dtype=np.float64)
+    if report.head_pose is not None:
+        return np.asarray(report.head_pose, dtype=np.float64)
+    times, poses = history()
+    t_obs = report.ts if report.ts > 0.0 else now
+    return poses[nearest_index(times, np.array([t_obs - delay]))[0]]
 
 
 class SetGaze(Protocol):
@@ -337,12 +360,11 @@ class HeadTracker:
         u = (face.x + 1.0) / 2.0 * (width - 1)
         v = (face.y + 1.0) / 2.0 * (height - 1)
         try:
-            if camera.fixed:
-                head = np.asarray(INIT_HEAD_POSE, dtype=np.float64)
-            elif report.head_pose is not None:
-                head = np.asarray(report.head_pose, dtype=np.float64)
-            else:
-                head = self._head_at_frame(report, u, v, now)
+            if not camera.fixed and report.head_pose is None:
+                self._note_detection(report, u, v, now)
+            head = frame_head_pose(
+                report, camera, self.history, self._delay, self._last_t_obs
+            )
             return look_at_image_pose(
                 u, v, camera.K, camera.D, head, default_head_to_camera_transform()
             )
@@ -350,20 +372,17 @@ class HeadTracker:
             _logger.debug("head tracking: no aim for the face at (%s, %s): %s", u, v, e)
             return None
 
-    def _head_at_frame(
+    def _note_detection(
         self, report: FaceReport, u: float, v: float, now: float
-    ) -> npt.NDArray[np.float64]:
-        """The reported head pose at the observation's time minus the estimated delay;
-        a new detection joins the estimate's window and refits it first."""
+    ) -> None:
+        """A new detection joins the delay estimate's window and refits it, before the
+        report is aimed against the pose that estimate gives."""
         # Only a new detection counts: the loop reports once per new frame, so a new
         # frame time is a new detection.
         if report.ts != self._last_ts:
             self._last_ts = report.ts
             self._last_t_obs = report.ts if report.ts > 0.0 else now
             self._add_detection(self._last_t_obs, u, v, now)
-        times, poses = self.history()
-        index = nearest_index(times, np.array([self._last_t_obs - self._delay]))[0]
-        return poses[index]
 
     def _add_detection(self, t_obs: float, u: float, v: float, now: float) -> None:
         x_n, y_n = undistort_points(u, v, self.camera.K, self.camera.D)

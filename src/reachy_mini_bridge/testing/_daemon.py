@@ -10,7 +10,8 @@ on this machine; a remote `real` address skips) — translating a `DaemonError` 
 `pytest.skip` so the live tier skips, never fails, when the environment can't provide one.
 
 Kept out of `fixtures.py` so the plugin module reads as the fixture surface. The names
-used by `fixtures.py` (`target`, `backend`, `address`, `managed_daemon`) are
+used by `fixtures.py` (`target`, `backend`, `address`, `sim_displays`,
+`managed_daemon`) are
 un-underscored; the rest stays module-private.
 """
 
@@ -25,7 +26,7 @@ from contextlib import contextmanager
 import pytest
 
 from reachy_mini_bridge import daemon
-from reachy_mini_bridge.config import LOOPBACK_HOSTS, DaemonConfig
+from reachy_mini_bridge.config import LOOPBACK_HOSTS, DaemonConfig, SimDisplaySettings
 from reachy_mini_bridge.errors import DaemonError
 from reachy_mini_bridge.testing.sim_scene import write_test_scene
 
@@ -68,6 +69,14 @@ def _sim_viewer() -> bool:
         "yes",
         "on",
     }
+
+
+def sim_displays() -> SimDisplaySettings:
+    """The sim displays of the harness's sim: the face markers on the viewer sim — the
+    daemon then serves the displays route and the bridge sends its markers there, which
+    the marker tests read back (specs/daemon/sim_displays.md) — and none headless, where
+    there is no viewer to draw in."""
+    return SimDisplaySettings(face_markers=_sim_viewer())
 
 
 @contextmanager
@@ -113,7 +122,12 @@ def managed_daemon(target_: str) -> Iterator[tuple[str, int]]:
         return
     pytest.importorskip("mujoco", reason="sim extra (mujoco) not installed")
     with _test_scene() as scene:
-        config = DaemonConfig(spawn="auto", headless=not _sim_viewer(), scene=scene)
+        config = DaemonConfig(
+            spawn="auto",
+            headless=not _sim_viewer(),
+            scene=scene,
+            sim_displays=sim_displays(),
+        )
         with _spawned(config, host, port, "sim") as handle:
             yield handle
 

@@ -203,6 +203,8 @@ def test_a_spawned_sim_runs_the_test_scene_for_the_daemon_lifetime(
     (config,) = spawns.configs
     assert spawns.calls == [("sim", "127.0.0.1", 8000)]
     assert config.spawn == "auto" and config.headless is not viewer
+    # The viewer sim draws the faces the bridge sends it; headless has no viewer.
+    assert config.sim_displays.enabled() == (["face_markers"] if viewer else [])
     assert config.scene is not None and config.scene.endswith("scene.xml")
     scene = Path(config.scene)
     assert scene.is_file()
@@ -254,10 +256,39 @@ def test_faces_probe_absent_without_the_endpoint(monkeypatch: pytest.MonkeyPatch
             pass
 
         def bodies(self) -> dict[str, object]:
-            raise SimSceneError("no sim-scene endpoint")
+            raise SimSceneError("no inject endpoint")
 
     monkeypatch.setattr(fixtures, "SimSceneClient", _NoEndpoint)
     assert not fixtures._probe_faces("127.0.0.1", 8000)
+
+
+# --- face_markers capability probe, and the bridge's side of it ---
+
+
+def test_face_markers_probe_is_the_displays_route(monkeypatch: pytest.MonkeyPatch):
+    """The `face_markers` capability is the daemon answering the face markers route;
+    a daemon launched without the display (or none at all) lacks it."""
+    states: dict[int, object] = {8000: {"age_s": None, "markers": []}, 8001: None}
+    monkeypatch.setattr(fixtures, "fetch_face_markers", lambda host, port: states[port])
+    assert fixtures._probe_face_markers("127.0.0.1", 8000)
+    assert not fixtures._probe_face_markers("127.0.0.1", 8001)
+
+
+def test_the_bridge_sends_face_markers_on_the_viewer_sim_only(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`live_bridge`'s config turns the face markers on where the harness's daemon
+    draws them — the viewer sim — and nowhere else."""
+    monkeypatch.delenv("REACHY_MINI_E2E_TARGET", raising=False)
+    monkeypatch.setenv("REACHY_MINI_E2E_SIM_VIEWER", "1")
+    viewer = fixtures._bridge_daemon_config()
+    assert viewer.spawn == "never" and not viewer.headless
+    assert viewer.sim_displays.enabled() == ["face_markers"]
+    monkeypatch.delenv("REACHY_MINI_E2E_SIM_VIEWER")
+    assert fixtures._bridge_daemon_config().sim_displays.enabled() == []
+    monkeypatch.setenv("REACHY_MINI_E2E_SIM_VIEWER", "1")
+    monkeypatch.setenv("REACHY_MINI_E2E_TARGET", "real")
+    assert fixtures._bridge_daemon_config().sim_displays.enabled() == []
 
 
 # --- gravity_compensation capability probe ---

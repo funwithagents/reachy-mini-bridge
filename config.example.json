@@ -17,7 +17,9 @@
       "hfov_deg": 70.0
     },
     "sim_displays": {
-      "camera_overlay": true
+      "camera_overlay": true,
+      "robot_gaze": true,
+      "face_markers": true
     },
     "preload_datasets": true,
     "startup_timeout": 45.0

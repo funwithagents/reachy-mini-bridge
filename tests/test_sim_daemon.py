@@ -22,16 +22,13 @@ from typing import Any
 import numpy as np
 import pytest
 
-from reachy_mini_bridge import sim_daemon
+from reachy_mini_bridge import sim_daemon, sim_displays
 from reachy_mini_bridge.sim_daemon import (
     SimDaemonExtension,
-    ViewerOverlay,
     WebcamRelay,
     bridge_backend,
-    overlay_rect,
     relay_pipeline_candidates,
     relay_pipeline_description,
-    resample_nearest,
     webcam_source,
 )
 
@@ -370,39 +367,6 @@ def test_the_relay_logs_a_silent_camera_once_retries_and_recovers(
 # --- the viewer overlay -----------------------------------------------------------------
 
 
-def test_overlay_rect_sits_in_the_top_right_corner() -> None:
-    """A 16:9 picture a quarter of the view's width, even-sided, inset by the margin from
-    the top-right corner — MuJoCo rectangles have their origin at the bottom-left, so
-    the corner is where left+width and bottom+height meet the view's."""
-    for viewport in ((0, 0, 1920, 1080), (10, 20, 1280, 720)):
-        rect = overlay_rect(viewport)
-        assert rect is not None
-        left, bottom, width, height = rect
-        view_left, view_bottom, view_width, view_height = viewport
-        assert width == int(view_width * 0.25) // 2 * 2
-        assert width % 2 == 0 and height % 2 == 0
-        assert abs(width / height - 16 / 9) < 0.02
-        inset = int(view_width * 0.02)
-        assert left + width + inset == view_left + view_width
-        assert bottom + height + inset == view_bottom + view_height
-        assert left > view_left and bottom > view_bottom
-    assert overlay_rect((0, 0, 100, 60)) is None  # too small a picture to draw
-    assert overlay_rect((0, 0, 1920, 40)) is None  # a view not tall enough for it
-
-
-def test_resample_nearest_keeps_the_size_and_the_corners() -> None:
-    frame = np.zeros((360, 640, 3), dtype=np.uint8)
-    frame[0, 0], frame[0, -1] = (1, 2, 3), (4, 5, 6)
-    frame[-1, 0], frame[-1, -1] = (7, 8, 9), (10, 11, 12)
-    for size in ((480, 270), (1280, 720), (33, 17)):
-        out = resample_nearest(frame, size)
-        assert out.shape == (size[1], size[0], 3) and out.flags.c_contiguous
-        assert tuple(out[0, 0]) == (1, 2, 3) and tuple(out[0, -1]) == (4, 5, 6)
-        assert tuple(out[-1, 0]) == (7, 8, 9) and tuple(out[-1, -1]) == (10, 11, 12)
-    same = resample_nearest(frame, (640, 360))
-    assert same is not frame and np.array_equal(same, frame)
-
-
 def test_the_relay_pipeline_grows_an_overlay_branch_only_when_asked() -> None:
     """With the overlay, a tee after the RGB caps adds a leaky one-buffer branch scaled
     to the overlay's size and mirrored into a named appsink; the stream branch is
@@ -429,155 +393,13 @@ def test_the_relay_pipeline_grows_an_overlay_branch_only_when_asked() -> None:
 
 
 class _FakeHandle:
-    """Stands in for `mujoco.viewer.Handle`: records the overlay calls, and holds a
-    `set_images` call until released, as the real one waits for the render thread."""
+    """Stands in for `mujoco.viewer.Handle` as far as the run wiring goes: it closes."""
 
-    def __init__(
-        self,
-        viewport: tuple[int, int, int, int] = (0, 0, 1920, 1080),
-        events: list[str] | None = None,
-    ) -> None:
-        self.resize(viewport)
-        self.events = [] if events is None else events
-        self.images: list[tuple[Any, np.ndarray]] = []
-        self.texts: list[Any] = []
-        self.cleared: list[str] = []
-        self.running = True
-        self.entered = threading.Event()
-        self.release = threading.Event()
-        self.release.set()
-
-    def resize(self, viewport: tuple[int, int, int, int]) -> None:
-        left, bottom, width, height = viewport
-        self.viewport = SimpleNamespace(
-            left=left, bottom=bottom, width=width, height=height
-        )
-
-    def is_running(self) -> bool:
-        return self.running
-
-    def set_images(self, pairs: list[tuple[Any, np.ndarray]]) -> None:
-        self.entered.set()
-        self.release.wait(5.0)
-        self.images.extend(pairs)
-
-    def set_texts(self, texts: Any) -> None:
-        self.texts.append(texts)
-
-    def clear_images(self) -> None:
-        self.cleared.append("images")
-
-    def clear_texts(self) -> None:
-        self.cleared.append("texts")
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
 
     def close(self) -> None:
-        self.running = False
         self.events.append("close")
-
-
-def _rect(left: int, bottom: int, width: int, height: int) -> tuple[int, int, int, int]:
-    return (left, bottom, width, height)
-
-
-def _overlay() -> ViewerOverlay:
-    return ViewerOverlay(rect_factory=_rect, text_style=("font", "grid"))
-
-
-def test_the_overlay_draws_the_latest_frame_at_the_corner_rectangle() -> None:
-    handle = _FakeHandle()
-    overlay = _overlay()
-    overlay.attach(handle)
-    try:
-        assert overlay.drawing
-        overlay.show(np.full((360, 640, 3), 1, dtype=np.uint8))
-        assert _wait(lambda: len(handle.images) == 1)
-        rect, image = handle.images[0]
-        assert rect == overlay_rect((0, 0, 1920, 1080))
-        assert image.shape == (rect[3], rect[2], 3) and image.dtype == np.uint8
-        assert int(image[rect[3] // 2, rect[2] // 2, 0]) == 1
-        # a light frame around the picture, so it shows against a same-coloured scene
-        assert int(image[0, 0, 0]) == 230 and int(image[-1, -1, 0]) == 230
-        assert int(image[1, rect[2] // 2, 0]) == 230 and int(image[2, 2, 0]) == 1
-        handle.resize((0, 0, 1280, 720))  # a resized window: the picture follows
-        overlay.show(np.full((360, 640, 3), 2, dtype=np.uint8))
-        assert _wait(lambda: len(handle.images) == 2)
-        assert handle.images[1][0] == overlay_rect((0, 0, 1280, 720))
-        overlay.label("webcam: Fake Camera 1920x1080")
-        assert _wait(lambda: len(handle.texts) == 1)
-        assert handle.texts == [("font", "grid", "webcam: Fake Camera 1920x1080", "")]
-    finally:
-        overlay.stop()
-    assert not overlay.drawing and handle.cleared == ["images", "texts"]
-    overlay.stop()  # idempotent
-    assert handle.cleared == ["images", "texts"]
-
-
-def test_the_overlay_skips_to_the_latest_frame_while_the_viewer_is_busy() -> None:
-    """`set_images` waits for the viewer's render thread; frames shown meanwhile replace
-    each other, and the next draw is the latest one — never a queue of stale frames."""
-    handle = _FakeHandle()
-    overlay = _overlay()
-    overlay.attach(handle)
-    try:
-        handle.release.clear()
-        overlay.show(np.full((36, 64, 3), 1, dtype=np.uint8))
-        assert handle.entered.wait(5.0)  # the first draw is waiting on the viewer
-        overlay.show(np.full((36, 64, 3), 2, dtype=np.uint8))
-        overlay.show(np.full((36, 64, 3), 3, dtype=np.uint8))
-        handle.release.set()
-        assert _wait(lambda: len(handle.images) == 2)
-        time.sleep(0.1)
-        assert [int(image[10, 10, 0]) for _, image in handle.images] == [1, 3]
-    finally:
-        overlay.stop()
-
-
-def test_the_overlay_warns_once_on_a_mujoco_without_set_images(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    class _OldHandle:
-        viewport = SimpleNamespace(left=0, bottom=0, width=1920, height=1080)
-
-        def is_running(self) -> bool:
-            return True
-
-    overlay = _overlay()
-    with caplog.at_level(logging.WARNING, logger="reachy_mini_bridge.sim_daemon"):
-        overlay.attach(_OldHandle())
-        overlay.show(np.zeros((36, 64, 3), dtype=np.uint8))
-        overlay.label("webcam")
-        overlay.stop()
-    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-    assert len(warnings) == 1 and "3.3.1" in warnings[0].getMessage()
-    assert not overlay.drawing
-
-
-def test_the_overlay_reports_a_failing_draw_once(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """A draw that raises is a WARNING with the traceback the first time — the person
-    running the sim sees why there is no picture — and quiet after that."""
-
-    class _BrokenHandle(_FakeHandle):
-        def set_images(self, pairs: list[tuple[Any, np.ndarray]]) -> None:
-            raise ValueError("Image shape (1, 1) does not match target shape")
-
-    handle = _BrokenHandle()
-    overlay = _overlay()
-    with caplog.at_level(logging.INFO, logger="reachy_mini_bridge.sim_daemon"):
-        overlay.attach(handle)
-        for value in (1, 2, 3):
-            overlay.show(np.full((36, 64, 3), value, dtype=np.uint8))
-            time.sleep(0.05)
-        assert _wait(
-            lambda: sum("draw failed" in r.getMessage() for r in caplog.records) >= 1
-        )
-        time.sleep(0.1)
-        overlay.stop()
-    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-    assert len(warnings) == 1 and "draw failed" in warnings[0].getMessage()
-    assert warnings[0].exc_info is not None
-    assert any("drawing on the viewer" in r.getMessage() for r in caplog.records)
 
 
 class _FakeOverlay:
@@ -688,7 +510,7 @@ def test_the_run_hands_the_viewer_to_the_overlay_and_stops_it_before_the_close()
     wrapper hands that handle to the overlay and makes its close stop the overlay first,
     then restores the launch function — also when the run raises."""
     events: list[str] = []
-    handle = _FakeHandle(events=events)
+    handle = _FakeHandle(events)
 
     def launch_passive(*args: Any, **kwargs: Any) -> _FakeHandle:
         events.append(f"launch {kwargs.get('show_left_ui')}")
@@ -820,6 +642,125 @@ def test_run_sim_daemon_turns_on_a_viewer_display(
     assert seen["displays"] == sim_daemon._Displays(camera_overlay=True)
     _run([], monkeypatch)
     assert seen["displays"] == sim_daemon._Displays()
+    # Every display has its flag, and several go together.
+    _run(["--sim-display", "face_markers", "--sim-display", "robot_gaze"], monkeypatch)
+    assert seen["displays"] == sim_daemon._Displays(robot_gaze=True, face_markers=True)
+
+
+def test_the_scene_displays_are_built_on_the_model_and_handed_the_viewer(
+    mujoco: Any, scene_name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With `robot_gaze` / `face_markers` on, the backend builds one scene layer over
+    the views that are on, once its model exists; the face markers view is handed out
+    for the router; and run() gives the layer the viewer like the overlay, stopping
+    both before the close."""
+    from reachy_mini.daemon.backend.mujoco.backend import MujocoBackend
+
+    events: list[str] = []
+    layers: list[Any] = []
+
+    class _Layer:
+        def __init__(self, views: Any) -> None:
+            self.views = list(views)
+            layers.append(self)
+
+        def attach(self, handle: Any) -> None:
+            events.append("attach layer")
+
+        def stop(self) -> None:
+            events.append("stop layer")
+
+    handle = _FakeHandle(events)
+    viewer_module = SimpleNamespace(launch_passive=lambda *a, **kw: handle)
+    handed: list[Any] = []
+    on = sim_daemon._Displays(camera_overlay=True, robot_gaze=True, face_markers=True)
+    backend_class = bridge_backend(
+        MujocoBackend,
+        displays=on,
+        overlay_factory=lambda: _FakeOverlay(events),
+        layer_factory=_Layer,
+        on_face_markers=handed.append,
+        viewer_module=viewer_module,
+    )
+    backend = backend_class(scene=scene_name, headless=True, use_audio=False)
+    (layer,) = layers
+    gaze, markers = layer.views
+    assert isinstance(gaze, sim_displays.RobotGazeView)
+    assert isinstance(markers, sim_displays.FaceMarkersView) and handed == [markers]
+    # The views read the backend's own model: the gaze starts at its eye camera, and
+    # the markers' frame offset is the shift upstream applies to the pose it reports.
+    camera = mujoco.mj_name2id(backend.model, mujoco.mjtObj.mjOBJ_CAMERA, "eye_camera")
+    assert gaze.geoms()[0].a == pytest.approx(tuple(backend.data.cam_xpos[camera]))
+    marker = sim_displays.FaceMarker(
+        pos=(0.4, 0.0, 0.0), quat=(1.0, 0.0, 0.0, 0.0), size=(0.1, 0.2)
+    )
+    assert markers.world_pos(marker) == pytest.approx((0.4, 0.0, 0.177))
+
+    def run(self: Any) -> None:  # upstream's run(), as far as the viewer goes
+        viewer_module.launch_passive(None, None).close()
+
+    monkeypatch.setattr(MujocoBackend, "run", run)
+    backend.run()
+    assert events == [
+        "attach",
+        "attach layer",
+        "stop",
+        "stop layer",
+        "close",
+        "stop",
+        "stop layer",  # the run's own finally: idempotent on the displays
+    ]
+
+    # Only the gaze: no markers view, nothing handed out.
+    layers.clear()
+    bridge_backend(
+        MujocoBackend,
+        displays=sim_daemon._Displays(robot_gaze=True),
+        layer_factory=_Layer,
+        on_face_markers=handed.append,
+    )(scene=scene_name, headless=True, use_audio=False)
+    assert [type(v) for v in layers[0].views] == [sim_displays.RobotGazeView]
+    assert handed == [markers]
+
+
+def test_the_displays_router_is_mounted_with_face_markers_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`--sim-display face_markers` mounts the displays router on upstream's app; it
+    answers 503 until a backend is built, and without the display it is not there."""
+    fastapi = pytest.importorskip("fastapi")
+    testclient = pytest.importorskip("fastapi.testclient")
+    from reachy_mini.daemon.app import main as upstream_main
+
+    monkeypatch.setattr(
+        upstream_main, "create_app", lambda *a, **kw: fastapi.FastAPI(title="upstream")
+    )
+    seen: dict[str, Any] = {}
+
+    def corrected(backend_class: type, **kwargs: Any) -> type:
+        seen.update(kwargs)
+        return backend_class
+
+    monkeypatch.setattr(sim_daemon, "bridge_backend", corrected)
+    upstream_args: Any = SimpleNamespace()
+    _run(["--sim-display", "face_markers"], monkeypatch)
+    http = testclient.TestClient(upstream_main.create_app(upstream_args, None))
+    assert http.get("/api/sim/displays/face_markers").status_code == 503
+    # The backend, once built, hands its view over: the route serves it.
+    seen["on_face_markers"](
+        sim_displays.FaceMarkersView(lambda: np.array([0.0, 0.0, 0.177]))
+    )
+    assert http.get("/api/sim/displays/face_markers").json() == {
+        "age_s": None,
+        "markers": [],
+    }
+    # A launch without the display (a fresh process: upstream's own create_app again).
+    monkeypatch.setattr(
+        upstream_main, "create_app", lambda *a, **kw: fastapi.FastAPI(title="upstream")
+    )
+    _run(["--sim-display", "robot_gaze"], monkeypatch)
+    http = testclient.TestClient(upstream_main.create_app(upstream_args, None))
+    assert http.get("/api/sim/displays/face_markers").status_code == 404
 
 
 @pytest.mark.parametrize(
@@ -830,6 +771,8 @@ def test_run_sim_daemon_turns_on_a_viewer_display(
         ["--camera", "webcam", "--webcam-hfov", "180"],
         ["--camera", "usb"],
         ["--headless", "--sim-display", "camera_overlay"],
+        ["--headless", "--sim-display", "robot_gaze"],
+        ["--headless", "--sim-display", "face_markers"],
         ["--sim-display", "hud"],
     ],
 )

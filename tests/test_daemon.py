@@ -204,6 +204,11 @@ def test_launch_command_turns_on_the_viewer_displays(
         DaemonConfig(headless=False, scene=scene, sim_displays=overlay)
     )[-3:] == ["--preload-datasets", "--sim-display", "camera_overlay"]
     assert "--sim-display" not in daemon.launch_command(DaemonConfig(headless=False))
+    # Every display that is on, in SIM_DISPLAYS order.
+    views = SimDisplaySettings(face_markers=True, robot_gaze=True)
+    assert daemon.launch_command(DaemonConfig(headless=False, sim_displays=views))[
+        -4:
+    ] == ["--sim-display", "robot_gaze", "--sim-display", "face_markers"]
 
 
 def test_launch_command_runs_a_scene_file_through_the_bridge_launcher(

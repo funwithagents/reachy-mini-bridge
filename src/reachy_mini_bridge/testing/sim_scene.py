@@ -27,7 +27,7 @@ Three pieces, one process boundary:
   the ``--scene`` value upstream resolves to it), with the scene's extension: a
   ``SceneDirector`` installed as MuJoCo's control callback once the model is built, so the
   mocap bodies follow commanded poses from inside the physics loop, and a small REST
-  router on the daemon's own FastAPI app (``/api/sim-scene/bodies``).
+  router on the daemon's own FastAPI app (``/api/sim/inject/bodies``).
 - **Client** (bridge side) — ``SimSceneClient`` drives that router: spawn a free prop of
   the pool, despawn it, clear the scene; per body list, place (with an optional move
   duration), hide, show.
@@ -106,7 +106,9 @@ FACE_POOL_SIZE = 3
 _PORTRAIT_MATERIAL_PREFIX = "portrait_"
 
 _HTTP_TIMEOUT_S = 5.0
-_ROUTE_PREFIX = "/api/sim-scene"
+_ROUTE_PREFIX = "/api/sim/inject"
+# The router's own paths under ``bodies/``: a prop cannot carry these names.
+_RESERVED_NAMES = frozenset({"spawn", "clear"})
 
 
 # --- the scene file --------------------------------------------------------------------
@@ -166,13 +168,20 @@ def write_test_scene(
     The scene includes the robot model and its assets by absolute path, so it loads from
     anywhere; textures are referenced by absolute path too, one texture and one material
     (``portrait_<image stem>``) per distinct image, shared by every portrait showing it.
-    Prop names must be unique and non-empty.
+    Prop names must be unique and non-empty, and neither ``spawn`` nor ``clear`` (the
+    inject router's own paths under ``bodies/``).
     """
     if faces is None:
         faces = face_pool()
     names = [face.name for face in faces]
     if not faces or len(set(names)) != len(names) or any(not n for n in names):
         raise ValueError("face planes need unique, non-empty names")
+    reserved = sorted(_RESERVED_NAMES.intersection(names))
+    if reserved:
+        raise ValueError(
+            f"face plane name(s) {', '.join(reserved)} are reserved: the inject router "
+            "serves bodies/spawn and bodies/clear"
+        )
     root = _mjcf_root()
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -599,14 +608,16 @@ def _pool_order(name: str) -> tuple[int, str]:
 
 
 def build_router(director: SceneDirector) -> Any:
-    """A FastAPI ``APIRouter`` over ``director`` (mounted at ``/api/sim-scene``):
-    ``GET /bodies`` lists every scriptable body, ``POST /bodies/{name}`` commands one
-    (JSON body with any of ``pos``, ``quat``, ``duration``, ``visible``) and returns
-    its new state; an unknown body is 404, a malformed value 400. ``POST /spawn`` shows a
-    free prop of a pool (409 when none is free), ``POST /clear`` hides them all."""
+    """A FastAPI ``APIRouter`` over ``director`` (mounted at ``/api/sim/inject``): every
+    route acts on bodies, so every route is under ``bodies``. ``GET /bodies`` lists every
+    scriptable body, ``POST /bodies/{name}`` commands one (JSON body with any of ``pos``,
+    ``quat``, ``duration``, ``visible``) and returns its new state; an unknown body is
+    404, a malformed value 400. ``POST /bodies/spawn`` shows a free prop of a pool (409
+    when none is free), ``POST /bodies/clear`` hides them all — the two fixed paths are
+    registered before ``{name}``, and a scene refuses props with those names."""
     from fastapi import APIRouter, Body, HTTPException
 
-    router = APIRouter(tags=["sim-scene"])
+    router = APIRouter(tags=["sim-inject"])
 
     @router.get("/bodies")
     def list_bodies() -> dict[str, Any]:
@@ -614,6 +625,33 @@ def build_router(director: SceneDirector) -> Any:
             "attached": director.attached,
             "bodies": {name: s.to_dict() for name, s in director.states().items()},
         }
+
+    spawn_body = Body(...)
+
+    @router.post("/bodies/spawn")
+    def spawn(payload: dict[str, Any] = spawn_body) -> dict[str, Any]:
+        unknown = set(payload) - {"pos", "quat", "duration", "kind", "image"}
+        if unknown:
+            raise HTTPException(400, f"unknown field(s): {', '.join(sorted(unknown))}")
+        if "pos" not in payload:
+            raise HTTPException(400, "spawn needs a pos")
+        try:
+            state = director.spawn(
+                payload["pos"],
+                payload.get("quat"),
+                kind=str(payload.get("kind", "face")),
+                image=payload.get("image"),
+                duration=float(payload.get("duration", 0.0)),
+            )
+        except LookupError as e:
+            raise HTTPException(409, str(e.args[0] if e.args else e)) from None
+        except (TypeError, ValueError) as e:
+            raise HTTPException(400, str(e)) from None
+        return state.to_dict()
+
+    @router.post("/bodies/clear")
+    def clear() -> dict[str, Any]:
+        return {"bodies": {name: s.to_dict() for name, s in director.clear().items()}}
 
     payload_body = Body(default={})
 
@@ -638,33 +676,6 @@ def build_router(director: SceneDirector) -> Any:
             raise HTTPException(400, str(e)) from None
         return state.to_dict()
 
-    spawn_body = Body(...)
-
-    @router.post("/spawn")
-    def spawn(payload: dict[str, Any] = spawn_body) -> dict[str, Any]:
-        unknown = set(payload) - {"pos", "quat", "duration", "kind", "image"}
-        if unknown:
-            raise HTTPException(400, f"unknown field(s): {', '.join(sorted(unknown))}")
-        if "pos" not in payload:
-            raise HTTPException(400, "spawn needs a pos")
-        try:
-            state = director.spawn(
-                payload["pos"],
-                payload.get("quat"),
-                kind=str(payload.get("kind", "face")),
-                image=payload.get("image"),
-                duration=float(payload.get("duration", 0.0)),
-            )
-        except LookupError as e:
-            raise HTTPException(409, str(e.args[0] if e.args else e)) from None
-        except (TypeError, ValueError) as e:
-            raise HTTPException(400, str(e)) from None
-        return state.to_dict()
-
-    @router.post("/clear")
-    def clear() -> dict[str, Any]:
-        return {"bodies": {name: s.to_dict() for name, s in director.clear().items()}}
-
     return router
 
 
@@ -673,7 +684,7 @@ def build_router(director: SceneDirector) -> Any:
 
 def scene_extension(director: SceneDirector) -> SimDaemonExtension:
     """The test scene as a sim daemon extension: ``director`` installed as MuJoCo's control
-    callback once the backend has built its model, the sim-scene router mounted on the
+    callback once the backend has built its model, the inject router mounted on the
     daemon's app.
 
     Installed after the model is built, never before: MuJoCo's compiler calls the control
@@ -706,7 +717,7 @@ def run_daemon(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="python -m reachy_mini_bridge.testing.sim_scene",
         description="Run the Reachy Mini MuJoCo daemon on the bridge's test scene "
-        "(specs/testing/sim_scene.md), with the sim-scene endpoint mounted. Every other flag "
+        "(specs/testing/sim_scene.md), with the inject endpoint mounted. Every other flag "
         "is the sim daemon launcher's (python -m reachy_mini_bridge.sim_daemon --help).",
         add_help=True,
     )
@@ -780,7 +791,7 @@ class SimSceneClient:
             body["quat"] = list(quat)
         if image is not None:
             body["image"] = image
-        return BodyState.from_dict(self._request("POST", "/spawn", body)).name
+        return BodyState.from_dict(self._request("POST", "/bodies/spawn", body)).name
 
     def despawn(self, name: str) -> BodyState:
         """Hide ``name`` and return it to the pool (it keeps its pose)."""
@@ -788,7 +799,7 @@ class SimSceneClient:
 
     def clear(self) -> dict[str, BodyState]:
         """Hide every prop: nobody in view."""
-        payload = self._request("POST", "/clear", {})
+        payload = self._request("POST", "/bodies/clear", {})
         return {
             name: BodyState.from_dict(state)
             for name, state in payload["bodies"].items()
@@ -833,7 +844,7 @@ class SimSceneClient:
             detail = e.read().decode(errors="replace")
             if e.code == 404 and "unknown body" not in detail:
                 raise SimSceneError(
-                    f"no sim-scene endpoint at {self._base}: the daemon was not launched "
+                    f"no inject endpoint at {self._base}: the daemon was not launched "
                     "through reachy_mini_bridge.testing.sim_scene (DaemonConfig.scene must be a "
                     ".xml path)"
                 ) from e

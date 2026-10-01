@@ -32,6 +32,7 @@ from reachy_mini_bridge.head_tracking import (
     CameraModel,
     HeadTracker,
     HeadTrackingReport,
+    frame_head_pose,
     pinhole_intrinsics,
     sim_hfov_deg,
 )
@@ -232,6 +233,43 @@ def test_a_report_carrying_its_frame_pose_is_aimed_against_it() -> None:
     report = replace(_report(0.0, 0.0, ts=time.monotonic()), head_pose=pose)
     tracker.observe(report)
     assert _yaw_deg(sent[-1]) == pytest.approx(20.0, abs=0.5)
+
+
+def test_frame_head_pose_is_the_pose_the_frame_was_taken_from() -> None:
+    """The one rule the aim and the sim's face markers share: the neutral pose for a
+    fixed camera, a stamped report's own pose, else the reported pose at the report's
+    time minus the delay — a read that leaves the delay estimate alone."""
+    times = np.array([10.0, 10.1, 10.2, 10.3])
+    poses = np.stack([_turned(yaw) for yaw in (0.0, 10.0, 20.0, 30.0)])
+    history = lambda: (times, poses)
+    head_mounted = CameraModel.for_sim(SimCameraSettings())
+    unstamped = _report(0.0, 0.0, ts=10.3)
+
+    def yaw(report: FaceReport, camera: CameraModel, delay: float, now: float) -> float:
+        return _yaw_deg(frame_head_pose(report, camera, history, delay, now))
+
+    # Unstamped: the history at the report's time minus the delay.
+    assert yaw(unstamped, head_mounted, 0.0, 99.0) == pytest.approx(30.0)
+    assert yaw(unstamped, head_mounted, 0.2, 99.0) == pytest.approx(10.0)
+    # A report without a time is placed at `now`.
+    timeless = _report(0.0, 0.0, ts=0.0)
+    assert yaw(timeless, head_mounted, 0.1, 10.2) == pytest.approx(10.0)
+    # Stamped: its own pose, whatever the history and the delay say.
+    stamped = replace(unstamped, head_pose=_turned(-15.0))
+    assert yaw(stamped, head_mounted, 0.2, 99.0) == pytest.approx(-15.0)
+    # A fixed camera: the neutral pose, even for a stamped report.
+    fixed = CameraModel.for_sim(SimCameraSettings(source="webcam"))
+    assert yaw(stamped, fixed, 0.2, 99.0) == pytest.approx(0.0)
+    assert yaw(unstamped, fixed, 0.0, 99.0) == pytest.approx(0.0)
+
+    # Reading it for a marker never feeds the tracker's estimate.
+    tracker = HeadTracker(
+        head_mounted, history=history, set_gaze=lambda aim, *, focus=False: None
+    )
+    for _ in range(20):
+        frame_head_pose(unstamped, head_mounted, history, tracker.delay_s, 99.0)
+    assert tracker.delay_s == head_tracking.DELAY_PRIOR_S
+    assert not tracker._detections
 
 
 async def _constant_observation(camera: CameraModel, seconds: float) -> list[float]:

@@ -48,6 +48,7 @@ from .head_tracking import CameraModel, HeadTracker, HeadTrackingReport
 from .motion import NEUTRAL_ANTENNAS, NEUTRAL_BODY_YAW, NEUTRAL_HEAD, MotionSession
 from .observable import Observable
 from .robot import build_robot
+from .sim_displays import FaceMarkerPublisher, face_markers_url
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -414,6 +415,20 @@ class ReachyMiniBridge:
             stack.push_async_callback(self._stop_detection)
             if self._face_detection_wanted or self._tracking_wanted:
                 await self._start_detection(detection)
+            # The sim's face markers (specs/daemon/sim_displays.md): the faces sent to the
+            # daemon's viewer. Exits after the motion session, before the detection loop.
+            if cfg.backend == "sim" and cfg.daemon.sim_displays.face_markers:
+                tracker = self._tracker
+                publisher = FaceMarkerPublisher(
+                    self._faces,
+                    self._head_tracking,
+                    camera=tracker.camera,
+                    history=motion.head_pose_history,
+                    delay=lambda: tracker.delay_s,
+                    url=face_markers_url(*self._daemon_address()),
+                )
+                await publisher.start()
+                stack.push_async_callback(publisher.stop)
             # Entered after wobbling, exits first (specs/motion/motion.md "Lifecycle"): the
             # stack unwinds in reverse, so the loop eases to neutral before wobbling
             # (and everything else) tears down.
@@ -513,6 +528,12 @@ class ReachyMiniBridge:
                 f"the face detector {self._config.face_detection.detector!r} could not be built: "
                 f"{type(e).__name__}: {e}"
             ) from e
+
+    def _daemon_address(self) -> tuple[str, int]:
+        """The daemon's HTTP address: the robot options' host and port, else the local
+        daemon's defaults (``start_daemon``'s)."""
+        opts = self._config.effective_robot_options()
+        return (str(opts.get("host", "127.0.0.1")), int(opts.get("port", 8000)))
 
     def _camera_model(self, robot: AnyReachyMini) -> CameraModel:
         """The tracker's camera (specs/motion/head_tracking.md "The aim"): the bridge's pinhole

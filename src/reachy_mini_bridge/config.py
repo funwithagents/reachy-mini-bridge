@@ -47,10 +47,10 @@ SPAWN_MODES = ("never", "auto", "always")
 # What the sim daemon's camera stream carries (specs/daemon/sim_daemon.md "Camera sources").
 CAMERA_SOURCES = ("sim", "webcam")
 DEFAULT_WEBCAM_HFOV_DEG = 70.0
-# The MuJoCo viewer's displays (specs/core/config.md `daemon.sim_displays`; specs/daemon/sim_daemon.md
-# "Viewer overlay"): each name is a field of SimDisplaySettings and a `--sim-display`
-# value of the sim daemon launcher. Add a display here and as a field, nowhere else.
-SIM_DISPLAYS = ("camera_overlay",)
+# The sim displays (specs/core/config.md `daemon.sim_displays`; specs/daemon/sim_displays.md):
+# each name is a field of SimDisplaySettings and a `--sim-display` value of the sim
+# daemon launcher. Add a display here and as a field, nowhere else.
+SIM_DISPLAYS = ("camera_overlay", "robot_gaze", "face_markers")
 # The idle modes (specs/motion/motion.md "Presence and the idle mode"); motion.IdleMode is the
 # same three values as a type.
 IDLE_MODES = ("breathing", "hold", "custom")
@@ -167,10 +167,15 @@ class SimDisplaySettings:
     """What the MuJoCo viewer window shows besides the scene (specs/core/config.md
     ``daemon.sim_displays``): one boolean per display, every one off by default.
     ``camera_overlay`` draws the sim daemon's camera stream in the top-right corner of
-    the viewer (specs/daemon/sim_daemon.md "Viewer overlay"). A display needs the viewer, so
-    ``DaemonConfig.from_dict`` rejects one set with ``headless``."""
+    the viewer, ``robot_gaze`` the eye camera's optical axis as a line in the 3D scene,
+    ``face_markers`` an ellipsoid per face the bridge detects, where it places it — which
+    the bridge sends, so that one is read by both sides (specs/daemon/sim_displays.md). A
+    display needs the viewer, so ``DaemonConfig.from_dict`` rejects one set with
+    ``headless``."""
 
     camera_overlay: bool = False
+    robot_gaze: bool = False
+    face_markers: bool = False
 
     def enabled(self) -> list[str]:
         """The names of the displays that are on, in ``SIM_DISPLAYS`` order."""

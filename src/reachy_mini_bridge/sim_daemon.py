@@ -14,11 +14,10 @@ every client see the person in front of the computer. The capture pipeline const
 nothing about the source — a camera offers the modes it has — and centre-crops whatever it
 negotiates into the stream's 1280x720.
 
-``--sim-display camera_overlay`` draws the camera stream — the webcam, or the rendered eye
-camera — as a picture in the top-right corner of the MuJoCo viewer window, through the
-passive viewer's ``set_images`` (MuJoCo 3.3.1+; an older MuJoCo gets one warning and no
-picture). Frames come off a second branch of the relay pipeline, or off the eye-camera
-renderer, into a thread of the overlay's own; the stream clients read is untouched.
+``--sim-display NAME`` turns a sim display on (specs/daemon/sim_displays.md,
+``sim_displays.py``). The launcher's part is the wiring: it builds the displays that are
+on, hands them the viewer handle, and feeds the camera overlay — off a second branch of
+the relay pipeline, or off the eye-camera renderer; the stream clients read is untouched.
 
 Importing this module pulls in neither ``mujoco`` nor GStreamer; the daemon-side pieces
 import them when they run.
@@ -27,33 +26,41 @@ import them when they run.
 from __future__ import annotations
 
 import argparse
-import importlib
 import logging
 import math
 import platform
 import sys
 import threading
 import time
-from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager, nullcontext
+from collections.abc import Callable, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 import numpy as np
 
 from .config import CAMERA_SOURCES, DEFAULT_WEBCAM_HFOV_DEG, SIM_DISPLAYS
+from .sim_displays import (
+    DISPLAYS_ROUTE_PREFIX,
+    OVERLAY_SOURCE_SIZE,
+    FaceMarkersView,
+    RobotGazeView,
+    SceneLayer,
+    ViewerDisplay,
+    ViewerOverlay,
+    build_router,
+    capture_viewer,
+    resample_nearest,
+)
 
 __all__ = [
     "CAMERA_SOURCES",
     "DEFAULT_WEBCAM_HFOV_DEG",
     "SIM_DISPLAYS",
     "SimDaemonExtension",
-    "ViewerOverlay",
     "WebcamRelay",
     "bridge_backend",
-    "overlay_rect",
     "relay_pipeline_candidates",
-    "resample_nearest",
     "run_sim_daemon",
     "webcam_source",
 ]
@@ -75,21 +82,7 @@ _STREAM_FPS = 25
 _FRAME_TIMEOUT_S = 5.0
 _RETRY_S = 5.0
 
-# The viewer overlay (specs/daemon/sim_daemon.md "Viewer overlay"): the camera stream drawn in
-# the top-right corner of the MuJoCo viewer, this fraction of the view's width, inset by
-# this fraction of it; frames reach the overlay at OVERLAY_SOURCE_SIZE (the relay's second
-# branch scales to it, the renderer tap resamples to it) and are resampled to the
-# rectangle. A viewport whose rectangle would have a side under _OVERLAY_MIN_SIDE pixels
-# draws nothing. The relay's appsink for the overlay branch is named so the pipeline can
-# find it.
-OVERLAY_FRACTION = 0.25
-OVERLAY_MARGIN = 0.02
-OVERLAY_SOURCE_SIZE = (640, 360)
-_OVERLAY_MIN_SIDE = 32
-# A light frame around the picture, so it stands out from a scene of the same colours
-# (the eye camera's view of the empty scene is the viewer's own skybox and floor).
-_OVERLAY_BORDER_PX = 2
-_OVERLAY_BORDER_VALUE = 230
+# The relay's appsink for the camera overlay's branch, named so the pipeline can find it.
 _OVERLAY_SINK_NAME = "overlay"
 
 
@@ -502,213 +495,6 @@ class WebcamRelay:
         )
 
 
-# --- the viewer overlay -----------------------------------------------------------------
-
-
-def overlay_rect(
-    viewport: tuple[int, int, int, int],
-    *,
-    fraction: float = OVERLAY_FRACTION,
-    margin: float = OVERLAY_MARGIN,
-) -> tuple[int, int, int, int] | None:
-    """Where the camera overlay goes in a viewer ``viewport`` (``left, bottom, width,
-    height`` in framebuffer pixels, origin bottom-left like MuJoCo's ``MjrRect``): a 16:9
-    rectangle ``fraction`` of the viewport's width, both sides even, in the top-right
-    corner inset by ``margin`` of the viewport's width. ``None`` when the viewport is too
-    small for it — nothing is drawn then."""
-    left, bottom, view_width, view_height = viewport
-    width = int(view_width * fraction) // 2 * 2
-    height = int(width * STREAM_SIZE[1] / STREAM_SIZE[0]) // 2 * 2
-    inset = int(view_width * margin)
-    if (
-        min(width, height) < _OVERLAY_MIN_SIDE
-        or width + inset > view_width
-        or height + inset > view_height
-    ):
-        return None
-    return (
-        left + view_width - width - inset,
-        bottom + view_height - height - inset,
-        width,
-        height,
-    )
-
-
-def resample_nearest(frame: np.ndarray, size: tuple[int, int]) -> np.ndarray:
-    """``frame`` (``height x width x channels``) at ``size`` (``width, height``) by
-    nearest-neighbour index arrays — the daemon has no OpenCV. A contiguous copy either
-    way."""
-    width, height = size
-    source_height, source_width = frame.shape[:2]
-    if (source_width, source_height) == (width, height):
-        return np.array(frame, order="C")  # a copy: the caller may reuse its buffer
-    # The first and last output pixels take the first and last source pixels, the rest
-    # the nearest in between — so the corners are the corners whichever way the size
-    # goes.
-    rows = np.rint(np.arange(height) * (source_height - 1) / max(height - 1, 1))
-    cols = np.rint(np.arange(width) * (source_width - 1) / max(width - 1, 1))
-    return np.ascontiguousarray(frame[rows.astype(int)[:, None], cols.astype(int)])
-
-
-def _mujoco_version() -> str:
-    try:
-        return str(importlib.import_module("mujoco").__version__)
-    except Exception:  # noqa: BLE001 - no mujoco at all
-        return "unknown"
-
-
-class ViewerOverlay:
-    """The camera stream drawn over the MuJoCo viewer (specs/daemon/sim_daemon.md "Viewer
-    overlay").
-
-    Frames arrive through ``show`` from whichever thread has them — the webcam relay's
-    appsink, the eye-camera render thread — into a latest-frame slot, and a thread of
-    the overlay's own draws them through the viewer handle's ``set_images``: a call that
-    waits for the viewer's render thread, so it never runs on a feed thread or the
-    physics loop, and a feed faster than the viewer only ever loses intermediate frames.
-    The rectangle is recomputed from the handle's viewport for every frame, so a window
-    resize keeps the picture in its corner. ``label`` puts one line of text at the top
-    left of the view (the camera's name and size). A handle without ``set_images`` — a
-    MuJoCo before 3.3.1 — is logged once at ``WARNING`` and everything else is a no-op.
-
-    ``rect_factory`` and ``text_style`` default to MuJoCo's ``MjrRect`` and
-    ``(mjFONTSCALE_100, mjGRID_TOPLEFT)``, imported when a handle is attached; the tests
-    hand in their own and need no MuJoCo."""
-
-    def __init__(
-        self,
-        *,
-        rect_factory: Callable[[int, int, int, int], Any] | None = None,
-        text_style: tuple[Any, Any] | None = None,
-    ) -> None:
-        self._rect_factory = rect_factory
-        self._text_style = text_style
-        self._lock = threading.Lock()
-        self._frame: np.ndarray | None = None
-        self._label: str | None = None
-        self._new = threading.Event()
-        self._stop = threading.Event()
-        self._handle: Any = None
-        self._thread: threading.Thread | None = None
-
-    @property
-    def drawing(self) -> bool:
-        """Whether a viewer is attached and being drawn on."""
-        return self._thread is not None
-
-    def attach(self, handle: Any) -> None:
-        """Start drawing on ``handle`` (a ``mujoco.viewer.Handle``)."""
-        if not hasattr(handle, "set_images"):
-            _logger.warning(
-                "camera overlay: needs MuJoCo 3.3.1 or later (installed %s); not drawn",
-                _mujoco_version(),
-            )
-            return
-        rect_factory, text_style = self._rect_factory, self._text_style
-        if rect_factory is None or text_style is None:
-            mujoco: Any = importlib.import_module("mujoco")
-            rect_factory = rect_factory or mujoco.MjrRect
-            text_style = text_style or (
-                mujoco.mjtFontScale.mjFONTSCALE_100,
-                mujoco.mjtGridPos.mjGRID_TOPLEFT,
-            )
-        self._handle = handle
-        self._stop.clear()
-        _logger.info("camera overlay: drawing on the viewer")
-        self._thread = threading.Thread(
-            target=self._run,
-            args=(handle, rect_factory, text_style),
-            name="viewer-overlay",
-            daemon=True,
-        )
-        self._thread.start()
-
-    def show(self, frame: np.ndarray) -> None:
-        """The latest frame (RGB ``uint8``, any size); replaces an undrawn one."""
-        with self._lock:
-            self._frame = frame
-        self._new.set()
-
-    def label(self, text: str) -> None:
-        with self._lock:
-            self._label = text
-        self._new.set()
-
-    def stop(self) -> None:
-        """Stop drawing, and clear the overlay while the viewer is still up; idempotent,
-        harmless before ``attach``."""
-        self._stop.set()
-        self._new.set()
-        thread, self._thread = self._thread, None
-        if thread is not None:
-            thread.join(timeout=5.0)
-        handle, self._handle = self._handle, None
-        if handle is not None and handle.is_running():
-            handle.clear_images()
-            if hasattr(handle, "clear_texts"):
-                handle.clear_texts()
-
-    def _run(
-        self,
-        handle: Any,
-        rect_factory: Callable[[int, int, int, int], Any],
-        text_style: tuple[Any, Any],
-    ) -> None:
-        shown_label: str | None = None
-        drawn = 0
-        failed = 0
-        while True:
-            self._new.wait()
-            if self._stop.is_set():
-                return
-            self._new.clear()
-            with self._lock:
-                frame, label = self._frame, self._label
-            if not handle.is_running():
-                continue
-            try:
-                if label is not None and label != shown_label:
-                    if hasattr(handle, "set_texts"):
-                        handle.set_texts((*text_style, label, ""))
-                    shown_label = label
-                if frame is None:
-                    continue
-                viewport = handle.viewport
-                if viewport is None:
-                    continue
-                rect = overlay_rect(
-                    (viewport.left, viewport.bottom, viewport.width, viewport.height)
-                )
-                if rect is None:
-                    continue
-                image = resample_nearest(frame, (rect[2], rect[3]))
-                b = _OVERLAY_BORDER_PX
-                image[:b], image[-b:] = _OVERLAY_BORDER_VALUE, _OVERLAY_BORDER_VALUE
-                image[:, :b], image[:, -b:] = (
-                    _OVERLAY_BORDER_VALUE,
-                    _OVERLAY_BORDER_VALUE,
-                )
-                handle.set_images([(rect_factory(*rect), image)])
-                drawn += 1
-                if drawn == 1:
-                    _logger.info(
-                        "camera overlay: first frame drawn, %dx%d at (%d, %d) of a "
-                        "%dx%d view",
-                        rect[2],
-                        rect[3],
-                        rect[0],
-                        rect[1],
-                        viewport.width,
-                        viewport.height,
-                    )
-            except Exception:  # the viewer going away under a draw — or a real fault
-                failed += 1
-                if failed == 1:
-                    _logger.warning("camera overlay: a draw failed", exc_info=True)
-                else:
-                    _logger.debug("camera overlay: a draw failed", exc_info=True)
-
-
 class _TappedRenderer:
     """Upstream's offscreen eye-camera renderer with every rendered frame also handed to
     the overlay (at ``OVERLAY_SOURCE_SIZE``), on the render thread, before the frame goes
@@ -733,40 +519,6 @@ class _TappedRenderer:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._renderer, name)
-
-
-@contextmanager
-def _capture_viewer(overlay: _Overlay, viewer_module: Any | None) -> Iterator[None]:
-    """While active, the viewer that upstream's ``run()`` launches is handed to
-    ``overlay``, and its ``close`` stops the overlay first. Upstream keeps the handle as
-    a local and closes it itself at the end of ``run()``, and a draw issued after the
-    close could wait on a render thread that is gone — so the ordering lives on the
-    handle. A process-local substitution of ``mujoco.viewer.launch_passive`` (looked up
-    on the module at call time), like the tracker intrinsics; restored on exit."""
-    module: Any = (
-        importlib.import_module("mujoco.viewer")
-        if viewer_module is None
-        else viewer_module
-    )
-    original = module.launch_passive
-
-    def launch_passive(*args: Any, **kwargs: Any) -> Any:
-        handle = original(*args, **kwargs)
-        overlay.attach(handle)
-        close = handle.close
-
-        def close_after_overlay() -> None:
-            overlay.stop()
-            close()
-
-        handle.close = close_after_overlay
-        return handle
-
-    module.launch_passive = launch_passive
-    try:
-        yield
-    finally:
-        module.launch_passive = original
 
 
 # --- the backend subclass (camera source wiring, the overlay, the hooks) -------------
@@ -795,6 +547,12 @@ class _Displays:
     """The viewer displays turned on (``--sim-display``; ``SIM_DISPLAYS``)."""
 
     camera_overlay: bool = False
+    robot_gaze: bool = False
+    face_markers: bool = False
+
+    @classmethod
+    def named(cls, names: Sequence[str]) -> _Displays:
+        return cls(**{name: name in names for name in SIM_DISPLAYS})
 
 
 @dataclass(frozen=True)
@@ -812,6 +570,8 @@ def bridge_backend(
     extensions: Sequence[SimDaemonExtension] = (),
     relay_factory: _RelayFactory = WebcamRelay,
     overlay_factory: Callable[[], _Overlay] = ViewerOverlay,
+    layer_factory: Callable[[Sequence[Any]], ViewerDisplay] = SceneLayer,
+    on_face_markers: Callable[[FaceMarkersView], None] | None = None,
     viewer_module: Any | None = None,
 ) -> type:
     """A subclass of upstream's ``MujocoBackend`` wiring the launcher's additions in
@@ -823,8 +583,13 @@ def bridge_backend(
       relay runs with the loop.
     - With ``displays.camera_overlay``: a ``ViewerOverlay`` (from ``overlay_factory``)
       is fed by the relay's overlay branch (webcam) or a tap on the eye-camera renderer
-      (sim); ``run()`` hands it the viewer upstream launches (``viewer_module``, the
-      ``mujoco.viewer`` module by default) and stops it with the run.
+      (sim).
+    - With ``displays.robot_gaze`` / ``displays.face_markers``: a scene layer (from
+      ``layer_factory``) over the views that are on, built once the model exists; the
+      face markers view is also handed to ``on_face_markers``, for the displays router.
+    - ``run()`` hands every display that is on the viewer upstream launches
+      (``viewer_module``, the ``mujoco.viewer`` module by default) and stops them with
+      the run.
     """
     camera = _Camera() if camera is None else camera
     displays = _Displays() if displays is None else displays
@@ -835,6 +600,17 @@ def bridge_backend(
             super().__init__(*args, **kwargs)
             self._viewer_overlay: _Overlay | None = (
                 overlay_factory() if displays.camera_overlay else None
+            )
+            views: list[Any] = []
+            if displays.robot_gaze:
+                views.append(RobotGazeView(self.model, self.data))
+            if displays.face_markers:
+                markers = FaceMarkersView.for_backend(self)
+                views.append(markers)
+                if on_face_markers is not None:
+                    on_face_markers(markers)
+            self._scene_layer: ViewerDisplay | None = (
+                layer_factory(views) if views else None
             )
             for extension in extensions:
                 if extension.on_backend is not None:
@@ -860,18 +636,19 @@ def bridge_backend(
             relay = relay_factory(camera.device, overlay=overlay) if webcam else None
             if relay is not None:
                 relay.start()
+            shown: list[ViewerDisplay] = [
+                display
+                for display in (overlay, self._scene_layer)
+                if display is not None
+            ]
             try:
-                with (
-                    nullcontext()
-                    if overlay is None
-                    else _capture_viewer(overlay, viewer_module)
-                ):
+                with capture_viewer(shown, viewer_module) if shown else nullcontext():
                     super().run()
             finally:
                 if relay is not None:
                     relay.stop()
-                if overlay is not None:
-                    overlay.stop()
+                for display in shown:
+                    display.stop()
 
     BridgeMujocoBackend.__name__ = backend_class.__name__
     BridgeMujocoBackend.__qualname__ = backend_class.__qualname__
@@ -975,7 +752,10 @@ def run_sim_daemon(
             parser.error(str(e))
     if args.sim_display and args.headless:
         parser.error("--sim-display needs the viewer (drop --headless)")
-    displays = _Displays(camera_overlay="camera_overlay" in args.sim_display)
+    displays = _Displays.named(args.sim_display)
+    # The face markers view exists once the backend is built; the displays router,
+    # mounted on the app before that, reaches the latest one through this holder.
+    face_markers: list[FaceMarkersView] = []
 
     from reachy_mini.daemon import daemon as upstream_daemon
     from reachy_mini.daemon.app import main as upstream_main
@@ -985,11 +765,17 @@ def run_sim_daemon(
         camera=camera,
         displays=displays,
         extensions=extensions,
+        on_face_markers=face_markers.append,
     )
     original_create_app = upstream_main.create_app
 
     def create_app(*a: Any, **kw: Any) -> Any:
         app = original_create_app(*a, **kw)
+        if displays.face_markers:
+            app.include_router(
+                build_router(lambda: face_markers[-1] if face_markers else None),
+                prefix=DISPLAYS_ROUTE_PREFIX,
+            )
         for extension in extensions:
             if extension.on_app is not None:
                 extension.on_app(app)

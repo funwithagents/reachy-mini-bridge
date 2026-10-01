@@ -59,13 +59,16 @@ def test_from_json_file_round_trips_the_repo_example() -> None:
         "timeout": 5.0,
     }
     # The example is the sim viewer seeing through the host webcam (specs/core/config.md):
-    # headless is off and the camera source is `webcam` on purpose.
+    # headless is off and the camera source is `webcam` on purpose, with every sim
+    # display on: the camera overlay, the robot's gaze and the face markers.
     assert cfg.daemon == DaemonConfig(
         spawn="auto",
         headless=False,
         scene=None,
         camera=SimCameraSettings(source="webcam", device=None, hfov_deg=70.0),
-        sim_displays=SimDisplaySettings(camera_overlay=True),
+        sim_displays=SimDisplaySettings(
+            camera_overlay=True, robot_gaze=True, face_markers=True
+        ),
         preload_datasets=True,
         startup_timeout=45.0,
     )
@@ -74,8 +77,11 @@ def test_from_json_file_round_trips_the_repo_example() -> None:
     assert cfg.tts["module"]["voice"] == "george"
     assert cfg.audio == AudioSettings(xvf3800=None)
     # The example shows the robot that follows the person in front of the webcam: the
-    # shipped detector, detection and tracking on.
-    assert cfg.face_detection == FaceDetectionSettings(detector="yunet", enabled=True)
+    # shipped detector, detection and tracking on — detecting at 640 px, twice the
+    # default width, for a finer roll.
+    assert cfg.face_detection == FaceDetectionSettings(
+        detector="yunet", enabled=True, width=640
+    )
     assert cfg.motion == MotionSettings(tracking=True)
 
 
@@ -330,7 +336,7 @@ def test_daemon_camera_must_be_an_object() -> None:
 def test_daemon_sim_displays_default_off() -> None:
     assert ReachyMiniConfig.from_dict({}).daemon.sim_displays == SimDisplaySettings()
     assert SimDisplaySettings().enabled() == []
-    assert SIM_DISPLAYS == ("camera_overlay",)
+    assert SIM_DISPLAYS == ("camera_overlay", "robot_gaze", "face_markers")
 
 
 def test_daemon_sim_displays_turn_on_a_viewer_display() -> None:
@@ -342,6 +348,15 @@ def test_daemon_sim_displays_turn_on_a_viewer_display() -> None:
     )
     assert cfg.daemon.sim_displays == SimDisplaySettings(camera_overlay=True)
     assert cfg.daemon.sim_displays.enabled() == ["camera_overlay"]
+    # Every display parses, and the ones on are listed in SIM_DISPLAYS order whatever
+    # the order they were written in.
+    every = SimDisplaySettings.from_json(
+        '{"face_markers": true, "robot_gaze": true, "camera_overlay": true}'
+    )
+    assert every == SimDisplaySettings(
+        camera_overlay=True, robot_gaze=True, face_markers=True
+    )
+    assert every.enabled() == ["camera_overlay", "robot_gaze", "face_markers"]
     assert SimDisplaySettings.from_json('{"camera_overlay": true}').enabled() == [
         "camera_overlay"
     ]
@@ -350,6 +365,11 @@ def test_daemon_sim_displays_turn_on_a_viewer_display() -> None:
 def test_daemon_sim_displays_need_the_viewer() -> None:
     """A display is drawn in the viewer window; with the headless daemon (the default)
     there is none, so the config says so instead of silently showing nothing."""
+    for name in ("robot_gaze", "face_markers"):
+        with pytest.raises(ConfigError, match=rf"sim_displays\.{name}.*headless"):
+            ReachyMiniConfig.from_dict(
+                {"backend": "sim", "daemon": {"sim_displays": {name: True}}}
+            )
     with pytest.raises(ConfigError, match=r"sim_displays\.camera_overlay.*headless"):
         ReachyMiniConfig.from_dict(
             {"backend": "sim", "daemon": {"sim_displays": {"camera_overlay": True}}}
