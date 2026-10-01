@@ -18,8 +18,8 @@ import math
 import threading
 import time
 from contextlib import suppress
-from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Protocol
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Protocol, cast
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -165,8 +165,9 @@ type FaceDetectorFactory = Callable[[], FaceDetector]
 
 def check_face_detector_factory(factory: object) -> None:
     """Registration-time check (specs/vision/user_perception.md "Custom detectors"):
-    ``ValueError`` unless ``factory`` is a callable whose result has a callable
-    ``detect``. Calls the factory once, on the caller's thread."""
+    ``ValueError`` unless ``factory`` is callable. Nothing is built here — the loop
+    builds the detector when it starts, on a worker thread, and validates it then
+    (:meth:`FaceDetection.start`)."""
     if not callable(factory):
         # ValueError, not TypeError: the bridge's one error for bad input (specs/core/bridge.md)
         raise ValueError(  # noqa: TRY004
@@ -174,17 +175,16 @@ def check_face_detector_factory(factory: object) -> None:
             "FaceDetector (a class with a `detect(frame_bgr, ts)` method is one), got "
             f"{type(factory).__name__}"
         )
-    try:
-        detector = factory()
-    except Exception as e:
-        raise ValueError(
-            f"invalid face detector: the factory raised {type(e).__name__}: {e}"
-        ) from e
+
+
+def _check_face_detector(detector: object) -> FaceDetector:
+    """What a factory built, or ``ValueError`` when it has no callable ``detect``."""
     if not callable(getattr(detector, "detect", None)):
         raise ValueError(  # noqa: TRY004 - ValueError is the bridge's error for bad input
             f"invalid face detector: {type(detector).__name__} has no callable "
             "`detect(frame_bgr, ts)` method"
         )
+    return cast("FaceDetector", detector)
 
 
 def _normalised(u: float, v: float, size: tuple[int, int]) -> tuple[float, float]:
@@ -342,10 +342,11 @@ class FaceDetection:
 
     ``detector`` names what runs — ``"yunet"`` (the shipped detector), ``"custom"`` (the
     factory registered through ``detector_factory``) or ``None`` (nothing: ``start``
-    refuses). ``on_observation`` receives every observation's report, undebounced (the
-    head tracker's feed). The detector is built from its factory when the loop starts,
-    on a worker thread (a build may load a model); the daemon's own tracking is never
-    touched.
+    refuses). ``on_observation`` hears every poll, undebounced — the observation's
+    report, or ``None`` for a poll that produced none (the head tracker's feed, and
+    its clock while the camera is silent). The detector is built from its factory when
+    the loop starts, on a worker thread (a build may load a model), and validated
+    then; the daemon's own tracking is never touched.
     """
 
     def __init__(
@@ -353,7 +354,7 @@ class FaceDetection:
         *,
         detector: str | None,
         faces: Observable[FaceReport],
-        on_observation: Callable[[FaceReport], None] | None = None,
+        on_observation: Callable[[FaceReport | None], None] | None = None,
         feed: CameraFeed | None = None,
         detector_factory: FaceDetectorFactory | None = None,
         width: int | None = DETECT_WIDTH,
@@ -427,13 +428,20 @@ class FaceDetection:
         """Build the detector (on a worker thread) and start sampling the feed.
 
         Raises ``ValueError`` for a detector this loop cannot run (no detector named,
-        ``custom`` with none registered, no camera feed) and whatever the detector's
-        factory raises — a model that cannot load — with the loop left not running.
+        ``custom`` with none registered, no camera feed, a factory's result without a
+        callable ``detect`` — released through its ``close()`` if it has one) and
+        whatever the detector's factory raises — a model that cannot load — with the
+        loop left not running.
         """
         if self.running:
             return
         factory = self._factory()
-        self._detector = await asyncio.to_thread(factory)
+        built = await asyncio.to_thread(factory)
+        try:
+            self._detector = _check_face_detector(built)
+        except ValueError:
+            await self._release(cast("FaceDetector", built))
+            raise
         self._tracks = _FaceTracks(self._new_track_id)
         self._last_detect_at = None
         self._cost_since, self._cost_calls, self._cost_total_s = None, 0, 0.0
@@ -561,7 +569,6 @@ class FaceDetection:
     async def _run(self) -> None:
         published: FaceReport | None = None  # the last value `set`
         lower_since: float | None = None  # when the count first read below `published`
-        last: FaceReport | None = None  # the last good observation
         failing_since: float | None = None
         down = False
         while True:
@@ -586,15 +593,15 @@ class FaceDetection:
                         self._name,
                         down_after,
                     )
-                    base = last or FaceReport.inactive(self._name)
-                    published = replace(base, active=False)
+                    published = FaceReport.inactive(self._name)
                     self._faces.set(published)
                     lower_since = None
+                if self._on_observation is not None:
+                    self._on_observation(None)  # the tracker keeps time
                 await asyncio.sleep(1.0 / FACE_POLL_HZ)
                 continue
             failing_since = None
             down = False
-            last = report
             if self._on_observation is not None:
                 self._on_observation(report)
             published, lower_since = self._publish(report, published, lower_since)

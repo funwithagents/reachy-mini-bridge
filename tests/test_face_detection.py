@@ -16,6 +16,7 @@ import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
@@ -54,6 +55,13 @@ class _Loop:
         self.faces = faces
         self.woken: list[FaceReport] = []
         self.observed: list[FaceReport] = []
+        self.silent = 0  # polls the observer heard nothing from
+
+    def hear(self, report: FaceReport | None) -> None:
+        if report is None:
+            self.silent += 1
+        else:
+            self.observed.append(report)
 
 
 def _counts(reports: list[FaceReport]) -> list[int]:
@@ -251,17 +259,43 @@ def test_the_factory_check_accepts_a_class_and_a_lambda() -> None:
     check_face_detector_factory(Bare)
 
 
-def test_the_factory_check_names_the_problem() -> None:
+def test_the_factory_check_refuses_only_what_is_not_callable() -> None:
+    """Registration checks the callable alone and builds nothing; a factory that raises,
+    or returns something without `detect`, fails the loop's start instead
+    (specs/vision/user_perception.md "Building the detector")."""
     with pytest.raises(ValueError, match="zero-argument callable.*got int"):
         check_face_detector_factory(42)
 
     def boom() -> _StubDetector:
         raise RuntimeError("no model file")
 
-    with pytest.raises(ValueError, match="factory raised RuntimeError: no model file"):
-        check_face_detector_factory(boom)
-    with pytest.raises(ValueError, match="object has no callable `detect"):
-        check_face_detector_factory(object)
+    check_face_detector_factory(boom)
+    check_face_detector_factory(object)
+
+
+def test_a_factory_result_without_detect_fails_the_start_and_is_released() -> None:
+    closed: list[object] = []
+
+    class NoDetect:
+        def close(self) -> None:
+            closed.append(self)
+
+    async def run() -> tuple[bool, FaceReport, int]:
+        robot = FakeReachyMini()
+        faces: Observable[FaceReport] = Observable(FaceReport.inactive("custom"))
+        feed = CameraFeed(frame_reader(robot), None)
+        no_detect: Any = NoDetect
+        detection = FaceDetection(
+            detector="custom", faces=faces, feed=feed, detector_factory=no_detect
+        )
+        with pytest.raises(ValueError, match="NoDetect has no callable `detect"):
+            await detection.start()
+        return detection.running, faces.value, len(closed)
+
+    running, value, released = _run(run)
+    assert running is False
+    assert value == FaceReport.inactive("custom")
+    assert released == 1  # what the factory built was let go through its close()
 
 
 def _frame(ts: float = 4.5, pose: npt.NDArray[np.float64] | None = None) -> CameraFrame:
@@ -420,7 +454,7 @@ async def _running_custom(
         target_fps=target_fps,
     )
     loop = _CustomLoop(robot, faces, feed, scene, detection)
-    detection._on_observation = loop.observed.append
+    detection._on_observation = loop.hear
 
     async def subscribe() -> None:
         async for report in faces.changes():
@@ -542,19 +576,22 @@ def test_a_detector_raising_on_every_frame_reads_inactive_then_recovers(
     monkeypatch.setattr(fd, "FACE_SOURCE_DOWN_S", 0.3)
     scene = _Scene([_face(30, 24)])
 
-    async def run() -> tuple[bool, bool, list[bool]]:
+    async def run() -> tuple[FaceReport, int, bool, list[bool]]:
         async with _running_custom(scene) as loop:
-            await _wait_for(lambda: loop.faces.value.active)
+            await _wait_for(lambda: bool(loop.faces.value.faces))
             loop.woken.clear()
             scene.raises = True
             await asyncio.sleep(0.6)
-            down = loop.faces.value.active
+            down = loop.faces.value
+            silent = loop.silent
             scene.raises = False
             await _wait_for(lambda: loop.faces.value.active)
-            return down, loop.faces.value.active, [r.active for r in loop.woken]
+            return down, silent, loop.faces.value.active, [r.active for r in loop.woken]
 
-    down, up, woken = _run(run)
-    assert down is False and up is True
+    down, silent, up, woken = _run(run)
+    assert down == FaceReport.inactive("custom")  # no stale face survives the outage
+    assert silent > 0  # the observer heard the empty polls (the tracker's clock)
+    assert up is True
     assert woken == [False, True]
 
 

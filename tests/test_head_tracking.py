@@ -407,6 +407,11 @@ class _Chooser:
             )
         )
 
+    def tick(self, after: float = 0.1) -> None:
+        """A poll of the detection loop without an observation."""
+        self.clock.now += after
+        self.tracker.tick()
+
     def aim_at(self, face: Face) -> Any:
         """The aim a tracker gives this face alone."""
         aims: list[Any] = []
@@ -513,6 +518,41 @@ def test_only_specks_in_view_hold_until_the_loss(
         track_id=None,
         ts=chooser.report.value.ts,
     )
+
+
+def test_ticks_alone_release_the_aim_after_the_loss_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No observation at all after a sighting — a dead camera, a detector that keeps
+    raising — still ends in the loss, measured by the loop's ticks
+    (specs/motion/head_tracking.md "Easing, loss, focus")."""
+    monkeypatch.setattr(head_tracking, "TRACKING_LOST_S", 2.0)
+    chooser = _Chooser(monkeypatch)
+    chooser.see(_person(1, 0.0, NEAR))
+    sets = len(chooser.published)
+    chooser.tick(after=1.9)
+    assert chooser.tracker.following == 1 and chooser.aims[-1] is not None
+    chooser.tick(after=0.2)  # 2.1 s since the last sighting
+    assert chooser.tracker.following is None and chooser.aims[-1] is None
+    assert len(chooser.published) == sets + 1
+    assert chooser.published[-1].attention == "watching"
+    chooser.tick(after=1.0)  # nothing left to release
+    assert len(chooser.published) == sets + 1 and chooser.aims[-1] is None
+
+
+def test_the_loss_counts_from_the_last_sighting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(head_tracking, "TRACKING_LOST_S", 2.0)
+    chooser = _Chooser(monkeypatch)
+    chooser.see(_person(1, 0.0, NEAR))
+    chooser.see(
+        after=1.5
+    )  # the first report without the face, 1.5 s after the sighting
+    chooser.tick(after=0.4)  # 1.9 s: held
+    assert chooser.tracker.following == 1
+    chooser.tick(after=0.2)  # 2.1 s since the sighting, 0.6 s since the empty report
+    assert chooser.tracker.following is None and chooser.aims[-1] is None
 
 
 def test_an_eligible_face_between_the_switch_and_the_loss_is_followed_at_once(

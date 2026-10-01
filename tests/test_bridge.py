@@ -1188,23 +1188,20 @@ def test_a_switch_on_without_a_detector_fails_entry_before_anything_starts() -> 
     assert robots == []
 
 
-class _FlakyFactory:
-    """Passes the registration check (its first build succeeds) and fails every build
-    after it — a model that could not be loaded when the loop starts."""
+class _BrokenFactory:
+    """Callable, so registration accepts it; every build fails — a model that could not
+    be loaded when the loop starts."""
 
-    def __init__(self, scene: _Scene) -> None:
-        self._scene = scene
+    def __init__(self) -> None:
         self.builds = 0
 
     def __call__(self) -> _StubDetector:
         self.builds += 1
-        if self.builds > 1:
-            raise OSError("no network: the model could not be downloaded")
-        return _StubDetector(self._scene)
+        raise OSError("no network: the model could not be downloaded")
 
 
 def test_a_detector_that_cannot_be_built_fails_bring_up_and_unwinds() -> None:
-    factory = _FlakyFactory(_Scene([]))
+    factory = _BrokenFactory()
     config = ReachyMiniConfig(
         backend="fake",
         face_detection=FaceDetectionSettings(
@@ -1225,6 +1222,9 @@ def test_a_detector_that_cannot_be_built_fails_bring_up_and_unwinds() -> None:
         with pytest.raises(BridgeError, match="could not be built.*no network") as info:
             asyncio.run(bridge.start())
     assert isinstance(info.value.__cause__, OSError)
+    assert (
+        factory.builds == 1
+    )  # built once, at the loop's start — never at registration
     (robot,) = robots
     assert robot.commands[-1][0] == "__exit__"  # everything started was unwound
     with pytest.raises(BridgeError):
@@ -1238,9 +1238,7 @@ def test_a_detector_that_cannot_be_built_leaves_a_switch_as_it_was() -> None:
 
     async def run() -> tuple[bool, bool, bool]:
         async with ReachyMiniBridge(config) as bridge:
-            await bridge.set_face_detector(
-                _FlakyFactory(scene)
-            )  # the check builds once
+            await bridge.set_face_detector(_BrokenFactory())  # callable: accepted
             with pytest.raises(BridgeError, match="could not be built"):
                 await bridge.set_face_detection(True)
             detection = bridge.face_detection
@@ -2155,6 +2153,7 @@ class _Scene:
     def __init__(self, faces: list[PixelFace]) -> None:
         self.faces = faces
         self.calls = 0
+        self.raises = False  # a detector failing on every frame: no observation at all
         # The factory: one object, so identity checks on `bridge.face_detector` hold.
         self.detector: Callable[[], _StubDetector] = lambda: _StubDetector(self)
 
@@ -2171,6 +2170,8 @@ class _StubDetector:
 
     def detect(self, frame_bgr: npt.NDArray[np.uint8], ts: float) -> list[PixelFace]:
         self._scene.calls += 1
+        if self._scene.raises:
+            raise RuntimeError("model crashed")
         return list(self._scene.faces)
 
 
@@ -2238,14 +2239,18 @@ def test_set_face_detector_swaps_detectors_mid_session() -> None:
             await _wait_for_face_x(bridge, -0.5)
             await bridge.set_face_detector(right.detector)
             await _wait_for_face_x(bridge, 0.5, timeout=2.5 / FAKE_FRAME_HZ)
-            bad: Any = object
-            with pytest.raises(ValueError, match="no callable"):
+            bad: Any = 42  # not callable: refused at registration
+            with pytest.raises(ValueError, match="zero-argument callable"):
                 await bridge.set_face_detector(bad)
             assert bridge.face_detector is right.detector  # the bad one left it alone
             calls_left = left.calls
             await asyncio.sleep(3.0 / FAKE_FRAME_HZ)
             assert left.calls == calls_left  # the old detector is never called again
-            await bridge.set_face_detector(None)  # cleared: nothing looks any more
+            with pytest.raises(ValueError, match="cannot be cleared"):
+                await bridge.set_face_detector(None)  # the loop runs it
+            assert bridge.face_detector is right.detector
+            await bridge.set_face_detection(False)  # nobody needs faces now
+            await bridge.set_face_detector(None)  # cleared
             await asyncio.sleep(0.05)
             return left.calls, bridge.faces.value
 
@@ -2388,3 +2393,138 @@ def test_stop_then_start_is_a_second_session_on_the_same_object() -> None:
     assert state == "enabled" and same_robot is False  # a fresh robot per session
     assert bridge.faces is faces and bridge.camera is camera  # the same objects across
     assert bridge.running is False
+
+
+# --- the detector built once, and only when someone needs faces --------------------------
+
+
+def test_the_custom_factory_is_called_once_per_start_on_a_worker() -> None:
+    scene = _Scene([])
+    built: list[int] = []
+
+    def factory() -> _StubDetector:
+        built.append(threading.get_ident())
+        return _StubDetector(scene)
+
+    async def run() -> tuple[int, int, int, int]:
+        config = _custom_config(scene, detection=False, tracking=False)
+        async with ReachyMiniBridge(config) as bridge:
+            await bridge.set_face_detector(factory)
+            registered = len(built)
+            await asyncio.sleep(0.05)
+            idle = len(built)  # nobody needs faces: nothing is built
+            await bridge.start_head_tracking()
+            await asyncio.sleep(0.05)
+            started = len(built)
+            await bridge.stop_head_tracking()
+            await bridge.set_face_detection(True)
+            await asyncio.sleep(0.05)
+            return registered, idle, started, len(built)
+
+    assert asyncio.run(run()) == (0, 0, 1, 2)
+    assert threading.get_ident() not in built  # on a worker thread, never the loop's
+
+
+def test_a_factory_result_without_detect_fails_entry_and_the_verbs_alike() -> None:
+    class NoDetect:
+        pass
+
+    no_detect: Any = (
+        NoDetect  # callable, so the type checker and the check both pass it
+    )
+    config = ReachyMiniConfig(
+        backend="fake",
+        face_detection=FaceDetectionSettings(
+            detector="custom", enabled=True, face_detector=no_detect
+        ),
+    )
+    with pytest.raises(ValueError, match="NoDetect has no callable `detect"):
+        asyncio.run(ReachyMiniBridge(config).start())
+
+    async def run() -> tuple[bool, bool, bool]:
+        config = _custom_config(_Scene([]), detection=False, tracking=False)
+        async with ReachyMiniBridge(config) as bridge:
+            await bridge.set_face_detector(no_detect)  # callable: accepted
+            with pytest.raises(ValueError, match="no callable `detect"):
+                await bridge.start_head_tracking()
+            with pytest.raises(ValueError, match="no callable `detect"):
+                await bridge.set_face_detection(True)
+            await bridge.set_motors_state("enabled")  # the session still works
+            return bridge.tracking, bridge.face_detection, bridge.faces.value.active
+
+    assert asyncio.run(run()) == (False, False, False)
+
+
+def test_clearing_the_custom_detector_while_tracking_is_refused(
+    fast_faces: None,
+) -> None:
+    scene = _Scene([_pixel_face(0.3)])
+
+    async def run() -> tuple[
+        str | None, tuple[bool, bool, str | None, bool], Any, bool
+    ]:
+        async with ReachyMiniBridge(_custom_config(scene, detection=False)) as bridge:
+            await _wait_for_face_x(bridge, 0.3)
+            await asyncio.sleep(0.1)
+            engaged = bridge.attention
+            with pytest.raises(
+                ValueError, match="stop head tracking and face detection"
+            ):
+                await bridge.set_face_detector(None)
+            kept = (
+                bridge.tracking,
+                bridge.face_detector is scene.detector,
+                bridge.attention,
+                bridge.faces.value.active,
+            )
+            await bridge.stop_head_tracking()
+            await bridge.set_face_detector(None)  # nobody needs faces: cleared
+            with pytest.raises(ValueError, match="no face detector is registered"):
+                await bridge.start_head_tracking()
+            return engaged, kept, bridge.face_detector, bridge.tracking
+
+    engaged, kept, cleared, tracking = asyncio.run(run())
+    assert engaged == "engaged"
+    assert kept == (True, True, "engaged", True)
+    assert cleared is None and tracking is False
+
+
+# --- a silent detector: the loss by time, the inactive report empty ------------------------
+
+
+def test_a_silent_detector_releases_the_head_reads_inactive_and_re_engages(
+    monkeypatch: pytest.MonkeyPatch, fast_attention: None
+) -> None:
+    """The detector fails on every frame, so no observation reaches the tracker at all:
+    the aim is withdrawn after TRACKING_LOST_S anyway (the loop's ticks keep the
+    tracker's clock), the report turns inactive and empty after FACE_SOURCE_DOWN_S, and
+    the head re-engages once observations return."""
+    monkeypatch.setattr(face_detection_module, "FACE_SOURCE_DOWN_S", 0.8)
+    scene = _Scene([_pixel_face(0.5)])
+
+    async def run() -> tuple[
+        tuple[str | None, float], tuple[str | None, bool], FaceReport, float, str | None
+    ]:
+        async with ReachyMiniBridge(_custom_config(scene, idle="hold")) as bridge:
+            await bridge.set_motors_state("enabled")
+            await asyncio.sleep(1.0)
+            engaged = (bridge.attention, _yaw_deg(_fake(bridge).last_target[0]))
+            scene.raises = True
+            await asyncio.sleep(
+                0.5
+            )  # past TRACKING_LOST_S (0.3), before the source-down
+            lost = (bridge.attention, bridge.faces.value.active)
+            await asyncio.sleep(0.5)  # past FACE_SOURCE_DOWN_S
+            down = bridge.faces.value
+            await asyncio.sleep(0.8)  # the gaze layer faded out onto the neutral hold
+            released = _yaw_deg(_fake(bridge).last_target[0])
+            scene.raises = False
+            await asyncio.sleep(0.6)
+            return engaged, lost, down, released, bridge.attention
+
+    engaged, lost, down, released, again = asyncio.run(run())
+    assert engaged[0] == "engaged" and engaged[1] < -5.0
+    assert lost == ("watching", True)
+    assert down == FaceReport.inactive("custom")  # no stale face while nobody looks
+    assert abs(released) < 1.0
+    assert again == "engaged"

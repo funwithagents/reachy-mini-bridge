@@ -30,7 +30,7 @@ import pytest
 from reachy_mini_bridge import ReachyMiniConfig
 from reachy_mini_bridge.bridge import ReachyMiniBridge
 from reachy_mini_bridge.config import FaceDetectionSettings, MotionSettings
-from reachy_mini_bridge.testing import _daemon, requires_caps
+from reachy_mini_bridge.testing import BridgeLoop, LiveBridge, _daemon, requires_caps
 from reachy_mini_bridge.testing.fixtures import _probe_capabilities
 from reachy_mini_bridge.testing.sim_scene import DEFAULT_FACE_POS, SimSceneClient
 from reachy_mini_bridge.yunet import YuNetDetector
@@ -74,10 +74,11 @@ async def _settled_yaw(
 @pytest.fixture(scope="module")
 def live_bridge_custom_faces(
     _live_daemon: tuple[str, int],
-) -> Iterator[tuple[ReachyMiniBridge, frozenset[str]]]:
-    """`live_bridge`'s twin for the `custom` detection path: the same target, daemon and
-    capability probe, but a config with `face_detection.detector="custom"` and the shipped
-    detector class registered as the custom factory. Its own session, because the
+) -> Iterator[LiveBridge]:
+    """`live_bridge`'s twin for the `custom` detection path: the same target, daemon,
+    capability probe and event loop (`BridgeLoop`), but a config with
+    `face_detection.detector="custom"` and the shipped detector class registered as the
+    custom factory. Its own session, because the
     detector is config-only and two bridge sessions on one daemon would be two motion loops
     writing the head."""
     host, port = _live_daemon
@@ -96,17 +97,18 @@ def live_bridge_custom_faces(
             motion=MotionSettings(tracking=True),
         )
     )
-    asyncio.run(bridge.start())
-    try:
-        caps = _probe_capabilities(bridge.robot, (host, port))
-        yield bridge, caps
-    finally:
-        asyncio.run(bridge.stop())
+    with BridgeLoop() as loop:
+        loop.run(bridge.start())
+        try:
+            caps = _probe_capabilities(bridge.robot, (host, port))
+            yield LiveBridge(bridge, caps, loop)
+        finally:
+            loop.run(bridge.stop())
 
 
 @pytest.fixture
 def face_scene(
-    live_bridge_custom_faces: tuple[ReachyMiniBridge, frozenset[str]],
+    live_bridge_custom_faces: LiveBridge,
     sim_scene: SimSceneClient,
 ) -> Iterator[SimSceneClient]:
     requires_caps(live_bridge_custom_faces, "camera", "faces")
@@ -116,7 +118,7 @@ def face_scene(
 
 
 def test_custom_detector_converges_on_the_face(
-    live_bridge_custom_faces: tuple[ReachyMiniBridge, frozenset[str]],
+    live_bridge_custom_faces: LiveBridge,
     face_scene: SimSceneClient,
 ) -> None:
     """With the shipped detector class registered as the custom detector, `bridge.faces`
@@ -143,7 +145,7 @@ def test_custom_detector_converges_on_the_face(
             await asyncio.sleep(0.01)
         return ahead, aside, report, (len(seen) - 1) / 2.0, bridge.attention
 
-    ahead, aside, report, rate, attention = asyncio.run(scenario())
+    ahead, aside, report, rate, attention = live_bridge_custom_faces.run(scenario())
     print(
         f"\n[e2e] custom source: yaw ahead {ahead:+.1f}, aside {aside:+.1f} deg "
         f"(expected {_expected_yaw_deg(LATERAL_M):+.1f}), {rate:.1f} reports/s, "

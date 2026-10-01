@@ -236,7 +236,9 @@ class HeadTracker:
     its gaze command. A report's ``ts`` is its frame's time on this process's monotonic
     clock (specs/vision/camera.md). ``focus`` is the caller's, handed over with every aim.
     :meth:`observe` is fed every report of the detection loop while :meth:`start` has
-    it running; its state is published on ``report`` when one is given.
+    it running, :meth:`tick` every poll of it that produced none, so the tracker keeps
+    time while the camera is silent; its state is published on ``report`` when one is
+    given.
     """
 
     camera: CameraModel
@@ -245,9 +247,9 @@ class HeadTracker:
     focus: bool = False
     report: Observable[HeadTrackingReport] | None = None
     _active: bool = field(default=False, init=False)
-    # whom the head follows, by track_id, and since when that face has been missing
+    # whom the head follows, by track_id, and when an observation last showed that face
     _following: int | None = field(default=None, init=False)
-    _missing_since: float | None = field(default=None, init=False)
+    _seen_at: float | None = field(default=None, init=False)
     _aimed_ts: float = field(default=0.0, init=False)
     _delay: float = field(default=DELAY_PRIOR_S, init=False)
     _detections: deque[_Detection] = field(default_factory=deque, init=False)
@@ -282,7 +284,7 @@ class HeadTracker:
         (specs/motion/head_tracking.md "Whom the head follows") and aim that face — or hold
         the previous aim while the followed face is missing, switch after
         ``TRACKING_SWITCH_S``, withdraw after ``TRACKING_LOST_S`` with nobody to switch
-        to."""
+        to. A face is missing from the last observation that showed it."""
         now = time.monotonic()
         face: Face | None = None
         if self._following is not None:
@@ -290,28 +292,47 @@ class HeadTracker:
                 (f for f in report.faces if f.track_id == self._following), None
             )
             if face is None:
-                if self._missing_since is None:
-                    self._missing_since = now
-                missing = now - self._missing_since
+                missing = self._missing_for(now)
                 if missing >= TRACKING_SWITCH_S:
                     face = self._biggest(report)
                 if face is None:
                     if missing >= TRACKING_LOST_S:
-                        self._following = None
-                        self._missing_since = None
-                        self.set_gaze(None, focus=self.focus)
-                        self._publish()
+                        self._lose()
                     return  # the previous aim stands: the head holds toward the face
         else:
             face = self._biggest(report)
             if face is None:
                 return
         self._following = face.track_id
-        self._missing_since = None
+        self._seen_at = now
         aim = self._aim(face, report, now)
         if aim is not None:
             self._aimed_ts = report.ts
             self.set_gaze(aim, focus=self.focus)
+        self._publish()
+
+    def tick(self, now: float | None = None) -> None:
+        """A poll of the detection loop that produced no observation (no new frame, a
+        failed ``detect``): the followed face has been missing since the last
+        observation that showed it, and ``TRACKING_LOST_S`` of that withdraws the aim
+        as on an observation (specs/motion/head_tracking.md "Easing, loss, focus")."""
+        if self._following is None:
+            return
+        if now is None:
+            now = time.monotonic()
+        if self._missing_for(now) >= TRACKING_LOST_S:
+            self._lose()
+
+    def _missing_for(self, now: float) -> float:
+        """How long the followed face has been missing: since the observation that last
+        showed it."""
+        return 0.0 if self._seen_at is None else now - self._seen_at
+
+    def _lose(self) -> None:
+        """Follow nobody and withdraw the aim (the gaze layer fades out); published."""
+        self._following = None
+        self._seen_at = None
+        self.set_gaze(None, focus=self.focus)
         self._publish()
 
     def stop(self) -> None:
@@ -319,7 +340,7 @@ class HeadTracker:
         inactive report."""
         self._active = False
         self._following = None
-        self._missing_since = None
+        self._seen_at = None
         self.set_gaze(None, focus=self.focus)
         self._publish()
 

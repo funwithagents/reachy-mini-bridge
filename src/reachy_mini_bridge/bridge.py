@@ -543,11 +543,16 @@ class ReachyMiniBridge:
             return CameraModel.for_sim(self._config.daemon.camera)
         return CameraModel.for_robot(robot)
 
-    def _on_face_observation(self, report: FaceReport) -> None:
+    def _on_face_observation(self, report: FaceReport | None) -> None:
         """The detection loop's every poll, undebounced: the tracker's feed while
-        tracking is on."""
+        tracking is on — an observation, or ``None`` for a poll without one, which
+        keeps the tracker's loss clock running while the camera is silent."""
         tracker = self._tracker
-        if tracker is not None and self._tracking_wanted:
+        if tracker is None or not self._tracking_wanted:
+            return
+        if report is None:
+            tracker.tick()
+        else:
             tracker.observe(report)
 
     async def _sync_detection(self) -> None:
@@ -871,23 +876,31 @@ class ReachyMiniBridge:
         returning an object with ``detect(frame_bgr, ts) -> Sequence[PixelFace]`` — a
         class is one — or ``None`` to clear it.
 
-        Checked before it is stored: ``ValueError`` for a factory that is not callable,
-        raises, or builds something without a callable ``detect`` — the registered one
-        then stays. Stored whatever the detector is; with the detector ``custom`` and
-        the loop running, the loop swaps to the new one between two polls (clearing it
-        stops the loop, which the next start will refuse until one is registered).
+        Checked before it is stored: ``ValueError`` for a factory that is not
+        callable — the registered one then stays; the detector itself is built, and
+        validated, when the loop starts. Stored whatever the detector is; with the
+        detector ``custom`` and the loop running, the loop swaps to the new one between
+        two polls. Clearing it while the loop runs it (detection or tracking on) is
+        refused with ``ValueError`` and changes nothing: stop both first.
         """
         if factory is not None:
             check_face_detector_factory(factory)
-        self._face_detector = factory
         detection = self._detection
+        runs_custom = (
+            detection is not None
+            and detection.running
+            and self._config.face_detection.detector == "custom"
+        )
+        if factory is None and runs_custom:
+            raise ValueError(
+                "the custom face detector cannot be cleared while the detection loop "
+                "runs it: stop head tracking and face detection first"
+            )
+        self._face_detector = factory
         if detection is None or self._config.face_detection.detector != "custom":
             return
         detection.restart(factory)
-        if factory is None:
-            if detection.running:
-                await detection.stop()
-        else:
+        if factory is not None:
             await self._sync_detection()
 
     @property

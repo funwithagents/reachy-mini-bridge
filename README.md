@@ -381,7 +381,7 @@ from reachy_mini_bridge.testing import requires_caps
 def test_it_speaks(live_bridge):
     requires_caps(live_bridge, "audio")
     bridge, _caps = live_bridge
-    ...
+    live_bridge.run(bridge.say("hello", my_synth))  # every bridge call runs on the harness's loop
 ```
 
 The `live_bridge` fixture borrows a running daemon or spawns one (sim, or a USB-connected robot's), probes what actually works (`motion`, `audio`, `camera`, `gravity_compensation`, `faces`), and skips rather than fails when it can't. The sim it spawns runs the bridge's test scene — a portrait hidden until a test shows it (the `sim_scene` fixture) — so with the viewer (`REACHY_MINI_E2E_SIM_VIEWER=1`) face tracking and the hand-back to the idle motion are tested without a person ([specs/testing/sim_scene.md](specs/testing/sim_scene.md)). Full guide: [docs/testing-with-the-bridge.md](docs/testing-with-the-bridge.md).

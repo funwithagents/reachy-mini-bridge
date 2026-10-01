@@ -86,15 +86,13 @@ its needs, so one test runs unchanged on the headless sim, the headfull viewer, 
 robot:
 
 ```python
-import asyncio
-
 from reachy_mini_bridge.testing import require_env, requires_caps
 
 
 def test_it_speaks(live_bridge):
     requires_caps(live_bridge, "audio")
     bridge, _caps = live_bridge
-    asyncio.run(bridge.say("hello", my_synth))
+    live_bridge.run(bridge.say("hello", my_synth))
 
 
 def test_it_nods(live_bridge):
@@ -102,6 +100,14 @@ def test_it_nods(live_bridge):
     bridge, _caps = live_bridge
     ...
 ```
+
+`live_bridge.run(...)` executes a coroutine on the one event loop the harness runs the
+bridge on, from its `start()` to its `stop()`, and returns the result. Use it for
+everything you await on the bridge rather than `asyncio.run`: the bridge is loop-bound
+(its detection loop is an asyncio task on the loop that started it, its observables
+publish there), so a coroutine run on a second loop would leave any task it starts to
+die with that loop. `BridgeLoop`, from the same package, is the mechanism for a fixture
+of your own — a second bridge session, say.
 
 (A test that needs the robot to *see* something gates on `camera`, and on `faces` when it
 uses the sim's portrait — see "Testing tracking without a person" below.)

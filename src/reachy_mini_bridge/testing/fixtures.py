@@ -11,18 +11,19 @@ then writes target-agnostic e2e tests that gate on probed capabilities::
     def test_it_speaks(live_bridge):
         requires_caps(live_bridge, "audio")
         bridge, _caps = live_bridge
-        ...
+        live_bridge.run(bridge.say("hello", my_synth))
 
 ``live_bridge`` resolves the target (``REACHY_MINI_E2E_TARGET`` = ``sim`` default | ``real``),
 brings a daemon up under own-it-or-borrow-it (see ``_daemon``), builds a ``ReachyMiniBridge``
-over it, *probes* capabilities against the live daemon, and yields ``(bridge, capabilities)``.
+over it on one event loop that lives from ``start()`` to ``stop()`` (``BridgeLoop``), *probes*
+capabilities against the live daemon, and yields a ``LiveBridge`` — ``(bridge, capabilities)``
+plus ``run(coro)`` on that loop.
 See ../../../specs/testing/testing_support.md for the strategy and
 ../../../docs/running-the-sim-daemon.md for the launch recipes.
 """
 
 from __future__ import annotations
 
-import asyncio
 import time
 from collections.abc import Iterator
 from typing import Any
@@ -41,6 +42,7 @@ from reachy_mini_bridge.robot import AnyReachyMini
 from reachy_mini_bridge.sim_displays import fetch_face_markers
 from reachy_mini_bridge.testing import _daemon
 from reachy_mini_bridge.testing.sim_scene import SimSceneClient
+from reachy_mini_bridge.testing.support import BridgeLoop, LiveBridge
 
 _AUDIO_PROBE_TIMEOUT = 5.0
 _CAMERA_PROBE_TIMEOUT = 5.0
@@ -183,13 +185,15 @@ def _bridge_daemon_config() -> DaemonConfig:
 @pytest.fixture(scope="module")
 def live_bridge(
     _live_daemon: tuple[str, int],
-) -> Iterator[tuple[ReachyMiniBridge, frozenset[str]]]:
+) -> Iterator[LiveBridge]:
     """A connected ``ReachyMiniBridge`` + its probed capability set, for the selected target.
 
     Builds the bridge against the fixture-managed daemon (no robot injection — construction
     stays backend-string-only per specs/core/robot.md) and probes capabilities through
-    ``bridge.robot``. The bridge's async lifecycle is driven on a throwaway loop; tests run
-    their own coroutines via ``asyncio.run`` (nothing in the bridge binds to a loop).
+    ``bridge.robot``. The bridge's lifecycle runs on one event loop, on a background
+    thread, from ``start()`` to ``stop()`` (the bridge is loop-bound: its detection loop
+    is an asyncio task, its observables publish on the loop thread); a test runs its
+    coroutines on that loop through ``live_bridge.run(...)``, never ``asyncio.run``.
 
     Probing happens after ``start()``, on the media pipeline the bridge's MediaSession
     already started, which the probes leave running (see ``_probe_audio``).
@@ -217,9 +221,10 @@ def live_bridge(
             daemon=_bridge_daemon_config(),
         )
     )
-    asyncio.run(bridge.start())
-    try:
-        caps = _probe_capabilities(bridge.robot, (host, port))
-        yield bridge, caps
-    finally:
-        asyncio.run(bridge.stop())
+    with BridgeLoop() as loop:
+        loop.run(bridge.start())
+        try:
+            caps = _probe_capabilities(bridge.robot, (host, port))
+            yield LiveBridge(bridge, caps, loop)
+        finally:
+            loop.run(bridge.stop())

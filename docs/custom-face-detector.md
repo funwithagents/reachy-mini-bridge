@@ -105,11 +105,13 @@ async with ReachyMiniBridge(config) as bridge:
 
 Or at run time, `await bridge.set_face_detector(MyDetector)`; registering another factory
 while the session runs swaps the detector between two frames. The factory is checked when
-registered — not callable, raising, or returning something without a callable `detect` is
-a `ValueError`, and the registered one stays — and session entry refuses `"custom"` with
-nothing registered, before anything is started. The loop builds the detector from the
-factory when it starts, on a worker thread, so a constructor may load a model; a build
-that fails fails session entry with a `BridgeError` naming the cause.
+registered — not callable is a `ValueError`, and the registered one stays — and session
+entry refuses `"custom"` with nothing registered, before anything is started. Nothing is
+built at registration: the loop builds the detector from the factory when it starts, on a
+worker thread, so a constructor may load a model; a build that raises fails session entry
+with a `BridgeError` naming the cause, and one that returns something without a callable
+`detect` fails it with a `ValueError`. Clearing the factory (`set_face_detector(None)`)
+while the loop runs it is refused — stop head tracking and face detection first.
 
 ## 3. What happens to your faces
 

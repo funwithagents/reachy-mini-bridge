@@ -9,6 +9,9 @@ e2e tier, not here.
 
 from __future__ import annotations
 
+import asyncio
+import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -17,10 +20,25 @@ from types import SimpleNamespace
 import pytest
 
 from reachy_mini_bridge import daemon, testing
+from reachy_mini_bridge import face_detection as face_detection_module
 from reachy_mini_bridge import robot as robot_module
-from reachy_mini_bridge.config import DaemonConfig
+from reachy_mini_bridge.bridge import ReachyMiniBridge
+from reachy_mini_bridge.config import (
+    DaemonConfig,
+    FaceDetectionSettings,
+    MotionSettings,
+    ReachyMiniConfig,
+)
 from reachy_mini_bridge.errors import DaemonError, SimSceneError
-from reachy_mini_bridge.testing import _daemon, fixtures, require_env, requires_caps
+from reachy_mini_bridge.face_detection import PixelFace
+from reachy_mini_bridge.testing import (
+    BridgeLoop,
+    LiveBridge,
+    _daemon,
+    fixtures,
+    require_env,
+    requires_caps,
+)
 from reachy_mini_bridge.testing.sim_scene import BodyState
 from reachy_mini_bridge.testing.support import (
     require_env as support_require_env,
@@ -35,7 +53,12 @@ from reachy_mini_bridge.testing.support import (
 def test_package_reexports_the_public_names():
     assert testing.require_env is support_require_env
     assert testing.requires_caps is support_requires_caps
-    assert set(testing.__all__) == {"require_env", "requires_caps"}
+    assert set(testing.__all__) == {
+        "BridgeLoop",
+        "LiveBridge",
+        "require_env",
+        "requires_caps",
+    }
 
 
 # --- requires_caps skip gate ---
@@ -391,3 +414,111 @@ def test_audio_probe_absent_when_no_sample_arrives(monkeypatch: pytest.MonkeyPat
     media = _SharedPipelineMedia(yields_samples=False)
     assert fixtures._probe_audio(media) is False
     assert media.running and media.device == "robot"
+
+
+# --- the harness loop (specs/testing/testing_support.md "Public surface") -----------------
+#
+# The bridge is loop-bound: its detection loop is an asyncio task on the loop that ran
+# `start()`. `BridgeLoop` keeps that loop alive across a module's synchronous tests, so a
+# fixture-started bridge keeps detecting and tracking between the tests' own calls.
+
+
+class _Blinking:
+    """A stub detector: a face that moves a little on every call, so every observation
+    is a fresh report (``faces.value.ts`` advances) and the tracker engages it."""
+
+    calls = 0
+
+    def detect(self, frame_bgr: object, ts: float) -> list[PixelFace]:
+        _Blinking.calls += 1
+        u = 31.5 + (_Blinking.calls % 3)
+        return [PixelFace(bbox=(u - 5, 15.5, 10, 16), nose=(u, 23.5))]
+
+
+def _tracking_fake() -> ReachyMiniBridge:
+    return ReachyMiniBridge(
+        ReachyMiniConfig(
+            backend="fake",
+            face_detection=FaceDetectionSettings(
+                detector="custom", enabled=True, face_detector=_Blinking
+            ),
+            motion=MotionSettings(tracking=True),
+        )
+    )
+
+
+def test_a_bridge_on_the_harness_loop_keeps_detecting_between_synchronous_tests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(face_detection_module, "FACE_POLL_HZ", 20.0)
+    bridge = _tracking_fake()
+    with BridgeLoop() as loop:
+        loop.run(bridge.start())
+        detection = bridge._detection
+        assert detection is not None and detection.running
+        time.sleep(0.3)  # a plain wait, no coroutine of ours running
+        first = bridge.faces.value
+        time.sleep(0.3)
+        second = bridge.faces.value
+        assert first.active and second.active
+        assert second.ts > first.ts  # observations kept coming while nobody awaited
+        assert bridge.head_tracking.value.attention == "engaged"
+        loop.run(bridge.stop())
+        assert not detection.running
+        assert bridge.faces.value.active is False
+    assert not loop.running
+
+
+def test_bridge_loop_run_propagates_exceptions_and_refuses_once_stopped() -> None:
+    async def boom() -> None:
+        raise ValueError("from the loop")
+
+    async def answer() -> int:
+        await asyncio.sleep(0.01)
+        return 42
+
+    loop = BridgeLoop()
+    loop.start()
+    try:
+        assert loop.run(answer()) == 42
+        with pytest.raises(ValueError, match="from the loop"):
+            loop.run(boom())
+        with pytest.raises(TimeoutError):
+            loop.run(asyncio.sleep(5.0), timeout=0.05)
+    finally:
+        loop.stop()
+    with pytest.raises(RuntimeError, match="not running"):
+        loop.run(answer())
+
+
+def test_bridge_loop_stop_cancels_what_a_test_left_running() -> None:
+    cancelled = threading.Event()
+
+    async def forever() -> None:
+        try:
+            await asyncio.sleep(60.0)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    async def leave_it() -> None:
+        asyncio.get_running_loop().create_task(forever())
+
+    loop = BridgeLoop()
+    loop.start()
+    loop.run(leave_it())
+    loop.stop()
+    assert cancelled.is_set()
+
+
+def test_live_bridge_unpacks_and_gates_like_the_tuple_did() -> None:
+    bridge = ReachyMiniBridge("fake")
+    loop = BridgeLoop()
+    live = LiveBridge(bridge, frozenset({"motion"}), loop)
+    unpacked, caps = live
+    assert unpacked is bridge and caps == frozenset({"motion"})
+    requires_caps(live, "motion")  # no skip
+    with pytest.raises(pytest.skip.Exception):
+        requires_caps(live, "audio")
+    with pytest.raises(RuntimeError, match="not running"):
+        live.run(asyncio.sleep(0))
