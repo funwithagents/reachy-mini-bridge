@@ -33,6 +33,7 @@ env:
     gstreamer1.0-pulseaudio gstreamer1.0-tools
   APT_LIVE: >-
     pulseaudio pulseaudio-utils
+    gstreamer1.0-plugins-rs
     libegl1 libgl1-mesa-dri libosmesa6
 
 jobs:
@@ -118,6 +119,9 @@ jobs:
           print(os.environ["MUJOCO_GL"], "ok", im.shape, float(im.mean()))
           PY
           done
+          echo "== rust plugins"
+          gst-inspect-1.0 webrtcsink | head -3 || true
+          gst-inspect-1.0 unixfdsink | head -3 || true
           echo "== headless launcher, 15 s"
           (timeout 15 uv run --no-sync python -m reachy_mini_bridge.sim_daemon --headless --no-preload-datasets --fastapi-port 8020 2>&1 | tail -60) || true
       - name: Live tier
