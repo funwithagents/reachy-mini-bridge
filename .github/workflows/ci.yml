@@ -50,7 +50,7 @@ jobs:
       - name: System packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends $APT_BASE
+          sudo apt-get install -y --no-install-recommends -o Acquire::http::Timeout=30 -o Acquire::Retries=3 $APT_BASE
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
@@ -73,7 +73,7 @@ jobs:
       - name: System packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends $APT_BASE
+          sudo apt-get install -y --no-install-recommends -o Acquire::http::Timeout=30 -o Acquire::Retries=3 $APT_BASE
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
@@ -92,7 +92,7 @@ jobs:
       - name: System packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends $APT_BASE $APT_LIVE
+          sudo apt-get install -y --no-install-recommends -o Acquire::http::Timeout=30 -o Acquire::Retries=3 $APT_BASE $APT_LIVE
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
@@ -127,4 +127,4 @@ jobs:
         # Warnings and errors logged while the tier runs — the spawned daemon's own lines
         # among them, forwarded by the harness — print live, so a daemon that comes up
         # without its camera or its media server says so in the job log.
-        run: uv run pytest tests-e2e -rs -o log_cli=true --log-cli-level=WARNING
+        run: uv run pytest tests-e2e -rs -o log_cli=true --log-cli-level=INFO  # INFO: temporary, hunting a camera that intermittently fails to reach the bridge
