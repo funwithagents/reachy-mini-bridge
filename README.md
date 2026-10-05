@@ -39,7 +39,7 @@ The upstream `reachy_mini` SDK gives full, low-level access to the robot. The br
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How the project is run today: feedback through issues, no external pull requests yet |
 | [specs/](specs/) | Design docs, one per concept in folders named after the subsystem (`core/`, `motion/`, `vision/`, `audio/`, `daemon/`, `testing/`, `examples/`), each with a status — the source of truth for how things are meant to work |
 | [plans/](plans/) | Implementation plans that turned those specs into code |
-| [docs/](docs/) | Reference notes: the upstream SDK, running the sim daemon, testing your project against the bridge |
+| [docs/](docs/) | Reference notes: the upstream SDK, running the sim daemon, the bridge on Linux, testing your project against the bridge |
 | [tests/](tests/), [tests-e2e/](tests-e2e/) | The fast offline suite (default `pytest`) and the opt-in live suite against a sim or real daemon |
 | [examples/](examples/) | Runnable examples, not part of the package: `control_panel/`, a Gradio control panel with a button for every verb (see [Try it from a browser](#try-it-from-a-browser)) |
 
@@ -65,6 +65,8 @@ uv add "reachy-mini-bridge[sim,test] @ ../reachy-mini-bridge"   # a checkout nex
 | `test` | `pytest` | The shipped `reachy_mini_bridge.testing` harness for your e2e tests |
 
 Importing the package imports `reachy_mini`, which needs its native libraries installed but not a running daemon.
+
+**Platforms.** Developed on macOS; Linux is where CI runs the whole test suite, sim camera included; Windows is untested. On macOS and Windows, GStreamer comes with `reachy_mini`'s wheels. **On Linux it comes from the system**, and running a daemon on the machine — the sim, or a robot plugged in over USB — also needs the Rust GStreamer webrtc plugin, which no distribution packages; the headless sim's camera needs Mesa's EGL. The packages, the plugin's two routes, and what works without a sound card are in [docs/linux.md](docs/linux.md), which applies to a Lite's USB daemon as much as to the sim's. A client talking to a wireless robot's own daemon needs the GStreamer packages only.
 
 ## Quick start
 
@@ -278,7 +280,7 @@ Two keys are **reserved**: `use_sim` (derived from `backend`) and `spawn_daemon`
 | Field | Default | What it does |
 |---|---|---|
 | `spawn` | `"never"` | `"never"`: only connect, to a daemon you run (what a wireless robot needs). `"auto"`: reuse one already listening at `host:port`, else start one and stop it on exit. `"always"`: insist on starting one — a port already in use is an error |
-| `headless` | `true` | *sim only.* `true` runs MuJoCo with no window (motion and audio, no rendered camera). `false` opens the **viewer** under `mjpython`, so you watch the robot and the `sim` camera works; needs an unlocked GUI session |
+| `headless` | `true` | *sim only.* `true` runs MuJoCo with no window: motion and audio, and on Linux the rendered camera too (offscreen through EGL); on macOS no camera. `false` opens the **viewer** (under `mjpython` on macOS), so you watch the robot and the `sim` camera works everywhere; needs an unlocked GUI session |
 | `scene` | `null` | *sim only.* An upstream scene name (`"empty"`, `"minimal"`), or the path of a scene `.xml` for the bridge's launcher — how the test scene's portrait gets loaded ([specs/testing/sim_scene.md](specs/testing/sim_scene.md)) |
 | `camera` | `{"source": "sim"}` | *sim only.* What the sim's camera shows — see the table below |
 | `preload_datasets` | `true` | Downloads the recorded-move datasets in the background at startup, so the first `play_emotion` doesn't wait on a download. Readiness isn't delayed either way |
@@ -290,7 +292,7 @@ Two keys are **reserved**: `use_sim` (derived from `backend`) and `spawn_daemon`
 
 | Field | Default | What it does |
 |---|---|---|
-| `source` | `"sim"` | `"sim"` renders the scene from the robot's eye camera (viewer only). `"webcam"` relays your computer's camera instead, so the person in front of the screen is who the simulated robot sees and follows — headless or viewer |
+| `source` | `"sim"` | `"sim"` renders the scene from the robot's eye camera (the viewer, or headless on Linux). `"webcam"` relays your computer's camera instead, so the person in front of the screen is who the simulated robot sees and follows — headless or viewer |
 | `device` | `null` | *webcam only.* `null` is the default camera; an integer is a macOS device index, a string a Linux device path (`/dev/video0`) |
 | `hfov_deg` | `70.0` | *webcam only.* The camera's horizontal field of view in degrees, which the tracker's intrinsics derive from — match it to your camera for an accurate aim |
 

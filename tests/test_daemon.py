@@ -102,7 +102,8 @@ def harness(monkeypatch: pytest.MonkeyPatch) -> _Harness:
 
 def test_launch_command_headless_and_viewer(monkeypatch: pytest.MonkeyPatch) -> None:
     """Every sim daemon runs the bridge's sim daemon launcher (specs/daemon/sim_daemon.md) —
-    this interpreter headless, mjpython for the viewer."""
+    this interpreter headless, the viewer interpreter for the viewer: mjpython on macOS,
+    this interpreter elsewhere (specs/daemon/daemon.md "The launch command")."""
     monkeypatch.setattr(daemon.shutil, "which", lambda name: f"/bin/{name}")
     launcher = [sys.executable, "-m", "reachy_mini_bridge.sim_daemon"]
     # Preloading is the default and always explicit: the daemon's own default is off.
@@ -126,7 +127,8 @@ def test_launch_command_headless_and_viewer(monkeypatch: pytest.MonkeyPatch) -> 
         "--preload-datasets",
         *_ADDRESS,
     ]
-    assert daemon.launch_command(DaemonConfig(headless=False, scene="minimal")) == [
+    viewer = DaemonConfig(headless=False, scene="minimal")
+    assert daemon.launch_command(viewer, system="darwin") == [
         "/bin/mjpython",
         "-m",
         "reachy_mini_bridge.sim_daemon",
@@ -135,6 +137,17 @@ def test_launch_command_headless_and_viewer(monkeypatch: pytest.MonkeyPatch) -> 
         "--preload-datasets",
         *_ADDRESS,
     ]
+    assert daemon.launch_command(viewer, system="linux") == [
+        *launcher,
+        "--scene",
+        "minimal",
+        "--preload-datasets",
+        *_ADDRESS,
+    ]
+    # Omitted, the platform is this one's.
+    assert daemon.launch_command(viewer) == daemon.launch_command(
+        viewer, system=sys.platform
+    )
 
 
 def test_launch_command_passes_the_webcam_camera_source(
@@ -144,7 +157,9 @@ def test_launch_command_passes_the_webcam_camera_source(
     camera, on the plain and the scene-file recipes alike."""
     monkeypatch.setattr(daemon.shutil, "which", lambda name: f"/bin/{name}")
     webcam = SimCameraSettings(source="webcam")
-    assert daemon.launch_command(DaemonConfig(headless=False, camera=webcam)) == [
+    assert daemon.launch_command(
+        DaemonConfig(headless=False, camera=webcam), system="darwin"
+    ) == [
         "/bin/mjpython",
         "-m",
         "reachy_mini_bridge.sim_daemon",
@@ -186,7 +201,7 @@ def test_launch_command_turns_on_the_viewer_displays(
     monkeypatch.setattr(daemon.shutil, "which", lambda name: f"/bin/{name}")
     overlay = SimDisplaySettings(camera_overlay=True)
     assert daemon.launch_command(
-        DaemonConfig(headless=False, sim_displays=overlay)
+        DaemonConfig(headless=False, sim_displays=overlay), system="darwin"
     ) == [
         "/bin/mjpython",
         "-m",
@@ -239,7 +254,8 @@ def test_launch_command_runs_a_scene_file_through_the_bridge_launcher(
         *_ADDRESS,
     ]
     assert daemon.launch_command(
-        DaemonConfig(headless=False, scene=str(scene), preload_datasets=False)
+        DaemonConfig(headless=False, scene=str(scene), preload_datasets=False),
+        system="darwin",
     ) == [
         "/bin/mjpython",
         "-m",
@@ -268,13 +284,16 @@ def test_launch_command_scene_file_still_needs_the_sim_extra(
     monkeypatch.setattr(
         daemon.shutil, "which", lambda name: "/bin/x" if name != "mjpython" else None
     )
+    scene_viewer = DaemonConfig(headless=False, scene="/tmp/scene.xml")
     with pytest.raises(DaemonError, match="mjpython"):
-        daemon.launch_command(DaemonConfig(headless=False, scene="/tmp/scene.xml"))
+        daemon.launch_command(scene_viewer, system="darwin")
+    assert daemon.launch_command(scene_viewer, system="linux")[0] == sys.executable
 
 
 def test_launch_command_requires_the_launcher(monkeypatch: pytest.MonkeyPatch) -> None:
     """The sim extra (which ships `reachy-mini-daemon` and MuJoCo) is required for every
-    sim recipe; the viewer also needs `mjpython`."""
+    sim recipe; the viewer also needs `mjpython` — on macOS, where alone the passive
+    viewer runs under it."""
     monkeypatch.setattr(daemon.shutil, "which", lambda name: None)
     with pytest.raises(DaemonError, match=r"reachy-mini-bridge\[sim\]"):
         daemon.launch_command(DaemonConfig())
@@ -284,7 +303,10 @@ def test_launch_command_requires_the_launcher(monkeypatch: pytest.MonkeyPatch) -
         daemon.shutil, "which", lambda name: "/bin/x" if name != "mjpython" else None
     )
     with pytest.raises(DaemonError, match="mjpython"):
-        daemon.launch_command(DaemonConfig(headless=False))
+        daemon.launch_command(DaemonConfig(headless=False), system="darwin")
+    assert daemon.launch_command(DaemonConfig(headless=False), system="linux")[0] == (
+        sys.executable
+    )
 
 
 def test_launch_command_real_robot(monkeypatch: pytest.MonkeyPatch) -> None:

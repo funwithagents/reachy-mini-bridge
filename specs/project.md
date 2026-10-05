@@ -16,6 +16,7 @@ Structure and tooling for the Reachy Mini Bridge project itself: Python version,
 ## Decided
 
 - **Python version:** 3.12+ minimum.
+- **Platforms.** macOS is the development platform; Linux is verified by CI, which runs both test tiers there with the sim's camera ([testing/ci.md](testing/ci.md)); Windows is untested. On Linux, GStreamer is the system's rather than a wheel's, a daemon on the machine needs the GStreamer Rust webrtc plugin that no distribution ships, and the headless sim's camera needs Mesa — the user-facing recipe, worked out on the runner, is [docs/linux.md](../docs/linux.md), which the README's install section points to.
 - **Package layout:** `src/` layout — `src/reachy_mini_bridge/...` — not flat, to avoid accidentally importing an uninstalled package from the repo root.
 - **Dependency/venv management:** `uv`. Dev tooling lives in dependency groups, not in runtime `dependencies` — the groups and which of them a plain `uv sync` installs are decided below ("Dependency groups").
 - **Runtime-dependency policy.** Runtime dependencies are declared in `pyproject.toml` `[project.dependencies]` (the canonical list). A dependency is added by the implementation plan for the spec that first needs it, so `dependencies` grows as concepts are built and each concept spec names the dependency it introduces in its own text. Sourcing follows the nature of the dep:

@@ -413,7 +413,7 @@ def test_a_face_gone_for_good_hands_over_to_the_other_then_the_head_is_released(
     onto it; that one despawned too, attention reads `watching` after `TRACKING_LOST_S`."""
     bridge, _caps = live_bridge
 
-    async def scenario() -> tuple[float, Track, int, list[Any], float]:
+    async def scenario() -> tuple[float, Track, int, list[Any], float, tuple[Any, Any]]:
         await _prepare(bridge)
         await bridge.start_head_tracking()
         first = face_scene.spawn(face_at(LATERAL_M))
@@ -435,12 +435,18 @@ def test_a_face_gone_for_good_hands_over_to_the_other_then_the_head_is_released(
             TRACKING_LOST_S + 3.0,
         )
         changes.stop()
-        return switched_after, track, other.track_id, changes.woken, lost_after
+        # What the detector and the tracker hold at the end — the evidence when a face
+        # shows up after both portraits are gone (a phantom seen once on a CI runner).
+        final = (bridge.head_tracking.value, bridge.faces.value)
+        return switched_after, track, other.track_id, changes.woken, lost_after, final
 
-    switched_after, track, other_id, woken, lost_after = live_bridge.run(scenario())
+    switched_after, track, other_id, woken, lost_after, final = live_bridge.run(
+        scenario()
+    )
     print(
         f"\n[e2e] switched after {switched_after:.2f} s, released after {lost_after:.2f} s"
     )
+    print(f"[e2e] at the end: tracking {final[0]}, faces {final[1]}")
     assert_tracked(track)
     assert switched_after >= TRACKING_SWITCH_S - 0.2  # the head waited first
     states = [(r.attention, r.track_id) for r in woken]

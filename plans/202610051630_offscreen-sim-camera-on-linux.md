@@ -1,6 +1,6 @@
 # The headless sim's camera on Linux — the eye camera rendered offscreen through EGL
 
-**Status:** Todo
+**Status:** Done
 
 Implements [specs/daemon/sim_daemon.md](../specs/daemon/sim_daemon.md) ("The headless camera") and the viewer-interpreter rule of [specs/daemon/daemon.md](../specs/daemon/daemon.md) ("The launch command"), which [specs/testing/testing.md](../specs/testing/testing.md) (the `camera` capability row, the headless target) and [specs/testing/ci.md](../specs/testing/ci.md) build on. It delivers:
 
@@ -74,8 +74,19 @@ The first plan `Done`: `check` and `e2e-sim` green on `main`, the `e2e-sim` log 
 - Locally on the Mac: `uv run pytest tests-e2e -rs` headless unchanged (camera skipped, green); `REACHY_MINI_E2E_SIM_VIEWER=1 uv run pytest tests-e2e -rs` green (the viewer path untouched).
 - On GitHub: `e2e-sim` green three times with the camera tests running and the reduced skip set; the `-rs` list matches `ci.md`'s table.
 
+## Linux shakeout
+
+What the runner found, in order — one line per change: the symptom, the fix, the spec it touches.
+
+- **The render thread ran, no frame reached the bridge.** With `MUJOCO_GL=egl` the launcher's thread started and upstream's UDP sender logged itself, yet `camera` probed absent: upstream's media server — the piece that serves the stream to clients — failed to initialise on Linux, `Failed to create webrtcsink element`. The Rust GStreamer plugins are in no Ubuntu archive (24.04 and 26.04 both tried); upstream's own CI installs a prebuilt `libgstrswebrtc.so` from Pollen's public desktop-app repository through a composite action pinned to a commit and a sha256, and needs `gstreamer1.0-nice` / `libnice10`. The live job reuses that action, pinned. Spec: `ci.md` "The runner" (system packages) and "What the live job provides".
+- **A camera at four frames a second.** With frames flowing, the rate floors of the perception and custom-detector tests (5 reports a second) failed on some runs and the head-tracking assertions on others (an overshoot of 15 to 26°, the head oscillating, a phantom face after a release). Measured on the runner under EGL: upstream's full render 140 to 230 ms a frame against 14 ms on a Mac — the shadow map of a 4096-texel light more than half of it, the robot's 349 000 triangles about 40 ms of the rest; the resolution irrelevant (640×360 cost the same); YuNet 1.7 ms; llvmpipe's thread count irrelevant. The headless render is now drawn for the detector: no shadows, reflections, skybox, haze, fog or multisampling, and the eye camera's kinematic tree hidden (alpha 0, which MuJoCo's scene builder skips before any vertex work) — about 10 ms a frame, upstream's rate. Every camera and tracking test then passed on the runner at the Mac's thresholds. Spec: `sim_daemon.md` "The headless camera" ("Drawn for the detector").
+- **The cloud TTS keys as secrets.** Added to the repository and mapped onto the live job's test step; `require_env` treats an empty value as unset, so a fork's pull request skips the two tests. Spec: `ci.md` "Secrets and protection".
+- **One run in two came up without the camera — the harness's own probe, not the daemon.** Six headless launches in a row on the runner, with the harness's exact command, every one with a first frame within 0.25 s; yet the live tier lost the camera for whole runs. The capabilities are probed once per run, on the first bridge session, and the camera probe called `media.get_frame()` directly while the bridge's camera feed thread — started with the bridge — loops that same one-shot call: two readers of upstream's single-buffer appsink starve each other silently (`camera.md` says exactly that), and on the runner the probe lost about every other time. The probe now reads the feed (`bridge.camera.latest()`); `_probe_capabilities` / `probed_capabilities` take the feed. Spec: `testing.md` (the `camera` row, "The harness"), `testing_support.md`. Before that was found: Between green runs, one live job skipped every camera test — the daemon's log, captured by pytest, said nothing. The live tier now runs with `-o log_cli=true --log-cli-level=WARNING`, so the daemon's forwarded warnings and errors print in the job log and the next occurrence explains itself (`ci.md` open question 1 keeps it). Seen in those logs on Ubuntu 24.04: the client's `webrtcdsp` is unavailable — the software echo cancellation runs nowhere on the runner — which the audio tests do not depend on.
+- **Pyright and `mujoco`.** The bindings carry no types: `mujoco.mj_name2id` is unknown to pyright. The trim helpers import the module as `Any` through `importlib`, as `sim_displays.py` and `sim_scene.py` do.
+
 ## Measurements
 
-- First frame after spawn on the runner: — s (probe timeout 5 s)
-- Tracking settle time / overshoot on the runner vs the Mac docstrings: —
-- `e2e-sim` duration with the camera tests: — min
+On the runner (four vCPUs, Mesa llvmpipe under EGL):
+
+- Render of the test scene at 1280×720, upstream's settings: 140 to 230 ms a frame; without shadows 85; without multisampling 62; the robot's body left out as well: 10 to 12 ms. YuNet on a frame: 1.7 ms.
+- The live tier with the trimmed render: 28 passed, 4 skipped (the two face-marker tests on `camera`-then-`face_markers`, `gravity_compensation`, the sim's motor-mode test), 208 s of pytest, the `e2e-sim` job about 270 s.

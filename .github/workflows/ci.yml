@@ -31,8 +31,13 @@ env:
     gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0
     gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
     gstreamer1.0-pulseaudio gstreamer1.0-tools
+  # The live job adds PulseAudio itself, the ICE library the daemon's WebRTC server needs
+  # (the Rust webrtc plugin itself has no Ubuntu package: upstream's composite action
+  # below installs a prebuilt, checksum-pinned libgstrswebrtc.so), and Mesa's EGL/OSMesa
+  # for the offscreen camera render.
   APT_LIVE: >-
     pulseaudio pulseaudio-utils
+    gstreamer1.0-nice libnice10
     libegl1 libgl1-mesa-dri libosmesa6
 
 jobs:
@@ -45,7 +50,7 @@ jobs:
       - name: System packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends $APT_BASE
+          sudo apt-get install -y --no-install-recommends -o Acquire::http::Timeout=30 -o Acquire::Retries=3 $APT_BASE
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
@@ -68,7 +73,7 @@ jobs:
       - name: System packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends $APT_BASE
+          sudo apt-get install -y --no-install-recommends -o Acquire::http::Timeout=30 -o Acquire::Retries=3 $APT_BASE
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
@@ -87,7 +92,7 @@ jobs:
       - name: System packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends $APT_BASE $APT_LIVE
+          sudo apt-get install -y --no-install-recommends -o Acquire::http::Timeout=30 -o Acquire::Retries=3 $APT_BASE $APT_LIVE
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
@@ -107,5 +112,19 @@ jobs:
           pactl set-default-sink ci
           pactl set-default-source ci.monitor
           pactl info
+      # The daemon's media server hard-requires the gst-plugins-rs webrtcsink element, which
+      # no Ubuntu archive ships; upstream's own CI installs a prebuilt libgstrswebrtc.so
+      # (pinned to a commit and a sha256 inside the action) and puts it on GST_PLUGIN_PATH.
+      - name: Rust webrtc plugin (upstream's action, pinned)
+        uses: pollen-robotics/reachy_mini/.github/actions/webrtc-plugin@c14dc5fd43100582d349466aec4bdc4960490522
       - name: Live tier
-        run: uv run pytest tests-e2e -rs
+        # The cloud TTS keys, when the repository holds them as secrets: the two cloud
+        # `say` tests run; absent (or on a fork's pull request, which never receives a
+        # secret) the variables are empty and the tests skip (specs/testing/ci.md).
+        env:
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          GRADIUM_API_KEY: ${{ secrets.GRADIUM_API_KEY }}
+        # Warnings and errors logged while the tier runs — the spawned daemon's own lines
+        # among them, forwarded by the harness — print live, so a daemon that comes up
+        # without its camera or its media server says so in the job log.
+        run: uv run pytest tests-e2e -rs -o log_cli=true --log-cli-level=WARNING
