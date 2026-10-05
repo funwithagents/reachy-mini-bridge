@@ -112,9 +112,9 @@ reachy-mini-daemon --kinematics-engine Placo --preload-datasets
 
 It finds the robot's serial port itself, wakes the robot on start and puts it to sleep on stop (about 8 s). Pass `--kinematics-engine Placo` only with `reachy-mini[placo_kinematics]` installed — gravity compensation needs it. A `ReachyMiniConfig` with `"backend": "real"` and `"daemon": {"spawn": "auto"}` runs this for you.
 
-## Linux
+## Linux — any daemon on this machine, the sim's or a Lite's
 
-macOS and Windows get GStreamer from `reachy_mini`'s wheels; on Linux it is the system's, and the bridge's CI runner is where the recipe below was worked out (Ubuntu 24.04, the sim, headless — [../specs/testing/ci.md](../specs/testing/ci.md)). Upstream's own guide, [GStreamer installation](https://github.com/pollen-robotics/reachy_mini/blob/main/docs/source/SDK/gstreamer-installation.md), is the reference; this is what the bridge adds to it.
+macOS and Windows get GStreamer from `reachy_mini`'s wheels; on Linux it is the system's, and the bridge's CI runner is where the recipe below was worked out (Ubuntu 24.04, the sim, headless — [../specs/testing/ci.md](../specs/testing/ci.md)). Upstream's own guide, [GStreamer installation](https://github.com/pollen-robotics/reachy_mini/blob/main/docs/source/SDK/gstreamer-installation.md), is the reference; this is what the bridge adds to it. The packages and the webrtc plugin apply to **every daemon on the machine** — the sim, or a Lite plugged in over USB: the media server is the same code for both — and the packages to every client, a wireless robot's included. The headless camera's Mesa and the null sink are the sim's concerns; a Lite brings its own camera and sound card. What CI verifies is the sim; a Lite on Linux has not been run by us, and its statements here follow from upstream's code, not from a test.
 
 **Packages.** `reachy_mini` depends on PyGObject, which has no Linux wheel in the pinned range and builds against the girepository and cairo headers, and on the system GStreamer with its introspection data:
 

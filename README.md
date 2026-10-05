@@ -66,7 +66,7 @@ uv add "reachy-mini-bridge[sim,test] @ ../reachy-mini-bridge"   # a checkout nex
 
 Importing the package imports `reachy_mini`, which needs its native libraries installed but not a running daemon.
 
-**Platforms.** Developed on macOS; Linux is where CI runs the whole test suite, sim camera included; Windows is untested. On macOS and Windows, GStreamer comes with `reachy_mini`'s wheels. **On Linux it comes from the system**, and running a daemon on the machine — the sim, or a robot plugged in over USB — also needs the Rust GStreamer webrtc plugin, which no distribution packages; the headless sim's camera needs Mesa's EGL. The packages, the plugin's two routes, and what works without a sound card are in [docs/running-the-sim-daemon.md](docs/running-the-sim-daemon.md) "Linux". A client talking to a wireless robot's own daemon needs the GStreamer packages only.
+**Platforms.** Developed on macOS; Linux is where CI runs the whole test suite, sim camera included; Windows is untested. On macOS and Windows, GStreamer comes with `reachy_mini`'s wheels. **On Linux it comes from the system**, and running a daemon on the machine — the sim, or a robot plugged in over USB — also needs the Rust GStreamer webrtc plugin, which no distribution packages; the headless sim's camera needs Mesa's EGL. The packages, the plugin's two routes, and what works without a sound card are in [docs/running-the-sim-daemon.md](docs/running-the-sim-daemon.md) "Linux" — which applies to a Lite's USB daemon as much as to the sim's. A client talking to a wireless robot's own daemon needs the GStreamer packages only.
 
 ## Quick start
 
