@@ -140,9 +140,12 @@ testpaths = ["tests"]
 # The fast tier runs in parallel (pytest-xdist): it is sleep-bound — the motion loop and
 # the fake run at real time, so most tests wait through real blends and breaths — and
 # spread over eight workers its ~3 min of waiting takes ~30 s. Capped at eight: each
-# worker is a whole interpreter with the package imported. `-n 0` on the command line
-# runs it serially. tests-e2e/conftest.py forces the live tier serial (one shared daemon).
-addopts = ["-n", "auto", "--maxprocesses", "8"]
+# worker is a whole interpreter with the package imported. `logical` counts logical
+# cores: `auto` counts physical ones when psutil is importable (it is, through
+# reachy-mini), which on a hyperthreaded CI runner halves the workers for a tier that
+# sleeps, not computes. `-n 0` on the command line runs it serially.
+# tests-e2e/conftest.py forces the live tier serial (one shared daemon).
+addopts = ["-n", "logical", "--maxprocesses", "8"]
 # Lets tests/ import the example app (`examples.control_panel...`, specs/examples/control_panel.md).
 pythonpath = ["."]
 
