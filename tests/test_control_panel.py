@@ -12,7 +12,9 @@ import asyncio
 import concurrent.futures as cf
 import math
 import time
+import wave
 from collections.abc import AsyncIterator, Callable
+from pathlib import Path
 
 import numpy as np
 import numpy.typing as npt
@@ -88,6 +90,17 @@ def _commands(controller: ControlPanelController) -> list[str]:
     return [name for name, _ in _fake(controller).commands]
 
 
+def _wav(directory: Path, seconds: float, name: str) -> Path:
+    """Write ``seconds`` of 16 kHz mono silence as a WAV file."""
+    path = directory / name
+    with wave.open(str(path), "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(16000)
+        out.writeframes(b"\x00\x00" * int(16000 * seconds))
+    return path
+
+
 def _wait_until(predicate: Callable[[], bool], timeout: float = 3.0) -> None:
     deadline = time.monotonic() + timeout
     while not predicate():
@@ -158,11 +171,39 @@ def test_instant_verbs_dispatch_and_errors_propagate() -> None:
             controller.play_emotion("no-such-emotion")
         assert controller.play_emotion("sad") is True
 
-        controller.play_sound("ding.wav")
-        assert ("media.play_sound", {"sound_file": "ding.wav"}) in _fake(
-            controller
-        ).commands
         assert controller.busy == []
+        with pytest.raises(FileNotFoundError):
+            controller.play_sound("no-such-sound.wav")
+
+
+def test_play_sound_plays_to_its_end_and_stops_from_another_thread(
+    tmp_path: Path,
+) -> None:
+    short, long = _wav(tmp_path, 0.2, "short.wav"), _wav(tmp_path, 3.0, "long.wav")
+    with (
+        ControlPanelController("fake") as controller,
+        cf.ThreadPoolExecutor(max_workers=1) as pool,
+    ):
+        assert controller.play_sound(str(short)) is True
+        started = pool.submit(controller.play_sound, str(long))
+        _wait_until(lambda: _commands(controller).count("media.play_sound") == 2)
+        assert controller.busy == ["sound"]
+        assert controller.stop_sound() == 1
+        assert started.result(timeout=2.0) is False
+        assert "media.stop_sound" in _commands(controller)
+        assert controller.busy == []
+
+
+def test_a_new_sound_file_stops_the_one_playing(tmp_path: Path) -> None:
+    first, second = _wav(tmp_path, 3.0, "first.wav"), _wav(tmp_path, 0.2, "second.wav")
+    with (
+        ControlPanelController("fake") as controller,
+        cf.ThreadPoolExecutor(max_workers=2) as pool,
+    ):
+        started = pool.submit(controller.play_sound, str(first))
+        _wait_until(lambda: "media.play_sound" in _commands(controller))
+        assert controller.play_sound(str(second)) is True
+        assert started.result(timeout=2.0) is False
 
 
 def test_snapshot_reflects_the_modes_and_the_camera_is_rgb() -> None:

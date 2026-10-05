@@ -258,6 +258,34 @@ def test_a_new_say_interrupts_the_one_playing(live_bridge: LiveBridge) -> None:
     assert 0.5 <= total < 1.5
 
 
+def test_play_sound_spans_the_file_and_a_cancel_stops_it(
+    live_bridge: LiveBridge,
+) -> None:
+    """`play_sound` is a spanning verb (specs/audio/audio.md "Sound files"): it
+    completes when the file has been heard — `go_sleep.wav`, an SDK asset, lasts
+    3.6 s — and a cancel returns at once, the file stopped, the session usable."""
+    requires_caps(live_bridge, "audio")
+    bridge, _caps = live_bridge
+
+    async def scenario() -> tuple[float, float]:
+        t0 = time.monotonic()
+        await bridge.play_sound("go_sleep.wav")
+        heard_after = time.monotonic() - t0
+        task = asyncio.create_task(bridge.play_sound("confused1.wav"))  # 5.7 s
+        await asyncio.sleep(1.0)
+        t0 = time.monotonic()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        cancelled_after = time.monotonic() - t0
+        await bridge.say("ignored", _ToneSynth(seconds=0.3))  # the session plays on
+        return heard_after, cancelled_after
+
+    heard_after, cancelled_after = live_bridge.run(scenario())
+    assert 3.6 <= heard_after < 4.2
+    assert cancelled_after < 0.1
+
+
 def _head_deviation_deg(
     start: npt.NDArray[np.float64], pose: npt.NDArray[np.float64]
 ) -> float:

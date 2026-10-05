@@ -616,6 +616,7 @@ class _Playing:
     stage_start: float = 0.0  # monotonic time the current stage began
     exit_blend: bool = False  # True for close()'s final blend to neutral
     sound_started: bool = False
+    sound_token: object = None  # what start_sound returned, handed back to stop_sound
 
 
 class MotionSession:
@@ -633,15 +634,19 @@ class MotionSession:
         presence: bool,
         idle: IdleMode,
         idle_move: IdleMoveFactory | None = None,
-        stop_sound: Callable[[], None] | None = None,
+        start_sound: Callable[[Path], object] | None = None,
+        stop_sound: Callable[[object], None] | None = None,
     ) -> None:
         if idle_move is not None:
             check_idle_move_factory(idle_move)
         self._robot = robot
-        # Stops the sound file the loop started for a primary (the bridge's
-        # MediaSession.stop_sound): the loop is the one party that started it, so it is
-        # the one that stops it when the primary is cancelled or fails
-        # (specs/motion/motion.md "Emotions through the loop").
+        # Start and stop the sound file of a primary through the bridge's file player
+        # (MediaSession.start_sound / stop_sound): start returns a token, and the stop
+        # with that token ends the file only while it still plays — the loop is the one
+        # party that started it, so it is the one that stops it when the primary is
+        # cancelled or fails (specs/motion/motion.md "Emotions through the loop"). With
+        # no start_sound the loop plays the file through the robot directly.
+        self._start_sound = start_sound
         self._stop_sound = stop_sound
         self._commands: queue.SimpleQueue[Callable[[], None]] = queue.SimpleQueue()
         self._thread = threading.Thread(
@@ -723,13 +728,13 @@ class MotionSession:
             and playing.primary is not None
             and playing.sound_started
         ):
-            self._stop_primary_sound()
+            self._stop_primary_sound(playing.sound_token)
 
-    def _stop_primary_sound(self) -> None:
+    def _stop_primary_sound(self, token: object) -> None:
         if self._stop_sound is None:
             return
         try:
-            self._stop_sound()
+            self._stop_sound(token)
         except Exception as e:  # noqa: BLE001 - the loop must survive a failed stop
             _logger.warning("could not stop the emotion's sound: %s", e)
 
@@ -1060,7 +1065,11 @@ class MotionSession:
             and not playing.sound_started
             and playing.primary.sound_path is not None
         ):
-            self._robot.media.play_sound(str(playing.primary.sound_path))
+            sound_path = playing.primary.sound_path
+            if self._start_sound is None:
+                self._robot.media.play_sound(str(sound_path))
+            else:
+                playing.sound_token = self._start_sound(sound_path)
             playing.sound_started = True
 
         last_head, last_antennas, last_yaw = self._last_target

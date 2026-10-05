@@ -12,6 +12,7 @@ import itertools
 import json
 import threading
 import time
+import wave
 from collections.abc import AsyncIterator, Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -39,6 +40,7 @@ from reachy_mini_bridge.errors import (
     ConfigError,
     GravityCompensationUnsupportedError,
     MotorsNotEnabledError,
+    SoundInterruptedError,
     SpeechInterruptedError,
 )
 from reachy_mini_bridge.face_detection import FaceReport, PixelFace
@@ -72,6 +74,17 @@ def _fake(bridge: ReachyMiniBridge) -> FakeReachyMini:
 
 def _command_names(bridge: ReachyMiniBridge) -> list[str]:
     return [name for name, _ in _fake(bridge).commands]
+
+
+def _wav(directory: Path, seconds: float) -> Path:
+    """Write ``seconds`` of 16 kHz mono silence as a WAV file."""
+    path = directory / "sound.wav"
+    with wave.open(str(path), "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(16000)
+        out.writeframes(b"\x00\x00" * int(16000 * seconds))
+    return path
 
 
 def _yaw_deg(head: npt.NDArray[np.float64]) -> float:
@@ -162,6 +175,7 @@ def test_package_front_door_drives_the_fake() -> None:
         "IdleOffsets",
         "MotorsNotEnabledError",
         "Observable",
+        "SoundInterruptedError",
         "SpeechInterruptedError",
         "PixelFace",
         "ReachyMiniBridge",
@@ -1068,13 +1082,121 @@ def test_say_without_any_synthesizer_raises_bridge_error() -> None:
     asyncio.run(run())
 
 
-def test_play_sound_reaches_the_media_layer() -> None:
-    async def run() -> dict[str, object]:
+def test_play_sound_plays_a_built_in_sound_to_its_end() -> None:
+    async def run() -> tuple[float, dict[str, object]]:
         async with ReachyMiniBridge("fake") as bridge:
-            await bridge.play_sound("wake_up.wav")
-            return next(a for n, a in _fake(bridge).commands if n == "media.play_sound")
+            t0 = time.monotonic()
+            await bridge.play_sound("wake_up.wav")  # an SDK asset, 0.41 s
+            elapsed = time.monotonic() - t0
+            args = next(a for n, a in _fake(bridge).commands if n == "media.play_sound")
+            return elapsed, args
 
-    assert asyncio.run(run())["sound_file"] == "wake_up.wav"
+    elapsed, args = asyncio.run(run())
+    assert elapsed >= 0.4
+    played = Path(str(args["sound_file"]))
+    assert played.name == "wake_up.wav" and played.is_file()
+
+
+def test_play_sound_outside_a_session_raises(tmp_path: Path) -> None:
+    with pytest.raises(BridgeError):
+        asyncio.run(ReachyMiniBridge("fake").play_sound(str(_wav(tmp_path, 0.1))))
+
+
+def test_a_cancelled_play_sound_stops_the_sound_and_keeps_the_session(
+    tmp_path: Path,
+) -> None:
+    path = _wav(tmp_path, 3.0)
+
+    async def run() -> tuple[float, list[str]]:
+        async with ReachyMiniBridge("fake", synthesizer=_ToneSynth()) as bridge:
+            task = asyncio.create_task(bridge.play_sound(str(path)))
+            while "media.play_sound" not in _command_names(bridge):
+                await asyncio.sleep(0.01)
+            t0 = time.monotonic()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            elapsed = time.monotonic() - t0
+            await bridge.say("still here")
+            return elapsed, _command_names(bridge)
+
+    elapsed, names = asyncio.run(run())
+    assert elapsed < 0.05
+    i = names.index("media.play_sound")
+    assert names[i + 1] == "media.stop_sound"
+    assert "media.push_audio_sample" in names[i + 1 :]
+
+
+def test_a_play_sound_during_an_emotion_survives_the_emotion_cancel(
+    tmp_path: Path,
+) -> None:
+    path = _wav(tmp_path, 1.0)
+
+    async def run() -> list[tuple[str, dict[str, Any]]]:
+        async with ReachyMiniBridge("fake") as bridge:
+            await bridge.set_motors_state("enabled")
+            emotion = asyncio.create_task(bridge.play_emotion("happy"))
+            while "media.play_sound" not in _command_names(bridge):
+                await asyncio.sleep(0)
+            sound = asyncio.create_task(bridge.play_sound(str(path)))
+            while _command_names(bridge).count("media.play_sound") < 2:
+                await asyncio.sleep(0.01)
+            emotion.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await emotion
+            await sound  # plays to its end: the emotion's stop was not ours
+            return list(_fake(bridge).commands)
+
+    commands = asyncio.run(run())
+    names = [n for n, _ in commands]
+    user_start = max(i for i, n in enumerate(names) if n == "media.play_sound")
+    assert commands[user_start][1]["sound_file"] == str(path)
+    assert "media.stop_sound" not in names[user_start:]
+
+
+def test_an_emotion_sound_interrupts_the_play_sound_in_flight(tmp_path: Path) -> None:
+    path = _wav(tmp_path, 3.0)
+
+    async def run() -> None:
+        async with ReachyMiniBridge("fake") as bridge:
+            await bridge.set_motors_state("enabled")
+            sound = asyncio.create_task(bridge.play_sound(str(path)))
+            while "media.play_sound" not in _command_names(bridge):
+                await asyncio.sleep(0.01)
+            emotion = asyncio.create_task(bridge.play_emotion("happy"))
+            with pytest.raises(SoundInterruptedError):
+                await sound
+            await emotion  # the emotion plays as usual
+
+    asyncio.run(run())
+
+
+def test_an_emotion_cancelled_during_a_say_leaves_the_utterance_playing() -> None:
+    class _LongTone:
+        sample_rate = 16000
+
+        async def stream(self, text: str) -> AsyncIterator[npt.NDArray[np.float32]]:
+            yield np.full(16000, 0.2, dtype=np.float32)  # one second
+
+    async def run() -> tuple[list[str], int]:
+        async with ReachyMiniBridge("fake", synthesizer=_LongTone()) as bridge:
+            await bridge.set_motors_state("enabled")
+            emotion = asyncio.create_task(bridge.play_emotion("happy"))
+            while "media.play_sound" not in _command_names(bridge):
+                await asyncio.sleep(0)
+            say = asyncio.create_task(bridge.say("one second of speech"))
+            while "media.push_audio_sample" not in _command_names(bridge):
+                await asyncio.sleep(0)
+            emotion.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await emotion
+            at_cancel = _command_names(bridge)
+            await say  # returns normally, its audio never flushed
+            return at_cancel, _command_names(bridge).count("audio.clear_player")
+
+    at_cancel, flushes = asyncio.run(run())
+    assert "media.stop_sound" in at_cancel
+    assert flushes == 0
 
 
 def test_audio_input_streams_mic_bytes_and_exposes_format() -> None:

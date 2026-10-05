@@ -11,8 +11,10 @@ import asyncio
 import logging
 import threading
 import time
+import wave
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -29,7 +31,11 @@ from reachy_mini_bridge.audio import (
     float32_to_int16,
     int16_to_float32,
 )
-from reachy_mini_bridge.errors import BridgeError, SpeechInterruptedError
+from reachy_mini_bridge.errors import (
+    BridgeError,
+    SoundInterruptedError,
+    SpeechInterruptedError,
+)
 from reachy_mini_bridge.fake_reachy_mini import FakeReachyMini
 
 
@@ -509,10 +515,30 @@ def test_clear_player_flushes_speaker() -> None:
 # --- stopping a sound file (specs/audio/audio.md "Stopping a sound file") ---
 
 
-def test_stop_sound_on_the_fake_records_the_stop_then_resets_the_wobbler() -> None:
+def test_stop_sound_stops_only_the_file_that_holds_the_player() -> None:
     robot = FakeReachyMini()
-    MediaSession(robot).stop_sound()
-    assert _command_names(robot) == ["media.stop_sound", "audio.clear_player"]
+    session = MediaSession(robot)
+    first = session.start_sound(Path("first.wav"))
+    second = session.start_sound(Path("second.wav"))
+    assert first.replaced.done() and not second.replaced.done()
+
+    session.stop_sound(first)  # replaced: the player holds the second file
+    assert _command_names(robot) == ["media.play_sound", "media.play_sound"]
+
+    session.stop_sound(second)  # the owner: stopped, then the wobbler reset
+    assert _command_names(robot)[2:] == ["media.stop_sound", "audio.clear_player"]
+
+    session.stop_sound(second)  # nothing holds the player any more
+    assert len(robot.commands) == 4
+
+
+def test_a_released_file_is_not_stopped() -> None:
+    robot = FakeReachyMini()
+    session = MediaSession(robot)
+    token = session.start_sound(Path("done.wav"))
+    session.release(token)  # it ended on its own
+    session.stop_sound(token)
+    assert _command_names(robot) == ["media.play_sound"]
 
 
 class _StubPlaybin:
@@ -763,3 +789,227 @@ def test_a_new_say_interrupts_one_still_synthesizing() -> None:
     names = asyncio.run(run())
     assert names.count("audio.clear_player") == 1
     assert names.count("media.push_audio_sample") == 2
+
+
+# --- sound files (specs/audio/audio.md "Sound files") ---
+
+
+def _wav(directory: Path, seconds: float, name: str = "sound.wav") -> Path:
+    """Write ``seconds`` of 16 kHz mono silence as a WAV file."""
+    path = directory / name
+    with wave.open(str(path), "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(16000)
+        out.writeframes(b"\x00\x00" * int(16000 * seconds))
+    return path
+
+
+def _float_wav(directory: Path, seconds: float) -> Path:
+    """Write a float32 WAV (format 3), which the stdlib ``wave`` module refuses."""
+    import struct
+
+    rate, frames = 16000, int(16000 * seconds)
+    data = b"\x00" * (4 * frames)
+    header = b"RIFF" + struct.pack("<I", 4 + 24 + 8 + len(data)) + b"WAVE"
+    fmt = b"fmt " + struct.pack("<IHHIIHH", 16, 3, 1, rate, rate * 4, 4, 32)
+    path = directory / "float.wav"
+    path.write_bytes(header + fmt + b"data" + struct.pack("<I", len(data)) + data)
+    return path
+
+
+@asynccontextmanager
+async def _open_session(robot: FakeReachyMini) -> AsyncIterator[MediaSession]:
+    session = MediaSession(robot)
+    await session.start()
+    try:
+        yield session
+    finally:
+        await session.stop()
+
+
+def test_sound_duration_reads_a_wav_exactly(tmp_path: Path) -> None:
+    assert audio_module._sound_duration(_wav(tmp_path, 0.3)) == pytest.approx(
+        0.3, abs=1e-3
+    )
+
+
+def _duration_in_a_child_process(path: Path) -> str:
+    """``_sound_duration(path)`` run in a fresh interpreter with the GStreamer-bundle
+    variables scrubbed. The bundle's startup hook appends its paths to them in every
+    Python process, so a pytest-xdist worker (a Python child of pytest) inherits them
+    doubled — ``GST_REGISTRY_1_0`` and ``GST_PLUGIN_SCANNER_1_0`` become two paths
+    joined — and ``Gst.init`` exits the worker. The daemon launcher scrubs them for the
+    same reason (``scrubbed_env``)."""
+    import subprocess
+    import sys
+
+    from reachy_mini_bridge.daemon import scrubbed_env
+
+    code = (
+        "import sys; from pathlib import Path; "
+        "from reachy_mini_bridge.audio import _sound_duration\n"
+        "try:\n    print(_sound_duration(Path(sys.argv[1])))\n"
+        "except ValueError as e:\n    print('ValueError', e)"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", code, str(path)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+        env=scrubbed_env(),
+    )
+    return done.stdout.strip()
+
+
+def test_sound_duration_reads_other_files_through_gstreamer(tmp_path: Path) -> None:
+    pytest.importorskip("gi")
+    path = _float_wav(tmp_path, 0.5)
+    with pytest.raises(wave.Error), wave.open(str(path), "rb"):
+        pass
+    assert float(_duration_in_a_child_process(path)) == pytest.approx(0.5, abs=0.01)
+
+
+def test_sound_duration_of_an_unreadable_file_is_a_value_error(tmp_path: Path) -> None:
+    pytest.importorskip("gi")
+    path = tmp_path / "noise.ogg"
+    path.write_text("not a sound")
+    out = _duration_in_a_child_process(path)
+    assert out.startswith("ValueError") and "noise.ogg" in out
+
+
+def test_a_built_in_sound_resolves_to_the_sdk_asset(tmp_path: Path) -> None:
+    path = audio_module._resolve_sound_file("wake_up.wav")
+    assert path.name == "wake_up.wav" and path.is_file()
+    local = _wav(tmp_path, 0.1)
+    assert audio_module._resolve_sound_file(str(local)) == local
+
+
+def test_a_missing_sound_file_raises_before_anything_plays() -> None:
+    robot = FakeReachyMini()
+
+    async def run() -> None:
+        async with _open_session(robot) as session:
+            with pytest.raises(FileNotFoundError, match="nope.wav"):
+                await session.play_sound("nope.wav")
+
+    asyncio.run(run())
+    assert "media.play_sound" not in _command_names(robot)
+
+
+def test_play_sound_requires_an_open_session(tmp_path: Path) -> None:
+    with pytest.raises(BridgeError, match="play_sound"):
+        asyncio.run(MediaSession(FakeReachyMini()).play_sound(str(_wav(tmp_path, 0.1))))
+
+
+def test_play_sound_completes_when_the_file_has_been_heard(tmp_path: Path) -> None:
+    path = _wav(tmp_path, 0.3)
+    robot = FakeReachyMini()
+
+    async def run() -> float:
+        async with _open_session(robot) as session:
+            t0 = time.monotonic()
+            await session.play_sound(str(path))
+            return time.monotonic() - t0
+
+    elapsed = asyncio.run(run())
+    assert 0.3 <= elapsed < 0.6
+    assert ("media.play_sound", {"sound_file": str(path)}) in robot.commands
+    assert "media.stop_sound" not in _command_names(robot)  # it ended on its own
+
+
+def test_a_cancelled_play_sound_stops_its_file_and_the_session_plays_on(
+    tmp_path: Path,
+) -> None:
+    long, short = _wav(tmp_path, 3.0, "long.wav"), _wav(tmp_path, 0.2, "short.wav")
+    robot = FakeReachyMini()
+
+    async def run() -> tuple[float, list[str]]:
+        async with _open_session(robot) as session:
+            task = asyncio.create_task(session.play_sound(str(long)))
+            await asyncio.sleep(0.3)
+            t0 = time.monotonic()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            elapsed = time.monotonic() - t0
+            at_cancel = _command_names(robot)  # the stop precedes the CancelledError
+            await session.play_sound(str(short))  # the session still works
+            return elapsed, at_cancel
+
+    elapsed, at_cancel = asyncio.run(run())
+    assert elapsed < 0.05
+    assert at_cancel[-2:] == ["media.stop_sound", "audio.clear_player"]
+    assert _command_names(robot).count("media.play_sound") == 2
+
+
+def test_a_cancel_during_the_start_stops_the_file_once_it_has_started(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _wav(tmp_path, 2.0)
+    robot = FakeReachyMini()
+    original = robot.media.play_sound
+
+    def slow_start(sound_file: str) -> None:
+        time.sleep(0.2)
+        original(sound_file)
+
+    monkeypatch.setattr(robot.media, "play_sound", slow_start)
+
+    async def run() -> None:
+        async with _open_session(robot) as session:
+            task = asyncio.create_task(session.play_sound(str(path)))
+            await asyncio.sleep(0.05)  # inside the start
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    asyncio.run(run())
+    names = _command_names(robot)
+    assert names.index("media.stop_sound") > names.index("media.play_sound")
+
+
+def test_a_later_sound_file_interrupts_the_play_sound_in_flight(tmp_path: Path) -> None:
+    first, second = _wav(tmp_path, 3.0, "first.wav"), _wav(tmp_path, 0.3, "second.wav")
+    robot = FakeReachyMini()
+
+    async def run() -> float:
+        async with _open_session(robot) as session:
+            task = asyncio.create_task(session.play_sound(str(first)))
+            await asyncio.sleep(0.1)
+            later = asyncio.create_task(session.play_sound(str(second)))
+            t0 = time.monotonic()
+            with pytest.raises(SoundInterruptedError):
+                await task
+            elapsed = time.monotonic() - t0
+            await later  # the newest plays to its end
+            return elapsed
+
+    assert asyncio.run(run()) < 0.05
+    assert "media.stop_sound" not in _command_names(robot)
+
+
+def test_a_sound_file_and_a_say_play_together_and_a_stop_spares_the_say(
+    tmp_path: Path,
+) -> None:
+    path = _wav(tmp_path, 2.0)
+    robot = FakeReachyMini()
+    synth = _ToneSynth(16000, chunks=10, block=1600)  # one second of speech
+
+    async def run() -> None:
+        async with _open_session(robot) as session:
+            sound = asyncio.create_task(session.play_sound(str(path)))
+            say = asyncio.create_task(session.say("hello", synth))
+            while "media.push_audio_sample" not in _command_names(robot):
+                await asyncio.sleep(0.01)
+            sound.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await sound
+            await say  # completes: the stop flushed nothing
+
+    asyncio.run(run())
+    names = _command_names(robot)
+    assert "media.stop_sound" in names
+    assert "audio.clear_player" not in names
+    assert names.count("media.push_audio_sample") == 10

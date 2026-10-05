@@ -1323,7 +1323,7 @@ def test_the_loop_stops_only_the_sound_it_started_and_acknowledges_the_drop() ->
             robot,
             presence=True,
             idle="breathing",
-            stop_sound=lambda: stops.append(time.monotonic()),
+            stop_sound=lambda token: stops.append(time.monotonic()),
         )
         async with _running(session):
             session.resume()
@@ -1341,6 +1341,39 @@ def test_the_loop_stops_only_the_sound_it_started_and_acknowledges_the_drop() ->
     assert asyncio.run(run()) == (0, True, 1, True)
 
 
+def test_the_loop_stops_the_sound_with_the_token_its_start_returned() -> None:
+    async def run() -> tuple[list[Path], list[object], list[object]]:
+        robot = FakeReachyMini()
+        started: list[Path] = []
+        tokens: list[object] = []
+        stopped: list[object] = []
+
+        def start(path: Path) -> object:
+            started.append(path)
+            tokens.append(object())
+            return tokens[-1]
+
+        session = MotionSession(
+            robot,
+            presence=True,
+            idle="hold",
+            start_sound=start,
+            stop_sound=stopped.append,
+        )
+        async with _running(session):
+            session.resume()
+            primary = session.submit(_TestPrimary(0.6, 0.02), Path("one.ogg"))
+            while not started:
+                await asyncio.sleep(0.01)
+            primary.done.cancel()
+            await asyncio.to_thread(primary.dropped.wait, 0.5)
+        return started, tokens, stopped
+
+    started, tokens, stopped = asyncio.run(run())
+    assert started == [Path("one.ogg")]
+    assert stopped == tokens  # the very token, so the player can tell it was replaced
+
+
 def test_a_failing_primary_has_its_sound_stopped_before_the_failure_is_raised() -> None:
     class _Boom(_TestPrimary):
         def evaluate(self, t: float) -> Any:
@@ -1352,7 +1385,10 @@ def test_a_failing_primary_has_its_sound_stopped_before_the_failure_is_raised() 
         robot = FakeReachyMini()
         stops: list[float] = []
         session = MotionSession(
-            robot, presence=True, idle="hold", stop_sound=lambda: stops.append(1.0)
+            robot,
+            presence=True,
+            idle="hold",
+            stop_sound=lambda token: stops.append(1.0),
         )
         async with _running(session):
             session.resume()

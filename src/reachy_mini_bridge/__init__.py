@@ -22,6 +22,7 @@ from .errors import (
     ConfigError,
     GravityCompensationUnsupportedError,
     MotorsNotEnabledError,
+    SoundInterruptedError,
     SpeechInterruptedError,
 )
 from .face_detection import Face, FaceDetector, FaceReport, PixelFace
@@ -45,6 +46,7 @@ __all__ = [
     "PixelFace",
     "ReachyMiniBridge",
     "ReachyMiniConfig",
+    "SoundInterruptedError",
     "SpeechInterruptedError",
     "SpeechSynthesizer",
     "TTSEngineSynthesizer",

@@ -34,7 +34,7 @@ from reachy_mini.motion.move import Move
 
 from . import daemon as _daemon
 from . import robot as _robot
-from .audio import MediaSession, TTSEngineSynthesizer, cancel_safe_step
+from .audio import MediaSession, SoundToken, TTSEngineSynthesizer, cancel_safe_step
 from .camera import CameraFeed, frame_reader
 from .config import IDLE_MODES, ReachyMiniConfig
 from .errors import (
@@ -310,6 +310,10 @@ class ReachyMiniBridge:
             )
         return self._media
 
+    def _stop_emotion_sound(self, token: object) -> None:
+        if isinstance(token, SoundToken):
+            self._require_media().stop_sound(token)
+
     def _require_motion(self) -> MotionSession:
         if self._motion is None:
             raise BridgeError(
@@ -381,9 +385,11 @@ class ReachyMiniBridge:
                 presence=self._presence,
                 idle=self._idle,
                 idle_move=self._idle_move,
-                # The loop stops the emotion sound it started (specs/motion/motion.md
-                # "Emotions through the loop"), through the media session's stop.
-                stop_sound=lambda: self._require_media().stop_sound(),
+                # The loop starts and stops the emotion's sound through the media
+                # session's one file player (specs/motion/motion.md "Emotions through
+                # the loop", specs/audio/audio.md "Sound files").
+                start_sound=lambda path: self._require_media().start_sound(path),
+                stop_sound=self._stop_emotion_sound,
             )
             # The camera feed (specs/vision/camera.md "Lifecycle"): the one reader of the
             # camera, started right after the media session and stopped right before it
@@ -985,8 +991,17 @@ class ReachyMiniBridge:
         await self._require_media().say(text, chosen)
 
     async def play_sound(self, sound_file: str) -> None:
-        """Play a sound file / built-in sound through the robot speaker."""
-        await asyncio.to_thread(self.robot.media.play_sound, sound_file)
+        """Play a sound file through the robot speaker and wait until it has been heard.
+
+        ``sound_file`` is a path on this machine or the name of one of the SDK's
+        built-in sounds (``"wake_up.wav"``). Cancelling the task stops the sound; run it
+        as a task to play it in the background. One sound file plays at a time and the
+        newest wins: when a later one — another ``play_sound``, or an emotion's sound —
+        replaces this one, the call raises :class:`SoundInterruptedError`. It plays
+        alongside ``say``. ``FileNotFoundError`` / ``ValueError`` for a file that cannot
+        be found or read, before anything plays. Needs no motors.
+        """
+        await self._require_media().play_sound(sound_file)
 
     # --- audio-reactive motion (head wobbling) ---
 

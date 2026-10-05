@@ -31,14 +31,15 @@ from reachy_mini_bridge import (
     BridgeError,
     ReachyMiniBridge,
     ReachyMiniConfig,
+    SoundInterruptedError,
     SpeechInterruptedError,
     SpeechSynthesizer,
 )
 
 _logger = logging.getLogger(__name__)
 
-Slot = Literal["say", "emotion"]
-_SLOTS: tuple[Slot, ...] = ("say", "emotion")
+Slot = Literal["say", "sound", "emotion"]
+_SLOTS: tuple[Slot, ...] = ("say", "sound", "emotion")
 
 # The mic level decays by this factor per chunk when quieter than the last, so a short
 # burst survives until the panel's next 0.5 s refresh (chunks are ~10 ms).
@@ -311,8 +312,8 @@ class ControlPanelController:
                 # The verb has already stopped its effect (specs/core/bridge.md "Cancellation");
                 # report the stop instead of propagating it to the caller thread.
                 return False
-            except SpeechInterruptedError:
-                return False  # a later say took over: this one stopped
+            except (SpeechInterruptedError, SoundInterruptedError):
+                return False  # a later say / sound file took over: this one stopped
 
         with self._in_flight_lock:
             self._in_flight[slot].append(entry)
@@ -353,7 +354,8 @@ class ControlPanelController:
 
     @property
     def busy(self) -> list[str]:
-        """The spanning-verb slots currently occupied (``"say"`` / ``"emotion"``)."""
+        """The spanning-verb slots currently occupied (``"say"`` / ``"sound"`` /
+        ``"emotion"``)."""
         with self._in_flight_lock:
             return [slot for slot in _SLOTS if self._in_flight[slot]]
 
@@ -440,9 +442,6 @@ class ControlPanelController:
     def set_motors_state(self, state: str) -> None:
         self._call(self._bridge.set_motors_state(state))
 
-    def play_sound(self, sound_file: str) -> None:
-        self._call(self._bridge.play_sound(sound_file))
-
     def start_head_tracking(self, focus: bool = False) -> None:
         self._call(self._bridge.start_head_tracking(focus=focus))
 
@@ -478,6 +477,15 @@ class ControlPanelController:
     def stop_saying(self) -> int:
         """Stop the `say` in flight, waiting until the speaker is flushed; how many stopped."""
         return self._stop_slot("say")
+
+    def play_sound(self, sound_file: str) -> bool:
+        """Play a sound file and block until heard; ``False`` if stopped — or replaced by a
+        later sound file (the bridge's rule: the newest sound file wins)."""
+        return self._run_spanning("sound", self._bridge.play_sound(sound_file))
+
+    def stop_sound(self) -> int:
+        """Stop the sound file in flight, waiting until it is stopped; how many stopped."""
+        return self._stop_slot("sound")
 
     def play_emotion(self, name: str) -> bool:
         """Play an emotion and block until its trajectory has played; ``False`` if stopped.

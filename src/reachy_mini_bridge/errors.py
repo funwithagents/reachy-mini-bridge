@@ -17,6 +17,7 @@ __all__ = [
     "GravityCompensationUnsupportedError",
     "MotorsNotEnabledError",
     "SimSceneError",
+    "SoundInterruptedError",
     "SpeechInterruptedError",
 ]
 
@@ -50,6 +51,14 @@ class SpeechInterruptedError(BridgeError):
     running utterance is flushed and its call ends with this, in its own task at its
     next await — the bridge cancels no caller's task (see specs/audio/audio.md "TTS out",
     specs/core/bridge.md "Cancellation").
+    """
+
+
+class SoundInterruptedError(BridgeError):
+    """The ``play_sound`` was interrupted by a later sound file: the robot plays one sound
+    file at a time and the newest wins — another ``play_sound`` or an emotion's sound
+    replaced this one, which ends with this in its own task at its next await (see
+    specs/audio/audio.md "Sound files", specs/core/bridge.md "Cancellation").
     """
 
 

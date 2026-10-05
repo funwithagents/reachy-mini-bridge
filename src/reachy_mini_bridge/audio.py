@@ -8,6 +8,9 @@ daemon-owned pipeline with the XVF3800 voice processor in the middle:
   needs (TTS out through the same pipeline the mic-in stream is cancelled against).
 - ``say`` routes a pluggable :class:`SpeechSynthesizer`'s float32 mono PCM to the
   robot speaker, resampling to the speaker rate and fanning mono out to its channels.
+- ``play_sound`` plays a sound file on the robot's one file player, to its end; the
+  session owns that player, so every start — the verb's, an emotion's — is recorded
+  and a stop ends only the file it started.
 - ``audio_input`` exposes the echo-cancelled mic as a clean int16 LE stream for the
   caller's own ASR (mono by default; raw multichannel on request). The bridge embeds
   no ASR.
@@ -22,17 +25,21 @@ hardcoded, so the code is correct across the real / sim / fake backends.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
+import threading
 import time
 import urllib.request
+import wave
 from contextlib import AsyncExitStack
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
 
 import numpy as np
 import numpy.typing as npt
 import samplerate
 
-from .errors import BridgeError, SpeechInterruptedError
+from .errors import BridgeError, SoundInterruptedError, SpeechInterruptedError
 from .fake_reachy_mini import FakeReachyMini
 
 if TYPE_CHECKING:
@@ -42,6 +49,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "MediaSession",
+    "SoundToken",
     "SpeechSynthesizer",
     "TTSEngineSynthesizer",
     "cancel_safe_step",
@@ -155,6 +163,11 @@ class MediaSession:
         self._exit_stack: AsyncExitStack | None = None
         # The utterance in flight: a new `say` interrupts it (the newest wins).
         self._saying: _Utterance | None = None
+        # The start that holds the robot's one sound file player (specs/audio/audio.md
+        # "Sound files"). Started from the motion loop's thread and from worker threads,
+        # so the start and this record change together under the lock.
+        self._sound_lock = threading.Lock()
+        self._sound_owner: SoundToken | None = None
 
     async def start(self) -> None:
         """Open the session: start recording and playback, apply the audio profile.
@@ -325,16 +338,169 @@ class MediaSession:
         audio: Any = self._robot.media.audio  # see note in start() on media.audio
         audio.clear_player()
 
-    def stop_sound(self) -> None:
-        """Stop the sound file the SDK is playing, without touching the shared pipeline.
+    # --- sound files (the one file player) ---
 
-        An emotion's sidecar sound or a `play_sound` call. Then resets the head wobbler
-        through :meth:`clear_player` (the stopped player never reaches the EOS that
-        would reset it). A no-op when no sound plays. Works at any time, like
-        :meth:`clear_player`. See specs/audio/audio.md "Stopping a sound file".
+    def start_sound(self, path: Path) -> SoundToken:
+        """Start the sound file ``path`` and record its token as the player's owner.
+
+        Blocking (call it off the event loop). The robot plays one sound file at a time,
+        so the owner before it, if any, is replaced: its ``replaced`` future resolves.
+        Works at any time, like :meth:`clear_player`. See specs/audio/audio.md
+        "Sound files".
         """
-        _stop_sound_file(self._robot)
-        self.clear_player()
+        token = SoundToken(path)
+        with self._sound_lock:
+            self._robot.media.play_sound(str(path))
+            previous, self._sound_owner = self._sound_owner, token
+            if previous is not None:
+                previous.mark_replaced()
+        return token
+
+    def stop_sound(self, token: SoundToken) -> None:
+        """Stop the sound file ``token`` started, while it still holds the player —
+        never a file started after it — without touching the shared pipeline.
+
+        Then resets the head wobbler through :meth:`clear_player` (the stopped player
+        never reaches the end of stream that would reset it), unless a ``say`` is in
+        flight: its audio drives the wobbler, and the flush would cut it off. See
+        specs/audio/audio.md "Stopping a sound file, per backend".
+        """
+        with self._sound_lock:
+            if token is not self._sound_owner:
+                return
+            _stop_sound_file(self._robot)
+            self._sound_owner = None
+        if self._saying is None:
+            self.clear_player()
+
+    def release(self, token: SoundToken) -> None:
+        """Clear ``token``'s ownership of the player without stopping anything: its file
+        ended on its own."""
+        with self._sound_lock:
+            if token is self._sound_owner:
+                self._sound_owner = None
+
+    async def play_sound(self, sound_file: str) -> None:
+        """Play a sound file through the robot speaker and wait until it is heard.
+
+        ``sound_file`` is a path on this machine or the name of one of the SDK's
+        built-in sounds; ``FileNotFoundError`` when it is neither, ``ValueError`` when
+        its duration cannot be read — before anything plays. Cancelling the task stops
+        the sound before the ``CancelledError`` propagates. The newest sound file wins:
+        when a later one (another ``play_sound``, an emotion's sound) replaces this one,
+        the call raises :class:`SoundInterruptedError`. Raises :class:`BridgeError` when
+        the session is not open. See specs/audio/audio.md "Sound files".
+        """
+        self._require_open("play_sound")
+        path = await asyncio.to_thread(_resolve_sound_file, sound_file)
+        duration = await asyncio.to_thread(_sound_duration, path)
+        token = await cancel_safe_step(
+            lambda: self.start_sound(path), self._stop_sound_logged
+        )
+        try:
+            await self._wait_heard(token, duration)
+        except SoundInterruptedError:
+            raise
+        except BaseException:
+            # Cancelled (or failed): stop our file before the exception propagates.
+            await asyncio.shield(asyncio.to_thread(self._stop_sound_logged, token))
+            raise
+        self.release(token)
+
+    async def _wait_heard(self, token: SoundToken, duration: float) -> None:
+        """Wait for the file's duration plus the tail margin, unless a later start
+        replaces it first: then raise :class:`SoundInterruptedError`."""
+        heard = asyncio.ensure_future(asyncio.sleep(duration + _PLAYBACK_TAIL_S))
+        replaced = asyncio.wrap_future(token.replaced)
+        try:
+            done, _pending = await asyncio.wait(
+                {heard, replaced}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if heard in done:
+                return
+            _logger.info("play_sound: a later sound file replaced this one")
+            raise SoundInterruptedError(
+                "play_sound was interrupted by a later sound file"
+            )
+        finally:
+            for future in (heard, replaced):
+                future.cancel()
+            await asyncio.gather(heard, replaced, return_exceptions=True)
+
+    def _stop_sound_logged(self, token: SoundToken) -> None:
+        try:
+            self.stop_sound(token)
+        except Exception as e:  # noqa: BLE001 - the verb's own exception wins
+            _logger.warning("could not stop the sound file: %s", e)
+
+
+class SoundToken:
+    """One start of a sound file on the robot's one file player.
+
+    ``replaced`` resolves when a later start takes the player from this one. A
+    ``concurrent.futures.Future`` because the start that replaces it may run on the
+    motion loop's thread; the verb awaits it on the event loop.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.replaced: concurrent.futures.Future[None] = concurrent.futures.Future()
+
+    def mark_replaced(self) -> None:
+        try:
+            self.replaced.set_result(None)
+        except concurrent.futures.InvalidStateError:
+            pass  # already replaced, or its waiter has gone (cancelled the future)
+
+
+def _resolve_sound_file(name: str) -> Path:
+    """The file ``name`` names: a path on this machine, or one of the SDK's built-in
+    sounds, as upstream's local backend resolves it (specs/audio/audio.md "Sound files")."""
+    path = Path(name)
+    if path.is_file():
+        return path
+    from reachy_mini.utils.constants import ASSETS_ROOT_PATH
+
+    asset = Path(ASSETS_ROOT_PATH) / name
+    if asset.is_file():
+        return asset
+    raise FileNotFoundError(
+        f"sound file {name!r} not found: neither a file on this machine nor one of "
+        f"the SDK's built-in sounds ({ASSETS_ROOT_PATH})"
+    )
+
+
+def _sound_duration(path: Path) -> float:
+    """The duration of the sound file at ``path``, in seconds: a WAV through the stdlib
+    ``wave`` module, any other file (or a WAV ``wave`` cannot read) through GStreamer's
+    discoverer. ``ValueError`` when neither can read it."""
+    if path.suffix.lower() == ".wav":
+        try:
+            with wave.open(str(path), "rb") as wav:
+                return wav.getnframes() / wav.getframerate()
+        except (wave.Error, EOFError):
+            pass  # e.g. floating-point samples: the discoverer reads those
+    try:
+        # gi ships inside the gstreamer wheel's own site-packages, which pyright does
+        # not index.
+        import gi  # pyright: ignore[reportMissingImports]
+
+        gi.require_version("Gst", "1.0")
+        gi.require_version("GstPbutils", "1.0")
+        from gi.repository import (  # pyright: ignore[reportMissingImports]
+            Gst,
+            GstPbutils,
+        )
+
+        Gst.init(None)
+        discoverer = GstPbutils.Discoverer.new(5 * Gst.SECOND)
+        info = discoverer.discover_uri(path.resolve().as_uri())
+        nanoseconds = info.get_duration()
+    except Exception as e:
+        raise ValueError(f"cannot read the duration of sound file {path}: {e}") from e
+    if not 0 < nanoseconds < Gst.CLOCK_TIME_NONE:
+        raise ValueError(f"cannot read the duration of sound file {path}")
+    return nanoseconds / Gst.SECOND
 
 
 def _stop_sound_file(robot: AnyReachyMini) -> None:

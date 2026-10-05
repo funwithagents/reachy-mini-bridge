@@ -127,7 +127,7 @@ def build_app(controller: ControlPanelController) -> gr.Blocks:
         def run(*args: Any) -> None:
             try:
                 result = fn(*args)
-            except (BridgeError, ValueError) as exc:
+            except (BridgeError, ValueError, FileNotFoundError) as exc:
                 log_line(log, f"{verb}: error: {exc}")
                 raise gr.Error(str(exc), title=verb, print_exception=False) from exc
             if result is True:
@@ -191,6 +191,7 @@ def build_app(controller: ControlPanelController) -> gr.Blocks:
                 with gr.Row():
                     sound_file = gr.Textbox(label="Sound file (path)", scale=3)
                     play_sound = gr.Button("Play sound")
+                    stop_sound = gr.Button("Stop sound", variant="stop")
 
                 gr.Markdown("## Gaze")
                 with gr.Row():
@@ -244,6 +245,7 @@ def build_app(controller: ControlPanelController) -> gr.Blocks:
         bind(say.click, "say", controller.say, text)
         bind(stop_say.click, "stop_saying", controller.stop_saying)
         bind(play_sound.click, "play_sound", controller.play_sound, sound_file)
+        bind(stop_sound.click, "stop_sound", controller.stop_sound)
         for box in (tracking, focus):
             bind(
                 box.input,
