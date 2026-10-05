@@ -541,7 +541,9 @@ def test_capabilities_are_probed_once_per_daemon_and_reused(
     monkeypatch.setattr(fixtures, "_PROBED", {})
     probed: list[tuple[str, int]] = []
 
-    def probe(robot: object, address: tuple[str, int] | None = None) -> frozenset[str]:
+    def probe(
+        robot: object, address: tuple[str, int] | None = None, camera: object = None
+    ) -> frozenset[str]:
         assert address is not None
         probed.append(address)
         return frozenset({"motion", f"port-{address[1]}"})
