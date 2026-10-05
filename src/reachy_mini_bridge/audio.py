@@ -526,7 +526,9 @@ def _stop_sound_file(robot: AnyReachyMini) -> None:
             import gi  # pyright: ignore[reportMissingImports]
 
             gi.require_version("Gst", "1.0")
-            from gi.repository import Gst  # pyright: ignore[reportMissingImports]
+            from gi.repository import (  # pyright: ignore[reportMissingImports]
+                Gst,  # pyright: ignore[reportAttributeAccessIssue]
+            )
 
             playbin.set_state(Gst.State.NULL)
             audio._playbin = None
