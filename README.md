@@ -39,7 +39,7 @@ The upstream `reachy_mini` SDK gives full, low-level access to the robot. The br
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How the project is run today: feedback through issues, no external pull requests yet |
 | [specs/](specs/) | Design docs, one per concept in folders named after the subsystem (`core/`, `motion/`, `vision/`, `audio/`, `daemon/`, `testing/`, `examples/`), each with a status — the source of truth for how things are meant to work |
 | [plans/](plans/) | Implementation plans that turned those specs into code |
-| [docs/](docs/) | Reference notes: the upstream SDK, running the sim daemon, testing your project against the bridge |
+| [docs/](docs/) | Reference notes: the upstream SDK, running the sim daemon, the bridge on Linux, testing your project against the bridge |
 | [tests/](tests/), [tests-e2e/](tests-e2e/) | The fast offline suite (default `pytest`) and the opt-in live suite against a sim or real daemon |
 | [examples/](examples/) | Runnable examples, not part of the package: `control_panel/`, a Gradio control panel with a button for every verb (see [Try it from a browser](#try-it-from-a-browser)) |
 
@@ -66,7 +66,7 @@ uv add "reachy-mini-bridge[sim,test] @ ../reachy-mini-bridge"   # a checkout nex
 
 Importing the package imports `reachy_mini`, which needs its native libraries installed but not a running daemon.
 
-**Platforms.** Developed on macOS; Linux is where CI runs the whole test suite, sim camera included; Windows is untested. On macOS and Windows, GStreamer comes with `reachy_mini`'s wheels. **On Linux it comes from the system**, and running a daemon on the machine — the sim, or a robot plugged in over USB — also needs the Rust GStreamer webrtc plugin, which no distribution packages; the headless sim's camera needs Mesa's EGL. The packages, the plugin's two routes, and what works without a sound card are in [docs/running-the-sim-daemon.md](docs/running-the-sim-daemon.md) "Linux" — which applies to a Lite's USB daemon as much as to the sim's. A client talking to a wireless robot's own daemon needs the GStreamer packages only.
+**Platforms.** Developed on macOS; Linux is where CI runs the whole test suite, sim camera included; Windows is untested. On macOS and Windows, GStreamer comes with `reachy_mini`'s wheels. **On Linux it comes from the system**, and running a daemon on the machine — the sim, or a robot plugged in over USB — also needs the Rust GStreamer webrtc plugin, which no distribution packages; the headless sim's camera needs Mesa's EGL. The packages, the plugin's two routes, and what works without a sound card are in [docs/linux.md](docs/linux.md), which applies to a Lite's USB daemon as much as to the sim's. A client talking to a wireless robot's own daemon needs the GStreamer packages only.
 
 ## Quick start
 

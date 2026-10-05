@@ -148,7 +148,7 @@ pactl set-default-sink ci
 pactl set-default-source ci.monitor
 ```
 
-This is what the bridge's own CI does ([../specs/testing/ci.md](../specs/testing/ci.md)); the Linux packages and the webrtc plugin a daemon needs are in [running-the-sim-daemon.md](running-the-sim-daemon.md) "Linux".
+This is what the bridge's own CI does ([../specs/testing/ci.md](../specs/testing/ci.md)); the Linux packages and the webrtc plugin a daemon needs are in [linux.md](linux.md).
 
 Capabilities are **probed, not assumed** from the backend type — environment quirks decide
 what actually works.
