@@ -117,6 +117,48 @@ jobs:
       # (pinned to a commit and a sha256 inside the action) and puts it on GST_PLUGIN_PATH.
       - name: Rust webrtc plugin (upstream's action, pinned)
         uses: pollen-robotics/reachy_mini/.github/actions/webrtc-plugin@c14dc5fd43100582d349466aec4bdc4960490522
+      - name: Repeated-launch probe (temporary diagnostic)
+        run: |
+          uv run --no-sync python - <<'PY' || true
+          import os, subprocess, sys, time, urllib.request, threading
+          from reachy_mini_bridge.daemon import scrubbed_env
+          from reachy_mini import ReachyMini
+          failures = 0
+          for i in range(6):
+              port = 8030 + i
+              env = scrubbed_env(); env["GST_DEBUG"] = "2"
+              cmd = [sys.executable, "-m", "reachy_mini_bridge.sim_daemon", "--headless", "--no-preload-datasets", "--fastapi-port", str(port)]
+              t0 = time.monotonic(); lines = []
+              proc = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+              def pump(p=proc, lines=lines):
+                  for line in p.stdout: lines.append((time.monotonic() - t0, line.rstrip()))
+              threading.Thread(target=pump, daemon=True).start()
+              ready = None
+              while time.monotonic() - t0 < 60:
+                  try:
+                      with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/daemon/status", timeout=1) as r:
+                          if b'"running"' in r.read(): ready = time.monotonic() - t0; break
+                  except Exception: pass
+                  time.sleep(0.25)
+              first = None
+              try:
+                  robot = ReachyMini(host="127.0.0.1", port=port, media_backend="local")
+                  t1 = time.monotonic()
+                  while time.monotonic() - t1 < 10:
+                      if robot.media.get_frame() is not None: first = time.monotonic() - t1; break
+                      time.sleep(0.1)
+                  try: robot.close()
+                  except Exception: pass
+              except Exception as e:
+                  print(f"launch {i}: client error {e!r}")
+              print(f"launch {i}: ready after {ready and round(ready, 1)} s, first frame {first and round(first, 2)} s after the client opened")
+              if first is None:
+                  failures += 1
+                  print("---- daemon output (no frame):")
+                  for ts, line in lines[-120:]: print(f"  [{ts:5.1f}s] {line[:220]}")
+              proc.terminate(); proc.wait(15)
+          print(f"launches without a frame: {failures} of 6")
+          PY
       - name: Live tier
         # The cloud TTS keys, when the repository holds them as secrets: the two cloud
         # `say` tests run; absent (or on a fork's pull request, which never receives a
