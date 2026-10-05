@@ -107,5 +107,18 @@ jobs:
           pactl set-default-sink ci
           pactl set-default-source ci.monitor
           pactl info
+      - name: Offscreen GL probe (temporary diagnostic)
+        run: |
+          for gl in egl osmesa; do
+            echo "== MUJOCO_GL=$gl"
+            MUJOCO_GL=$gl uv run --no-sync python - <<'PY' || true
+          import os, mujoco
+          m = mujoco.MjModel.from_xml_string('<mujoco><worldbody><light pos="0 0 1"/><camera name="c" pos="0 -1 0.5" xyaxes="1 0 0 0 1 2"/><geom size="0.1"/></worldbody></mujoco>')
+          r = mujoco.Renderer(m, 240, 320); d = mujoco.MjData(m); mujoco.mj_forward(m, d); r.update_scene(d, "c"); im = r.render()
+          print(os.environ["MUJOCO_GL"], "ok", im.shape, float(im.mean()))
+          PY
+          done
+          echo "== headless launcher, 15 s"
+          (timeout 15 uv run --no-sync python -m reachy_mini_bridge.sim_daemon --headless --no-preload-datasets --fastapi-port 8020 2>&1 | tail -60) || true
       - name: Live tier
         run: uv run pytest tests-e2e -rs
