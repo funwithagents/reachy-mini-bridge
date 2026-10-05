@@ -1,8 +1,9 @@
 # Continuous integration — specs/testing/ci.md.
 #
 # Both test tiers on GitHub's hosted Linux runners, on every pull request and push to
-# main: `check` (lint, format, types) first, then `fast-tier` and `e2e-sim` (the live tier
-# against the headless sim the harness spawns) side by side. Every dependency group installs — on Linux torch comes from
+# main, three jobs side by side: `check` (lint, format, types), `fast-tier`, and `e2e-sim`
+# (the live tier against the headless sim the harness spawns). None waits on another: a
+# run takes as long as its slowest job. Every dependency group installs — on Linux torch comes from
 # PyTorch's CPU index, a few seconds — so the real pocket-TTS test runs here too. No
 # secret is needed: tests whose needs the runner cannot meet skip, and the spec's
 # expected-skips table says which.
@@ -60,7 +61,6 @@ jobs:
 
   fast-tier:
     name: fast tier
-    needs: check
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -80,7 +80,6 @@ jobs:
 
   e2e-sim:
     name: live tier, headless sim
-    needs: check
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
