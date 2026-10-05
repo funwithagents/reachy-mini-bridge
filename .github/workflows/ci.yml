@@ -128,48 +128,34 @@ jobs:
           print(os.environ["MUJOCO_GL"], "ok", im.shape, float(im.mean()))
           PY
           done
-          echo "== render and detection cost on the test scene (EGL)"
-          for threads in default 2 1; do
-            echo "-- LP_NUM_THREADS=$threads"
-            if [ "$threads" != default ]; then export LP_NUM_THREADS=$threads; fi
-            MUJOCO_GL=egl uv run --no-sync python - <<'PY' 2>&1 | grep -v "EGLError\|Exception ignored\|File \"\|^Traceback" || true
-          import os, tempfile, time, traceback, numpy as np, mujoco
+          echo "== render cost: the robot's geoms hidden by alpha vs by geom group (EGL)"
+          MUJOCO_GL=egl uv run --no-sync python - <<'PY' 2>&1 | grep -v "EGLError\|Exception ignored\|File \"\|^Traceback" || true
+          import os, tempfile, time, numpy as np, mujoco
           from reachy_mini_bridge.testing.sim_scene import write_test_scene, DEFAULT_FACE_POS
           m = mujoco.MjModel.from_xml_path(str(write_test_scene(tempfile.mkdtemp()))); data = mujoco.MjData(m)
           body = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "face_1"); data.mocap_pos[m.body_mocapid[body]] = DEFAULT_FACE_POS
           for g in range(m.ngeom):
               if m.geom_bodyid[g] == body: m.geom_rgba[g, 3] = 1.0
           mujoco.mj_forward(m, data); cam = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_CAMERA, "eye_camera")
-          groups = {int(k): int(v) for k, v in zip(*np.unique(m.geom_group, return_counts=True))}
-          print("cpus", os.cpu_count(), "ngeom", m.ngeom, "mesh faces", int(m.mesh_facenum.sum()), "geom groups", groups, "face group", int(m.geom_group[[g for g in range(m.ngeom) if m.geom_bodyid[g] == body][0]]))
+          robot_root = m.body_rootid[m.cam_bodyid[cam]]
+          robot_geoms = [g for g in range(m.ngeom) if m.body_rootid[m.geom_bodyid[g]] == robot_root]
+          print("robot root body", robot_root, mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_BODY, int(robot_root)), "robot geoms", len(robot_geoms), "of", m.ngeom)
           m.vis.quality.offsamples = 0
-          def bench(label, h=720, w=1280, flags=(), groups=None):
-              r = mujoco.Renderer(m, h, w)
+          def bench(label, opt=None):
+              r = mujoco.Renderer(m, 720, 1280)
               r.scene.flags[mujoco.mjtRndFlag.mjRND_SHADOW] = 0
-              for f in flags: r.scene.flags[f] = 0
-              opt = mujoco.MjvOption()
-              if groups is not None:
-                  for i in range(6): opt.geomgroup[i] = 1 if i in groups else 0
               r.update_scene(data, cam, opt); r.render()
               t = time.perf_counter()
               for _ in range(20): r.update_scene(data, cam, opt); im = r.render()
-              print(f"{label}: {(time.perf_counter()-t)/20*1000:.1f} ms/frame")
-              return im
-          F = mujoco.mjtRndFlag
-          bench("no shadow, offsamples 0")
-          bench("+ no reflection/skybox/haze/fog", flags=(F.mjRND_REFLECTION, F.mjRND_SKYBOX, F.mjRND_HAZE, F.mjRND_FOG))
-          im = bench("+ only the face's geom group", flags=(F.mjRND_REFLECTION, F.mjRND_SKYBOX, F.mjRND_HAZE, F.mjRND_FOG), groups={int(m.geom_group[[g for g in range(m.ngeom) if m.geom_bodyid[g] == body][0]])})
-          bench("+ no geoms at all", flags=(F.mjRND_REFLECTION, F.mjRND_SKYBOX, F.mjRND_HAZE, F.mjRND_FOG), groups=set())
-          bench("320x180, no shadow", h=180, w=320)
-          try:
-              from reachy_mini_bridge.yunet import YuNetDetector
-              det = YuNetDetector(); det.detect(im, 0.0)
-              t = time.perf_counter()
-              for _ in range(10): faces = det.detect(im, 0.0)
-              print(f"yunet on a {im.shape[1]}x{im.shape[0]} frame: {(time.perf_counter()-t)/10*1000:.1f} ms, faces {len(faces)}")
-          except Exception:
-              traceback.print_exc()
+              print(f"{label}: {(time.perf_counter()-t)/20*1000:.1f} ms/frame, scene geoms {r.scene.ngeom}")
+          bench("robot drawn")
+          saved = m.geom_rgba[robot_geoms, 3].copy()
+          m.geom_rgba[robot_geoms, 3] = 0.0
+          bench("robot geoms alpha 0")
+          m.geom_rgba[robot_geoms, 3] = saved
+          opt = mujoco.MjvOption()
+          for i in range(6): opt.geomgroup[i] = 1 if i < 2 else 0
+          bench("geom groups 0 and 1 only", opt)
           PY
-          done
       - name: Live tier
         run: uv run pytest tests-e2e -rs
