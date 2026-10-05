@@ -355,9 +355,14 @@ def test_say_with_real_tts_speaks_through_the_robot(
     Exercises the full real path the tone test can't: tts-engine synthesis (in-process,
     the model loaded from the Hugging Face cache — no key, no network once cached), the
     push→pull queue-bridge sink, int16→float32, and the 24 kHz→16 kHz resample. Gated
-    on `audio` only, so it runs on every dev sync (the dev group carries `tts-pocket`).
+    on `audio` and on the provider being installed: the `tts` dependency group carries
+    it, default in a local sync, left out in CI (specs/testing/ci.md), where this test
+    skips on the missing module rather than fail on tts-engine's ConfigError.
     On the headfull-viewer sim you should hear the phrase; assert it completes.
     """
+    pytest.importorskip(
+        "pocket_tts", reason="the tts dependency group is not installed"
+    )
     requires_caps(live_bridge, "audio")
     bridge, _caps = live_bridge
 
@@ -373,9 +378,12 @@ def test_say_with_elevenlabs_speaks_through_the_robot(
     """The cloud provider end-to-end: `TTSEngineSynthesizer` (ElevenLabs) → speaker.
 
     The path the pocket test doesn't cover: synthesis over the network and the
-    44.1 kHz→16 kHz resample. Gated on `ELEVENLABS_API_KEY` (skips cleanly without a
-    key) and `audio`.
+    44.1 kHz→16 kHz resample. Gated on the provider being installed (the `tts`
+    dependency group), on `ELEVENLABS_API_KEY` (skips cleanly without a key) and `audio`.
     """
+    pytest.importorskip(
+        "elevenlabs", reason="the tts dependency group is not installed"
+    )
     require_env("ELEVENLABS_API_KEY")
     requires_caps(live_bridge, "audio")
     bridge, _caps = live_bridge
@@ -402,8 +410,10 @@ def test_say_with_gradium_speaks_through_the_robot(
 
     Configured at 16 kHz, the speaker rate, so it covers the path the other two
     providers' rates don't: the say sink's resample skipped on real network audio.
-    Gated on `GRADIUM_API_KEY` (skips cleanly without a key) and `audio`.
+    Gated on the provider being installed (the `tts` dependency group), on
+    `GRADIUM_API_KEY` (skips cleanly without a key) and `audio`.
     """
+    pytest.importorskip("gradium", reason="the tts dependency group is not installed")
     require_env("GRADIUM_API_KEY")
     requires_caps(live_bridge, "audio")
     bridge, _caps = live_bridge

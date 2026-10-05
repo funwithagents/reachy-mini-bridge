@@ -73,34 +73,53 @@ dev = [
     # Pull the sim backend into the dev env so the sim e2e tests run (not skip).
     # `sim` stays an optional extra for consumers; only dev installs it by default.
     "reachy-mini-bridge[sim]",
-    # Every provider in the dev env: pocket so the real-TTS live test runs with no
-    # credential (the cost is torch in every dev sync — accepted, as in tts-engine's
-    # own dev group), elevenlabs and gradium so the key-gated cloud tests can run
-    # when a key is set rather than fail on a missing extra. Consumers install one
-    # at a time.
-    "reachy-mini-bridge[tts-elevenlabs,tts-gradium,tts-pocket]",
     # Pull the test extra into the dev env so the shipped harness type-checks and the
     # bridge dogfoods it in tests-e2e/; stays optional for consumers.
     "reachy-mini-bridge[test]",
     "pytest-xdist>=3.8.0",
 ]
+# The TTS providers (specs/project.md "Dependency groups"): pocket so the real-TTS live
+# test runs with no credential, elevenlabs and gradium so the key-gated cloud tests run
+# when a key is set rather than fail on a missing extra. A default group, so a plain
+# `uv sync` has every provider (the cost is torch in every local sync, as in tts-engine's
+# own dev group); CI syncs `--no-group tts` (specs/testing/ci.md) and the provider e2e
+# tests skip on the missing module. Consumers install one extra at a time. `torch` is
+# named here, although pocket-tts brings it, because a uv source applies only to a
+# dependency the project declares itself: this is what routes it to the CPU index below.
+tts = [
+    "reachy-mini-bridge[tts-elevenlabs,tts-gradium,tts-pocket]",
+    "torch",
+]
 # The Gradio control panel in examples/control_panel (specs/examples/control_panel.md): a
-# manual test/demo app, not part of the package. Its own group so a consumer or CI
-# can leave it out (`uv sync --no-group demo`); pulled in by default (see
-# `default-groups` below) so `uv run pyright` covers examples/ in a normal dev env.
+# manual test/demo app, not part of the package. Its own group so a consumer can leave
+# it out (`uv sync --no-group demo`); pulled in by default (see `default-groups` below)
+# so `uv run pyright` covers examples/ in a normal dev env. The panel's voice comes from
+# the config's `tts` block, whose provider the `tts` group installs — not from here.
 demo = [
     "gradio>=5",
-    "reachy-mini-bridge[sim,tts-pocket]",
+    "reachy-mini-bridge[sim]",
 ]
+
+[[tool.uv.index]]
+# PyPI's Linux torch wheel is the CUDA build and drags gigabytes of NVIDIA libraries no
+# machine of ours uses (a CI runner has no GPU, the robot none either); on Linux torch
+# resolves from PyTorch's CPU index instead (the `torch` source below). `explicit`: only
+# the packages pinned to it below come from here. macOS keeps PyPI's CPU-only wheel.
+# A uv source is not inherited by a downstream project, which declares its own if wanted.
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [tool.uv.sources]
 # Self-reference for the groups above that pull in the package's own extras.
 reachy-mini-bridge = { workspace = true }
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
 
 [tool.uv]
-# Both groups install by default: `demo` is separate so it can be opted out of, not so
-# that the verification gate (ruff / pyright over examples/) runs in a partial env.
-default-groups = ["dev", "demo"]
+# Every group installs by default — a sync is exact, so a group left out of a sync is
+# uninstalled by it: `demo` and `tts` are separate so CI (or a consumer) can opt out
+# explicitly, not so that a plain dev sync runs the verification gate in a partial env.
+default-groups = ["dev", "demo", "tts"]
 # reachy-mini gates PyGObject to Linux (macOS/Windows use the self-contained
 # gstreamer-bundle). PyGObject/pycairo are sdist-only in the pinned range, so uv's
 # universal lock would try to *build* them on a non-Linux host just to read their

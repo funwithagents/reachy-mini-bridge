@@ -7,7 +7,7 @@ tests:
 
 # Testing
 
-**Status:** Implemented
+**Status:** Updated
 
 ## Purpose
 
@@ -43,10 +43,10 @@ The e2e tier runs one suite against a **live daemon**, choosing the *target* at 
 Selected by `REACHY_MINI_E2E_TARGET`:
 
 - **`sim`** (default) — the harness spawns and manages a MuJoCo daemon, in one of two **launch modes**:
-  - **headless** (default, for CI): `--sim --headless` — no window, runs anywhere.
+  - **headless** (default; the CI target, [ci.md](ci.md)): `--sim --headless` — no window, runs anywhere. On Linux the eye camera renders offscreen ([../daemon/sim_daemon.md](../daemon/sim_daemon.md) "The headless camera"), so the headless sim there has the camera too; on macOS it has motion and audio only.
   - **headfull** (`REACHY_MINI_E2E_SIM_VIEWER=1`, local): the MuJoCo viewer, to watch the sim as a robot stand-in. On macOS the viewer must run under `mjpython` from a GUI session (see the doc).
   Both modes are the same daemon with the same capabilities, except the camera (below).
-  - **scene** (both modes, no knob): a spawned sim always runs the bridge's **test scene** — upstream's empty scene plus props (a portrait plane today) that stay hidden until a test shows, moves and hides them through the `sim_scene` fixture ([sim_scene.md](sim_scene.md)). A test that never shows a prop sees upstream's scene; one sim target serves every test. Tracking tests gate on `camera` **and** `faces`, so they run on the viewer and skip headless (no rendered camera), on a borrowed daemon started without the scene, and on a robot.
+  - **scene** (both modes, no knob): a spawned sim always runs the bridge's **test scene** — upstream's empty scene plus props (a portrait plane today) that stay hidden until a test shows, moves and hides them through the `sim_scene` fixture ([sim_scene.md](sim_scene.md)). A test that never shows a prop sees upstream's scene; one sim target serves every test. Tracking tests gate on `camera` **and** `faces`, so they run on the viewer and on a Linux headless sim, and skip on a macOS headless sim (no rendered camera), on a borrowed daemon started without the scene, and on a robot.
 - **`real`** — connects to a robot's daemon at `REACHY_MINI_HOST` / `REACHY_MINI_PORT`. When that address is loopback and no daemon is ready — a robot plugged into this machine over USB (Lite) — the harness spawns the hardware daemon (upstream's `reachy-mini-daemon` through the bridge's real daemon launcher, [real_daemon.md](../daemon/real_daemon.md) — serial port auto-detected; Placo kinematics when `placo` is installed, see [daemon.md](../daemon/daemon.md)). A wireless robot runs its own daemon: borrow it or skip.
 
 Any target **reuses a daemon already reachable** at the address (a viewer sim you started by hand, or the robot), instead of spawning its own.
@@ -69,13 +69,13 @@ def test_say_is_audible(live_bridge):
 |---|---|---|---|---|
 | `motion` | backend reports a status | ✅ | ✅ | ✅ |
 | `audio` | a mic sample arrives on the open media session (never restarted, see [testing_support.md](testing_support.md)) | ✅ software AEC, host device | ✅ | ✅ hardware AEC |
-| `camera` | `get_frame()` returns a frame | ⚠️ needs a GL context (not headless plain-python on macOS) | ✅ | ✅ |
+| `camera` | `get_frame()` returns a frame | ✅ Linux (offscreen EGL render) · ❌ macOS (no display-less GL) | ✅ | ✅ |
 | `gravity_compensation` | not a simulation, and `GET /api/kinematics/info` reports `engine == "Placo"` | ❌ | ❌ | ✅ with Placo (`reachy-mini[placo_kinematics]`) |
 | `faces` | the daemon's `/api/sim/inject/bodies` lists a portrait (a body of kind `face`) — it runs the bridge's test scene ([sim_scene.md](sim_scene.md)), which every harness-spawned sim does; its pool of portraits starts hidden and a test spawns the ones it needs | ✅ scene loads (but nothing looks at it: no camera) | ✅ | ❌ |
 | `face_markers` | the daemon's `/api/sim/displays/face_markers` answers — it draws the faces the bridge sends it ([sim_displays.md](../daemon/sim_displays.md)), which every viewer sim the harness spawns does; a test reads back where the bridge placed a face | ❌ no viewer | ✅ | ❌ |
 | `doa` · hardware-AEC quality · beamforming | — | ❌ | ❌ | ✅ |
 
-The sim covers **motion and audio** (audio via the host's audio device with *software* AEC — the device named "Reachy Mini Audio" when a robot is plugged in over USB, else the machine's default speaker and mic, for the sim daemon's own sounds and the client's alike — only the XVF3800's hardware AEC/beamforming/DoA are robot-only); the sim **camera** needs a GL context, so it works headfull (or with a headless GL backend) but not headless plain-python on macOS.
+The sim covers **motion and audio** (audio via the host's audio device with *software* AEC — the device named "Reachy Mini Audio" when a robot is plugged in over USB, else the machine's default speaker and mic, for the sim daemon's own sounds and the client's alike — only the XVF3800's hardware AEC/beamforming/DoA are robot-only); the sim **camera** needs a GL context, so it works headfull, and headless on Linux through Mesa's EGL, but not headless on macOS.
 
 ### The harness
 
@@ -93,7 +93,7 @@ If the package holds process-global or singleton state, both tiers carry an iden
 
 ## Live tier: skip without credentials
 
-A live test needs real credentials, and it must **skip — never fail** — when they're absent, so you exercise only the services you hold keys for and a contributor (or CI) with none is never broken. `reachy_mini_bridge.testing.require_env(NAME)` (shipped, see [testing_support.md](testing_support.md)) implements this: it returns the env var or calls `pytest.skip(...)` when it's unset. Credentials come from the environment, never committed. The bridge's own real-TTS live test needs none: it runs on the local pocket-tts model (the dev group carries the `tts-pocket` extra, see [project.md](../project.md)), so the default `uv run pytest tests-e2e` exercises `say` end to end; only the cloud tests are key-gated (`ELEVENLABS_API_KEY` for ElevenLabs, `GRADIUM_API_KEY` for Gradium). The custom-detector test (`tests-e2e/test_custom_faces.py`, [user_perception.md](../vision/user_perception.md) "Custom detectors") needs no credential either: it runs the shipped YuNet class through the `custom` path, in a bridge session of its own (`live_bridge_custom_faces` — the detector is config-only), whenever the viewer sim runs (`REACHY_MINI_E2E_SIM_VIEWER=1`), and skips where the `faces` capability is absent; the model downloads into the Hugging Face cache on first use.
+A live test needs real credentials, and it must **skip — never fail** — when they're absent, so you exercise only the services you hold keys for and a contributor (or CI) with none is never broken. `reachy_mini_bridge.testing.require_env(NAME)` (shipped, see [testing_support.md](testing_support.md)) implements this: it returns the env var or calls `pytest.skip(...)` when it's unset. Credentials come from the environment, never committed. The bridge's own real-TTS live test needs none: it runs on the local pocket-tts model (the `tts` dependency group, default in a local sync, carries the three provider extras, see [project.md](../project.md)), so the default `uv run pytest tests-e2e` exercises `say` end to end; only the cloud tests are key-gated (`ELEVENLABS_API_KEY` for ElevenLabs, `GRADIUM_API_KEY` for Gradium). **A missing provider skips the way a missing key does:** each provider test calls `pytest.importorskip` on the provider's module (`pocket_tts`, `elevenlabs`, `gradium`) before it builds the synthesizer, so a sync without the `tts` group — CI's ([ci.md](ci.md)) — skips the three rather than failing on tts-engine's `ConfigError`. The custom-detector test (`tests-e2e/test_custom_faces.py`, [user_perception.md](../vision/user_perception.md) "Custom detectors") needs no credential either: it runs the shipped YuNet class through the `custom` path, in a bridge session of its own (`live_bridge_custom_faces` — the detector is config-only), whenever the viewer sim runs (`REACHY_MINI_E2E_SIM_VIEWER=1`), and skips where the `faces` capability is absent; the model downloads into the Hugging Face cache on first use.
 
 ## Tooling
 
@@ -102,4 +102,4 @@ A live test needs real credentials, and it must **skip — never fail** — when
 
 ## Open questions
 
-1. **CI wiring.** Nothing here sets up continuous integration. The default `tests/` tier is CI-ready (deterministic, no credentials), and the e2e tier is designed to skip cleanly when keys are absent — but actually running either on a hosted runner is unbuilt. Today all testing is a local, manual command.
+None currently. Continuous integration — both tiers on GitHub's hosted runners — is [ci.md](ci.md).

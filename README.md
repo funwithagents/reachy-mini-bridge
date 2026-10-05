@@ -59,7 +59,7 @@ uv add "reachy-mini-bridge[sim,test] @ ../reachy-mini-bridge"   # a checkout nex
 |---|---|---|
 | *(none)* | `reachy_mini`, `numpy`, `samplerate`, `tts-engine` | The `real` backend, the offline `fake`, and `say` with your own synthesizer. `tts-engine` is our small first-party engine with no provider; one of the `tts-*` extras adds one |
 | `sim` | `mujoco` 3.3.1+ (3.3.x) | The `sim` backend (MuJoCo). Declared directly rather than through `reachy_mini[mujoco]`, whose exact pin on 3.3.0 predates the viewer overlays the sim launcher needs; don't install that upstream extra alongside (see [docs/running-the-sim-daemon.md](docs/running-the-sim-daemon.md) "The MuJoCo version") |
-| `tts-pocket` | `tts-engine[pocket]` | The default voice for `say` on the local pocket-tts model: no key, no network once the weights are cached, but torch (hundreds of MB) |
+| `tts-pocket` | `tts-engine[pocket]` | The default voice for `say` on the local pocket-tts model: no key, no network once the weights are cached, but torch (hundreds of MB; on Linux a dev checkout takes the CPU build from PyTorch's index) |
 | `tts-elevenlabs` | `tts-engine[elevenlabs]` | The default voice for `say` on ElevenLabs (`ELEVENLABS_API_KEY`); a few MB |
 | `tts-gradium` | `tts-engine[gradium]` | The default voice for `say` on Gradium (`GRADIUM_API_KEY`); a few MB |
 | `test` | `pytest` | The shipped `reachy_mini_bridge.testing` harness for your e2e tests |
@@ -100,7 +100,7 @@ Face detection and tracking are opt-in: name a detector in the config's `face_de
 
 ### Try it from a browser
 
-The repo ships a Gradio **control panel** — every verb a button, the bridge's state on screen and refreshed twice a second (motor state, attention, the mode flags, a mic level meter, the camera frame, a log), with a Stop button next to `say` and `play_emotion` that cancels the verb mid-flight. It runs from a checkout (it needs the `demo` dependency group, installed by `uv sync`):
+The repo ships a Gradio **control panel** — every verb a button, the bridge's state on screen and refreshed twice a second (motor state, attention, the mode flags, a mic level meter, the camera frame, a log), with a Stop button next to `say` and `play_emotion` that cancels the verb mid-flight. It runs from a checkout (it needs the `demo` dependency group, and its voice the `tts` group — both installed by a plain `uv sync`):
 
 ```
 uv run python -m examples.control_panel --config config.example.json   # the sim viewer, spawned for you
@@ -389,9 +389,9 @@ The `live_bridge` fixture borrows a running daemon or spawns one for the whole r
 ## Development
 
 ```
-uv sync --dev
+uv sync                  # every group: the tooling, the sim, the TTS providers (CI syncs --no-group tts)
 uv run ruff check .
-uv run ruff format .
+uv run ruff format src tests tests-e2e examples
 uv run pyright
 uv run pytest            # fast offline tier only
 uv run pytest tests-e2e -rs                                  # live tier, headless sim: motion + audio
