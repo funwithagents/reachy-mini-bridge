@@ -41,13 +41,14 @@ One file, `.github/workflows/ci.yml`. It triggers on `pull_request`, on `push` t
 
 - **Audio: a PulseAudio null sink.** The daemon's media server takes the host's default source and sink when no robot sound card is present ([../audio/audio.md](../audio/audio.md)); on a runner with no sound hardware there is none, the server logs that audio is unavailable, and every `audio` test would skip. The job starts PulseAudio and loads `module-null-sink` before the tests, so the daemon finds a sink and its monitor as the source: the `audio` capability probes present, `say` and `play_sound` stream to a sink nobody hears, the mic tap reads silence, and the software AEC runs. The audio tests assert on the pipeline — a sample arriving, a `say` completing or being interrupted — never on what is heard, so silence is a valid signal.
 - **The camera: offscreen on Linux.** The headless sim renders its eye camera through EGL ([../daemon/sim_daemon.md](../daemon/sim_daemon.md) "The headless camera"), so `camera` probes present and the perception, head-tracking and custom-detector tests run on the runner against the test scene's portraits. Until that launcher behaviour is built, the camera probes absent on the runner and those tests skip; the expected-skips table below changes with it.
-- **Downloads, cached.** The runner has the network: the emotions library the daemon preloads and the emotion tests fetch, the YuNet model the detector loads, and the pocket-tts weights (about 800 MB) all come from the Hugging Face Hub into `~/.cache/huggingface`, which the workflow caches keyed on the lock file (a prefix restore key keeps an older cache useful; the cache stays around a gigabyte, well inside GitHub's allowance). uv's own cache is kept by the uv setup action, keyed on `uv.lock`.
+- **Downloads, cached.** The runner has the network: the emotions library the daemon preloads and the emotion tests fetch, the YuNet model the detector loads, and the pocket-tts weights the real-TTS test loads all come from the Hugging Face Hub into `~/.cache/huggingface`, which the workflow caches keyed on the lock file (a prefix restore key keeps an older cache useful; the whole cache measures about 160 MB). uv's cache is kept by the uv setup action, keyed on `uv.lock` and pruned to what the sync had to build — the PyGObject sdist — while prebuilt wheels re-download: the 187 MB CPU torch takes the runner three seconds.
 - **Expected skips.** A skip is not a pass ([AGENTS.md](../../AGENTS.md) "Read the skips"); on the runner the following skip by design, and any other skip in a job log is an environment regression to investigate:
 
 | Skips on the runner | Why |
 |---|---|
 | `gravity_compensation` tests | hardware on the Placo engine; a sim never has it |
-| `face_markers` tests | the markers are drawn on the viewer window; no viewer in CI |
+| `face_markers` tests | the markers are drawn on the viewer window; no viewer in CI (headless they skip on `camera` first) |
+| the motor-mode test of `test_motors.py` | a simulation ignores motor modes, so the test skips on every sim target |
 | the ElevenLabs and Gradium `say` tests | no key in CI (`require_env`) |
 | `camera` and `faces` tests, until the offscreen camera is built | no frame from a headless sim before then |
 
