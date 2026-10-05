@@ -1,8 +1,8 @@
 # Continuous integration — specs/testing/ci.md.
 #
-# Both test tiers on GitHub's hosted Linux runners: `check` (lint, types, the fast tier)
-# and `e2e-sim` (the live tier against the headless sim the harness spawns) on every pull
-# request and push to main. Every dependency group installs — on Linux torch comes from
+# Both test tiers on GitHub's hosted Linux runners, on every pull request and push to
+# main: `check` (lint, format, types) first, then `fast-tier` and `e2e-sim` (the live tier
+# against the headless sim the harness spawns) side by side. Every dependency group installs — on Linux torch comes from
 # PyTorch's CPU index, a few seconds — so the real pocket-TTS test runs here too. No
 # secret is needed: tests whose needs the runner cannot meet skip, and the spec's
 # expected-skips table says which.
@@ -36,9 +36,9 @@ env:
 
 jobs:
   check:
-    name: lint, types, fast tier
+    name: lint, format, types
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - name: System packages
@@ -57,6 +57,24 @@ jobs:
         run: uv run ruff format --check src tests tests-e2e examples
       - name: Type check
         run: uv run pyright
+
+  fast-tier:
+    name: fast tier
+    needs: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends $APT_BASE
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Sync (every group, against the lock)
+        run: uv sync --locked
       - name: Fast tier
         run: uv run pytest
 

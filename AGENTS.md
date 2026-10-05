@@ -10,7 +10,7 @@ Where things live. This is a coarse, module-level map — for the full file inve
 
 | Path | What's there |
 |---|---|
-| `.github/workflows/` | The CI workflow — both test tiers on GitHub's hosted Linux runners on every pull request and push to `main`, spec: [specs/testing/ci.md](specs/testing/ci.md) |
+| `.github/workflows/` | The CI workflow — the static gate, then both test tiers side by side, on GitHub's hosted Linux runners on every pull request and push to `main`; spec: [specs/testing/ci.md](specs/testing/ci.md) |
 | `README.md` | Packaging front page — short intro + doc pointers |
 | `CONTRIBUTING.md` | How the project is run today — solo development, feedback through issues, no external pull requests yet |
 | `config.example.json` | Every `ReachyMiniConfig` field with placeholder values — kept in sync with [specs/core/config.md](specs/core/config.md) |

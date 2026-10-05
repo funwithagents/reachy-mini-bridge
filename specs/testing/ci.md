@@ -28,8 +28,11 @@ One file, `.github/workflows/ci.yml`. It triggers on `pull_request`, on `push` t
 
 | Job | When | What |
 |---|---|---|
-| `check` | every pull request and push to `main` | `uv sync --locked`, then `ruff check .`, `ruff format --check src tests tests-e2e examples`, `pyright`, `pytest` — the fast tier, with its parallel default |
-| `e2e-sim` | the same events, after `check` passes | the same environment plus PulseAudio and Mesa; a null sink loaded; `pytest tests-e2e -rs` against the headless sim the harness spawns — the real pocket-TTS test included |
+| `check` | every pull request and push to `main` | `uv sync --locked`, then `ruff check .`, `ruff format --check src tests tests-e2e examples`, `pyright` — the static gate, a minute and a half |
+| `fast-tier` | the same events, after `check` passes | the same environment; `pytest` — the fast tier, with its parallel default |
+| `e2e-sim` | the same events, after `check` passes, side by side with `fast-tier` | the same environment plus PulseAudio and Mesa; a null sink loaded; `pytest tests-e2e -rs` against the headless sim the harness spawns — the real pocket-TTS test included |
+
+The static gate goes first because it is the cheap verdict and the one a sim should not be spawned without; the two tiers then run in parallel, each on its own runner, since neither depends on the other — the run's wall time is the static gate plus the slower tier, not the sum. Each job installs its own environment (the system packages and the sync, about a minute with warm caches); that repetition is the price of the parallelism and of jobs that read on their own.
 
 - **`--locked`.** The sync fails when `uv.lock` does not match `pyproject.toml`, so a dependency edit lands with its relock or not at all.
 - **Every group installs**, the `tts` providers included ([../project.md](../project.md) "Dependency groups"): on Linux the group resolves torch from the PyTorch CPU index — a 190 MB wheel the runner fetches in seconds — never the CUDA libraries, so there is nothing to leave out, and the real pocket-TTS test runs on every pull request. The group stays separate for a consumer who wants an environment without it, and the provider tests then skip on the missing module ([testing.md](testing.md) "Live tier: skip without credentials").
@@ -57,11 +60,11 @@ One file, `.github/workflows/ci.yml`. It triggers on `pull_request`, on `push` t
 ### Secrets and protection
 
 - **No secret is required.** Every job is green with none: the cloud TTS tests skip on the missing key, and the pocket test needs none. The ElevenLabs and Gradium keys may later be added as repository secrets; a fork's pull request never receives a secret, so it runs the same jobs with the two cloud tests skipped.
-- **The two status checks to require on `main`** are `check` and `e2e-sim`. Requiring them is a repository setting on GitHub, outside the repo.
+- **The three status checks to require on `main`** are `check`, `fast-tier` and `e2e-sim`. Requiring them is a repository setting on GitHub, outside the repo.
 
 ### Time budget
 
-With warm caches, `check` is in the order of four minutes — the system packages and the fast tier dominate: the tier is sleep-bound and the runner's four cores spread it less than a laptop's eight — and `e2e-sim` about three (the daemon's spawn, the breaths and blends the live tests wait through, the pocket model's load). Each job carries a `timeout-minutes` well under GitHub's default, so a hung daemon fails the job in minutes rather than hours.
+With warm caches, `check` is in the order of a minute and a half (the system packages, the sync, pyright), `fast-tier` about three (the tier is sleep-bound, and the runner's four workers spread it less than a laptop's eight) and `e2e-sim` about four (the daemon's spawn, the breaths and blends the live tests wait through, the pocket model's load) — the two in parallel, so a run is about five and a half minutes end to end. Each job carries a `timeout-minutes` well under GitHub's default, so a hung daemon fails the job in minutes rather than hours.
 
 ## Relationship to the other specs
 
