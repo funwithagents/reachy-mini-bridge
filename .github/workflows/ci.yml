@@ -117,45 +117,11 @@ jobs:
       # (pinned to a commit and a sha256 inside the action) and puts it on GST_PLUGIN_PATH.
       - name: Rust webrtc plugin (upstream's action, pinned)
         uses: pollen-robotics/reachy_mini/.github/actions/webrtc-plugin@c14dc5fd43100582d349466aec4bdc4960490522
-      - name: Offscreen GL probe (temporary diagnostic)
-        run: |
-          for gl in egl osmesa; do
-            echo "== MUJOCO_GL=$gl"
-            MUJOCO_GL=$gl uv run --no-sync python - <<'PY' || true
-          import os, mujoco
-          m = mujoco.MjModel.from_xml_string('<mujoco><worldbody><light pos="0 0 1"/><camera name="c" pos="0 -1 0.5" xyaxes="1 0 0 0 1 2"/><geom size="0.1"/></worldbody></mujoco>')
-          r = mujoco.Renderer(m, 240, 320); d = mujoco.MjData(m); mujoco.mj_forward(m, d); r.update_scene(d, "c"); im = r.render()
-          print(os.environ["MUJOCO_GL"], "ok", im.shape, float(im.mean()))
-          PY
-          done
-          echo "== render cost: the robot's geoms hidden by alpha vs by geom group (EGL)"
-          MUJOCO_GL=egl uv run --no-sync python - <<'PY' 2>&1 | grep -v "EGLError\|Exception ignored\|File \"\|^Traceback" || true
-          import os, tempfile, time, numpy as np, mujoco
-          from reachy_mini_bridge.testing.sim_scene import write_test_scene, DEFAULT_FACE_POS
-          m = mujoco.MjModel.from_xml_path(str(write_test_scene(tempfile.mkdtemp()))); data = mujoco.MjData(m)
-          body = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "face_1"); data.mocap_pos[m.body_mocapid[body]] = DEFAULT_FACE_POS
-          for g in range(m.ngeom):
-              if m.geom_bodyid[g] == body: m.geom_rgba[g, 3] = 1.0
-          mujoco.mj_forward(m, data); cam = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_CAMERA, "eye_camera")
-          robot_root = m.body_rootid[m.cam_bodyid[cam]]
-          robot_geoms = [g for g in range(m.ngeom) if m.body_rootid[m.geom_bodyid[g]] == robot_root]
-          print("robot root body", robot_root, mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_BODY, int(robot_root)), "robot geoms", len(robot_geoms), "of", m.ngeom)
-          m.vis.quality.offsamples = 0
-          def bench(label, opt=None):
-              r = mujoco.Renderer(m, 720, 1280)
-              r.scene.flags[mujoco.mjtRndFlag.mjRND_SHADOW] = 0
-              r.update_scene(data, cam, opt); r.render()
-              t = time.perf_counter()
-              for _ in range(20): r.update_scene(data, cam, opt); im = r.render()
-              print(f"{label}: {(time.perf_counter()-t)/20*1000:.1f} ms/frame, scene geoms {r.scene.ngeom}")
-          bench("robot drawn")
-          saved = m.geom_rgba[robot_geoms, 3].copy()
-          m.geom_rgba[robot_geoms, 3] = 0.0
-          bench("robot geoms alpha 0")
-          m.geom_rgba[robot_geoms, 3] = saved
-          opt = mujoco.MjvOption()
-          for i in range(6): opt.geomgroup[i] = 1 if i < 2 else 0
-          bench("geom groups 0 and 1 only", opt)
-          PY
       - name: Live tier
+        # The cloud TTS keys, when the repository holds them as secrets: the two cloud
+        # `say` tests run; absent (or on a fork's pull request, which never receives a
+        # secret) the variables are empty and the tests skip (specs/testing/ci.md).
+        env:
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          GRADIUM_API_KEY: ${{ secrets.GRADIUM_API_KEY }}
         run: uv run pytest tests-e2e -rs

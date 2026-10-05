@@ -649,6 +649,120 @@ def test_a_render_context_that_cannot_be_created_is_logged_and_the_run_goes_on(
     assert "without a camera" in errors[0]
 
 
+_TREE_MODEL = """
+<mujoco>
+  <worldbody>
+    <geom name="floor" type="plane" size="1 1 0.1"/>
+    <body name="base">
+      <geom name="base_box" type="box" size="0.1 0.1 0.1"/>
+      <body name="head" pos="0 0 0.3">
+        <geom name="head_box" type="box" size="0.05 0.05 0.05"/>
+        <camera name="eye_camera" fovy="80"/>
+      </body>
+    </body>
+    <body name="face" mocap="true" pos="0.5 0 0.3">
+      <geom name="portrait" type="box" size="0.1 0.01 0.15"/>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+
+def test_the_camera_tree_is_the_robots_body_and_nothing_else(mujoco: Any) -> None:
+    """The geoms hidden by the headless render are exactly the eye camera's kinematic
+    tree: the floor (world) and a mocap portrait (its own tree) stay."""
+    model = mujoco.MjModel.from_xml_string(_TREE_MODEL)
+    name = lambda g: mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, g)
+    assert sorted(
+        name(g) for g in sim_daemon.camera_tree_geoms(model, "eye_camera")
+    ) == [
+        "base_box",
+        "head_box",
+    ]
+    with pytest.raises(ValueError, match="no camera 'nope'"):
+        sim_daemon.camera_tree_geoms(model, "nope")
+
+
+def test_the_model_is_trimmed_for_the_detector_render(mujoco: Any) -> None:
+    """No multisampling, the robot's geoms at alpha 0 — which MuJoCo's scene builder
+    skips — and the world and the portrait untouched."""
+    model = mujoco.MjModel.from_xml_string(_TREE_MODEL)
+    assert model.vis.quality.offsamples > 0
+    hidden = sim_daemon.trim_model_for_detector_render(model, "eye_camera")
+    assert model.vis.quality.offsamples == 0
+    alpha = {
+        mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, g): float(
+            model.geom_rgba[g, 3]
+        )
+        for g in range(model.ngeom)
+    }
+    assert alpha == {"floor": 1.0, "base_box": 0.0, "head_box": 0.0, "portrait": 1.0}
+    assert len(hidden) == 2
+    # The scene built from it holds the floor and the portrait only.
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    scene = mujoco.MjvScene(model, maxgeom=16)
+    camera = mujoco.MjvCamera()
+    camera.type = mujoco.mjtCamera.mjCAMERA_FIXED
+    camera.fixedcamid = mujoco.mj_name2id(
+        model, mujoco.mjtObj.mjOBJ_CAMERA, "eye_camera"
+    )
+    mujoco.mjv_updateScene(
+        model, data, mujoco.MjvOption(), None, camera, mujoco.mjtCatBit.mjCAT_ALL, scene
+    )
+    assert scene.ngeom == 2
+
+
+def test_the_render_passes_a_detector_does_without_are_off(mujoco: Any) -> None:
+    scene = mujoco.MjvScene(mujoco.MjModel.from_xml_string(_TREE_MODEL), maxgeom=4)
+    flags = mujoco.mjtRndFlag
+    for f in (flags.mjRND_SHADOW, flags.mjRND_REFLECTION, flags.mjRND_SKYBOX):
+        scene.flags[f] = 1
+    sim_daemon.trim_scene_for_detector_render(scene)
+    for f in (
+        flags.mjRND_SHADOW,
+        flags.mjRND_REFLECTION,
+        flags.mjRND_SKYBOX,
+        flags.mjRND_HAZE,
+        flags.mjRND_FOG,
+    ):
+        assert scene.flags[f] == 0
+    # The passes a detector does read stay as they were.
+    assert scene.flags[flags.mjRND_SEGMENT] == 0
+
+
+class _TrimmedRendererStubBackend(_StubBackend):
+    """A backend with the tree model, whose upstream renderer is a stand-in exposing a
+    scene with flags: the trim must happen on the model before, and on the scene after."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        mujoco = pytest.importorskip("mujoco")
+        self.model = mujoco.MjModel.from_xml_string(_TREE_MODEL)
+        self.offsamples_at_build: int | None = None
+        self.scene = mujoco.MjvScene(self.model, maxgeom=4)
+        self.scene.flags[mujoco.mjtRndFlag.mjRND_SHADOW] = 1
+
+    def _get_renderer(self, camera_name: str) -> Any:
+        self.offsamples_at_build = int(self.model.vis.quality.offsamples)
+        return SimpleNamespace(scene=self.scene, camera=camera_name)
+
+
+def test_the_headless_render_builds_a_trimmed_renderer() -> None:
+    mujoco = pytest.importorskip("mujoco")
+    backend = bridge_backend(_TrimmedRendererStubBackend, headless_render="egl")()
+    renderer = backend._get_renderer("eye_camera")
+    assert renderer.camera == "eye_camera"
+    assert backend.offsamples_at_build == 0  # trimmed before the build
+    assert renderer.scene.flags[mujoco.mjtRndFlag.mjRND_SHADOW] == 0
+    assert float(backend.model.geom_rgba[1, 3]) == 0.0  # base_box, the robot's
+    # Without a headless render the renderer is upstream's, untouched.
+    plain = bridge_backend(_TrimmedRendererStubBackend)()
+    renderer = plain._get_renderer("eye_camera")
+    assert plain.offsamples_at_build == 4
+    assert renderer.scene.flags[mujoco.mjtRndFlag.mjRND_SHADOW] == 1
+
+
 def _headless_render_seen(
     argv: list[str], monkeypatch: pytest.MonkeyPatch, system: str
 ) -> str | None:

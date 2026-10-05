@@ -66,9 +66,12 @@ __all__ = [
     "SimDaemonExtension",
     "WebcamRelay",
     "bridge_backend",
+    "camera_tree_geoms",
     "offscreen_gl_backend",
     "relay_pipeline_candidates",
     "run_sim_daemon",
+    "trim_model_for_detector_render",
+    "trim_scene_for_detector_render",
     "webcam_source",
 ]
 
@@ -563,6 +566,58 @@ def offscreen_gl_backend(
     return named or _OFFSCREEN_GL_DEFAULT
 
 
+# The render passes a software rasterizer pays for and no detector reads
+# (``mujoco.mjtRndFlag`` names), off in the headless render.
+_DETECTOR_RENDER_FLAGS_OFF = (
+    "mjRND_SHADOW",
+    "mjRND_REFLECTION",
+    "mjRND_SKYBOX",
+    "mjRND_HAZE",
+    "mjRND_FOG",
+)
+
+
+def camera_tree_geoms(model: Any, camera_name: str) -> list[int]:
+    """The geoms of the kinematic tree the camera ``camera_name`` belongs to — the
+    robot's own body, for the eye camera — by id. The world body's geoms (the floor) and
+    every other tree's (a mocap portrait, a scene's props) are not among them."""
+    import mujoco
+
+    camera = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, camera_name)
+    if camera < 0:
+        raise ValueError(f"no camera {camera_name!r} in the model")
+    root = int(model.body_rootid[model.cam_bodyid[camera]])
+    if root == 0:
+        return []  # a camera on the world body belongs to no tree
+    return [
+        g
+        for g in range(model.ngeom)
+        if int(model.body_rootid[model.geom_bodyid[g]]) == root
+    ]
+
+
+def trim_model_for_detector_render(model: Any, camera_name: str) -> list[int]:
+    """Prepare ``model`` for the headless render (specs/daemon/sim_daemon.md "The headless
+    camera", "Drawn for the detector"): no multisampling of the offscreen buffer, and the
+    camera's own kinematic tree — the robot's body — invisible (alpha 0, which MuJoCo's
+    scene builder skips before any vertex is transformed). Returns the geoms hidden. Call
+    before the renderer is built: the buffer's samples are read at its creation."""
+    hidden = camera_tree_geoms(model, camera_name)
+    model.vis.quality.offsamples = 0
+    for g in hidden:
+        model.geom_rgba[g, 3] = 0.0
+    return hidden
+
+
+def trim_scene_for_detector_render(scene: Any) -> None:
+    """Turn off, on a renderer's ``scene``, the passes the headless render does without:
+    shadows, reflections, the skybox, haze and fog."""
+    import mujoco
+
+    for name in _DETECTOR_RENDER_FLAGS_OFF:
+        scene.flags[getattr(mujoco.mjtRndFlag, name)] = 0
+
+
 # --- the backend subclass (camera source wiring, the overlay, the hooks) -------------
 
 
@@ -627,7 +682,9 @@ def bridge_backend(
     - With ``headless_render`` (the GL backend's name — the launcher passes it for a
       headless run with the ``sim`` camera where ``offscreen_gl_backend`` found one):
       ``run()`` starts upstream's eye-camera render thread itself, which upstream starts
-      only under the viewer, and joins it after the run; a renderer that cannot build its
+      only under the viewer, and joins it after the run; the renderer that thread builds
+      is trimmed for a detector (no shadows, reflections, skybox, haze, fog or
+      multisampling; the robot's own body left out); a renderer that cannot build its
       context logs one error and the daemon runs on without a camera.
     - With ``displays.camera_overlay``: a ``ViewerOverlay`` (from ``overlay_factory``)
       is fed by the relay's overlay branch (webcam) or a tap on the eye-camera renderer
@@ -669,9 +726,22 @@ def bridge_backend(
             def rendering_loop(self, *args: Any, **kwargs: Any) -> None:
                 return None  # the webcam relay feeds the camera stream
 
-        if displays.camera_overlay and not webcam:
+        if not webcam and (displays.camera_overlay or headless_render is not None):
 
             def _get_renderer(self, camera_name: str) -> Any:
+                if headless_render is not None:
+                    hidden = trim_model_for_detector_render(self.model, camera_name)
+                    renderer = super()._get_renderer(camera_name)
+                    trim_scene_for_detector_render(renderer.scene)
+                    _logger.info(
+                        "headless camera: rendering offscreen on %s=%s for the detector "
+                        "(no shadows or multisampling, %d geoms of the robot's own body "
+                        "left out)",
+                        _MUJOCO_GL,
+                        headless_render,
+                        len(hidden),
+                    )
+                    return renderer
                 renderer = super()._get_renderer(camera_name)
                 overlay = self._viewer_overlay
                 if overlay is None:
