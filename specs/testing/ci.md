@@ -24,17 +24,15 @@ Both test tiers run on GitHub's hosted runners for every pull request and every 
 
 ### The workflow
 
-One file, `.github/workflows/ci.yml`. It triggers on `pull_request`, on `push` to `main`, on a nightly `schedule`, and on `workflow_dispatch`. Concurrency is one run per ref: a newer push cancels the older run still in flight.
+One file, `.github/workflows/ci.yml`. It triggers on `pull_request`, on `push` to `main`, and on `workflow_dispatch`. Concurrency is one run per ref: a newer push cancels the older run still in flight.
 
 | Job | When | What |
 |---|---|---|
-| `check` | every pull request and push to `main` | `uv sync --locked --no-group tts`, then `ruff check .`, `ruff format --check src tests tests-e2e examples`, `pyright`, `pytest` — the fast tier, with its parallel default |
-| `e2e-sim` | the same events, after `check` passes | the same environment plus PulseAudio and Mesa; a null sink loaded; `pytest tests-e2e -rs` against the headless sim the harness spawns |
-| `e2e-tts` | nightly on `main`, and on dispatch | `uv sync --locked` — the `tts` group included, so CPU torch and every provider install — then `pytest tests-e2e -rs`; the real-TTS test runs here and nowhere else in CI |
+| `check` | every pull request and push to `main` | `uv sync --locked`, then `ruff check .`, `ruff format --check src tests tests-e2e examples`, `pyright`, `pytest` — the fast tier, with its parallel default |
+| `e2e-sim` | the same events, after `check` passes | the same environment plus PulseAudio and Mesa; a null sink loaded; `pytest tests-e2e -rs` against the headless sim the harness spawns — the real pocket-TTS test included |
 
 - **`--locked`.** The sync fails when `uv.lock` does not match `pyproject.toml`, so a dependency edit lands with its relock or not at all.
-- **The sync is the one install.** `UV_NO_SYNC=1` is set for every job: `uv run` would otherwise re-sync the environment to the default groups before each command, quietly pulling the `tts` group back in after the `--no-group tts` sync — torch downloaded, the provider tests running on a pull request. With it, each `uv run` runs in the environment the sync step built, and nothing else.
-- **`--no-group tts`.** The provider extras are a default dependency group locally and an explicit opt-out in CI ([../project.md](../project.md) "Dependency groups"): a pull-request job installs no torch and no model, and the TTS provider tests skip on the missing module ([testing.md](testing.md) "Live tier: skip without credentials"). On Linux the `tts` group resolves torch from the PyTorch CPU index (the same section), so the nightly job installs a CPU build and never the CUDA libraries.
+- **Every group installs**, the `tts` providers included ([../project.md](../project.md) "Dependency groups"): on Linux the group resolves torch from the PyTorch CPU index — a 190 MB wheel the runner fetches in seconds — never the CUDA libraries, so there is nothing to leave out, and the real pocket-TTS test runs on every pull request. The group stays separate for a consumer who wants an environment without it, and the provider tests then skip on the missing module ([testing.md](testing.md) "Live tier: skip without credentials").
 - **The format check covers the code directories only.** `ruff format .` rewrites the Python blocks inside Markdown files (plans, docs, the README), so the gate is `ruff format --check src tests tests-e2e examples`, the same scope a local format run uses.
 - **The fast tier runs as locally**: `uv run pytest` with the `-n auto --maxprocesses 8` default of `pyproject.toml`, which on the runner's four cores is four workers; the tier is sleep-bound ([testing.md](testing.md)), so it takes roughly twice its local time.
 - **The live tier runs as locally**, serial, one daemon per run: the harness spawns the headless sim with the test scene ([testing.md](testing.md) "E2E targets & capabilities"); nothing in the workflow starts a daemon by hand. `-rs` prints every skip into the job log.
@@ -43,7 +41,7 @@ One file, `.github/workflows/ci.yml`. It triggers on `pull_request`, on `push` t
 
 - **Audio: a PulseAudio null sink.** The daemon's media server takes the host's default source and sink when no robot sound card is present ([../audio/audio.md](../audio/audio.md)); on a runner with no sound hardware there is none, the server logs that audio is unavailable, and every `audio` test would skip. The job starts PulseAudio and loads `module-null-sink` before the tests, so the daemon finds a sink and its monitor as the source: the `audio` capability probes present, `say` and `play_sound` stream to a sink nobody hears, the mic tap reads silence, and the software AEC runs. The audio tests assert on the pipeline — a sample arriving, a `say` completing or being interrupted — never on what is heard, so silence is a valid signal.
 - **The camera: offscreen on Linux.** The headless sim renders its eye camera through EGL ([../daemon/sim_daemon.md](../daemon/sim_daemon.md) "The headless camera"), so `camera` probes present and the perception, head-tracking and custom-detector tests run on the runner against the test scene's portraits. Until that launcher behaviour is built, the camera probes absent on the runner and those tests skip; the expected-skips table below changes with it.
-- **Downloads, cached.** The runner has the network: the emotions library the daemon preloads and the emotion tests fetch, the YuNet model the detector loads, and — in the nightly job — the pocket-tts weights all come from the Hugging Face Hub into `~/.cache/huggingface`, which the workflow caches keyed on the lock file (a prefix restore key keeps an older cache useful). uv's own cache is kept by the uv setup action, keyed on `uv.lock`.
+- **Downloads, cached.** The runner has the network: the emotions library the daemon preloads and the emotion tests fetch, the YuNet model the detector loads, and the pocket-tts weights (about 800 MB) all come from the Hugging Face Hub into `~/.cache/huggingface`, which the workflow caches keyed on the lock file (a prefix restore key keeps an older cache useful; the cache stays around a gigabyte, well inside GitHub's allowance). uv's own cache is kept by the uv setup action, keyed on `uv.lock`.
 - **Expected skips.** A skip is not a pass ([AGENTS.md](../../AGENTS.md) "Read the skips"); on the runner the following skip by design, and any other skip in a job log is an environment regression to investigate:
 
 | Skips on the runner | Why |
@@ -51,25 +49,24 @@ One file, `.github/workflows/ci.yml`. It triggers on `pull_request`, on `push` t
 | `gravity_compensation` tests | hardware on the Placo engine; a sim never has it |
 | `face_markers` tests | the markers are drawn on the viewer window; no viewer in CI |
 | the ElevenLabs and Gradium `say` tests | no key in CI (`require_env`) |
-| the pocket `say` test, in `check`'s sibling `e2e-sim` | the `tts` group is not installed; runs in `e2e-tts` |
 | `camera` and `faces` tests, until the offscreen camera is built | no frame from a headless sim before then |
 
 - **Never in CI:** the MuJoCo viewer (no GUI session on a runner; the face-marker tests stay a local viewer run), a real robot (`REACHY_MINI_E2E_TARGET=real` is a local or on-robot command), and a daemon started outside the harness.
 
 ### Secrets and protection
 
-- **No secret is required.** Every job is green with none: the cloud TTS tests skip on the missing key, the pocket test on the missing extra. The ElevenLabs and Gradium keys may later be added as repository secrets exposed to the nightly job only; pull-request jobs never receive a secret, so a fork's pull request runs the same jobs with the same skips.
-- **The two status checks to require on `main`** are `check` and `e2e-sim`. Requiring them is a repository setting on GitHub, outside the repo; the nightly job is informational — its failure is read on the Actions page, not enforced on a merge.
+- **No secret is required.** Every job is green with none: the cloud TTS tests skip on the missing key, and the pocket test needs none. The ElevenLabs and Gradium keys may later be added as repository secrets; a fork's pull request never receives a secret, so it runs the same jobs with the two cloud tests skipped.
+- **The two status checks to require on `main`** are `check` and `e2e-sim`. Requiring them is a repository setting on GitHub, outside the repo.
 
 ### Time budget
 
-With warm caches, `check` is in the order of three to four minutes (the PyGObject build and the fast tier dominate), `e2e-sim` about the same (the daemon's spawn, the breaths and blends the live tests wait through), the nightly job longer by the torch install and the model's first load. Each job carries a `timeout-minutes` well under GitHub's default, so a hung daemon fails the job in minutes rather than hours.
+With warm caches, `check` is in the order of four minutes — the system packages and the fast tier dominate: the tier is sleep-bound and the runner's four cores spread it less than a laptop's eight — and `e2e-sim` about three (the daemon's spawn, the breaths and blends the live tests wait through, the pocket model's load). Each job carries a `timeout-minutes` well under GitHub's default, so a hung daemon fails the job in minutes rather than hours.
 
 ## Relationship to the other specs
 
 - **[testing.md](testing.md):** the two tiers, the headless target, the probed capabilities and the skip-without-credentials rule CI runs on. CI is the hosted run of that strategy, with no rule of its own about what a test does.
 - **[testing_support.md](testing_support.md):** the shipped harness the live jobs drive; `REACHY_MINI_E2E_*` stays at its defaults in CI (headless sim, port 8000, loopback).
-- **[../project.md](../project.md):** the `tts` dependency group CI opts out of, the demo group without pocket, the PyTorch CPU index for Linux, `.github/workflows/` in the repo shape.
+- **[../project.md](../project.md):** the dependency groups CI installs whole, the PyTorch CPU index for Linux that makes the `tts` group cheap there, `.github/workflows/` in the repo shape.
 - **[../daemon/sim_daemon.md](../daemon/sim_daemon.md):** the headless camera on Linux, which turns the runner's sim into a camera target; **[../daemon/daemon.md](../daemon/daemon.md):** the headless launch recipe the harness spawns.
 - **[AGENTS.md](../../AGENTS.md):** the verification gate CI automates, and the skip-reading discipline it inherits.
 

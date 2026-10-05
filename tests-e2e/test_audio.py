@@ -356,8 +356,9 @@ def test_say_with_real_tts_speaks_through_the_robot(
     the model loaded from the Hugging Face cache — no key, no network once cached), the
     push→pull queue-bridge sink, int16→float32, and the 24 kHz→16 kHz resample. Gated
     on `audio` and on the provider being installed: the `tts` dependency group carries
-    it, default in a local sync, left out in CI (specs/testing/ci.md), where this test
-    skips on the missing module rather than fail on tts-engine's ConfigError.
+    it, default in a local sync and installed in CI (specs/testing/ci.md); a sync
+    without it skips this test on the missing module rather than fail on tts-engine's
+    ConfigError.
     On the headfull-viewer sim you should hear the phrase; assert it completes.
     """
     pytest.importorskip(

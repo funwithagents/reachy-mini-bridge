@@ -389,7 +389,7 @@ The `live_bridge` fixture borrows a running daemon or spawns one for the whole r
 ## Development
 
 ```
-uv sync                  # every group: the tooling, the sim, the TTS providers (CI syncs --no-group tts)
+uv sync                  # every group: the tooling, the sim, the TTS providers
 uv run ruff check .
 uv run ruff format src tests tests-e2e examples
 uv run pyright
