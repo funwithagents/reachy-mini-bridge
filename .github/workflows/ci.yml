@@ -21,6 +21,10 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  # The sync step is the one install: `uv run` would otherwise re-sync the environment to
+  # the default groups before each command, pulling the `tts` group back in after a
+  # `--no-group tts` sync (specs/testing/ci.md "The workflow").
+  UV_NO_SYNC: "1"
   # Upstream reachy_mini on Linux: PyGObject is sdist-only in the locked range and builds
   # against these headers; GStreamer comes from the system (the introspection data, the
   # base/good/bad plugin sets — bad carries the webrtcdsp software AEC — the PulseAudio
@@ -38,15 +42,15 @@ env:
 jobs:
   check:
     name: lint, types, fast tier
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: System packages
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends $APT_BASE
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
@@ -64,22 +68,22 @@ jobs:
   e2e-sim:
     name: live tier, headless sim
     needs: check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: System packages
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends $APT_BASE $APT_LIVE
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
       - name: Sync (without the tts group)
         run: uv sync --locked --no-group tts
       - name: Hugging Face cache (emotions library, YuNet model)
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/huggingface
           key: hf-${{ runner.os }}-${{ hashFiles('uv.lock') }}
@@ -97,22 +101,22 @@ jobs:
   e2e-tts:
     name: live tier with the tts group (nightly)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: System packages
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends $APT_BASE $APT_LIVE
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
       - name: Sync (every group — CPU torch and the providers)
         run: uv sync --locked
       - name: Hugging Face cache (emotions library, YuNet model, pocket-tts weights)
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/huggingface
           key: hf-tts-${{ runner.os }}-${{ hashFiles('uv.lock') }}
