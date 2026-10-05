@@ -31,6 +31,7 @@ import them when they run.
 from __future__ import annotations
 
 import argparse
+import importlib
 import logging
 import math
 import os
@@ -581,7 +582,7 @@ def camera_tree_geoms(model: Any, camera_name: str) -> list[int]:
     """The geoms of the kinematic tree the camera ``camera_name`` belongs to — the
     robot's own body, for the eye camera — by id. The world body's geoms (the floor) and
     every other tree's (a mocap portrait, a scene's props) are not among them."""
-    import mujoco
+    mujoco: Any = importlib.import_module("mujoco")
 
     camera = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, camera_name)
     if camera < 0:
@@ -612,7 +613,7 @@ def trim_model_for_detector_render(model: Any, camera_name: str) -> list[int]:
 def trim_scene_for_detector_render(scene: Any) -> None:
     """Turn off, on a renderer's ``scene``, the passes the headless render does without:
     shadows, reflections, the skybox, haze and fog."""
-    import mujoco
+    mujoco: Any = importlib.import_module("mujoco")
 
     for name in _DETECTOR_RENDER_FLAGS_OFF:
         scene.flags[getattr(mujoco.mjtRndFlag, name)] = 0
