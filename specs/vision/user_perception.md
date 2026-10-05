@@ -8,7 +8,7 @@ tests:
   - tests/test_face_detection.py
   - tests/test_yunet.py
   - tests/test_bridge.py
-  - tests-e2e/test_bridge.py
+  - tests-e2e/test_perception.py
   - tests-e2e/test_custom_faces.py
 ---
 

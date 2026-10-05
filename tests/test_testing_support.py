@@ -10,13 +10,15 @@ e2e tier, not here.
 from __future__ import annotations
 
 import asyncio
+import math
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from reachy_mini_bridge import daemon, testing
@@ -36,6 +38,7 @@ from reachy_mini_bridge.testing import (
     LiveBridge,
     _daemon,
     fixtures,
+    gaze,
     require_env,
     requires_caps,
 )
@@ -110,14 +113,86 @@ def test_require_env_skips_when_empty(monkeypatch: pytest.MonkeyPatch):
 # --- plugin registers the fixtures (without spawning a daemon) ---
 
 
-def test_live_bridge_and_daemon_are_module_scoped_fixtures():
+def test_the_daemon_is_the_runs_and_the_bridge_session_the_modules():
     # Importing the plugin module registers the fixtures without touching a daemon.
-    # `@pytest.fixture` wraps each in a FixtureFunctionDefinition carrying its marker;
-    # assert both are fixtures *and* module-scoped (one daemon per test file, per spec).
-    for fixture in (fixtures.live_bridge, fixtures._live_daemon, fixtures.sim_scene):
+    # `@pytest.fixture` wraps each in a FixtureFunctionDefinition carrying its marker.
+    # One daemon per pytest run, one bridge session (and scene client) per test file
+    # (specs/testing/testing.md "Daemon lifecycle").
+    scopes = {
+        fixtures._live_daemon: "session",
+        fixtures.live_bridge: "module",
+        fixtures.sim_scene: "module",
+        fixtures.face_scene: "function",
+        fixtures.emotions_library: "function",
+    }
+    for fixture, scope in scopes.items():
         marker = getattr(fixture, "_fixture_function_marker", None)
         assert marker is not None, f"{fixture!r} is not a pytest fixture"
-        assert marker.scope == "module"
+        assert marker.scope == scope
+
+
+# --- the convergence kit's pure parts (specs/testing/testing_support.md "Public surface") ---
+
+
+def _track(yaws: Sequence[float], start: float, expected: float) -> gaze.Track:
+    track = gaze.Track("synthetic", start, expected, None)
+    track.samples = [(y, 0.0) for y in yaws]
+    track.times = [0.1 * i for i in range(len(yaws))]
+    return track
+
+
+def test_expected_yaw_is_the_heading_of_the_face_from_the_pivot():
+    assert gaze.expected_yaw_deg(0.15) == pytest.approx(18.43, abs=0.01)
+    assert gaze.expected_yaw_deg(-0.15) == pytest.approx(-18.43, abs=0.01)
+    assert gaze.expected_yaw_deg(0.15, distance=0.35) == pytest.approx(23.2, abs=0.1)
+    assert gaze.face_at(0.15) == (
+        gaze.DEFAULT_FACE_POS[0],
+        0.15,
+        gaze.DEFAULT_FACE_POS[2],
+    )
+
+
+def test_yaw_pitch_read_back_a_rotated_pose():
+    yaw, pitch = math.radians(20.0), math.radians(-10.0)
+    rz = np.array(
+        [
+            [math.cos(yaw), -math.sin(yaw), 0],
+            [math.sin(yaw), math.cos(yaw), 0],
+            [0, 0, 1],
+        ]
+    )
+    ry = np.array(
+        [
+            [math.cos(pitch), 0, math.sin(pitch)],
+            [0, 1, 0],
+            [-math.sin(pitch), 0, math.cos(pitch)],
+        ]
+    )
+    pose = np.eye(4)
+    pose[:3, :3] = rz @ ry
+    got_yaw, got_pitch = gaze.yaw_pitch_deg(pose)
+    assert got_yaw == pytest.approx(20.0, abs=1e-6)
+    assert got_pitch == pytest.approx(-10.0, abs=1e-6)
+    assert gaze.angle_from_neutral_deg(pose) > 20.0
+    assert gaze.angle_from_neutral_deg(np.eye(4)) == pytest.approx(0.0)
+
+
+def test_a_track_measures_overshoot_and_the_swing_back():
+    # Turning from 0 to 18: past the face by 4 deg once, then creeping onto it.
+    onto = _track([0, 6, 12, 18, 22, 21, 20, 19, 18, 18], start=0.0, expected=18.0)
+    assert onto.overshoot_deg == pytest.approx(4.0)
+    assert onto.swing_back_deg == pytest.approx(0.0)
+    # Past the face by 4, then back 3 short of it: an oscillation.
+    swung = _track([0, 6, 12, 18, 22, 18, 15, 16, 17, 18], start=0.0, expected=18.0)
+    assert swung.overshoot_deg == pytest.approx(4.0)
+    assert swung.swing_back_deg == pytest.approx(3.0)
+    # The settled yaw is the mean over the last SETTLE_WINDOW_S only.
+    settled = _track([0] * 30 + [18] * 21, start=0.0, expected=18.0)  # 0.1 s apart
+    assert settled.yaw == pytest.approx(18.0)
+    assert settled.settle_s == pytest.approx(5.0)
+    # A face that did not move sideways has no overshoot to measure.
+    still = _track([1, -1, 2, -2], start=0.0, expected=0.0)
+    assert still.overshoot_deg == 0.0 and still.swing_back_deg == 0.0
 
 
 # --- target / backend / address resolution (the consumer-facing env knobs) ---
@@ -414,6 +489,29 @@ def test_audio_probe_absent_when_no_sample_arrives(monkeypatch: pytest.MonkeyPat
     media = _SharedPipelineMedia(yields_samples=False)
     assert fixtures._probe_audio(media) is False
     assert media.running and media.device == "robot"
+
+
+def test_capabilities_are_probed_once_per_daemon_and_reused(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The probes run on the first session over a daemon; every later session on the same
+    address gets the same set without probing again (they are the daemon's, not a
+    session's); another address is probed on its own."""
+    monkeypatch.setattr(fixtures, "_PROBED", {})
+    probed: list[tuple[str, int]] = []
+
+    def probe(robot: object, address: tuple[str, int] | None = None) -> frozenset[str]:
+        assert address is not None
+        probed.append(address)
+        return frozenset({"motion", f"port-{address[1]}"})
+
+    monkeypatch.setattr(fixtures, "_probe_capabilities", probe)
+    first = fixtures.probed_capabilities(object(), ("127.0.0.1", 8000))  # pyright: ignore[reportArgumentType]
+    again = fixtures.probed_capabilities(object(), ("127.0.0.1", 8000))  # pyright: ignore[reportArgumentType]
+    other = fixtures.probed_capabilities(object(), ("127.0.0.1", 8010))  # pyright: ignore[reportArgumentType]
+    assert first == again == {"motion", "port-8000"}
+    assert other == {"motion", "port-8010"}
+    assert probed == [("127.0.0.1", 8000), ("127.0.0.1", 8010)]
 
 
 # --- the harness loop (specs/testing/testing_support.md "Public surface") -----------------

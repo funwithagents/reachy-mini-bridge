@@ -7,7 +7,8 @@ tests:
   - tests/test_head_tracking.py
   - tests/test_motion.py
   - tests/test_bridge.py
-  - tests-e2e/test_bridge.py
+  - tests-e2e/test_head_tracking.py
+  - tests-e2e/test_custom_faces.py
 ---
 
 # Head tracking (`head_tracking.py`)

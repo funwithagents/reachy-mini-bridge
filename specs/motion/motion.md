@@ -6,7 +6,8 @@ code:
 tests:
   - tests/test_bridge.py
   - tests/test_motion.py
-  - tests-e2e/test_bridge.py
+  - tests-e2e/test_motion.py
+  - tests-e2e/test_head_tracking.py
 ---
 
 # Motion loop, presence & breathing (`motion.py`)

@@ -129,8 +129,9 @@ choice, by `track_id`, on `bridge.head_tracking`. The fields are in
 
 The live test [tests-e2e/test_custom_faces.py](../tests-e2e/test_custom_faces.py) registers
 the shipped `YuNetDetector` through this path on the viewer sim's camera and checks the
-head converges on the test scene's portrait — the registration and the runner under test,
-not the model:
+head converges on the test scene's portrait with the same convergence kit the config-named
+detector is tested with (`reachy_mini_bridge.testing.gaze`) — the registration and the
+runner under test, not the model:
 
 ```
 REACHY_MINI_E2E_SIM_VIEWER=1 uv run pytest tests-e2e -rs -k custom

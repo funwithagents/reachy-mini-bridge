@@ -31,7 +31,7 @@ uv run python -m reachy_mini_bridge.sim_daemon --headless --preload-datasets
 reachy-mini-daemon --sim --headless --preload-datasets
 ```
 
-- Serves `http://127.0.0.1:8000` in ~1s. Add `--no-media` for a pure **motion** daemon (no camera/audio) — the lightest option for motion-only work; the e2e harness spawns media-on so it can probe audio.
+- Serves `http://127.0.0.1:8000` in ~1s (`--fastapi-port` moves it; a daemon the bridge spawns is bound to the config's `robot.host:port` the same way, so two sims on one machine take two ports). Add `--no-media` for a pure **motion** daemon (no camera/audio) — the lightest option for motion-only work; the e2e harness spawns media-on so it can probe audio.
 - **Media on** (omit `--no-media`) brings up **audio**: the daemon falls back to the host's default mic/speaker and enables **software AEC** (`No hardware AEC; enabled software echo cancellation`). The macOS `libgstpython.dylib` GStreamer warning is harmless.
 - **The rendered camera does not work here**: upstream starts the eye-camera render only under the viewer (`get_frame()` returns `None`). Use the viewer mode for it — or a webcam (below), which works headless too.
 

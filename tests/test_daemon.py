@@ -34,6 +34,8 @@ from reachy_mini_bridge.errors import DaemonError
 
 _AUTO = DaemonConfig(spawn="auto")
 _REAL_LAUNCHER = [sys.executable, "-m", "reachy_mini_bridge.real_daemon"]
+# Every recipe ends with the address the daemon binds to (specs/daemon/daemon.md).
+_ADDRESS = ["--fastapi-host", "127.0.0.1", "--fastapi-port", "8000"]
 
 
 class _FakeProc:
@@ -108,11 +110,13 @@ def test_launch_command_headless_and_viewer(monkeypatch: pytest.MonkeyPatch) -> 
         *launcher,
         "--headless",
         "--preload-datasets",
+        *_ADDRESS,
     ]
     assert daemon.launch_command(DaemonConfig(preload_datasets=False)) == [
         *launcher,
         "--headless",
         "--no-preload-datasets",
+        *_ADDRESS,
     ]
     assert daemon.launch_command(DaemonConfig(scene="minimal")) == [
         *launcher,
@@ -120,6 +124,7 @@ def test_launch_command_headless_and_viewer(monkeypatch: pytest.MonkeyPatch) -> 
         "minimal",
         "--headless",
         "--preload-datasets",
+        *_ADDRESS,
     ]
     assert daemon.launch_command(DaemonConfig(headless=False, scene="minimal")) == [
         "/bin/mjpython",
@@ -128,6 +133,7 @@ def test_launch_command_headless_and_viewer(monkeypatch: pytest.MonkeyPatch) -> 
         "--scene",
         "minimal",
         "--preload-datasets",
+        *_ADDRESS,
     ]
 
 
@@ -147,9 +153,10 @@ def test_launch_command_passes_the_webcam_camera_source(
         "webcam",
         "--webcam-hfov",
         "70",
+        *_ADDRESS,
     ]
     chosen = SimCameraSettings(source="webcam", device=1, hfov_deg=62.5)
-    assert daemon.launch_command(DaemonConfig(camera=chosen))[-7:] == [
+    assert daemon.launch_command(DaemonConfig(camera=chosen))[-11:-4] == [
         "--preload-datasets",
         "--camera",
         "webcam",
@@ -159,7 +166,7 @@ def test_launch_command_passes_the_webcam_camera_source(
         "62.5",
     ]
     scene = str(tmp_path / "scene.xml")
-    assert daemon.launch_command(DaemonConfig(scene=scene, camera=webcam))[-5:] == [
+    assert daemon.launch_command(DaemonConfig(scene=scene, camera=webcam))[-9:-4] == [
         "--preload-datasets",
         "--camera",
         "webcam",
@@ -187,11 +194,12 @@ def test_launch_command_turns_on_the_viewer_displays(
         "--preload-datasets",
         "--sim-display",
         "camera_overlay",
+        *_ADDRESS,
     ]
     webcam = SimCameraSettings(source="webcam")
     assert daemon.launch_command(
         DaemonConfig(headless=False, camera=webcam, sim_displays=overlay)
-    )[-6:] == [
+    )[-10:-4] == [
         "--camera",
         "webcam",
         "--webcam-hfov",
@@ -202,12 +210,12 @@ def test_launch_command_turns_on_the_viewer_displays(
     scene = str(tmp_path / "scene.xml")
     assert daemon.launch_command(
         DaemonConfig(headless=False, scene=scene, sim_displays=overlay)
-    )[-3:] == ["--preload-datasets", "--sim-display", "camera_overlay"]
+    )[-7:-4] == ["--preload-datasets", "--sim-display", "camera_overlay"]
     assert "--sim-display" not in daemon.launch_command(DaemonConfig(headless=False))
     # Every display that is on, in SIM_DISPLAYS order.
     views = SimDisplaySettings(face_markers=True, robot_gaze=True)
     assert daemon.launch_command(DaemonConfig(headless=False, sim_displays=views))[
-        -4:
+        -8:-4
     ] == ["--sim-display", "robot_gaze", "--sim-display", "face_markers"]
 
 
@@ -228,6 +236,7 @@ def test_launch_command_runs_a_scene_file_through_the_bridge_launcher(
         str(scene),
         "--headless",
         "--preload-datasets",
+        *_ADDRESS,
     ]
     assert daemon.launch_command(
         DaemonConfig(headless=False, scene=str(scene), preload_datasets=False)
@@ -238,6 +247,7 @@ def test_launch_command_runs_a_scene_file_through_the_bridge_launcher(
         "--scene-path",
         str(scene),
         "--no-preload-datasets",
+        *_ADDRESS,
     ]
     # a real daemon ignores the sim knobs, scene file and camera included
     monkeypatch.setattr(daemon, "_placo_available", lambda: False)
@@ -245,6 +255,7 @@ def test_launch_command_runs_a_scene_file_through_the_bridge_launcher(
     assert daemon.launch_command(config, backend="real") == [
         *_REAL_LAUNCHER,
         "--preload-datasets",
+        *_ADDRESS,
     ]
 
 
@@ -282,10 +293,10 @@ def test_launch_command_real_robot(monkeypatch: pytest.MonkeyPatch) -> None:
     # (headless, scene) play no part.
     assert daemon.launch_command(
         DaemonConfig(headless=False, scene="minimal"), backend="real"
-    ) == [*_REAL_LAUNCHER, "--preload-datasets"]
+    ) == [*_REAL_LAUNCHER, "--preload-datasets", *_ADDRESS]
     assert daemon.launch_command(
         DaemonConfig(preload_datasets=False), backend="real"
-    ) == [*_REAL_LAUNCHER, "--no-preload-datasets"]
+    ) == [*_REAL_LAUNCHER, "--no-preload-datasets", *_ADDRESS]
 
 
 def test_launch_command_real_uses_placo_when_installed(
@@ -297,6 +308,7 @@ def test_launch_command_real_uses_placo_when_installed(
         "--kinematics-engine",
         "Placo",
         "--preload-datasets",
+        *_ADDRESS,
     ]
 
 
@@ -310,7 +322,35 @@ def test_launch_command_real_needs_no_launcher_on_path(
     assert daemon.launch_command(DaemonConfig(), backend="real") == [
         *_REAL_LAUNCHER,
         "--preload-datasets",
+        *_ADDRESS,
     ]
+
+
+def test_launch_command_binds_the_daemon_to_the_address_it_is_given(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The address flags carry the caller's host and port on every recipe, so a daemon
+    spawned for port 8010 listens on 8010 — not upstream's default 8000, where the
+    readiness poll on 8010 would never find it (specs/daemon/daemon.md)."""
+    monkeypatch.setattr(daemon.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(daemon, "_placo_available", lambda: False)
+    address = ["--fastapi-host", "0.0.0.0", "--fastapi-port", "8010"]
+    assert daemon.launch_command(DaemonConfig(), host="0.0.0.0", port=8010)[-4:] == (
+        address
+    )
+    assert (
+        daemon.launch_command(
+            DaemonConfig(
+                headless=False, sim_displays=SimDisplaySettings(robot_gaze=True)
+            ),
+            host="0.0.0.0",
+            port=8010,
+        )[-4:]
+        == address
+    )
+    assert daemon.launch_command(
+        DaemonConfig(), backend="real", host="0.0.0.0", port=8010
+    ) == [*_REAL_LAUNCHER, "--preload-datasets", *address]
 
 
 def test_launch_command_rejects_an_unknown_backend() -> None:
@@ -496,6 +536,7 @@ def test_auto_spawns_when_the_port_is_free(harness: _Harness) -> None:
         assert harness.proc.calls == []  # still running inside the block
     (cmd, env), *_ = harness.spawned
     assert cmd[1:3] == ["-m", "reachy_mini_bridge.sim_daemon"] and "--scene" in cmd
+    assert cmd[-4:] == _ADDRESS  # bound to the address the handle reports
     assert not any(k in env for k in daemon._GST_BUNDLE_ENV)
     assert harness.proc.calls == ["terminate", "wait"]
 
@@ -505,7 +546,7 @@ def test_auto_spawns_the_real_recipe_for_a_real_backend(harness: _Harness) -> No
     with daemon.managed_daemon(_AUTO, backend="real") as handle:
         assert handle.owned is True
     (cmd, env), *_ = harness.spawned
-    assert cmd == [*_REAL_LAUNCHER, "--preload-datasets"]
+    assert cmd == [*_REAL_LAUNCHER, "--preload-datasets", *_ADDRESS]
     assert not any(k in env for k in daemon._GST_BUNDLE_ENV)
     assert harness.proc.calls == ["terminate", "wait"]
 

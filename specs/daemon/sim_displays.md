@@ -16,7 +16,7 @@ tests:
   - tests/test_head_tracking.py
   - tests/test_bridge.py
   - tests/test_testing_support.py
-  - tests-e2e/test_bridge.py
+  - tests-e2e/test_sim_displays.py
 ---
 
 # Sim displays — what the MuJoCo viewer shows besides the scene (`sim_displays.py`)
@@ -174,7 +174,7 @@ The sim daemon launcher keeps what feeds the overlay, because it is camera-sourc
 - **The publisher.** Fed reports directly, with a recording stand-in for the route: one set per new report, the followed face marked; one empty set for an inactive report; the same marker for the same face whatever the camera; stopping after one warning on a `404`; one warning then recovery through a failing daemon; the loop staying responsive while a request is held; a stop mid-request returning at once with the task ended, and a fresh start sending again.
 - **Through the bridge** (`tests/test_bridge.py`), on a `sim` session whose robot is the fake, with a stub detector ([user_perception.md](../vision/user_perception.md) "`fake` backend support") and a local HTTP server as the daemon's port: the face's marker arrives at `/api/sim/displays/face_markers`, marked as followed once the head follows it; an empty set once nobody is there; nothing after `stop()`; nothing at all with the display off; and a session stopped while the daemon holds a request starts and sends again.
 
-**Viewer e2e** (`tests-e2e/test_bridge.py`, viewer sim only: `requires_caps(live_bridge, "camera", "faces", "face_markers")`. The harness's viewer sim runs with `face_markers` on, and `face_markers` is the capability that the daemon answers the route, [testing.md](../testing/testing.md)):
+**Viewer e2e** (`tests-e2e/test_sim_displays.py`, viewer sim only: `requires_caps(live_bridge, "camera", "faces", "face_markers")`. The harness's viewer sim runs with `face_markers` on, and `face_markers` is the capability that the daemon answers the route, [testing.md](../testing/testing.md)):
 
 - **The marker lands on the portrait.** For a portrait at 0.35 m and 0.60 m ahead and at 0.45 m to either side, the `GET` route's `world_pos` is within 0.03 m of the portrait sideways, up to 0.09 m under its centre (the marker is on the nose), and within 15 % of its distance. Measured on the viewer sim: 0.008 m sideways, 0.02 m under the centre, 3 % in distance at worst.
 - **The marker stays put while the head turns.** With the portrait still and tracking on, an emotion plays: the marker's `world_pos` stays within 0.05 m of its mean while the head moves. Measured over nine runs: the head moved 32°, the marker 0.023 to 0.038 m at most (about 0.02 m at the 90th percentile).

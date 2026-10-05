@@ -1,4 +1,5 @@
-"""The importable pytest plugin: the ``live_bridge`` fixture and its capability probe.
+"""The importable pytest plugin: the ``live_bridge`` fixture and its capability probe,
+the ``sim_scene`` client and the ``face_scene`` / ``emotions_library`` helpers.
 
 A consumer opts in from their own (root) ``conftest.py``::
 
@@ -42,9 +43,13 @@ from reachy_mini_bridge.robot import AnyReachyMini
 from reachy_mini_bridge.sim_displays import fetch_face_markers
 from reachy_mini_bridge.testing import _daemon
 from reachy_mini_bridge.testing.sim_scene import SimSceneClient
-from reachy_mini_bridge.testing.support import BridgeLoop, LiveBridge
+from reachy_mini_bridge.testing.support import BridgeLoop, LiveBridge, requires_caps
 
 _AUDIO_PROBE_TIMEOUT = 5.0
+# A fresh session's first frame usually arrives within a second on the viewer, but can take
+# more than two on a daemon that has already served sessions (measured 2026-10-05: a 2 s
+# wait lost the camera for one module in seven); the probe runs once per run, so 5 s is
+# cheap. Headless no frame ever comes.
 _CAMERA_PROBE_TIMEOUT = 5.0
 
 
@@ -154,12 +159,31 @@ def _probe_capabilities(
     return frozenset(caps)
 
 
+_PROBED: dict[tuple[str, int], frozenset[str]] = {}
+
+
+def probed_capabilities(
+    robot: AnyReachyMini, address: tuple[str, int]
+) -> frozenset[str]:
+    """The capabilities of the daemon at ``address``, probed once per ``pytest`` run — on
+    the first bridge session over it — and reused by every later session on it: they are
+    the daemon's (its camera, its audio device, its kinematics engine, its scene and
+    displays), not a session's, and probing them again on every module would only add
+    the probes' waits to every file's setup (specs/testing/testing.md "The harness")."""
+    if address not in _PROBED:
+        _PROBED[address] = _probe_capabilities(robot, address)
+    return _PROBED[address]
+
+
 # --- the fixtures ---
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
 def _live_daemon() -> Iterator[tuple[str, int]]:
-    """A live daemon for the selected target (module-scoped: one per test file)."""
+    """A live daemon for the selected target — session-scoped: one per ``pytest`` run,
+    brought up by the first module that needs it and stopped when the run ends
+    (specs/testing/testing.md "Daemon lifecycle"). The bridge session over it is each
+    module's own (``live_bridge``)."""
     yield from _daemon.managed_daemon(_daemon.target())
 
 
@@ -196,13 +220,14 @@ def live_bridge(
     coroutines on that loop through ``live_bridge.run(...)``, never ``asyncio.run``.
 
     Probing happens after ``start()``, on the media pipeline the bridge's MediaSession
-    already started, which the probes leave running (see ``_probe_audio``).
+    already started, which the probes leave running (see ``_probe_audio``) — once per
+    run: a later module's session reuses the set (``probed_capabilities``).
     """
     host, port = _live_daemon
     # Build the bridge on the target's own backend (`sim`/`real`) with the daemon left to
     # this harness (`daemon.spawn` stays "never"): the bridge connects as a plain network
-    # client to the daemon `_live_daemon` already manages, so one daemon serves the whole
-    # test module. See `_daemon.backend` for why the backend label is safe here.
+    # client to the daemon `_live_daemon` already manages — the run's one daemon, this
+    # module's own session over it. See `_daemon.backend` for why the label is safe here.
     # The live tier's subject is the robot that follows a face, so the config names the
     # shipped `yunet` detector with detection and tracking on (the defaults run no
     # detector — specs/vision/user_perception.md "Configuration"). The model downloads into the
@@ -224,7 +249,47 @@ def live_bridge(
     with BridgeLoop() as loop:
         loop.run(bridge.start())
         try:
-            caps = _probe_capabilities(bridge.robot, (host, port))
+            caps = probed_capabilities(bridge.robot, (host, port))
             yield LiveBridge(bridge, caps, loop)
         finally:
             loop.run(bridge.stop())
+
+
+@pytest.fixture
+def face_scene(
+    live_bridge: LiveBridge, sim_scene: SimSceneClient
+) -> Iterator[SimSceneClient]:
+    """The scene with nobody in view, for a test that puts faces in front of the robot:
+    gated on ``camera`` and ``faces`` (it skips where ``live_bridge`` probed neither), the
+    pool of portraits cleared before the test and again after it, so a test starts with an
+    empty view whatever the previous one left and leaves none behind
+    (specs/testing/sim_scene.md "A pool of portraits"). A test on a session of its own
+    (not ``live_bridge``) writes the same four lines against that session."""
+    requires_caps(live_bridge, "camera", "faces")
+    sim_scene.clear()
+    yield sim_scene
+    sim_scene.clear()
+
+
+@pytest.fixture
+def emotions_library() -> None:
+    """The client-side emotions library in the local Hugging Face cache, for a test that
+    plays one: a cache hit, else a download (a one-time cost), else a skip (offline).
+
+    The daemon preloads the datasets in the background, but ``play_emotion`` resolves the
+    move on the client from the cache, so on a fresh machine a live test would fail on the
+    miss; this fetches the library so the test genuinely exercises the move, skipping only
+    when it truly cannot be fetched. It yields nothing: its value is the side effect."""
+    from huggingface_hub import snapshot_download
+    from huggingface_hub.errors import LocalEntryNotFoundError
+    from reachy_mini.motion.recorded_move import DEFAULT_EMOTIONS_DATASET
+
+    try:
+        snapshot_download(
+            DEFAULT_EMOTIONS_DATASET, repo_type="dataset", local_files_only=True
+        )
+    except LocalEntryNotFoundError:
+        try:
+            snapshot_download(DEFAULT_EMOTIONS_DATASET, repo_type="dataset")
+        except Exception as exc:  # noqa: BLE001  (offline / fetch failure)
+            pytest.skip(f"emotions dataset not cached and download failed: {exc}")

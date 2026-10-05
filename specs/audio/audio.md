@@ -3,7 +3,7 @@ code:
   - src/reachy_mini_bridge/audio.py
 tests:
   - tests/test_audio.py
-  - tests-e2e/test_bridge.py
+  - tests-e2e/test_audio.py
 ---
 
 # Audio & media session (`audio.py`)

@@ -215,8 +215,19 @@ class _ChildOutput:
             self._settle(1.0)
 
 
-def launch_command(config: DaemonConfig, *, backend: str = "sim") -> list[str]:
-    """The argv for a ``backend`` daemon per ``config``.
+def launch_command(
+    config: DaemonConfig,
+    *,
+    backend: str = "sim",
+    host: str = "127.0.0.1",
+    port: int = 8000,
+) -> list[str]:
+    """The argv for a ``backend`` daemon per ``config``, bound to ``host:port``.
+
+    Every recipe ends with the address flags ``--fastapi-host <host> --fastapi-port
+    <port>`` (specs/daemon/daemon.md "The launch command"): upstream's daemon binds its
+    HTTP API where they say, and ``start_daemon`` polls that same address for readiness.
+    Without them it binds upstream's defaults (port 8000) whatever the caller asked.
 
     ``sim`` (docs/running-the-sim-daemon.md) — every recipe runs the bridge's sim daemon
     launcher (specs/daemon/sim_daemon.md: upstream's daemon with its face-tracking corrections and
@@ -239,7 +250,7 @@ def launch_command(config: DaemonConfig, *, backend: str = "sim") -> list[str]:
         if _placo_available():
             cmd += ["--kinematics-engine", "Placo"]
         cmd.append(_preload_flag(config))
-        return cmd
+        return cmd + _address_flags(host, port)
     if shutil.which("reachy-mini-daemon") is None:
         raise DaemonError(
             "no 'reachy-mini-daemon' launcher on PATH — install the sim extra "
@@ -265,7 +276,12 @@ def launch_command(config: DaemonConfig, *, backend: str = "sim") -> list[str]:
         cmd.append("--headless")
     cmd.append(_preload_flag(config))
     cmd += _camera_flags(config) + _display_flags(config)
-    return cmd
+    return cmd + _address_flags(host, port)
+
+
+def _address_flags(host: str, port: int) -> list[str]:
+    """The address every daemon binds to, forwarded by the launchers to upstream."""
+    return ["--fastapi-host", host, "--fastapi-port", str(port)]
 
 
 def _preload_flag(config: DaemonConfig) -> str:
@@ -415,7 +431,7 @@ def start_daemon(
         _wait_until_ready(host, port, config, backend, proc=None, cmd=None)
         return DaemonHandle(host=host, port=port, owned=False, pid=None)
 
-    cmd = launch_command(config, backend=backend)
+    cmd = launch_command(config, backend=backend, host=host, port=port)
     proc = _spawn(cmd, scrubbed_env())
     output = _ChildOutput(proc.stdout)
     try:

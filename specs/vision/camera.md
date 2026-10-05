@@ -6,7 +6,7 @@ code:
 tests:
   - tests/test_camera.py
   - tests/test_bridge.py
-  - tests-e2e/test_bridge.py
+  - tests-e2e/test_perception.py
 ---
 
 # Camera feed — the one reader of the robot's camera (`camera.py`)

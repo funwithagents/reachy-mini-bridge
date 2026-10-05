@@ -10,7 +10,8 @@ tests:
   - tests/test_sim_scene.py
   - tests/test_daemon.py
   - tests/test_testing_support.py
-  - tests-e2e/test_bridge.py
+  - tests-e2e/test_perception.py
+  - tests-e2e/test_head_tracking.py
 ---
 
 # Sim scene — faces in the MuJoCo sim (`sim_scene.py`)
@@ -114,9 +115,9 @@ The plane's geom has `contype`/`conaffinity` 0: it collides with nothing and ups
 
 - **The test scene is the harness's sim scene** — no knob: the harness writes it into a temporary directory that lives as long as the daemon it spawns and passes its path as `DaemonConfig.scene`. Its props start hidden, so every other test runs on upstream's empty scene. A daemon already ready at the address is borrowed as before, whatever it runs.
 - **`faces` capability** — probed like the others: the inject endpoint at the daemon's address answers and lists at least one body of kind `face`. Present on every harness-spawned sim; absent on a borrowed daemon started without the scene and on a real robot, so `requires_caps(live_bridge, "camera", "faces")` — with `camera` absent headless — runs a tracking test on the viewer sim only. (`faces` says the face exists; `camera` says something is looking at it — a face test needs both.)
-- **`sim_scene` fixture** (module-scoped, next to `live_bridge` in the plugin module) — a `SimSceneClient` on the fixture-managed daemon. A test spawns the portraits it needs and the bridge's own tests `clear()` the scene around each test, so every test starts with nobody in view.
+- **`sim_scene` fixture** (module-scoped, next to `live_bridge` in the plugin module) — a `SimSceneClient` on the fixture-managed daemon. A test spawns the portraits it needs; the `face_scene` fixture beside it ([testing_support.md](testing_support.md) "Public surface") gates on `camera` + `faces` and `clear()`s the scene before and after the test, so every face test starts with nobody in view — the bridge's own face tests all take it.
 
-The bridge's own tier ([testing.md](testing.md)) dogfoods it in the attention / gaze tests of `tests-e2e/test_bridge.py`, asserting how the head moves and where it settles ("Head tracking converges on the face" above): the head turns toward a face ahead and to either side, swings past it at most once and by a bounded amount (never back past it: no oscillation), and settles at the yaw the face's position implies — `atan2(y, x)` from the head's pivot, within 3° — with the tracked face near the image centre and its pitch unchanged; hidden, the tracker withdraws its aim after the loss timeout (`attention` reads `watching`) and the head settles back into the idle move — averaging a few degrees off neutral rather than holding the face's yaw, and breathing on the z axis; the face returning elsewhere re-engages `attention` and the head converges on the new position; an emotion plays over tracking (visibly moving the head through its own choreography) and the head converges on the still-visible face again once it ends.
+The bridge's own tier ([testing.md](testing.md)) dogfoods it in the attention / gaze tests of `tests-e2e/test_head_tracking.py` (the faces report in `tests-e2e/test_perception.py`), through the shipped convergence kit `reachy_mini_bridge.testing.gaze` ([testing_support.md](testing_support.md)), asserting how the head moves and where it settles ("Head tracking converges on the face" above): the head turns toward a face ahead and to either side, swings past it at most once and by a bounded amount (never back past it: no oscillation), and settles at the yaw the face's position implies — `atan2(y, x)` from the head's pivot, within 3° — with the tracked face near the image centre and its pitch unchanged; hidden, the tracker withdraws its aim after the loss timeout (`attention` reads `watching`) and the head settles back into the idle move — averaging a few degrees off neutral rather than holding the face's yaw, and breathing on the z axis; the face returning elsewhere re-engages `attention` and the head converges on the new position; an emotion plays over tracking (visibly moving the head through its own choreography) and the head converges on the still-visible face again once it ends.
 
 With several portraits it also pins **whom the head follows** ([head_tracking.md](../motion/head_tracking.md) "Whom the head follows"), each through `bridge.head_tracking`'s `track_id` and the head's yaw:
 

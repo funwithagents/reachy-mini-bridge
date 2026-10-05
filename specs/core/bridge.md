@@ -5,7 +5,11 @@ code:
   - src/reachy_mini_bridge/errors.py
 tests:
   - tests/test_bridge.py
-  - tests-e2e/test_bridge.py
+  - tests-e2e/test_motors.py
+  - tests-e2e/test_audio.py
+  - tests-e2e/test_motion.py
+  - tests-e2e/test_perception.py
+  - tests-e2e/test_head_tracking.py
 ---
 
 # The bridge (`ReachyMiniBridge`)

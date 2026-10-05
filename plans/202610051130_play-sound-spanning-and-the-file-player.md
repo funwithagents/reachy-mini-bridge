@@ -12,7 +12,7 @@ Implements the re-design of [specs/core/bridge.md](../specs/core/bridge.md) ("Ca
 - **a stopped sound file leaves speech alone**: the wobbler reset that follows a stop (`clear_player()`) runs only when no `say` is in flight, so cancelling an emotion or a `play_sound` no longer flushes an utterance;
 - **the control panel's Stop sound button**.
 
-It deliberately leaves out: the bookkeeping of the instant verbs `set_wobbling` / `set_motors_state` after a cancel caught inside their SDK call (analysis section 7); the e2e reorganisation of [202610011744](202610011744_e2e-tier-by-scenario-one-daemon-per-run-and-the-gaps.md). Independent of that plan; either order works (Step 7 says where the live test lands).
+It deliberately leaves out: the bookkeeping of the instant verbs `set_wobbling` / `set_motors_state` after a cancel caught inside their SDK call (analysis section 7); the e2e reorganisation of [202610051207](202610051207_e2e-tier-by-scenario-one-daemon-per-run-and-the-gaps.md). Independent of that plan; either order works (Step 7 says where the live test lands).
 
 ## How to work this plan
 
@@ -110,7 +110,7 @@ The spec edits listed at the top are written and the three specs are `Updated`. 
 
 ### Step 7 — The live check (gated on `audio`)
 
-**Files:** `tests-e2e/test_bridge.py`, or `tests-e2e/test_audio.py` if [202610011744](202610011744_e2e-tier-by-scenario-one-daemon-per-run-and-the-gaps.md) has split the tier by then.
+**Files:** `tests-e2e/test_bridge.py`, or `tests-e2e/test_audio.py` if [202610051207](202610051207_e2e-tier-by-scenario-one-daemon-per-run-and-the-gaps.md) has split the tier by then.
 
 - `play_sound("go_sleep.wav")` (an SDK asset, 3.6 s) takes between 3.6 s and 4.2 s; `play_sound("confused1.wav")` (5.7 s) cancelled after 1 s returns within 0.1 s, and a `say` right after completes. Headless sim; the wireless backend is not covered by the tier.
 

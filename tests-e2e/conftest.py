@@ -5,12 +5,19 @@
 #
 # The harness itself is shipped library code — `reachy_mini_bridge.testing` — so consumers
 # of the bridge reuse it (see specs/testing/testing_support.md). The bridge dogfoods its own
-# shipped harness here: we pull the `live_bridge` fixture (and the module-scoped `_live_daemon`
-# it depends on) in from `reachy_mini_bridge.testing.fixtures` rather than defining them.
+# shipped harness here: we pull the `live_bridge` fixture (and the session-scoped `_live_daemon`
+# it depends on — one daemon per run, one bridge session per file) in from
+# `reachy_mini_bridge.testing.fixtures` rather than defining them.
 # A downstream project instead opts in from its root conftest with
 # `pytest_plugins = ["reachy_mini_bridge.testing.fixtures"]`; we import the fixtures here
 # because this conftest isn't the rootdir conftest. `requires_caps` / `require_env` come
 # from `reachy_mini_bridge.testing` directly at each test's import site.
+#
+# The tier is one file per subject, each sharing a capability gate (specs/testing/testing.md):
+# test_motors / test_motion (`motion`), test_audio (`audio`), test_perception (`camera`,
+# then `faces`), test_head_tracking and test_custom_faces (`camera` + `faces`),
+# test_sim_displays (`face_markers`). The fixtures several of them share — `face_scene`,
+# `emotions_library` — are the plugin module's too.
 #
 # Mirror any isolation fixture the fast tier uses here — tests-e2e/ isn't a package that
 # can import from tests/, so the few lines are duplicated rather than shared. (The library
@@ -21,6 +28,8 @@ import pytest
 
 from reachy_mini_bridge.testing.fixtures import (  # noqa: F401
     _live_daemon,
+    emotions_library,
+    face_scene,
     live_bridge,
     sim_scene,
 )
