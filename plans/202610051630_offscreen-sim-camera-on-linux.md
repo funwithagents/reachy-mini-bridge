@@ -1,6 +1,6 @@
 # The headless sim's camera on Linux — the eye camera rendered offscreen through EGL
 
-**Status:** Todo
+**Status:** In progress
 
 Implements [specs/daemon/sim_daemon.md](../specs/daemon/sim_daemon.md) ("The headless camera") and the viewer-interpreter rule of [specs/daemon/daemon.md](../specs/daemon/daemon.md) ("The launch command"), which [specs/testing/testing.md](../specs/testing/testing.md) (the `camera` capability row, the headless target) and [specs/testing/ci.md](../specs/testing/ci.md) build on. It delivers:
 

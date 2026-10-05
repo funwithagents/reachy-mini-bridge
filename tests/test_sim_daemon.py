@@ -559,6 +559,144 @@ def test_the_run_hands_the_viewer_to_the_overlay_and_stops_it_before_the_close()
     assert viewer_module.launch_passive is launch_passive
 
 
+# --- the headless camera (specs/daemon/sim_daemon.md "The headless camera") ------------
+
+
+def test_offscreen_gl_backend_exists_on_linux_only() -> None:
+    """Linux renders offscreen through EGL unless the environment names a backend; macOS
+    and Windows have no display-less backend, so a headless sim stays camera-less."""
+    assert sim_daemon.offscreen_gl_backend("Linux", {}) == "egl"
+    assert sim_daemon.offscreen_gl_backend("Linux", {"MUJOCO_GL": "osmesa"}) == "osmesa"
+    assert sim_daemon.offscreen_gl_backend("Linux", {"MUJOCO_GL": " "}) == "egl"
+    assert sim_daemon.offscreen_gl_backend("Darwin", {}) is None
+    assert sim_daemon.offscreen_gl_backend("Darwin", {"MUJOCO_GL": "glfw"}) is None
+    assert sim_daemon.offscreen_gl_backend("Windows", {}) is None
+
+
+class _OffscreenStubBackend(_StubBackend):
+    """Records the render thread's call; `run()` sees whether it was started before."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.renders: list[tuple[Any, ...]] = []
+        self.render_thread_alive_during_run = False
+        # Upstream's loop runs until the daemon stops; the stub's runs until the run ends.
+        self._run_over = threading.Event()
+
+    def rendering_loop(self, *args: Any) -> None:
+        self.renders.append(tuple(args))
+        self._run_over.wait(5.0)
+
+    def run(self) -> None:
+        self.render_thread_alive_during_run = any(
+            t.name == "offscreen-camera-render" for t in threading.enumerate()
+        )
+        super().run()
+        self._run_over.set()
+
+
+def test_the_headless_render_thread_runs_with_the_run() -> None:
+    """With a GL backend named, the subclass starts upstream's eye-camera render thread
+    itself — on the stream upstream's media server reads — and joins it after the run."""
+    backend = bridge_backend(_OffscreenStubBackend, headless_render="egl")()
+    backend.run()
+    assert backend.ran
+    assert backend.render_thread_alive_during_run
+    assert backend.renders == [("eye_camera", sim_daemon.STREAM_PORT)]
+    assert not any(t.name == "offscreen-camera-render" for t in threading.enumerate())
+
+
+def test_no_headless_render_without_a_backend_or_with_a_webcam() -> None:
+    """No backend named (the viewer, or macOS headless): no render thread of the
+    launcher's own. A webcam feeds the stream instead, backend or not."""
+    backend = bridge_backend(_OffscreenStubBackend)()
+    backend.run()
+    assert backend.ran and backend.renders == []
+    webcam = sim_daemon._Camera(source="webcam", device=None, hfov_deg=70.0)
+
+    class _Relay:
+        def __init__(self, device: Any, *, overlay: Any = None) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            pass
+
+    # _StubBackend's rendering_loop raises if called: the run must not reach it.
+    backend = bridge_backend(
+        _StubBackend, camera=webcam, relay_factory=_Relay, headless_render="egl"
+    )()
+    backend.run()
+    assert backend.ran
+
+
+def test_a_render_context_that_cannot_be_created_is_logged_and_the_run_goes_on(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class _NoContextBackend(_StubBackend):
+        def rendering_loop(self, *args: Any) -> None:
+            raise RuntimeError("EGL: no display")
+
+    backend = bridge_backend(_NoContextBackend, headless_render="egl")()
+    with caplog.at_level(logging.ERROR, logger="reachy_mini_bridge.sim_daemon"):
+        backend.run()
+    assert backend.ran
+    errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1
+    assert "MUJOCO_GL=egl" in errors[0] and "EGL: no display" in errors[0]
+    assert "without a camera" in errors[0]
+
+
+def _headless_render_seen(
+    argv: list[str], monkeypatch: pytest.MonkeyPatch, system: str
+) -> str | None:
+    """Run the launcher on `system`, returning the GL backend it handed the subclass."""
+    seen: dict[str, Any] = {}
+
+    def corrected(backend_class: type, **kwargs: Any) -> type:
+        seen.update(kwargs)
+        return backend_class
+
+    monkeypatch.setattr(sim_daemon, "bridge_backend", corrected)
+    monkeypatch.setattr(sim_daemon.platform, "system", lambda: system)
+    _run(argv, monkeypatch)
+    return seen["headless_render"]
+
+
+def test_run_sim_daemon_defaults_the_gl_backend_for_a_headless_sim_camera_on_linux(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`MUJOCO_GL` is set to `egl` before upstream (and MuJoCo) is imported, and the
+    backend named reaches the subclass; an environment that names one is left alone."""
+    pytest.importorskip("reachy_mini.daemon.app.main")
+    monkeypatch.delenv("MUJOCO_GL", raising=False)
+    assert _headless_render_seen(["--headless"], monkeypatch, "Linux") == "egl"
+    assert sim_daemon.os.environ["MUJOCO_GL"] == "egl"
+    monkeypatch.setenv("MUJOCO_GL", "osmesa")
+    assert _headless_render_seen(["--headless"], monkeypatch, "Linux") == "osmesa"
+    assert sim_daemon.os.environ["MUJOCO_GL"] == "osmesa"
+
+
+@pytest.mark.parametrize(
+    ("argv", "system"),
+    [
+        (["--headless"], "Darwin"),
+        (["--headless"], "Windows"),
+        ([], "Linux"),  # the viewer brings its own context
+        (["--headless", "--camera", "webcam"], "Linux"),  # the webcam feeds the stream
+    ],
+)
+def test_run_sim_daemon_leaves_the_gl_backend_alone_elsewhere(
+    argv: list[str], system: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("reachy_mini.daemon.app.main")
+    monkeypatch.delenv("MUJOCO_GL", raising=False)
+    assert _headless_render_seen(argv, monkeypatch, system) is None
+    assert "MUJOCO_GL" not in sim_daemon.os.environ
+
+
 # --- the launcher -----------------------------------------------------------------------
 
 

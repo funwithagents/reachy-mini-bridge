@@ -85,7 +85,7 @@ _GST_BUNDLE_ENV = (
 
 _VIEWER_HINT = (
     " — the viewer (daemon.headless = false) needs an unlocked GUI session with a "
-    "display; a locked screen makes mjpython's viewer hang or crash"
+    "display; a locked screen makes the viewer hang or crash"
 )
 
 
@@ -221,6 +221,7 @@ def launch_command(
     backend: str = "sim",
     host: str = "127.0.0.1",
     port: int = 8000,
+    system: str | None = None,
 ) -> list[str]:
     """The argv for a ``backend`` daemon per ``config``, bound to ``host:port``.
 
@@ -233,9 +234,13 @@ def launch_command(
     launcher (specs/daemon/sim_daemon.md: upstream's daemon with its face-tracking corrections and
     the ``config.camera`` source): headless ``<this interpreter> -m
     reachy_mini_bridge.sim_daemon --headless --[no-]preload-datasets [--scene S] [camera
-    flags]``; viewer ``mjpython -m reachy_mini_bridge.sim_daemon [...] [display flags]``
-    (the render's GL context; needs a GUI session; ``--sim-display <name>`` per display
-    on in ``config.sim_displays``). A ``config.scene`` ending in ``.xml`` is a scene *file*,
+    flags]`` — on Linux with the eye camera rendered offscreen, on macOS camera-less
+    (specs/daemon/sim_daemon.md "The headless camera"); viewer ``<viewer interpreter> -m
+    reachy_mini_bridge.sim_daemon [...] [display flags]`` (the window's GL context; needs
+    a GUI session; ``--sim-display <name>`` per display on in ``config.sim_displays``),
+    the viewer interpreter being ``mjpython`` on macOS — the passive viewer runs only
+    under it there — and this interpreter elsewhere (``system`` is ``sys.platform``'s
+    word, read when omitted). A ``config.scene`` ending in ``.xml`` is a scene *file*,
     run by the test scene's launcher (``reachy_mini_bridge.testing.sim_scene``,
     specs/testing/sim_scene.md) built on it. ``real`` — a USB-attached robot: ``<this interpreter>
     -m reachy_mini_bridge.real_daemon [--kinematics-engine Placo] --[no-]preload-datasets``
@@ -256,15 +261,7 @@ def launch_command(
             "no 'reachy-mini-daemon' launcher on PATH — install the sim extra "
             "(reachy-mini-bridge[sim])"
         )
-    if config.headless:
-        exe = sys.executable
-    else:
-        exe = shutil.which("mjpython")
-        if exe is None:
-            raise DaemonError(
-                "no 'mjpython' launcher on PATH for the viewer daemon — install the sim "
-                "extra (reachy-mini-bridge[sim])"
-            )
+    exe = sys.executable if config.headless else _viewer_interpreter(system)
     if config.scene is not None and _scene_is_path(config.scene):
         cmd = [exe, "-m", "reachy_mini_bridge.testing.sim_scene", "--scene-path"]
         cmd.append(os.path.abspath(config.scene))
@@ -277,6 +274,21 @@ def launch_command(
     cmd.append(_preload_flag(config))
     cmd += _camera_flags(config) + _display_flags(config)
     return cmd + _address_flags(host, port)
+
+
+def _viewer_interpreter(system: str | None) -> str:
+    """The interpreter the viewer daemon runs under: ``mjpython`` on macOS, where
+    MuJoCo's passive viewer runs only under it, and this interpreter elsewhere."""
+    system = sys.platform if system is None else system
+    if system != "darwin":
+        return sys.executable
+    exe = shutil.which("mjpython")
+    if exe is None:
+        raise DaemonError(
+            "no 'mjpython' launcher on PATH for the viewer daemon — install the sim "
+            "extra (reachy-mini-bridge[sim])"
+        )
+    return exe
 
 
 def _address_flags(host: str, port: int) -> list[str]:

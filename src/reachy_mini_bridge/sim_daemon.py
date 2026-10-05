@@ -14,6 +14,11 @@ every client see the person in front of the computer. The capture pipeline const
 nothing about the source — a camera offers the modes it has — and centre-crops whatever it
 negotiates into the stream's 1280x720.
 
+``--headless`` with the ``sim`` camera renders the eye camera offscreen wherever MuJoCo
+can draw without a display — Linux, through Mesa's EGL (``MUJOCO_GL`` defaulted to
+``egl``) — so a headless sim there has its camera; on macOS and Windows a headless sim
+stays camera-less (specs/daemon/sim_daemon.md "The headless camera").
+
 ``--sim-display NAME`` turns a sim display on (specs/daemon/sim_displays.md,
 ``sim_displays.py``). The launcher's part is the wiring: it builds the displays that are
 on, hands them the viewer handle, and feeds the camera overlay — off a second branch of
@@ -28,11 +33,12 @@ from __future__ import annotations
 import argparse
 import logging
 import math
+import os
 import platform
 import sys
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -60,6 +66,7 @@ __all__ = [
     "SimDaemonExtension",
     "WebcamRelay",
     "bridge_backend",
+    "offscreen_gl_backend",
     "relay_pipeline_candidates",
     "run_sim_daemon",
     "webcam_source",
@@ -76,6 +83,15 @@ _SOURCE_NAME = "camera"
 STREAM_SIZE = (1280, 720)
 STREAM_PORT = 5005
 _STREAM_FPS = 25
+# The scene's head-mounted camera upstream renders the stream from (its `CAMERA_REACHY`).
+EYE_CAMERA = "eye_camera"
+# MuJoCo's GL backend variable, read once when `mujoco` is imported; the headless render on
+# Linux draws through this backend unless the environment names another.
+_MUJOCO_GL = "MUJOCO_GL"
+_OFFSCREEN_GL_DEFAULT = "egl"
+# How long the run waits for the offscreen render thread after upstream's loop returns:
+# the thread checks the stop flag once per frame, so this is slack, not a wait.
+_RENDER_JOIN_S = 2.0
 
 # The webcam relay's watchdog: a source that delivers no frame for this long is a failure,
 # and a failed source is retried this often.
@@ -525,6 +541,28 @@ class _TappedRenderer:
         return getattr(self._renderer, name)
 
 
+# --- the headless camera (specs/daemon/sim_daemon.md "The headless camera") ------------
+
+
+def offscreen_gl_backend(
+    system: str | None = None, environ: Mapping[str, str] | None = None
+) -> str | None:
+    """The GL backend a headless ``sim``-camera run renders the eye camera through with
+    no display, or ``None`` where MuJoCo has no display-less backend.
+
+    On Linux: what ``MUJOCO_GL`` names when it is set (``osmesa`` works too, slower), else
+    ``egl`` — Mesa's, drawing with no window and no X server. On macOS and Windows the
+    context can only come from the window server (GLFW, the viewer's), so ``None``: a
+    headless sim stays camera-less there. ``system`` is ``platform.system()``'s word.
+    """
+    system = platform.system() if system is None else system
+    environ = os.environ if environ is None else environ
+    if system != "Linux":
+        return None
+    named = environ.get(_MUJOCO_GL, "").strip()
+    return named or _OFFSCREEN_GL_DEFAULT
+
+
 # --- the backend subclass (camera source wiring, the overlay, the hooks) -------------
 
 
@@ -577,6 +615,7 @@ def bridge_backend(
     layer_factory: Callable[[Sequence[Any]], ViewerDisplay] = SceneLayer,
     on_face_markers: Callable[[FaceMarkersView], None] | None = None,
     viewer_module: Any | None = None,
+    headless_render: str | None = None,
 ) -> type:
     """A subclass of upstream's ``MujocoBackend`` wiring the launcher's additions in
     (specs/daemon/sim_daemon.md "The backend subclass"). It overrides nothing of the daemon's
@@ -585,6 +624,11 @@ def bridge_backend(
     - ``__init__`` runs each extension's ``on_backend`` once the model exists.
     - With a ``webcam`` camera: the eye-camera render thread does nothing, and the webcam
       relay runs with the loop.
+    - With ``headless_render`` (the GL backend's name — the launcher passes it for a
+      headless run with the ``sim`` camera where ``offscreen_gl_backend`` found one):
+      ``run()`` starts upstream's eye-camera render thread itself, which upstream starts
+      only under the viewer, and joins it after the run; a renderer that cannot build its
+      context logs one error and the daemon runs on without a camera.
     - With ``displays.camera_overlay``: a ``ViewerOverlay`` (from ``overlay_factory``)
       is fed by the relay's overlay branch (webcam) or a tap on the eye-camera renderer
       (sim).
@@ -635,11 +679,31 @@ def bridge_backend(
                 overlay.label(f"eye camera {STREAM_SIZE[0]}x{STREAM_SIZE[1]}")
                 return _TappedRenderer(renderer, overlay)
 
+        def _offscreen_rendering(self) -> None:
+            try:
+                self.rendering_loop(EYE_CAMERA, STREAM_PORT)
+            except Exception as e:  # noqa: BLE001 - the daemon runs on without a camera
+                _logger.error(
+                    "offscreen camera render failed on %s=%s: %s — the headless sim "
+                    "runs on without a camera; is Mesa's EGL installed?",
+                    _MUJOCO_GL,
+                    headless_render,
+                    e,
+                )
+
         def run(self) -> None:
             overlay = self._viewer_overlay
             relay = relay_factory(camera.device, overlay=overlay) if webcam else None
             if relay is not None:
                 relay.start()
+            render: threading.Thread | None = None
+            if headless_render is not None and not webcam:
+                render = threading.Thread(
+                    target=self._offscreen_rendering,
+                    name="offscreen-camera-render",
+                    daemon=True,
+                )
+                render.start()
             shown: list[ViewerDisplay] = [
                 display
                 for display in (overlay, self._scene_layer)
@@ -651,6 +715,8 @@ def bridge_backend(
             finally:
                 if relay is not None:
                     relay.stop()
+                if render is not None:
+                    render.join(_RENDER_JOIN_S)
                 for display in shown:
                     display.stop()
 
@@ -757,6 +823,13 @@ def run_sim_daemon(
     if args.sim_display and args.headless:
         parser.error("--sim-display needs the viewer (drop --headless)")
     displays = _Displays.named(args.sim_display)
+    # The headless camera: the GL backend is chosen — and MUJOCO_GL set — before anything
+    # imports mujoco, which reads the variable once.
+    headless_render: str | None = None
+    if args.headless and camera.source == "sim":
+        headless_render = offscreen_gl_backend()
+        if headless_render is not None and not os.environ.get(_MUJOCO_GL, "").strip():
+            os.environ[_MUJOCO_GL] = headless_render
     # The face markers view exists once the backend is built; the displays router,
     # mounted on the app before that, reaches the latest one through this holder.
     face_markers: list[FaceMarkersView] = []
@@ -770,6 +843,7 @@ def run_sim_daemon(
         displays=displays,
         extensions=extensions,
         on_face_markers=face_markers.append,
+        headless_render=headless_render,
     )
     original_create_app = upstream_main.create_app
 
@@ -795,7 +869,10 @@ def run_sim_daemon(
         *passthrough,
     ]
     _logger.info(
-        "sim daemon: camera %s, displays %s", camera, args.sim_display or "none"
+        "sim daemon: camera %s, displays %s, headless render %s",
+        camera,
+        args.sim_display or "none",
+        headless_render or "none",
     )
     upstream_main.main()
 
