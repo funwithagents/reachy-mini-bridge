@@ -205,7 +205,9 @@ class _GstPipeline:
         import gi  # pyright: ignore[reportMissingImports]
 
         gi.require_version("Gst", "1.0")
-        from gi.repository import Gst  # pyright: ignore[reportMissingImports]
+        from gi.repository import (  # pyright: ignore[reportMissingImports]
+            Gst,  # pyright: ignore[reportAttributeAccessIssue]
+        )
 
         Gst.init(None)
         self._gst: Any = Gst
@@ -307,7 +309,9 @@ def _bin_children(element: Any) -> list[Any]:
     import gi  # pyright: ignore[reportMissingImports]
 
     gi.require_version("Gst", "1.0")
-    from gi.repository import Gst  # pyright: ignore[reportMissingImports]
+    from gi.repository import (  # pyright: ignore[reportMissingImports]
+        Gst,  # pyright: ignore[reportAttributeAccessIssue]
+    )
 
     children: list[Any] = []
     walk = iterator()

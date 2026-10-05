@@ -10,6 +10,7 @@ Where things live. This is a coarse, module-level map — for the full file inve
 
 | Path | What's there |
 |---|---|
+| `.github/workflows/` | The CI workflow — the static gate and both test tiers, three jobs side by side on GitHub's hosted Linux runners on every pull request and push to `main`; spec: [specs/testing/ci.md](specs/testing/ci.md) |
 | `README.md` | Packaging front page — short intro + doc pointers |
 | `CONTRIBUTING.md` | How the project is run today — solo development, feedback through issues, no external pull requests yet |
 | `config.example.json` | Every `ReachyMiniConfig` field with placeholder values — kept in sync with [specs/core/config.md](specs/core/config.md) |
@@ -84,7 +85,7 @@ The mapping is **many-to-many**: a file can be governed by several specs, so the
 - Avoid trivial/tautological tests — e.g. asserting a constant, asserting an object is not `None`, asserting a mock was called. If a test would pass for a broken implementation, it's not worth writing.
 - Prefer driving the public API the way a real caller would over asserting on internals.
 - Every async verb whose effect spans time (`say`, `play_emotion`, the mic stream, session bring-up) is fully cancellable — [specs/core/bridge.md](specs/core/bridge.md) "Cancellation" defines what that means. When you add or change one, add a test on the `fake` that cancels it mid-flight and asserts the effect stopped and the session still works; the fake keeps real timing for these verbs precisely so there is a mid-flight to cancel in.
-- The fast tier runs in parallel by default (`-n auto --maxprocesses 8` in `addopts`; pytest-xdist in the dev group) because its tests wait through the loop's real blends and breaths — about three minutes of sleeping that spread over eight workers takes about half a minute. `uv run pytest -n 0` runs it serially, the thing to try when a timing assertion looks flaky. `tests-e2e/` stays serial — its conftest forces the worker count to zero, its modules share one daemon.
+- The fast tier runs in parallel by default (`-n logical --maxprocesses 8` in `addopts`; pytest-xdist in the dev group) because its tests wait through the loop's real blends and breaths — about three minutes of sleeping that spread over eight workers takes about half a minute. `uv run pytest -n 0` runs it serially, the thing to try when a timing assertion looks flaky. `tests-e2e/` stays serial — its conftest forces the worker count to zero, its modules share one daemon.
 
 ### Live/e2e tests
 
@@ -103,7 +104,7 @@ The `live_bridge` fixture brings up the daemon itself — **don't start one by h
 
 - **Read the skips.** `-rs` prints why each test skipped. A skip means a capability was probed absent (`motion`, `audio`, `camera`, `gravity_compensation`, `faces`, `face_markers`) or a credential is missing — it is not a pass; report it as such.
 - **Capabilities are probed**, not inferred from the target: the headless sim has no camera; `gravity_compensation` needs hardware on the Placo kinematics engine (`reachy-mini[placo_kinematics]` installed — a harness-spawned real daemon then uses it automatically).
-- **Credentials:** none needed for the real-TTS test — it runs on the local pocket-tts model (first run downloads the weights into the Hugging Face cache); `ELEVENLABS_API_KEY` and `GRADIUM_API_KEY` enable the ElevenLabs and Gradium cloud tests.
+- **Credentials:** none needed for the real-TTS test — it runs on the local pocket-tts model (first run downloads the weights into the Hugging Face cache); `ELEVENLABS_API_KEY` and `GRADIUM_API_KEY` enable the ElevenLabs and Gradium cloud tests. The providers come from the `tts` dependency group, default in a plain `uv sync`; a sync without it (`--no-group tts`) makes the three provider tests skip on the missing module.
 - **The detector is the bridge's:** `live_bridge` configures the shipped `yunet` detector (upstream's model, run by the bridge on the camera feed) with detection and tracking on — the defaults run no detector — so the tracking tests find the portrait in the rendered camera; the model downloads into the Hugging Face cache on the first live run. `tests-e2e/test_custom_faces.py` registers the same class through the `custom` path, in a bridge session of its own (the detector is config-only), and runs whenever the viewer sim runs.
 - **macOS permissions:** the process running the tests needs camera and microphone access; without it the camera probe finds no frame and the camera test skips.
 - **Every sim the harness spawns runs the bridge's test scene** (upstream's empty scene plus a pool of hidden portraits the tracking tests spawn), and **every sim runs through the bridge's launcher** ([specs/daemon/sim_daemon.md](specs/daemon/sim_daemon.md)), which adds the webcam camera source and the viewer overlay. Start `uv run python -m reachy_mini_bridge.sim_daemon` when you want one to borrow with those; the bridge's face detection works on upstream's `reachy-mini-daemon --sim` too.
@@ -120,7 +121,7 @@ The `live_bridge` fixture brings up the daemon itself — **don't start one by h
 
 ## Verification
 
-After any code change, run linting, type checking, and tests, and fix any failures before considering the work done.
+After any code change, run linting, type checking, and tests, and fix any failures before considering the work done. CI runs the same gate — plus the live tier on a headless sim — on every pull request and push to `main` ([specs/testing/ci.md](specs/testing/ci.md)); read its live job's skips as you would a local run's: the spec's expected-skips table says which skips are by design, any other is a regression.
 
 ## Commands
 

@@ -115,7 +115,10 @@ of your own — a second bridge session, say.
 uses the sim's portrait — see "Testing tracking without a person" below.)
 
 `require_env("SOME_API_KEY")` is the credential counterpart: it skips the test when the
-variable is unset, so a contributor with no keys is never broken.
+variable is unset, so a contributor with no keys is never broken. An optional dependency
+gets the same treatment with pytest's own `pytest.importorskip("module")`: the bridge's
+three TTS provider tests skip on the missing provider module before they check the key,
+so a sync without the `tts` dependency group skips them rather than fail.
 
 Keep e2e tests in their own directory that your default `pytest` run doesn't collect (the
 bridge uses a separate `tests-e2e/` and points `testpaths` at `tests/`), so the normal dev

@@ -1,0 +1,111 @@
+# Continuous integration — specs/testing/ci.md.
+#
+# Both test tiers on GitHub's hosted Linux runners, on every pull request and push to
+# main, three jobs side by side: `check` (lint, format, types), `fast-tier`, and `e2e-sim`
+# (the live tier against the headless sim the harness spawns). None waits on another: a
+# run takes as long as its slowest job. Every dependency group installs — on Linux torch comes from
+# PyTorch's CPU index, a few seconds — so the real pocket-TTS test runs here too. No
+# secret is needed: tests whose needs the runner cannot meet skip, and the spec's
+# expected-skips table says which.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Upstream reachy_mini on Linux: PyGObject is sdist-only in the locked range and builds
+  # against these headers; GStreamer comes from the system (the introspection data, the
+  # base/good/bad plugin sets — bad carries the webrtcdsp software AEC — the PulseAudio
+  # plugin). The live job adds PulseAudio itself and Mesa's EGL/OSMesa for the offscreen
+  # camera render.
+  APT_BASE: >-
+    libgirepository1.0-dev libcairo2-dev pkg-config
+    gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0
+    gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
+    gstreamer1.0-pulseaudio gstreamer1.0-tools
+  APT_LIVE: >-
+    pulseaudio pulseaudio-utils
+    libegl1 libgl1-mesa-dri libosmesa6
+
+jobs:
+  check:
+    name: lint, format, types
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends $APT_BASE
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Sync (every group, against the lock)
+        run: uv sync --locked
+      - name: Lint
+        run: uv run ruff check .
+      - name: Format check (code directories only — `ruff format .` reflows Markdown)
+        run: uv run ruff format --check src tests tests-e2e examples
+      - name: Type check
+        run: uv run pyright
+
+  fast-tier:
+    name: fast tier
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends $APT_BASE
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Sync (every group, against the lock)
+        run: uv sync --locked
+      - name: Fast tier
+        run: uv run pytest
+
+  e2e-sim:
+    name: live tier, headless sim
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends $APT_BASE $APT_LIVE
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Sync (every group, against the lock)
+        run: uv sync --locked
+      - name: Hugging Face cache (emotions library, YuNet model, pocket-tts weights)
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+          restore-keys: hf-${{ runner.os }}-
+      - name: Audio device (PulseAudio null sink — the daemon's default source and sink)
+        run: |
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=ci sink_properties=device.description=ci
+          pactl set-default-sink ci
+          pactl set-default-source ci.monitor
+          pactl info
+      - name: Live tier
+        run: uv run pytest tests-e2e -rs
