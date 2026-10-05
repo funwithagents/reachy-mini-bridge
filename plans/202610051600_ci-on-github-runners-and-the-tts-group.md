@@ -105,7 +105,8 @@ Check command green on `main`; `uv run pytest tests-e2e -rs` green headless (rea
 
 What the runner found that the Mac never had, filled in during Steps 4 and 5 — one line per change: the symptom, the fix, the spec it touches.
 
-- (none yet)
+- **pyright on Linux: `"Gst" is unknown import symbol`** at the six `from gi.repository import Gst` sites (`audio.py`, `real_daemon.py`, `sim_daemon.py`, `tests/test_audio.py`). On macOS the bundle's `gi` lives on a `.pth` path pyright cannot see, so the sites carried `# pyright: ignore[reportMissingImports]`; on Linux PyGObject resolves and `gi.repository` is built at runtime, so the name is `reportAttributeAccessIssue` instead. Fix: the parenthesized import form with the missing-import ignore on the `from` line and the attribute ignore on each name line (ruff's import sorter wants that form at this line length). No spec: the imports are an implementation detail of the GStreamer seams.
+- **What needed no fix on the first run:** the apt list as written (PyGObject built from its sdist against it), `uv sync --locked --no-group tts`, ruff check and the format check.
 
 ## Measurements
 

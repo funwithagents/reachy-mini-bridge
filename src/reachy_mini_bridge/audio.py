@@ -488,8 +488,8 @@ def _sound_duration(path: Path) -> float:
         gi.require_version("Gst", "1.0")
         gi.require_version("GstPbutils", "1.0")
         from gi.repository import (  # pyright: ignore[reportMissingImports]
-            Gst,
-            GstPbutils,
+            Gst,  # pyright: ignore[reportAttributeAccessIssue]
+            GstPbutils,  # pyright: ignore[reportAttributeAccessIssue]
         )
 
         Gst.init(None)

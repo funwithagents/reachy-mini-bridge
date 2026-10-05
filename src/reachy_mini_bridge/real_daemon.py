@@ -108,7 +108,9 @@ def select_camera(
 
 def _avfvideosrc(pipeline: Any) -> Any | None:
     """The ``avfvideosrc`` element of ``pipeline``, or ``None`` when it has none."""
-    from gi.repository import Gst  # pyright: ignore[reportMissingImports]
+    from gi.repository import (  # pyright: ignore[reportMissingImports]
+        Gst,  # pyright: ignore[reportAttributeAccessIssue]
+    )
 
     iterator = pipeline.iterate_recurse()
     while True:
@@ -152,7 +154,9 @@ def _video_device_count() -> int:
 
 
 def _gst_null() -> Any:
-    from gi.repository import Gst  # pyright: ignore[reportMissingImports]
+    from gi.repository import (  # pyright: ignore[reportMissingImports]
+        Gst,  # pyright: ignore[reportAttributeAccessIssue]
+    )
 
     return Gst.State.NULL
 

@@ -560,7 +560,9 @@ def test_stop_sound_stops_the_local_playbin_and_clears_it(
     from reachy_mini.media.audio_gstreamer import GStreamerAudio
 
     gi.require_version("Gst", "1.0")
-    from gi.repository import Gst  # pyright: ignore[reportMissingImports]
+    from gi.repository import (  # pyright: ignore[reportMissingImports]
+        Gst,  # pyright: ignore[reportAttributeAccessIssue]
+    )
 
     # The stand-in skips the SDK constructor; silence its __del__ on the missing state.
     monkeypatch.setattr(GStreamerAudio, "__del__", lambda self: None)
