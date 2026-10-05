@@ -96,6 +96,11 @@ _OFFSCREEN_GL_DEFAULT = "egl"
 # How long the run waits for the offscreen render thread after upstream's loop returns:
 # the thread checks the stop flag once per frame, so this is slack, not a wait.
 _RENDER_JOIN_S = 2.0
+# The offscreen render thread builds its renderer once upstream's loop reports ready (the
+# daemon's initialisation behind it), waiting at most this long for it; and it warns once
+# when no frame has been drawn this long after the run started.
+_RENDER_READY_WAIT_S = 30.0
+_FIRST_FRAME_WARN_S = 10.0
 
 # The webcam relay's watchdog: a source that delivers no frame for this long is a failure,
 # and a failed source is retried this often.
@@ -519,6 +524,25 @@ class WebcamRelay:
         )
 
 
+class _WatchedRenderer:
+    """Upstream's offscreen eye-camera renderer, ``on_first_frame`` called once when the
+    first frame has been drawn. Everything else is the renderer's."""
+
+    def __init__(self, renderer: Any, on_first_frame: Callable[[], None]) -> None:
+        self._renderer = renderer
+        self._on_first_frame: Callable[[], None] | None = on_first_frame
+
+    def render(self, *args: Any, **kwargs: Any) -> Any:
+        frame = self._renderer.render(*args, **kwargs)
+        if self._on_first_frame is not None:
+            self._on_first_frame()
+            self._on_first_frame = None
+        return frame
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._renderer, name)
+
+
 class _TappedRenderer:
     """Upstream's offscreen eye-camera renderer with every rendered frame also handed to
     the overlay (at ``OVERLAY_SOURCE_SIZE``), on the render thread, before the frame goes
@@ -718,6 +742,8 @@ def bridge_backend(
             self._scene_layer: ViewerDisplay | None = (
                 layer_factory(views) if views else None
             )
+            # The headless render's first frame, set by its renderer (watched by run()).
+            self._first_frame = threading.Event()
             for extension in extensions:
                 if extension.on_backend is not None:
                     extension.on_backend(self)
@@ -742,7 +768,7 @@ def bridge_backend(
                         headless_render,
                         len(hidden),
                     )
-                    return renderer
+                    return _WatchedRenderer(renderer, self._first_frame.set)
                 renderer = super()._get_renderer(camera_name)
                 overlay = self._viewer_overlay
                 if overlay is None:
@@ -751,6 +777,15 @@ def bridge_backend(
                 return _TappedRenderer(renderer, overlay)
 
         def _offscreen_rendering(self) -> None:
+            # Upstream's loop first: the renderer is built once the daemon has initialised
+            # (the model stepped, the media server up), never alongside it.
+            ready = getattr(self, "ready", None)
+            if ready is not None and not ready.wait(_RENDER_READY_WAIT_S):
+                _logger.warning(
+                    "offscreen camera render: the daemon's loop did not report ready "
+                    "within %.0f s; rendering anyway",
+                    _RENDER_READY_WAIT_S,
+                )
             try:
                 self.rendering_loop(EYE_CAMERA, STREAM_PORT)
             except Exception as e:  # noqa: BLE001 - the daemon runs on without a camera
@@ -762,6 +797,17 @@ def bridge_backend(
                     e,
                 )
 
+        def _warn_without_a_first_frame(self) -> None:
+            if not self._first_frame.wait(_FIRST_FRAME_WARN_S):
+                _logger.warning(
+                    "offscreen camera render: no frame drawn %.0f s into the run on "
+                    "%s=%s — the renderer's build or its first draw is stuck; the "
+                    "headless sim has no camera until it draws",
+                    _FIRST_FRAME_WARN_S,
+                    _MUJOCO_GL,
+                    headless_render,
+                )
+
         def run(self) -> None:
             overlay = self._viewer_overlay
             relay = relay_factory(camera.device, overlay=overlay) if webcam else None
@@ -769,12 +815,18 @@ def bridge_backend(
                 relay.start()
             render: threading.Thread | None = None
             if headless_render is not None and not webcam:
+                self._first_frame.clear()
                 render = threading.Thread(
                     target=self._offscreen_rendering,
                     name="offscreen-camera-render",
                     daemon=True,
                 )
                 render.start()
+                threading.Thread(
+                    target=self._warn_without_a_first_frame,
+                    name="offscreen-camera-watchdog",
+                    daemon=True,
+                ).start()
             shown: list[ViewerDisplay] = [
                 display
                 for display in (overlay, self._scene_layer)

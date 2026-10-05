@@ -632,6 +632,84 @@ def test_no_headless_render_without_a_backend_or_with_a_webcam() -> None:
     assert backend.ran
 
 
+def test_the_headless_render_waits_for_the_daemon_to_be_ready() -> None:
+    """The renderer is built once upstream's loop reports ready, never alongside the
+    daemon's initialisation: a backend whose `ready` is set during `run()` sees the
+    render after it."""
+    order: list[str] = []
+
+    class _ReadyLaterBackend(_StubBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.ready = threading.Event()
+            self._run_over = threading.Event()
+
+        def rendering_loop(self, *args: Any) -> None:
+            order.append("render")
+            self._run_over.wait(5.0)
+
+        def run(self) -> None:
+            time.sleep(0.2)
+            order.append("ready")
+            self.ready.set()
+            time.sleep(0.2)
+            super().run()
+            self._run_over.set()
+
+    backend = bridge_backend(_ReadyLaterBackend, headless_render="egl")()
+    backend.run()
+    assert order == ["ready", "render"]
+
+
+def test_a_render_without_a_first_frame_is_warned_about_once(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sim_daemon, "_FIRST_FRAME_WARN_S", 0.2)
+
+    class _StuckRenderBackend(_StubBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self._run_over = threading.Event()
+
+        def rendering_loop(self, *args: Any) -> None:
+            self._run_over.wait(5.0)  # builds nothing, draws nothing
+
+        def run(self) -> None:
+            time.sleep(0.5)
+            super().run()
+            self._run_over.set()
+
+    with caplog.at_level(logging.WARNING, logger="reachy_mini_bridge.sim_daemon"):
+        bridge_backend(_StuckRenderBackend, headless_render="egl")().run()
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1 and "no frame drawn" in warnings[0]
+    assert "MUJOCO_GL=egl" in warnings[0]
+
+    class _DrawingBackend(_TrimmedRendererStubBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self._run_over = threading.Event()
+
+        def rendering_loop(self, *args: Any) -> None:
+            renderer = self._get_renderer(args[0])
+            renderer.render()  # the first frame
+            self._run_over.wait(5.0)
+
+        def _get_renderer(self, camera_name: str) -> Any:
+            self.offsamples_at_build = int(self.model.vis.quality.offsamples)
+            return SimpleNamespace(scene=self.scene, render=lambda: "frame")
+
+        def run(self) -> None:
+            time.sleep(0.5)
+            super().run()
+            self._run_over.set()
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="reachy_mini_bridge.sim_daemon"):
+        bridge_backend(_DrawingBackend, headless_render="egl")().run()
+    assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+
+
 def test_a_render_context_that_cannot_be_created_is_logged_and_the_run_goes_on(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
