@@ -1,6 +1,6 @@
 # CI on GitHub's hosted runners, and the `tts` dependency group
 
-**Status:** In progress
+**Status:** Done
 
 Implements [specs/testing/ci.md](../specs/testing/ci.md) in full and the `tts` group, the demo group and the CPU torch index of [specs/project.md](../specs/project.md) ("Dependency groups"), with the provider-skip rule of [specs/testing/testing.md](../specs/testing/testing.md) ("Live tier: skip without credentials"). It delivers:
 
@@ -113,6 +113,9 @@ What the runner found that the Mac never had, filled in during Steps 4 and 5 —
 
 ## Measurements
 
-- `check`, warm caches: — min
-- `fast-tier`, warm caches: — min
-- `e2e-sim`, warm caches: — min; skips: —
+Run 8 on the pull request (`37322908600`, the three jobs side by side, warm caches), the second green run of that layout after run 7:
+
+- `check`: 61 s
+- `fast-tier`: 128 s (pytest 90 s on four workers; 148 s on two before `-n logical`)
+- `e2e-sim`: 172 s (pytest 113 s: 14 passed, 18 skipped — the two cloud keys, the motor-mode test, `gravity_compensation`, and 14 on `camera`, the set `ci.md` expects before the offscreen camera); torch `2.14.1+cpu` from the PyTorch index, no `nvidia-*` wheel; the Hugging Face cache hit at 160 MB
+- the run end to end: 176 s
