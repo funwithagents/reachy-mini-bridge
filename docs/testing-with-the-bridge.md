@@ -132,12 +132,23 @@ daemon at setup:
 | Capability | Meaning | sim headless | sim headfull | real robot |
 |---|---|---|---|---|
 | `motion` | the backend reports a status | ✅ | ✅ | ✅ |
-| `audio` | recording yields a mic sample | ✅ | ✅ | ✅ |
+| `audio` | recording yields a mic sample (a sound device — or a PulseAudio null sink, below) | ✅ | ✅ | ✅ |
 | `camera` | a camera frame comes back (needs a GL context) | ✅ Linux (rendered offscreen through EGL) · ❌ macOS | ✅ | ✅ |
 | `gravity_compensation` | hardware daemon on the Placo kinematics engine | ❌ | ❌ | ✅ with `reachy-mini[placo_kinematics]` |
 | `faces` | the daemon runs the bridge's test scene (every sim the harness spawns does), which has a pool of portraits (bodies of kind `face`) — hidden until spawned; the bridge's `yunet` detector, which `live_bridge` configures, finds it in the rendered camera | ✅ (nothing looks at it: no camera) | ✅ | ❌ |
 | `face_markers` | the daemon draws the faces the bridge sends it and returns them (`/api/sim/displays/face_markers`): every viewer sim the harness spawns; a test reads back where the bridge placed a face | ❌ no viewer | ✅ | ❌ |
 | `doa` | mic-array direction of arrival | ❌ | ❌ | ✅ (reserved) |
+
+**A Linux box without a sound card** (a server, a CI runner) has no default source or sink, so the daemon's audio comes up unavailable and `audio` probes absent: every audio test skips. A PulseAudio null sink, started before the daemon, makes it present — the daemon takes the sink and its monitor as the default devices, `say` and `play_sound` stream to a sink nobody hears, the mic tap reads silence, and the audio tests assert on the pipeline, not on what is heard:
+
+```
+pulseaudio --start --exit-idle-time=-1
+pactl load-module module-null-sink sink_name=ci
+pactl set-default-sink ci
+pactl set-default-source ci.monitor
+```
+
+This is what the bridge's own CI does ([../specs/testing/ci.md](../specs/testing/ci.md)); the Linux packages and the webrtc plugin a daemon needs are in [running-the-sim-daemon.md](running-the-sim-daemon.md) "Linux".
 
 Capabilities are **probed, not assumed** from the backend type — environment quirks decide
 what actually works.
