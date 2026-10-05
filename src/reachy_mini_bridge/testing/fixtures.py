@@ -32,6 +32,7 @@ from typing import Any
 import pytest
 
 from reachy_mini_bridge.bridge import ReachyMiniBridge, _daemon_kinematics_engine
+from reachy_mini_bridge.camera import CameraFeed
 from reachy_mini_bridge.config import (
     DaemonConfig,
     FaceDetectionSettings,
@@ -80,7 +81,7 @@ def _probe_audio(media: Any) -> bool:
         return False
 
 
-def _probe_camera(feed: Any) -> bool:
+def _probe_camera(feed: CameraFeed) -> bool:
     """True if the bridge's camera feed publishes a frame within the timeout (the sim
     needs a GL context for one; a robot always has one). Read on the feed, the one reader
     of upstream's ``get_frame()`` — never on ``get_frame()`` beside it."""
@@ -133,7 +134,7 @@ def _probe_face_markers(host: str, port: int) -> bool:
 def _probe_capabilities(
     robot: AnyReachyMini,
     address: tuple[str, int] | None = None,
-    camera: Any = None,
+    camera: CameraFeed | None = None,
 ) -> frozenset[str]:
     """Probe what the live daemon can actually do — never inferred from backend type.
 
@@ -170,7 +171,7 @@ _PROBED: dict[tuple[str, int], frozenset[str]] = {}
 
 
 def probed_capabilities(
-    robot: AnyReachyMini, address: tuple[str, int], camera: Any = None
+    robot: AnyReachyMini, address: tuple[str, int], camera: CameraFeed | None = None
 ) -> frozenset[str]:
     """The capabilities of the daemon at ``address``, probed once per ``pytest`` run — on
     the first bridge session over it — and reused by every later session on it: they are

@@ -17,14 +17,17 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 
 from reachy_mini_bridge import daemon, testing
 from reachy_mini_bridge import face_detection as face_detection_module
 from reachy_mini_bridge import robot as robot_module
 from reachy_mini_bridge.bridge import ReachyMiniBridge
+from reachy_mini_bridge.camera import CameraFeed
 from reachy_mini_bridge.config import (
     DaemonConfig,
     FaceDetectionSettings,
@@ -327,8 +330,9 @@ def test_camera_probe_reads_the_bridges_feed_and_never_get_frame(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The feed is the one reader of upstream's one-shot `get_frame()`; a probe calling it
-    beside the feed's thread would starve one or the other (specs/vision/camera.md)."""
-    monkeypatch.setattr(fixtures, "_CAMERA_PROBE_TIMEOUT", 0.5)
+    beside the feed's thread would starve one or the other (specs/vision/camera.md). The
+    probe reads a real `CameraFeed`, bound to a reader the way the bridge binds it."""
+    monkeypatch.setattr(fixtures, "_CAMERA_PROBE_TIMEOUT", 1.0)
     monkeypatch.setattr(fixtures, "_AUDIO_PROBE_TIMEOUT", 0.05)
 
     class _Media:
@@ -338,27 +342,34 @@ def test_camera_probe_reads_the_bridges_feed_and_never_get_frame(
         def get_audio_sample(self) -> None:
             return None
 
-    robot = SimpleNamespace(
+    robot: Any = SimpleNamespace(
         client=SimpleNamespace(get_status=lambda: SimpleNamespace(backend_status={})),
         media=_Media(),
     )
-    calls = {"n": 0}
+    reads = {"n": 0}
 
-    class _Feed:
-        def latest(self) -> object | None:
-            calls["n"] += 1
-            return None if calls["n"] < 3 else object()  # the third read has a frame
+    def late_reader() -> tuple[npt.NDArray[np.uint8], float | None] | None:
+        reads["n"] += 1
+        if reads["n"] < 3:
+            return None  # nothing yet: the probe keeps waiting on the feed
+        return np.zeros((4, 4, 3), dtype=np.uint8), None
 
-    caps = fixtures._probe_capabilities(robot, None, _Feed())  # type: ignore[arg-type]
+    feed = CameraFeed(late_reader, None)
+    asyncio.run(feed.start())
+    try:
+        caps = fixtures._probe_capabilities(robot, None, feed)
+    finally:
+        asyncio.run(feed.stop())
     assert "camera" in caps and "motion" in caps and "audio" not in caps
 
-    class _NoFrames:
-        def latest(self) -> None:
-            return None
-
-    assert "camera" not in fixtures._probe_capabilities(robot, None, _NoFrames())  # type: ignore[arg-type]
+    silent = CameraFeed(lambda: None, None)
+    asyncio.run(silent.start())
+    try:
+        assert "camera" not in fixtures._probe_capabilities(robot, None, silent)
+    finally:
+        asyncio.run(silent.stop())
     # No feed given (a caller probing a bare robot): the capability is not claimed.
-    assert "camera" not in fixtures._probe_capabilities(robot, None)  # type: ignore[arg-type]
+    assert "camera" not in fixtures._probe_capabilities(robot, None)
 
 
 # --- faces capability probe ---
