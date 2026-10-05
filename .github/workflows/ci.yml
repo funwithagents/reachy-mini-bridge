@@ -31,9 +31,13 @@ env:
     gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0
     gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
     gstreamer1.0-pulseaudio gstreamer1.0-tools
+  # The live job adds PulseAudio itself, the ICE library the daemon's WebRTC server needs
+  # (the Rust webrtc plugin itself has no Ubuntu package: upstream's composite action
+  # below installs a prebuilt, checksum-pinned libgstrswebrtc.so), and Mesa's EGL/OSMesa
+  # for the offscreen camera render.
   APT_LIVE: >-
     pulseaudio pulseaudio-utils
-    gstreamer1.0-plugins-rs
+    gstreamer1.0-nice libnice10
     libegl1 libgl1-mesa-dri libosmesa6
 
 jobs:
@@ -81,7 +85,7 @@ jobs:
 
   e2e-sim:
     name: live tier, headless sim
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -108,6 +112,11 @@ jobs:
           pactl set-default-sink ci
           pactl set-default-source ci.monitor
           pactl info
+      # The daemon's media server hard-requires the gst-plugins-rs webrtcsink element, which
+      # no Ubuntu archive ships; upstream's own CI installs a prebuilt libgstrswebrtc.so
+      # (pinned to a commit and a sha256 inside the action) and puts it on GST_PLUGIN_PATH.
+      - name: Rust webrtc plugin (upstream's action, pinned)
+        uses: pollen-robotics/reachy_mini/.github/actions/webrtc-plugin@c14dc5fd43100582d349466aec4bdc4960490522
       - name: Offscreen GL probe (temporary diagnostic)
         run: |
           for gl in egl osmesa; do
