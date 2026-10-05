@@ -117,44 +117,6 @@ jobs:
       # (pinned to a commit and a sha256 inside the action) and puts it on GST_PLUGIN_PATH.
       - name: Rust webrtc plugin (upstream's action, pinned)
         uses: pollen-robotics/reachy_mini/.github/actions/webrtc-plugin@c14dc5fd43100582d349466aec4bdc4960490522
-      - name: First-frame latency probe (temporary diagnostic)
-        run: |
-          uv run --no-sync python - <<'PY' || true
-          import subprocess, sys, time, urllib.request, threading
-          from reachy_mini_bridge.daemon import scrubbed_env
-          cmd = [sys.executable, "-m", "reachy_mini_bridge.sim_daemon", "--headless", "--no-preload-datasets", "--fastapi-port", "8020"]
-          t0 = time.monotonic()
-          proc = subprocess.Popen(cmd, env=scrubbed_env(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-          lines = []
-          def pump():
-              for line in proc.stdout: lines.append((time.monotonic() - t0, line.rstrip()))
-          threading.Thread(target=pump, daemon=True).start()
-          ready = None
-          while time.monotonic() - t0 < 60:
-              try:
-                  with urllib.request.urlopen("http://127.0.0.1:8020/api/daemon/status", timeout=1) as r:
-                      if b'"running"' in r.read(): ready = time.monotonic() - t0; break
-              except Exception: pass
-              time.sleep(0.25)
-          print(f"daemon ready after {ready} s")
-          from reachy_mini import ReachyMini
-          robot = ReachyMini(host="127.0.0.1", port=8020, media_backend="local")
-          t1 = time.monotonic(); first = None
-          while time.monotonic() - t1 < 30:
-              f = robot.media.get_frame()
-              if f is not None: first = time.monotonic() - t1; break
-              time.sleep(0.1)
-          print(f"first frame {first} s after the client opened ({time.monotonic() - t0:.1f} s after launch)")
-          n, t2 = 0, time.monotonic()
-          while time.monotonic() - t2 < 3: 
-              if robot.media.get_frame() is not None: n += 1
-              time.sleep(0.02)
-          print(f"frames polled in 3 s: {n}")
-          robot.close() if hasattr(robot, "close") else None
-          proc.terminate(); proc.wait(10)
-          for t, line in lines:
-              if any(k in line for k in ("headless camera", "UDP sender", "media server", "ERROR", "Daemon started", "offscreen", "Waking")): print(f"  [{t:5.1f}s] {line[:150]}")
-          PY
       - name: Live tier
         # The cloud TTS keys, when the repository holds them as secrets: the two cloud
         # `say` tests run; absent (or on a fork's pull request, which never receives a
@@ -162,4 +124,7 @@ jobs:
         env:
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           GRADIUM_API_KEY: ${{ secrets.GRADIUM_API_KEY }}
-        run: uv run pytest tests-e2e -rs
+        # Warnings and errors logged while the tier runs — the spawned daemon's own lines
+        # among them, forwarded by the harness — print live, so a daemon that comes up
+        # without its camera or its media server says so in the job log.
+        run: uv run pytest tests-e2e -rs -o log_cli=true --log-cli-level=WARNING

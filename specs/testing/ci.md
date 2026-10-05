@@ -43,7 +43,7 @@ The three jobs run side by side, each on its own runner, and none waits on anoth
 ### What the live job provides, and what it leaves absent
 
 - **Audio: a PulseAudio null sink.** The daemon's media server takes the host's default source and sink when no robot sound card is present ([../audio/audio.md](../audio/audio.md)); on a runner with no sound hardware there is none, the server logs that audio is unavailable, and every `audio` test would skip. The job starts PulseAudio and loads `module-null-sink` before the tests, so the daemon finds a sink and its monitor as the source: the `audio` capability probes present, `say` and `play_sound` stream to a sink nobody hears, the mic tap reads silence, and the software AEC runs. The audio tests assert on the pipeline — a sample arriving, a `say` completing or being interrupted — never on what is heard, so silence is a valid signal.
-- **The camera: offscreen on Linux.** The headless sim renders its eye camera through EGL ([../daemon/sim_daemon.md](../daemon/sim_daemon.md) "The headless camera"), so `camera` probes present and the perception, head-tracking and custom-detector tests run on the runner against the test scene's portraits. Until that launcher behaviour is built, the camera probes absent on the runner and those tests skip; the expected-skips table below changes with it.
+- **The camera: offscreen on Linux.** The headless sim renders its eye camera through EGL ([../daemon/sim_daemon.md](../daemon/sim_daemon.md) "The headless camera"), trimmed for the detector — no shadows or multisampling, the robot's own body left out — so a frame costs the runner's software rasterizer about 10 ms instead of 140 to 230, the camera runs at upstream's rate, `camera` probes present, and the perception, head-tracking and custom-detector tests run on the runner against the test scene's portraits. The daemon's media server, which serves those frames to the bridge, hard-requires the `webrtcsink` element of the Rust GStreamer plugins, which no Ubuntu archive ships: the live job installs upstream's prebuilt `libgstrswebrtc.so` through upstream's own composite action, pinned to a commit and checksum, and the ICE library it needs from apt.
 - **Downloads, cached.** The runner has the network: the emotions library the daemon preloads and the emotion tests fetch, the YuNet model the detector loads, and the pocket-tts weights the real-TTS test loads all come from the Hugging Face Hub into `~/.cache/huggingface`, which the workflow caches keyed on the lock file (a prefix restore key keeps an older cache useful; the whole cache measures about 160 MB). uv's cache is kept by the uv setup action, keyed on `uv.lock` and pruned to what the sync had to build — the PyGObject sdist — while prebuilt wheels re-download: the 187 MB CPU torch takes the runner three seconds.
 - **Expected skips.** A skip is not a pass ([AGENTS.md](../../AGENTS.md) "Read the skips"); on the runner the following skip by design, and any other skip in a job log is an environment regression to investigate:
 
@@ -52,14 +52,13 @@ The three jobs run side by side, each on its own runner, and none waits on anoth
 | `gravity_compensation` tests | hardware on the Placo engine; a sim never has it |
 | `face_markers` tests | the markers are drawn on the viewer window; no viewer in CI (headless they skip on `camera` first) |
 | the motor-mode test of `test_motors.py` | a simulation ignores motor modes, so the test skips on every sim target |
-| the ElevenLabs and Gradium `say` tests | no key in CI (`require_env`) |
-| `camera` and `faces` tests, until the offscreen camera is built | no frame from a headless sim before then |
+| the ElevenLabs and Gradium `say` tests | only where the repository holds no key, or on a fork's pull request (`require_env`); with the two secrets set, they run |
 
 - **Never in CI:** the MuJoCo viewer (no GUI session on a runner; the face-marker tests stay a local viewer run), a real robot (`REACHY_MINI_E2E_TARGET=real` is a local or on-robot command), and a daemon started outside the harness.
 
 ### Secrets and protection
 
-- **No secret is required.** Every job is green with none: the cloud TTS tests skip on the missing key, and the pocket test needs none. The ElevenLabs and Gradium keys may later be added as repository secrets; a fork's pull request never receives a secret, so it runs the same jobs with the two cloud tests skipped.
+- **No secret is required.** Every job is green with none: the cloud TTS tests skip on the missing key, and the pocket test needs none. The ElevenLabs and Gradium keys are repository secrets, mapped onto `ELEVENLABS_API_KEY` / `GRADIUM_API_KEY` for the live job's test step, so the two cloud `say` tests run on every pull request and push to `main` — a short synthesis each; a fork's pull request never receives a secret, the variables come out empty, and those two tests skip there.
 - **The three status checks to require on `main`** are `check`, `fast-tier` and `e2e-sim`. Requiring them is a repository setting on GitHub, outside the repo.
 
 ### Time budget
@@ -76,6 +75,6 @@ With warm caches, `check` is in the order of a minute and a half (the system pac
 
 ## Open questions
 
-1. **Thresholds on a shared runner.** The head-tracking convergence thresholds in `reachy_mini_bridge.testing.gaze` and the live tier's timing assertions were measured on a Mac; a shared four-core VM with software rendering is slower and noisier. The first camera-enabled runs will say whether the constants hold; a loosened constant is recorded in the kit's docstrings with its runner measurement, as the Mac measurements are today. Deferred until measured.
+1. **Thresholds on a shared runner.** The head-tracking convergence thresholds in `reachy_mini_bridge.testing.gaze` and the live tier's rate floors held on the runner once the camera ran at upstream's rate (the trimmed render); at the four frames a second of the untrimmed render they did not, which is the measurement that shaped the render, not the thresholds. Kept open for the day a run fails on a timing margin: a loosened constant is recorded in the kit's docstrings with its runner measurement, as the Mac measurements are today.
 2. **The viewer under Xvfb.** A Linux viewer on a virtual X display with Mesa's software renderer would bring the `face_markers` tests into CI. Not needed for the tier's coverage; deferred until a marker regression slips through a local run.
 3. **A macOS job.** Free on a public repo and the developers' platform, but blind to the camera and slower; worth adding only if a macOS-only regression ever reaches `main`.
