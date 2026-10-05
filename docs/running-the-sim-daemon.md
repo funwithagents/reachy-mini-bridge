@@ -21,7 +21,7 @@ face tracking is left as upstream ships it and never armed — so upstream's
 `reachy-mini-daemon --sim` below works for the bridge too; the launcher is what adds the
 webcam and the overlay.
 
-### Headless sim — CI (motion + audio, no camera)
+### Headless sim — CI (motion + audio; the camera too on Linux)
 
 Real MuJoCo physics, no viewer, no display — runs anywhere:
 
@@ -33,11 +33,11 @@ reachy-mini-daemon --sim --headless --preload-datasets
 
 - Serves `http://127.0.0.1:8000` in ~1s (`--fastapi-port` moves it; a daemon the bridge spawns is bound to the config's `robot.host:port` the same way, so two sims on one machine take two ports). Add `--no-media` for a pure **motion** daemon (no camera/audio) — the lightest option for motion-only work; the e2e harness spawns media-on so it can probe audio.
 - **Media on** (omit `--no-media`) brings up **audio**: the daemon falls back to the host's default mic/speaker and enables **software AEC** (`No hardware AEC; enabled software echo cancellation`). The macOS `libgstpython.dylib` GStreamer warning is harmless.
-- **The rendered camera does not work here**: upstream starts the eye-camera render only under the viewer (`get_frame()` returns `None`). Use the viewer mode for it — or a webcam (below), which works headless too.
+- **The rendered camera works headless on Linux, not on macOS.** Upstream starts the eye-camera render only under the viewer; the bridge's launcher starts it itself for a headless run wherever MuJoCo can draw without a display — on Linux, through Mesa's EGL (`MUJOCO_GL` defaulted to `egl`; `osmesa` works too if the environment names it; the `libegl1` / `libgl1-mesa-dri` packages, or `libosmesa6`), so a Linux headless sim serves frames and the face tests run on a CI runner ([specs/daemon/sim_daemon.md](../specs/daemon/sim_daemon.md) "The headless camera"). On macOS the only GL context is the window server's, so `get_frame()` returns `None` headless: use the viewer mode for the camera there — or a webcam (below), which works headless on either. A render context that cannot be created logs one `ERROR` and the daemon runs on without a camera.
 
 ### Headfull / viewer sim — local (adds camera, watchable)
 
-Drop `--headless` to open the MuJoCo viewer. The viewer supplies a **GL context** (so `get_frame()` works) and lets you watch the sim as a robot stand-in. It needs an **interactive GUI session**; on **macOS** it must run under `mjpython`:
+Drop `--headless` to open the MuJoCo viewer. The viewer supplies a **GL context** (so `get_frame()` works on every platform) and lets you watch the sim as a robot stand-in. It needs an **interactive GUI session**; on **macOS** it must run under `mjpython` (on Linux the plain interpreter opens it, and the bridge's launch command uses that):
 
 ```
 mjpython -m reachy_mini_bridge.sim_daemon --scene minimal --preload-datasets

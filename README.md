@@ -278,7 +278,7 @@ Two keys are **reserved**: `use_sim` (derived from `backend`) and `spawn_daemon`
 | Field | Default | What it does |
 |---|---|---|
 | `spawn` | `"never"` | `"never"`: only connect, to a daemon you run (what a wireless robot needs). `"auto"`: reuse one already listening at `host:port`, else start one and stop it on exit. `"always"`: insist on starting one — a port already in use is an error |
-| `headless` | `true` | *sim only.* `true` runs MuJoCo with no window (motion and audio, no rendered camera). `false` opens the **viewer** under `mjpython`, so you watch the robot and the `sim` camera works; needs an unlocked GUI session |
+| `headless` | `true` | *sim only.* `true` runs MuJoCo with no window: motion and audio, and on Linux the rendered camera too (offscreen through EGL); on macOS no camera. `false` opens the **viewer** (under `mjpython` on macOS), so you watch the robot and the `sim` camera works everywhere; needs an unlocked GUI session |
 | `scene` | `null` | *sim only.* An upstream scene name (`"empty"`, `"minimal"`), or the path of a scene `.xml` for the bridge's launcher — how the test scene's portrait gets loaded ([specs/testing/sim_scene.md](specs/testing/sim_scene.md)) |
 | `camera` | `{"source": "sim"}` | *sim only.* What the sim's camera shows — see the table below |
 | `preload_datasets` | `true` | Downloads the recorded-move datasets in the background at startup, so the first `play_emotion` doesn't wait on a download. Readiness isn't delayed either way |
@@ -290,7 +290,7 @@ Two keys are **reserved**: `use_sim` (derived from `backend`) and `spawn_daemon`
 
 | Field | Default | What it does |
 |---|---|---|
-| `source` | `"sim"` | `"sim"` renders the scene from the robot's eye camera (viewer only). `"webcam"` relays your computer's camera instead, so the person in front of the screen is who the simulated robot sees and follows — headless or viewer |
+| `source` | `"sim"` | `"sim"` renders the scene from the robot's eye camera (the viewer, or headless on Linux). `"webcam"` relays your computer's camera instead, so the person in front of the screen is who the simulated robot sees and follows — headless or viewer |
 | `device` | `null` | *webcam only.* `null` is the default camera; an integer is a macOS device index, a string a Linux device path (`/dev/video0`) |
 | `hfov_deg` | `70.0` | *webcam only.* The camera's horizontal field of view in degrees, which the tracker's intrinsics derive from — match it to your camera for an accurate aim |
 
