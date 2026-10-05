@@ -320,6 +320,47 @@ def test_a_daemon_that_cannot_start_skips(monkeypatch: pytest.MonkeyPatch):
         next(_daemon.managed_daemon("real"))
 
 
+# --- camera capability probe: through the bridge's feed, never beside it ---
+
+
+def test_camera_probe_reads_the_bridges_feed_and_never_get_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The feed is the one reader of upstream's one-shot `get_frame()`; a probe calling it
+    beside the feed's thread would starve one or the other (specs/vision/camera.md)."""
+    monkeypatch.setattr(fixtures, "_CAMERA_PROBE_TIMEOUT", 0.5)
+    monkeypatch.setattr(fixtures, "_AUDIO_PROBE_TIMEOUT", 0.05)
+
+    class _Media:
+        def get_frame(self) -> None:
+            raise AssertionError("the probe must not read get_frame() beside the feed")
+
+        def get_audio_sample(self) -> None:
+            return None
+
+    robot = SimpleNamespace(
+        client=SimpleNamespace(get_status=lambda: SimpleNamespace(backend_status={})),
+        media=_Media(),
+    )
+    calls = {"n": 0}
+
+    class _Feed:
+        def latest(self) -> object | None:
+            calls["n"] += 1
+            return None if calls["n"] < 3 else object()  # the third read has a frame
+
+    caps = fixtures._probe_capabilities(robot, None, _Feed())  # type: ignore[arg-type]
+    assert "camera" in caps and "motion" in caps and "audio" not in caps
+
+    class _NoFrames:
+        def latest(self) -> None:
+            return None
+
+    assert "camera" not in fixtures._probe_capabilities(robot, None, _NoFrames())  # type: ignore[arg-type]
+    # No feed given (a caller probing a bare robot): the capability is not claimed.
+    assert "camera" not in fixtures._probe_capabilities(robot, None)  # type: ignore[arg-type]
+
+
 # --- faces capability probe ---
 
 

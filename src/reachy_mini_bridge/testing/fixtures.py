@@ -46,10 +46,14 @@ from reachy_mini_bridge.testing.sim_scene import SimSceneClient
 from reachy_mini_bridge.testing.support import BridgeLoop, LiveBridge, requires_caps
 
 _AUDIO_PROBE_TIMEOUT = 5.0
-# A fresh session's first frame usually arrives within a second on the viewer, but can take
-# more than two on a daemon that has already served sessions (measured 2026-10-05: a 2 s
-# wait lost the camera for one module in seven); the probe runs once per run, so 5 s is
-# cheap. Headless no frame ever comes.
+# The camera probe reads the bridge's camera feed — the one reader of upstream's one-shot
+# `get_frame()` (specs/vision/camera.md) — never `get_frame()` itself: the feed's thread
+# loops that call from the moment the bridge starts, and two readers of it starve each
+# other silently (measured 2026-10-05: probing `get_frame()` beside the feed lost the
+# camera for one CI run in two, for the whole run — the probe runs once per run). A
+# fresh session's first frame usually arrives within a second, more than two on a daemon
+# that has served sessions before; 5 s is cheap once per run. Headless on macOS no frame
+# ever comes.
 _CAMERA_PROBE_TIMEOUT = 5.0
 
 
@@ -76,13 +80,14 @@ def _probe_audio(media: Any) -> bool:
         return False
 
 
-def _probe_camera(media: Any) -> bool:
-    """True if a camera frame comes back within the timeout (needs a GL context)."""
+def _probe_camera(feed: Any) -> bool:
+    """True if the bridge's camera feed publishes a frame within the timeout (the sim
+    needs a GL context for one; a robot always has one). Read on the feed, the one reader
+    of upstream's ``get_frame()`` — never on ``get_frame()`` beside it."""
     try:
         deadline = time.monotonic() + _CAMERA_PROBE_TIMEOUT
         while time.monotonic() < deadline:
-            frame = media.get_frame()
-            if frame is not None and getattr(frame, "size", 1) > 0:
+            if feed.latest() is not None:
                 return True
             time.sleep(0.1)
         return False
@@ -126,7 +131,9 @@ def _probe_face_markers(host: str, port: int) -> bool:
 
 
 def _probe_capabilities(
-    robot: AnyReachyMini, address: tuple[str, int] | None = None
+    robot: AnyReachyMini,
+    address: tuple[str, int] | None = None,
+    camera: Any = None,
 ) -> frozenset[str]:
     """Probe what the live daemon can actually do — never inferred from backend type.
 
@@ -148,7 +155,7 @@ def _probe_capabilities(
     media: Any = robot.media
     if _probe_audio(media):
         caps.add("audio")
-    if _probe_camera(media):
+    if camera is not None and _probe_camera(camera):
         caps.add("camera")
     if _probe_gravity_compensation(robot):
         caps.add("gravity_compensation")
@@ -163,7 +170,7 @@ _PROBED: dict[tuple[str, int], frozenset[str]] = {}
 
 
 def probed_capabilities(
-    robot: AnyReachyMini, address: tuple[str, int]
+    robot: AnyReachyMini, address: tuple[str, int], camera: Any = None
 ) -> frozenset[str]:
     """The capabilities of the daemon at ``address``, probed once per ``pytest`` run — on
     the first bridge session over it — and reused by every later session on it: they are
@@ -171,7 +178,7 @@ def probed_capabilities(
     displays), not a session's, and probing them again on every module would only add
     the probes' waits to every file's setup (specs/testing/testing.md "The harness")."""
     if address not in _PROBED:
-        _PROBED[address] = _probe_capabilities(robot, address)
+        _PROBED[address] = _probe_capabilities(robot, address, camera)
     return _PROBED[address]
 
 
@@ -249,7 +256,7 @@ def live_bridge(
     with BridgeLoop() as loop:
         loop.run(bridge.start())
         try:
-            caps = probed_capabilities(bridge.robot, (host, port))
+            caps = probed_capabilities(bridge.robot, (host, port), bridge.camera)
             yield LiveBridge(bridge, caps, loop)
         finally:
             loop.run(bridge.stop())
