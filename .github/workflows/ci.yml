@@ -121,7 +121,11 @@ jobs:
         # The cloud TTS keys, when the repository holds them as secrets: the two cloud
         # `say` tests run; absent (or on a fork's pull request, which never receives a
         # secret) the variables are empty and the tests skip (specs/testing/ci.md).
+        # The capabilities this runner is provisioned for: a sim that comes up without
+        # its camera (the EGL render), its audio (the null sink) or at all fails the job
+        # instead of skipping the files that need them (specs/testing/ci.md).
         env:
+          REACHY_MINI_E2E_REQUIRED_CAPS: motion,audio,camera,faces
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           GRADIUM_API_KEY: ${{ secrets.GRADIUM_API_KEY }}
         # Warnings and errors logged while the tier runs — the spawned daemon's own lines

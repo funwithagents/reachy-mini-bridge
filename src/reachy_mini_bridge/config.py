@@ -256,8 +256,12 @@ class DaemonConfig:
         if not isinstance(preload, bool):
             raise ConfigError("'daemon.preload_datasets' must be a boolean")
         timeout = block.get("startup_timeout", 45.0)
-        if not _is_number(timeout) or timeout <= 0:
-            raise ConfigError("'daemon.startup_timeout' must be a positive number")
+        # Finite as well as positive: Python's JSON parser accepts `Infinity` / `NaN`,
+        # and either would make the readiness deadline unreachable (specs/core/config.md).
+        if not _is_number(timeout) or not math.isfinite(timeout) or timeout <= 0:
+            raise ConfigError(
+                "'daemon.startup_timeout' must be a positive finite number"
+            )
         return cls(
             spawn=spawn,
             headless=headless,

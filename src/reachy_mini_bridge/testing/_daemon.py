@@ -7,12 +7,18 @@ daemon work to the library's [daemon.py](../daemon.py) (specs/daemon/daemon.md):
 already ready at the address (never torn down), else spawn one and own its teardown — a
 MuJoCo daemon for `sim`, the hardware daemon for `real` on a loopback address (a USB robot
 on this machine; a remote `real` address skips) — translating a `DaemonError` into a
-`pytest.skip` so the live tier skips, never fails, when the environment can't provide one.
+`pytest.skip` so the live tier skips, never fails, when the environment can't provide one —
+unless `REACHY_MINI_E2E_REQUIRED_CAPS` names capabilities the run must have, in which case
+an environment that cannot provide the daemon *fails* (specs/testing/testing_support.md
+"Configuration via the environment"). Also the `robot` block the harness's bridges connect
+with (`robot_options`): its `media_backend` follows the host's locality — `"local"` on a
+loopback address, upstream's `"default"` auto-detection (WebRTC for a network client)
+elsewhere — or `REACHY_MINI_E2E_MEDIA_BACKEND`.
 
 Kept out of `fixtures.py` so the plugin module reads as the fixture surface. The names
-used by `fixtures.py` (`target`, `backend`, `address`, `sim_displays`,
-`managed_daemon`) are
-un-underscored; the rest stays module-private.
+used by `fixtures.py` (`target`, `backend`, `address`, `robot_options`,
+`required_capabilities`, `sim_displays`, `managed_daemon`) are un-underscored; the rest
+stays module-private.
 """
 
 from __future__ import annotations
@@ -22,6 +28,7 @@ import shutil
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
+from typing import NoReturn
 
 import pytest
 
@@ -59,6 +66,47 @@ def address() -> tuple[str, int]:
     host = os.environ.get("REACHY_MINI_HOST", _DEFAULT_HOST)
     port = int(os.environ.get("REACHY_MINI_PORT", str(_DEFAULT_PORT)))
     return host, port
+
+
+def media_backend(host: str) -> str:
+    """The `media_backend` the harness connects with at `host`: `REACHY_MINI_E2E_MEDIA_BACKEND`
+    when set, else `"local"` on a loopback address — the IPC media path a daemon on this
+    machine serves — and upstream's `"default"` elsewhere, which for a network client
+    auto-detects to the WebRTC streaming path a wireless robot's daemon serves."""
+    override = os.environ.get("REACHY_MINI_E2E_MEDIA_BACKEND", "").strip()
+    if override:
+        return override
+    return "local" if host in LOOPBACK_HOSTS else "default"
+
+
+def robot_options(host: str, port: int) -> dict[str, object]:
+    """The `robot` block (upstream `ReachyMini(...)` kwargs, specs/core/config.md) of every
+    bridge the harness builds: a network client of the daemon at `host:port`, its media
+    backend by locality (`media_backend`)."""
+    return {
+        "connection_mode": "network",
+        "host": host,
+        "port": port,
+        "media_backend": media_backend(host),
+    }
+
+
+def required_capabilities() -> frozenset[str]:
+    """The capabilities the run must probe, from `REACHY_MINI_E2E_REQUIRED_CAPS` (comma-
+    separated, case-insensitive; unset or empty: none). Where one is missing the harness
+    fails instead of skipping — the knob CI sets so a sim that comes up without its camera
+    or its audio turns the job red (specs/testing/ci.md)."""
+    raw = os.environ.get("REACHY_MINI_E2E_REQUIRED_CAPS", "")
+    return frozenset(name.strip().lower() for name in raw.split(",") if name.strip())
+
+
+def _unavailable(reason: str) -> NoReturn:
+    """Leave the live tier: a skip, or a failure when the run requires capabilities (an
+    environment that cannot provide the daemon provides none of them)."""
+    required = required_capabilities()
+    if required:
+        pytest.fail(f"{reason} — and this run requires {', '.join(sorted(required))}")
+    pytest.skip(reason)
 
 
 def _sim_viewer() -> bool:
@@ -101,9 +149,10 @@ def managed_daemon(target_: str) -> Iterator[tuple[str, int]]:
     spawns one through `reachy_mini_bridge.daemon.managed_daemon` and owns its teardown:
     a MuJoCo daemon for `sim` (on the bridge's test scene, see `_test_scene`), the hardware daemon for `real` — only on a loopback address
     (a USB robot on this machine; the harness never starts a daemon elsewhere, so a remote
-    `real` address skips). Skips cleanly (never fails) when the launcher / sim extra is
-    missing, the port is busy with something else, no robot answers, or the daemon can't
-    become ready in time.
+    `real` address skips). Skips cleanly when the launcher / sim extra is missing, the port
+    is busy with something else, no robot answers, or the daemon can't become ready in
+    time — and fails instead when `REACHY_MINI_E2E_REQUIRED_CAPS` names capabilities
+    (`_unavailable`).
     """
     host, port = address()
 
@@ -114,13 +163,16 @@ def managed_daemon(target_: str) -> Iterator[tuple[str, int]]:
 
     if target_ == "real":
         if host not in LOOPBACK_HOSTS:
-            pytest.skip(f"no reachable real Reachy Mini daemon at {host}:{port}")
+            _unavailable(f"no reachable real Reachy Mini daemon at {host}:{port}")
         config = DaemonConfig(spawn="auto")
         backend_ = "real"
         with _spawned(config, host, port, backend_) as handle:
             yield handle
         return
-    pytest.importorskip("mujoco", reason="sim extra (mujoco) not installed")
+    try:
+        import mujoco  # noqa: F401 - the sim extra, which the launcher needs
+    except ImportError:
+        _unavailable("sim extra (mujoco) not installed")
     with _test_scene() as scene:
         config = DaemonConfig(
             spawn="auto",
@@ -142,4 +194,4 @@ def _spawned(
         ) as handle:
             yield handle.host, handle.port
     except DaemonError as e:
-        pytest.skip(str(e))
+        _unavailable(str(e))

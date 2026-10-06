@@ -31,7 +31,10 @@ from reachy_mini_bridge import ReachyMiniConfig
 from reachy_mini_bridge.bridge import ReachyMiniBridge
 from reachy_mini_bridge.config import FaceDetectionSettings, MotionSettings
 from reachy_mini_bridge.testing import BridgeLoop, LiveBridge, _daemon, requires_caps
-from reachy_mini_bridge.testing.fixtures import probed_capabilities
+from reachy_mini_bridge.testing.fixtures import (
+    check_required_capabilities,
+    probed_capabilities,
+)
 from reachy_mini_bridge.testing.gaze import (
     LATERAL_M,
     Track,
@@ -57,12 +60,7 @@ def live_bridge_custom_faces(
     bridge = ReachyMiniBridge(
         ReachyMiniConfig(
             backend=_daemon.backend(),
-            robot={
-                "connection_mode": "network",
-                "host": host,
-                "port": port,
-                "media_backend": "local",
-            },
+            robot=_daemon.robot_options(host, port),
             face_detection=FaceDetectionSettings(
                 detector="custom", enabled=True, face_detector=YuNetDetector
             ),
@@ -73,6 +71,7 @@ def live_bridge_custom_faces(
         loop.run(bridge.start())
         try:
             caps = probed_capabilities(bridge.robot, (host, port))
+            check_required_capabilities(caps)
             yield LiveBridge(bridge, caps, loop)
         finally:
             loop.run(bridge.stop())

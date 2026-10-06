@@ -170,6 +170,19 @@ def _probe_capabilities(
 _PROBED: dict[tuple[str, int], frozenset[str]] = {}
 
 
+def check_required_capabilities(caps: frozenset[str]) -> None:
+    """Fail — not skip — when the run requires a capability (`REACHY_MINI_E2E_REQUIRED_CAPS`)
+    the daemon did not probe; a no-op when none is required. Called by every harness
+    fixture right after its probe, so a CI sim that comes up without its camera or its
+    audio turns the job red instead of green-with-skips (specs/testing/ci.md)."""
+    missing = sorted(_daemon.required_capabilities() - caps)
+    if missing:
+        pytest.fail(
+            f"the target lacks required capability/ies: {', '.join(missing)} "
+            f"(probed: {', '.join(sorted(caps)) or 'none'})"
+        )
+
+
 def probed_capabilities(
     robot: AnyReachyMini, address: tuple[str, int], camera: CameraFeed | None = None
 ) -> frozenset[str]:
@@ -235,7 +248,8 @@ def live_bridge(
     # Build the bridge on the target's own backend (`sim`/`real`) with the daemon left to
     # this harness (`daemon.spawn` stays "never"): the bridge connects as a plain network
     # client to the daemon `_live_daemon` already manages — the run's one daemon, this
-    # module's own session over it. See `_daemon.backend` for why the label is safe here.
+    # module's own session over it — its media backend by the host's locality
+    # (`_daemon.robot_options`). See `_daemon.backend` for why the label is safe here.
     # The live tier's subject is the robot that follows a face, so the config names the
     # shipped `yunet` detector with detection and tracking on (the defaults run no
     # detector — specs/vision/user_perception.md "Configuration"). The model downloads into the
@@ -243,12 +257,7 @@ def live_bridge(
     bridge = ReachyMiniBridge(
         ReachyMiniConfig(
             backend=_daemon.backend(),
-            robot={
-                "connection_mode": "network",
-                "host": host,
-                "port": port,
-                "media_backend": "local",
-            },
+            robot=_daemon.robot_options(host, port),
             face_detection=FaceDetectionSettings(detector="yunet", enabled=True),
             motion=MotionSettings(tracking=True),
             daemon=_bridge_daemon_config(),
@@ -258,6 +267,7 @@ def live_bridge(
         loop.run(bridge.start())
         try:
             caps = probed_capabilities(bridge.robot, (host, port), bridge.camera)
+            check_required_capabilities(caps)
             yield LiveBridge(bridge, caps, loop)
         finally:
             loop.run(bridge.stop())

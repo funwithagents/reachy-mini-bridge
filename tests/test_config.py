@@ -274,6 +274,9 @@ def test_audio_xvf3800_shape() -> None:
         {"startup_timeout": 0},
         {"startup_timeout": True},
         {"startup_timeout": "45"},
+        {"startup_timeout": float("inf")},
+        {"startup_timeout": float("-inf")},
+        {"startup_timeout": float("nan")},
         {"scene": ""},
         {"scene": 3},
     ],
@@ -281,6 +284,18 @@ def test_audio_xvf3800_shape() -> None:
 def test_daemon_field_types(daemon: dict[str, object]) -> None:
     with pytest.raises(ConfigError, match="daemon"):
         ReachyMiniConfig.from_dict({"backend": "sim", "daemon": daemon})
+
+
+@pytest.mark.parametrize("spelling", ["Infinity", "-Infinity", "NaN"])
+def test_a_non_finite_startup_timeout_in_json_is_rejected(spelling: str) -> None:
+    """Python's JSON parser accepts these non-standard numbers; a deadline built from
+    one is never reached, so the config refuses them (specs/core/config.md)."""
+    text = f'{{"backend": "sim", "daemon": {{"startup_timeout": {spelling}}}}}'
+    with pytest.raises(ConfigError, match="startup_timeout.*finite"):
+        ReachyMiniConfig.from_json(text)
+    assert ReachyMiniConfig.from_json(
+        '{"backend": "sim", "daemon": {"startup_timeout": 12.5}}'
+    ).daemon.startup_timeout == pytest.approx(12.5)
 
 
 def test_daemon_camera_defaults_to_the_rendered_eye_camera() -> None:

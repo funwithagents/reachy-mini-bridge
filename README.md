@@ -284,7 +284,7 @@ Two keys are **reserved**: `use_sim` (derived from `backend`) and `spawn_daemon`
 | `scene` | `null` | *sim only.* An upstream scene name (`"empty"`, `"minimal"`), or the path of a scene `.xml` for the bridge's launcher — how the test scene's portrait gets loaded ([specs/testing/sim_scene.md](specs/testing/sim_scene.md)) |
 | `camera` | `{"source": "sim"}` | *sim only.* What the sim's camera shows — see the table below |
 | `preload_datasets` | `true` | Downloads the recorded-move datasets in the background at startup, so the first `play_emotion` doesn't wait on a download. Readiness isn't delayed either way |
-| `startup_timeout` | `45.0` | Seconds to wait for a spawned daemon to become ready |
+| `startup_timeout` | `45.0` | Seconds to wait for a spawned daemon to become ready (a positive, finite number) |
 
 `spawn` other than `"never"` needs `backend` `"sim"` or `"real"` (`fake` has no daemon). On `real` it starts the hardware daemon of a robot plugged into **this machine** over USB — it wakes the robot, and puts it to sleep on exit. `headless`, `scene` and `camera` are MuJoCo knobs and play no part on `real`.
 
@@ -386,7 +386,7 @@ def test_it_speaks(live_bridge):
     live_bridge.run(bridge.say("hello", my_synth))  # every bridge call runs on the harness's loop
 ```
 
-The `live_bridge` fixture borrows a running daemon or spawns one for the whole run (sim, or a USB-connected robot's) — one bridge session per test file over it — probes what actually works (`motion`, `audio`, `camera`, `gravity_compensation`, `faces`), and skips rather than fails when it can't. The sim it spawns runs the bridge's test scene — a portrait hidden until a test shows it (the `sim_scene` fixture) — so with the viewer (`REACHY_MINI_E2E_SIM_VIEWER=1`) face tracking and the hand-back to the idle motion are tested without a person ([specs/testing/sim_scene.md](specs/testing/sim_scene.md)). Full guide: [docs/testing-with-the-bridge.md](docs/testing-with-the-bridge.md).
+The `live_bridge` fixture borrows a running daemon or spawns one for the whole run (sim, or a USB-connected robot's) — one bridge session per test file over it — probes what actually works (`motion`, `audio`, `camera`, `gravity_compensation`, `faces`), and skips rather than fails when it can't — unless `REACHY_MINI_E2E_REQUIRED_CAPS` names capabilities the run must have, which is how the bridge's CI fails on a sim that comes up without its camera. The sim it spawns runs the bridge's test scene — a portrait hidden until a test shows it (the `sim_scene` fixture) — so with the viewer (`REACHY_MINI_E2E_SIM_VIEWER=1`) face tracking and the hand-back to the idle motion are tested without a person ([specs/testing/sim_scene.md](specs/testing/sim_scene.md)). Full guide: [docs/testing-with-the-bridge.md](docs/testing-with-the-bridge.md).
 
 ## Development
 

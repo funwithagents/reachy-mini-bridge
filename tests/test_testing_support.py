@@ -275,12 +275,103 @@ def test_real_target_borrows_a_ready_daemon(monkeypatch: pytest.MonkeyPatch):
 def test_real_target_skips_a_remote_address_without_spawning(
     monkeypatch: pytest.MonkeyPatch,
 ):
+    monkeypatch.delenv("REACHY_MINI_E2E_REQUIRED_CAPS", raising=False)
     monkeypatch.setenv("REACHY_MINI_HOST", "192.168.1.5")
     spawns = _RecordedSpawns()
     _patch_lifecycle(monkeypatch, ready=False, spawns=spawns)
     with pytest.raises(pytest.skip.Exception, match="192.168.1.5"):
         next(_daemon.managed_daemon("real"))
     assert spawns.calls == []
+
+
+def test_a_remote_real_address_fails_when_capabilities_are_required(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("REACHY_MINI_E2E_REQUIRED_CAPS", "motion")
+    monkeypatch.setenv("REACHY_MINI_HOST", "192.168.1.5")
+    spawns = _RecordedSpawns()
+    _patch_lifecycle(monkeypatch, ready=False, spawns=spawns)
+    with pytest.raises(pytest.fail.Exception, match="192.168.1.5.*requires motion"):
+        next(_daemon.managed_daemon("real"))
+    assert spawns.calls == []
+
+
+@pytest.mark.parametrize("required", ["", "camera, audio"])
+def test_a_daemon_that_cannot_come_up_skips_or_fails_as_required(
+    monkeypatch: pytest.MonkeyPatch, required: str
+):
+    """An unavailable daemon provides no capability: a skip by default, a failure once
+    the run requires any (the CI knob — specs/testing/ci.md)."""
+    monkeypatch.setenv("REACHY_MINI_E2E_REQUIRED_CAPS", required)
+    monkeypatch.delenv("REACHY_MINI_HOST", raising=False)
+    spawns = _RecordedSpawns(error=DaemonError("real daemon exited during startup"))
+    _patch_lifecycle(monkeypatch, ready=False, spawns=spawns)
+    outcome = pytest.fail.Exception if required else pytest.skip.Exception
+    with pytest.raises(outcome, match="exited during startup") as info:
+        next(_daemon.managed_daemon("real"))
+    assert spawns.calls == [("real", "127.0.0.1", 8000)]
+    assert ("requires audio, camera" in str(info.value)) is bool(required)
+
+
+def test_required_capabilities_parse_the_environment(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("REACHY_MINI_E2E_REQUIRED_CAPS", raising=False)
+    assert _daemon.required_capabilities() == frozenset()
+    monkeypatch.setenv("REACHY_MINI_E2E_REQUIRED_CAPS", " , ")
+    assert _daemon.required_capabilities() == frozenset()
+    monkeypatch.setenv("REACHY_MINI_E2E_REQUIRED_CAPS", "Motion, audio ,CAMERA,faces,")
+    assert _daemon.required_capabilities() == frozenset(
+        {"motion", "audio", "camera", "faces"}
+    )
+
+
+def test_check_required_capabilities_fails_naming_the_missing_ones(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.delenv("REACHY_MINI_E2E_REQUIRED_CAPS", raising=False)
+    fixtures.check_required_capabilities(frozenset())  # nothing required: a no-op
+    monkeypatch.setenv("REACHY_MINI_E2E_REQUIRED_CAPS", "motion,audio,camera,faces")
+    fixtures.check_required_capabilities(
+        frozenset({"motion", "audio", "camera", "faces", "face_markers"})
+    )
+    with pytest.raises(
+        pytest.fail.Exception, match=r"camera, faces \(probed: audio, motion\)"
+    ):
+        fixtures.check_required_capabilities(frozenset({"motion", "audio"}))
+    with pytest.raises(pytest.fail.Exception, match=r"probed: none"):
+        fixtures.check_required_capabilities(frozenset())
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "::1"])
+def test_robot_options_use_local_media_on_a_loopback_host(
+    monkeypatch: pytest.MonkeyPatch, host: str
+):
+    monkeypatch.delenv("REACHY_MINI_E2E_MEDIA_BACKEND", raising=False)
+    assert _daemon.robot_options(host, 8010) == {
+        "connection_mode": "network",
+        "host": host,
+        "port": 8010,
+        "media_backend": "local",
+    }
+
+
+def test_robot_options_leave_media_to_upstream_on_a_remote_host(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A wireless robot's daemon serves no local IPC media path: the harness hands
+    upstream its `default`, which a network client auto-detects to WebRTC."""
+    monkeypatch.delenv("REACHY_MINI_E2E_MEDIA_BACKEND", raising=False)
+    options = _daemon.robot_options("192.168.1.5", 8000)
+    assert options["media_backend"] == "default"
+    assert (options["host"], options["port"]) == ("192.168.1.5", 8000)
+    assert ReachyMiniConfig(backend="real", robot=options).robot == options
+
+
+def test_an_explicit_media_backend_overrides_the_locality_rule(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("REACHY_MINI_E2E_MEDIA_BACKEND", " no_media ")
+    assert _daemon.robot_options("127.0.0.1", 8000)["media_backend"] == "no_media"
+    assert _daemon.robot_options("192.168.1.5", 8000)["media_backend"] == "no_media"
 
 
 @pytest.mark.parametrize("viewer", [False, True])

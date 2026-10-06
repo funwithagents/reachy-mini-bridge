@@ -170,6 +170,8 @@ The `live_bridge` fixture reads the same knobs the bridge's own tier uses:
 | `REACHY_MINI_HOST` | `127.0.0.1` | daemon host (borrow one already running, or your robot; loopback lets the harness start a USB robot's daemon) |
 | `REACHY_MINI_PORT` | `8000` | daemon port |
 | `REACHY_MINI_E2E_SIM_VIEWER` | unset | `1` to launch the headfull MuJoCo viewer (local; needs a GUI/GL context) |
+| `REACHY_MINI_E2E_REQUIRED_CAPS` | unset | comma-separated capabilities the run must have (`motion,audio,camera,faces` in the bridge's CI): a missing one, or a daemon the harness cannot bring up, **fails** the fixture instead of skipping |
+| `REACHY_MINI_E2E_MEDIA_BACKEND` | by host | the `media_backend` the fixture's bridge connects with; by default `local` on a loopback host and upstream's `default` (WebRTC) for a remote robot |
 
 **Testing tracking without a person.** Every sim the harness spawns runs the bridge's test
 scene: upstream's empty scene plus a pool of portraits (`face_1` … `face_3`) that stay hidden until a test spawns them, so
@@ -228,8 +230,12 @@ webcam as the robot's camera ([running-the-sim-daemon.md](running-the-sim-daemon
 `sim`, and for `real` on a loopback address (a robot plugged into this machine over USB)
 the hardware daemon (upstream's `reachy-mini-daemon`, run through the bridge's real daemon launcher — [../specs/daemon/real_daemon.md](../specs/daemon/real_daemon.md)), which finds the robot's serial port itself, wakes
 the robot, and puts it to sleep when the fixture stops it. A wireless robot runs its own
-daemon: point `REACHY_MINI_HOST` at it. When it can't bring one up (missing sim extra, busy
-port, no robot answering), the test **skips** rather than failing.
+daemon: point `REACHY_MINI_HOST` at it — the fixture then leaves the media backend to
+upstream's default, the WebRTC stream the robot serves (a local daemon gets the IPC path,
+`media_backend="local"`). When it can't bring one up (missing sim extra, busy port, no robot
+answering), the test **skips** rather than failing — unless `REACHY_MINI_E2E_REQUIRED_CAPS`
+names capabilities the run must have, in which case it fails, as it does when a required
+capability isn't probed (what the bridge's CI does with `motion,audio,camera,faces`).
 
 **Gravity compensation** needs the daemon's Placo kinematics engine. Install
 `reachy-mini[placo_kinematics]` and a harness-spawned `real` daemon uses it automatically; a
