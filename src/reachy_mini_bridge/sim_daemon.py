@@ -884,7 +884,10 @@ def _parser(prog: str) -> argparse.ArgumentParser:
         "--camera",
         choices=CAMERA_SOURCES,
         default="sim",
-        help="sim: the rendered eye camera (viewer only); webcam: a host camera",
+        help=(
+            "sim: the rendered eye camera (the viewer, or headless on Linux); "
+            "webcam: a host camera"
+        ),
     )
     parser.add_argument(
         "--webcam-device",

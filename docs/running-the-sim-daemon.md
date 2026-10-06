@@ -85,7 +85,7 @@ write_test_scene("/tmp/scene")  # -> /tmp/scene/scene.xml (the face starts hidde
 mjpython -m reachy_mini_bridge.testing.sim_scene --scene-path /tmp/scene/scene.xml --preload-datasets
 ```
 
-It is the sim daemon launcher with the scene added; a bridge configured with the `yunet` detector then finds the face in the rendered camera and the head converges on it. Then, from any process: `SimSceneClient().show("face_1")` to bring it into view, `.place("face_1", (0.45, 0.15, 0.20), duration=1.5)` to move it, `.hide("face_1")` to take it away again — or `curl -X POST localhost:8000/api/sim/inject/bodies/face_1 -H 'Content-Type: application/json' -d '{"visible": true}'`. A `ReachyMiniConfig` whose `daemon.scene` is that `.xml` path does the launch for you (`"headless": false` — the face needs the viewer's camera to be seen). The e2e harness runs every sim it spawns on this scene.
+It is the sim daemon launcher with the scene added; a bridge configured with the `yunet` detector then finds the face in the rendered camera and the head converges on it. Then, from any process: `SimSceneClient().show("face_1")` to bring it into view, `.place("face_1", (0.45, 0.15, 0.20), duration=1.5)` to move it, `.hide("face_1")` to take it away again — or `curl -X POST localhost:8000/api/sim/inject/bodies/face_1 -H 'Content-Type: application/json' -d '{"visible": true}'`. A `ReachyMiniConfig` whose `daemon.scene` is that `.xml` path does the launch for you (`"headless": false` on macOS, where only the viewer has a camera to see the face with; on Linux a headless daemon renders it offscreen). The e2e harness runs every sim it spawns on this scene.
 
 ### You in front of the sim (a webcam as the camera)
 
@@ -102,15 +102,15 @@ On macOS the app that launched the daemon (your terminal, or VS Code) needs **Ca
 
 ### Real robot
 
-A wireless robot runs its own daemon — nothing to start. Point the client at it (`connection_mode="network"`, the robot's host); everything is available, including **hardware** AEC, camera, and DoA.
+A wireless robot runs its own daemon — nothing to start. Point the client at it (`connection_mode="network"`, the robot's host, `media_backend` left at upstream's default: a network client streams the camera and the audio over WebRTC). Upstream serves everything there — **hardware** AEC, camera and DoA included; the bridge itself is not validated on a wireless robot yet (the README's support status).
 
-A robot plugged into this machine over USB (Reachy Mini Lite) needs the daemon running here:
+A robot plugged into this machine over USB (Reachy Mini Lite) needs the daemon running here — the bridge's launcher:
 
 ```
-reachy-mini-daemon --kinematics-engine Placo --preload-datasets
+uv run python -m reachy_mini_bridge.real_daemon --kinematics-engine Placo --preload-datasets
 ```
 
-It finds the robot's serial port itself, wakes the robot on start and puts it to sleep on stop (about 8 s). Pass `--kinematics-engine Placo` only with `reachy-mini[placo_kinematics]` installed — gravity compensation needs it. A `ReachyMiniConfig` with `"backend": "real"` and `"daemon": {"spawn": "auto"}` runs this for you.
+It is upstream's `reachy-mini-daemon` run in-process with the bridge's macOS camera check ([../specs/daemon/real_daemon.md](../specs/daemon/real_daemon.md)): upstream opens the camera by a device index that moves between runs, and the launcher reads back which device opened and rebuilds the pipeline until it is the robot's camera; flags it does not know go to upstream unchanged. It finds the robot's serial port itself, wakes the robot on start and puts it to sleep on stop (about 8 s). Pass `--kinematics-engine Placo` only with `reachy-mini[placo_kinematics]` installed — gravity compensation needs it. A `ReachyMiniConfig` with `"backend": "real"` and `"daemon": {"spawn": "auto"}` runs exactly this for you. Running `reachy-mini-daemon` directly is a different route: the stock daemon, without the camera check.
 
 ## Linux
 
@@ -122,7 +122,11 @@ A daemon on a Linux machine — this sim, or a Lite plugged in over USB — need
 from reachy_mini_bridge.robot import build_robot
 
 with build_robot(
-    "real", connection_mode="network", host="127.0.0.1", port=8000
+    "real",
+    connection_mode="network",
+    host="127.0.0.1",
+    port=8000,
+    media_backend="local",  # a daemon on this machine serves the IPC media path
 ) as robot:
     ...
 ```

@@ -135,7 +135,7 @@ daemon at setup:
 | `audio` | recording yields a mic sample (a sound device — or a PulseAudio null sink, below) | ✅ | ✅ | ✅ |
 | `camera` | a camera frame comes back (needs a GL context) | ✅ Linux (rendered offscreen through EGL) · ❌ macOS | ✅ | ✅ |
 | `gravity_compensation` | hardware daemon on the Placo kinematics engine | ❌ | ❌ | ✅ with `reachy-mini[placo_kinematics]` |
-| `faces` | the daemon runs the bridge's test scene (every sim the harness spawns does), which has a pool of portraits (bodies of kind `face`) — hidden until spawned; the bridge's `yunet` detector, which `live_bridge` configures, finds it in the rendered camera | ✅ (nothing looks at it: no camera) | ✅ | ❌ |
+| `faces` | the daemon runs the bridge's test scene (every sim the harness spawns does), which has a pool of portraits (bodies of kind `face`) — hidden until spawned; the bridge's `yunet` detector, which `live_bridge` configures, finds it in the rendered camera | ✅ (on macOS nothing looks at it: no camera) | ✅ | ❌ |
 | `face_markers` | the daemon draws the faces the bridge sends it and returns them (`/api/sim/displays/face_markers`): every viewer sim the harness spawns; a test reads back where the bridge placed a face | ❌ no viewer | ✅ | ❌ |
 | `doa` | mic-array direction of arrival | ❌ | ❌ | ✅ (reserved) |
 
@@ -175,9 +175,9 @@ The `live_bridge` fixture reads the same knobs the bridge's own tier uses:
 
 **Testing tracking without a person.** Every sim the harness spawns runs the bridge's test
 scene: upstream's empty scene plus a pool of portraits (`face_1` … `face_3`) that stay hidden until a test spawns them, so
-tests that don't use it are unaffected, and `faces` is probed on every spawned sim. With
-`REACHY_MINI_E2E_SIM_VIEWER=1` (the camera needs the viewer), the `sim_scene` fixture (from the same
-plugin module) hands you a `SimSceneClient` to spawn portraits — as many at once as the
+tests that don't use it are unaffected, and `faces` is probed on every spawned sim. With a
+camera — the viewer (`REACHY_MINI_E2E_SIM_VIEWER=1`), or a Linux headless sim, which renders
+it offscreen — the `sim_scene` fixture (from the same plugin module) hands you a `SimSceneClient` to spawn portraits — as many at once as the
 pool holds — move and despawn them while your code runs, and `clear()` the scene between
 tests; the bridge's own detector (the `yunet` detector `live_bridge` configures) finds
 them in the rendered camera stream and the bridge's tracker does the rest, so the head

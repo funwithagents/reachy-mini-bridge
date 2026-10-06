@@ -30,7 +30,7 @@ examples/control_panel/
   app.py           # build_app(controller) -> gr.Blocks, and main(argv)
 ```
 
-- **Two layers, one gradio-free.** `controller.py` imports the bridge and the standard library only, so `tests/` exercise it on the `fake` backend without Gradio. `app.py` is the Gradio wiring: it maps components to controller calls and adds nothing the controller cannot do.
+- **Two layers, one gradio-free.** `controller.py` imports the bridge, NumPy and the standard library only — no Gradio — so `tests/` exercise it on the `fake` backend without it. `app.py` is the Gradio wiring: it maps components to controller calls and adds nothing the controller cannot do.
 - **Run it as a module** from the repo root, so the example package imports the same way from the command line and from `tests/` (`pyproject.toml` adds `.` to pytest's `pythonpath`):
 
   ```
@@ -39,7 +39,7 @@ examples/control_panel/
   ```
 
   `--config PATH` is the JSON config file; without it the panel runs the `fake` backend. `config.example.json` is the sim **viewer** with the host **webcam** as the robot's camera ([config.md](../core/config.md), [sim_daemon.md](../daemon/sim_daemon.md)): the MuJoCo window opens next to the panel, the camera frame is the webcam, and with the motors enabled the simulated robot follows the person in front of it — the manual face-tracking check. Set `daemon.camera.source` to `sim` for the rendered eye camera instead. `--host` / `--port` (default `127.0.0.1:7860`) place the web server. Ctrl+C in the terminal stops the server, then the controller closes the bridge session (which stops a daemon the bridge spawned).
-- **Dependencies: the `demo` group.** `[dependency-groups] demo = ["gradio>=5", "reachy-mini-bridge[sim,tts-pocket]"]` — Gradio plus the two extras that make the sim and the default voice work out of the box. It is a group of its own so it can be left out (`uv sync --no-group demo`), and it is in `[tool.uv] default-groups` next to `dev` so a normal dev env has it: `ruff` and `pyright` cover `examples/` (pyright's `include`), and that gate must not depend on which groups happen to be synced.
+- **Dependencies: the `demo` group.** `[dependency-groups] demo = ["gradio>=5", "reachy-mini-bridge[sim]"]` — Gradio plus the `sim` extra; the panel's voice comes from the config's `tts` block, whose provider the separate `tts` group installs (default in a plain sync, [project.md](../project.md) "Dependency groups"). It is a group of its own so it can be left out (`uv sync --no-group demo`), and it is in `[tool.uv] default-groups` next to `dev` so a normal dev env has it: `ruff` and `pyright` cover `examples/` (pyright's `include`), and that gate must not depend on which groups happen to be synced.
 
 ### The controller — one bridge session on a background loop
 

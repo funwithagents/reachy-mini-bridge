@@ -43,8 +43,8 @@ Issues = "https://github.com/funwithagents/reachy-mini-bridge/issues"
 # `set_texts`) the sim daemon launcher needs to show the camera stream over the viewer
 # (specs/daemon/sim_daemon.md). Requiring `mujoco` ourselves keeps the pin out of every
 # consumer's graph; `<3.4` stays on patch releases of the version upstream tests on.
-# When bumping reachy-mini, check its `mujoco` extra is still only `mujoco`. Upstream
-# report: docs/upstream-mujoco-version-pin.md.
+# When bumping reachy-mini, check its `mujoco` extra is still only `mujoco`. The
+# user-facing note: docs/running-the-sim-daemon.md "The MuJoCo version".
 sim = ["mujoco>=3.3.1,<3.4"]
 # One extra per tts-engine provider, mapping onto tts-engine's own extras (see
 # specs/audio/audio.md): the `tts` block's `module.type` picks the provider, and the matching
@@ -82,8 +82,8 @@ dev = [
 # test runs with no credential, elevenlabs and gradium so the key-gated cloud tests run
 # when a key is set rather than fail on a missing extra. A default group, so a plain
 # `uv sync` has every provider (the cost is torch in every local sync, as in tts-engine's
-# own dev group); CI syncs `--no-group tts` (specs/testing/ci.md) and the provider e2e
-# tests skip on the missing module. Consumers install one extra at a time. `torch` is
+# own dev group); CI installs it too (specs/testing/ci.md), and a sync without it
+# (`--no-group tts`) makes the provider e2e tests skip on the missing module. Consumers install one extra at a time. `torch` is
 # named here, although pocket-tts brings it, because a uv source applies only to a
 # dependency the project declares itself: this is what routes it to the CPU index below.
 tts = [

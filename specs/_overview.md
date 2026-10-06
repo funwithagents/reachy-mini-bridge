@@ -8,7 +8,7 @@ Reachy Mini Bridge sits between the [Reachy Mini](https://github.com/pollen-robo
 
 ## Architecture — two layers
 
-Each layer is one module, one concept, one spec. Dependencies point downward; each layer only knows the one below it.
+Each layer is one module, one concept, one spec. Dependencies point downward: the bridge orchestrates its sessions — audio, the camera feed, detection, the tracker, motion — which know the connection seam and one another only where the diagram draws an arrow, and never reach up into the bridge.
 
 ```mermaid
 flowchart TD
@@ -22,7 +22,10 @@ flowchart TD
     client -->|fake| fake["FakeReachyMini (in-package, no deps)"]
     api -.-> audio["audio.py — media session<br/>(routes through daemon for echo cancellation)"]
     api -.-> motion["motion.py — motion loop<br/>(one set_target writer, 60 Hz: emotions · breathing · hold · gaze layer)"]
+    api -.-> camera["camera.py — camera feed<br/>(the one reader of get_frame; newest frame + head pose, sampled by every consumer)"]
+    camera -->|get_frame| client
     api -.-> faces["face_detection.py — user perception<br/>(a detector over the camera feed — yunet.py or a developer's; Observable faces report)"]
+    camera -->|frames| faces
     faces -->|reports| tracker["head_tracking.py — head tracker<br/>(target face → look-at aim)"]
     tracker -->|aim| motion
     motion -->|set_target| client

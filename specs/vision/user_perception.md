@@ -202,12 +202,12 @@ The fake has no detector of its own and needs none: the default config runs no l
 
 - **[camera.md](camera.md):** the detection loop samples the camera feed — the one reader of the robot's camera — and puts each frame, with its `ts` and `head_pose`, on its report; a vision graph over the same feed reads the report beside its other perception.
 - **[observable.md](../core/observable.md):** `bridge.faces` is an `Observable[FaceReport]`; the detection loop is its producer and defines what it publishes.
-- **[head_tracking.md](../motion/head_tracking.md):** the tracker consumes every observation's report, steers the head toward its first face, and publishes which face it follows on `bridge.head_tracking`; tracking implies detection, and needs a detector.
+- **[head_tracking.md](../motion/head_tracking.md):** the tracker consumes every observation's report, steers the head toward the face it chose — the biggest eligible one when it follows none, held by `track_id` while it is seen — and publishes which face it follows on `bridge.head_tracking`; tracking implies detection, and needs a detector.
 - **[bridge.md](../core/bridge.md):** `faces`, `set_face_detection` / `face_detection`, `set_face_detector` / `face_detector`; the switches' behaviour without a detector.
 - **[config.md](../core/config.md):** the `face_detection` block (`detector`, `enabled`, `width`, `target_fps`, the Python-only `face_detector`); `motion.tracking` implies detection; the cross-block rule.
 - **vision-modules:** a face detector from it (its MediaPipe landmarker) runs in the bridge as a `custom` detector; a recogniser or other face module a client runs over `bridge.faces`.
 - **[robot.md](../core/robot.md):** the consumed slice reaches the camera through the feed alone (`media.get_frame`) and the daemon's tracking not at all.
-- **[sim_daemon.md](../daemon/sim_daemon.md):** the sim's faces are detected by the bridge from the camera stream the launcher feeds — the rendered eye camera under the viewer, or a host webcam headless or not; a headless sim without a webcam has no camera and its detector reads inactive.
+- **[sim_daemon.md](../daemon/sim_daemon.md):** the sim's faces are detected by the bridge from the camera stream the launcher feeds — the rendered eye camera under the viewer or, on Linux, headless through the launcher's offscreen render, or a host webcam headless or not; a macOS headless sim without a webcam has no camera and its detector reads inactive.
 - **[sim_scene.md](../testing/sim_scene.md) / [testing.md](../testing/testing.md) / [testing_support.md](../testing/testing_support.md):** a show / hide of the portrait on the viewer sim asserts *appeared* / *left* on `faces.changes()`; the live harness configures `yunet`.
 
 ## Open questions
