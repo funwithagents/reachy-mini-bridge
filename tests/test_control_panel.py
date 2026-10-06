@@ -467,7 +467,9 @@ def test_snapshot_marks_the_tracked_face_by_track_id() -> None:
         assert (
             report.faces[1].track_id == controller.bridge.head_tracking.value.track_id
         )
-        assert controller.face_target() == 1
+        view = controller.face_view()
+        assert view.active and view.target == 1
+        assert len(view.positions) == len(view.rolls) == 2
 
         controller.stop_head_tracking()
         _wait_until(lambda: controller.snapshot().face_target is None)

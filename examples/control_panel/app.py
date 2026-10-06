@@ -99,11 +99,10 @@ def refresh_camera(
 ) -> tuple[npt.NDArray[np.uint8] | None, str]:
     """One camera tick: the frame with a marker on each reported face (mirrored when
     ``MIRROR_CAMERA``), and the faces line under it."""
-    active = controller.bridge.faces.value.active
-    positions = controller.face_positions()
-    rolls = controller.face_rolls()
-    target = controller.face_target()
-    text = faces_line(positions if active else None, controller.face_rate, rolls)
+    view = controller.face_view()  # one report: markers, tilts and the target agree
+    text = faces_line(
+        view.positions if view.active else None, controller.face_rate, view.rolls
+    )
     try:
         frame = controller.camera_frame_rgb()
     except BridgeError as exc:
@@ -111,7 +110,7 @@ def refresh_camera(
         return None, text
     if frame is None:
         return None, text
-    marked = draw_faces(frame, positions, rolls, target)
+    marked = draw_faces(frame, view.positions, view.rolls, view.target)
     if MIRROR_CAMERA:
         marked = np.ascontiguousarray(marked[:, ::-1])
     return marked, text

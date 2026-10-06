@@ -40,7 +40,8 @@ The shipped detector is the worked example —
 [src/reachy_mini_bridge/yunet.py](../../src/reachy_mini_bridge/yunet.py) is a class whose
 constructor builds the model and whose `detect` subsamples the frame, runs the model and
 scales its boxes, noses and eyes back into `PixelFace`s. A wrapper around a model of your
-own has the same shape:
+own has the same shape — a sketch, `load_my_model()` and its `detect` standing for your
+model (a complete program that runs is [below](#a-complete-program)):
 
 ```python
 import numpy as np
@@ -97,14 +98,15 @@ per-run state and every restart gets a clean one:
 ```python
 from reachy_mini_bridge import ReachyMiniBridge, ReachyMiniConfig
 
-config = ReachyMiniConfig.from_json_file("robot.json")
-# robot.json: "face_detection": {"detector": "custom", "enabled": true},
-#             "motion": {"tracking": true}
-config.face_detection.face_detector = MyDetector  # Python only: a JSON file cannot carry code
 
-async with ReachyMiniBridge(config) as bridge:
-    await bridge.set_motors_state("enabled")
-    ...  # the head follows whoever it chooses; bridge.faces reports every face
+async def main() -> None:
+    config = ReachyMiniConfig.from_json_file("robot.json")
+    # robot.json: "face_detection": {"detector": "custom", "enabled": true},
+    #             "motion": {"tracking": true}
+    config.face_detection.face_detector = MyDetector  # Python only: a JSON file cannot carry code
+    async with ReachyMiniBridge(config) as bridge:
+        await bridge.set_motors_state("enabled")
+        ...  # the head follows whoever it chooses; bridge.faces reports every face
 ```
 
 Or at run time, `await bridge.set_face_detector(MyDetector)`; registering another factory
@@ -139,6 +141,46 @@ runner under test, not the model:
 
 ```
 REACHY_MINI_E2E_SIM_VIEWER=1 uv run pytest tests-e2e -rs -k custom
+```
+
+## A complete program
+
+The whole path on the offline fake, with a stand-in detector that reports one face in the
+middle of every frame — the fake's camera yields synthetic frames, so the loop runs, the
+report fills and the tracker engages. Save it as `one_face.py` and `uv run python one_face.py`
+prints `custom: face 1 at (+0.02, +0.02)` and `the head follows face 1`; swap `OneFace` for a
+detector over a model and `"fake"` for a config, and it is your application:
+
+```python
+import asyncio
+
+from reachy_mini_bridge import PixelFace, ReachyMiniBridge, ReachyMiniConfig
+from reachy_mini_bridge.config import FaceDetectionSettings, MotionSettings
+
+
+class OneFace:
+    """A stand-in detector: one face in the middle of every frame."""
+
+    def detect(self, frame_bgr, ts):
+        h, w = frame_bgr.shape[:2]
+        return [PixelFace(bbox=(w * 0.4, h * 0.3, w * 0.2, h * 0.4), nose=(w / 2, h / 2))]
+
+
+async def main() -> None:
+    config = ReachyMiniConfig(
+        backend="fake",
+        face_detection=FaceDetectionSettings(detector="custom", face_detector=OneFace),
+        motion=MotionSettings(tracking=True),
+    )
+    async with ReachyMiniBridge(config) as bridge:
+        report = await bridge.faces.wait_for(lambda r: r.active and len(r.faces) > 0)
+        face = report.faces[0]
+        print(f"{report.source}: face {face.track_id} at ({face.x:+.2f}, {face.y:+.2f})")
+        state = await bridge.head_tracking.wait_for(lambda s: s.attention == "engaged")
+        print(f"the head follows face {state.track_id}")
+
+
+asyncio.run(main())
 ```
 
 ## Beside a vision graph

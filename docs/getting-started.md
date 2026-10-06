@@ -4,11 +4,11 @@ Your first application on the bridge, then the connection choices that take the 
 
 ## Install
 
-Python 3.12+. The package is not on PyPI; add it from its git URL:
+Python 3.12+, in a Python project of your own (`uv init my-robot-app && cd my-robot-app` creates one). The package is not on PyPI; add it from its git URL — **one** of these two lines, the second when you also want the MuJoCo simulator:
 
 ```
-uv add "reachy-mini-bridge @ git+https://github.com/funwithagents/reachy-mini-bridge"
-uv add "reachy-mini-bridge[sim] @ git+https://github.com/funwithagents/reachy-mini-bridge"   # + the MuJoCo simulator
+uv add "reachy-mini-bridge @ git+https://github.com/funwithagents/reachy-mini-bridge"          # the robot and the offline fake
+uv add "reachy-mini-bridge[sim] @ git+https://github.com/funwithagents/reachy-mini-bridge"     # the same, plus the simulator
 ```
 
 The API changes between commits without a deprecation period while the bridge is at 0.1: pin a commit (`@<sha>`). The extras — `sim`, the `tts-*` voices, `test` — are listed in the [README](../README.md#install); importing the package imports `reachy_mini`, which needs its native libraries installed (GStreamer: with the wheels on macOS and Windows, from the system on Linux — [guides/linux.md](guides/linux.md)) but no running daemon.
@@ -53,7 +53,23 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-What happened, in order: the session started (on the fake, instantly; on a robot, the daemon, the connection, the media session, the camera feed, detection and the motion loop come up in order); the motors were enabled, which starts the idle behaviour — the robot breathes between verbs; the emotion played as the one primary move, blended in and out; `say` streamed the beep to the speaker and returned once it had been heard; the mic tap yielded one chunk; the camera feed's newest frame was read. Leaving the block eased the head to neutral and closed everything, a daemon the bridge had started included.
+Save it as `first_app.py` and run it:
+
+```
+uv run python first_app.py
+```
+
+It prints:
+
+```
+['happy', 'sad', 'curious']
+320 bytes of microphone audio at 16000 Hz
+a camera frame
+```
+
+**Nothing is heard and nothing moves: this is the fake.** It records every command on `bridge.robot` instead of sending it anywhere, answers the microphone and the camera with synthetic audio and frames, and keeps the real timing of the verbs that span time — `say` takes the beep's 0.3 s, the emotion its recorded length — so the program runs as it would against a robot, about a second and a half of it waiting. The same file drives a simulator or a robot once the dict becomes a config (next section); there the beep plays on the speaker and the head moves.
+
+What happened, in order: the session started (on the fake, instantly; on a robot, the daemon, the connection, the media session, the camera feed, detection and the motion loop come up in order); the motors were enabled, which starts the idle behaviour — the robot breathes between verbs; the emotion played as the one primary move, blended in and out; `say` streamed the beep to the speaker and returned once its estimated end had passed (on a robot, once it had been heard); the mic tap yielded one chunk; the camera feed's newest frame was read. Leaving the block eased the head to neutral and closed everything, a daemon the bridge had started included.
 
 **To interrupt what spans time — the emotion, the speech, the mic stream — cancel the task that awaits it.** The effect stops — speech flushed, the move no longer commanded — and the session stays usable for the next verb. The instant verbs (`set_motors_state` here) complete once accepted, their effect a mode the counterpart verb switches off ([reference/api.md](reference/api.md) "Cancellation and concurrency").
 
@@ -138,3 +154,4 @@ Cancelling the task that runs a tool stops the action on the robot (speech flush
 - [guides/perception-and-tracking.md](guides/perception-and-tracking.md) — the robot looks at people; what `faces` and `head_tracking` report and how to consume them.
 - [guides/testing.md](guides/testing.md) — unit tests on the fake, live tests with the shipped pytest harness.
 - [reference/api.md](reference/api.md) — every verb, value, error and contract.
+- [guides/troubleshooting.md](guides/troubleshooting.md) — when it does not connect, see, move or speak.

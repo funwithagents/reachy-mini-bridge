@@ -79,8 +79,8 @@ async with ReachyMiniBridge.from_json_file("robot.json") as bridge:
 | Expression | `list_emotions()` → the names of the upstream recorded-moves library; `play_emotion(name)` — plays the move with its sound, returns when the trajectory ends | yes |
 | Speech out | `say(text, synth=None)` — returns when the robot has finished speaking; `play_sound(file)` — a sound file, returns when it has been heard | no |
 | Mic in | `audio_input(mono=True)` — an async iterator of int16 LE PCM `bytes`; `mic_sample_rate`, `mic_channels` | no |
-| Gaze | `start_head_tracking(focus=False)`, `stop_head_tracking()` — the head follows the face the tracker chooses | no (a mode: the head moves once motors are `enabled`) |
-| Perception | `set_face_detection(enabled)` — run the detector so `faces` reports; `set_face_detector(factory)` — register a `"custom"` detector | no |
+| Gaze | `start_head_tracking(focus=False)`, `stop_head_tracking()` — the head follows the face the tracker chooses | no (a mode: the head moves once motors are `enabled` and `presence` is on) |
+| Perception | `set_face_detection(enabled)` — run the detector so `faces` reports; `set_face_detector(factory)` — register the factory the `"custom"` detector is built from (the detector *name* is config-only) | no |
 | Staying alive | `set_presence(enabled)`, `set_idle("breathing" \| "hold" \| "custom")`, `set_idle_move(factory)`, `set_wobbling(enabled)` | no (modes) |
 
 **Motors.** Verbs that move the robot — `play_emotion` — require motors `"enabled"` and raise `MotorsNotEnabledError` otherwise, before sending anything. `"gravity_compensation"` needs the daemon's Placo kinematics engine; without it `set_motors_state("gravity_compensation")` raises `GravityCompensationUnsupportedError` without sending the mode (sending it would make the daemon drop the connection). The modes — tracking, presence, idle, wobbling, detection — need no motors: they hold, and take effect on the head once torque is on. The motion loop pauses while motors are not enabled, so nothing is commanded into limp motors; a `play_emotion` in flight when the motors are disabled fails with `BridgeError`.
@@ -91,7 +91,7 @@ async with ReachyMiniBridge.from_json_file("robot.json") as bridge:
 
 **Mic in.** `audio_input()` is a tap over the already-running capture: iterate to consume, `break` to stop; it ends on its own when the session closes. Routing both directions through the bridge is what keeps the robot's echo cancellation working while it speaks and listens at once. The bridge does no speech recognition.
 
-**Gaze.** The tracker chooses whom to follow — the biggest face of a minimum size, kept while it is seen; a face that vanishes is waited for a second, the head holding toward where it was, before the head turns to the biggest other face; after two seconds with nobody the head eases back into the idle move. `focus=False` composes the aim into the idle move (the head looks at the person and breathes); `focus=True` holds the head exactly on the face, the antennas keeping their motion. Tracking implies detection, and needs a `face_detection.detector` in the config: `start_head_tracking()` with none raises `ValueError`.
+**Gaze.** The tracker chooses whom to follow — the biggest face of a minimum size, kept while it is seen; a face that vanishes is waited for a second, the head holding toward where it was, before the head turns to the biggest other face; after two seconds with nobody the head eases back into the idle move. `focus=False` composes the aim into the idle move (the head looks at the person and breathes); `focus=True` holds the head exactly on the face, the antennas keeping their motion. Tracking implies detection, and needs a `face_detection.detector` in the config: `start_head_tracking()` with none raises `ValueError`. The head moves on the aim only with motors `"enabled"` **and** `presence` on — `set_presence(False)` has the loop command nothing, the gaze included, while the tracking mode holds.
 
 ## Properties and reports
 
@@ -179,7 +179,9 @@ followed = bridge.head_tracking.value.track_id                # whom the head fo
 | `SoundInterruptedError` | `play_sound` | A newer sound file (an emotion's included) replaced this one |
 | `DaemonError` | `start()` | The managed daemon could not be started, found or reached in time (`reachy_mini_bridge.errors`) |
 | `ConfigError` | the `from_*` constructors | An invalid config; a `ValueError`, not a `BridgeError` |
-| `ValueError` | `start_head_tracking`, `set_face_detection(True)`, `set_face_detector`, `set_idle_move`, `set_idle` | A mode that needs a detector with none configured; a factory that is not callable or builds the wrong thing; an unknown idle mode |
+| `ValueError` | `start_head_tracking`, `set_face_detection(True)`, `set_face_detector`, `set_idle_move`, `set_idle`, `set_motors_state`, `play_emotion`, `play_sound` | A mode that needs a detector with none configured; a factory that is not callable or builds the wrong thing; an unknown idle mode; an unknown motor state; an emotion name the library does not have; a sound file whose duration cannot be read |
+| `FileNotFoundError` | `play_sound` | The name is neither a file on this machine nor one of the SDK's built-in sounds; nothing played |
+| upstream's own exceptions | `start()`, `bridge.robot` | A connection the SDK could not make — no daemon at `robot.host:port` with nothing to spawn — propagates from `start()` as `reachy_mini` raises it, unwrapped (a managed daemon's failures are the bridge's `DaemonError`); what you call on `bridge.robot` raises what the SDK raises |
 
 Every `BridgeError` subclass carries a message a tool can return to an agent as the reason.
 
@@ -222,7 +224,7 @@ What runs together, and who wins:
 
 ## Extension contracts
 
-Three seams take your code. Complete, runnable examples: a synthesizer in [../getting-started.md](../getting-started.md), a detector in [../guides/custom-face-detector.md](../guides/custom-face-detector.md), an idle move in [../guides/custom-idle-move.md](../guides/custom-idle-move.md).
+Three seams take your code, each with a complete program that runs on the fake: a synthesizer in [../getting-started.md](../getting-started.md), a detector in [../guides/custom-face-detector.md](../guides/custom-face-detector.md#a-complete-program), an idle move in [../guides/custom-idle-move.md](../guides/custom-idle-move.md).
 
 **A voice — `SpeechSynthesizer`** ([specs/audio/audio.md](../../specs/audio/audio.md)). Any object with a `sample_rate` (int, Hz, fixed) and a `stream(text)` returning an async iterator of float32 mono chunks in [-1, 1], shape `(n,)`. Pass it to `ReachyMiniBridge(config, synthesizer=...)` as the default voice, or per call to `say(text, synth)`. An engine that emits int16 converts with `int16_to_float32`. The bridge resamples to the speaker's rate; your rate is yours.
 

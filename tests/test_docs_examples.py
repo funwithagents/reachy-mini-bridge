@@ -3,7 +3,7 @@
 The first code a new user runs is extracted from its Markdown file and executed on the
 ``fake`` so none of it can drift from the bridge: the README's quick start, the
 getting-started application (with its beep synthesizer), the custom idle move guide's
-move, and the testing guide's unit-test example (specs/core/bridge.md "Front door";
+move, the custom face detector guide's program, and the testing guide's unit-test example (specs/core/bridge.md "Front door";
 docs/guides/testing.md "Unit tests").
 """
 
@@ -47,6 +47,14 @@ def test_the_getting_started_application_runs_on_the_fake() -> None:
 def test_the_custom_idle_move_guide_runs_on_the_fake() -> None:
     # Registers the guide's move on a session in the custom idle mode and lets it play.
     _run_as_main(ROOT / "docs" / "guides" / "custom-idle-move.md", "## The move")
+
+
+def test_the_custom_face_detector_guide_runs_on_the_fake() -> None:
+    # A stand-in detector registered through `custom`: the report fills from the fake's
+    # frames and the tracker engages the face it reports.
+    _run_as_main(
+        ROOT / "docs" / "guides" / "custom-face-detector.md", "## A complete program"
+    )
 
 
 def test_the_testing_guide_unit_example_passes() -> None:

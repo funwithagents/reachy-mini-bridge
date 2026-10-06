@@ -15,15 +15,7 @@ The bridge's **camera feed** (`bridge.camera`) is the one reader of the robot's 
 }
 ```
 
-| Field | Default | Effect |
-|---|---|---|
-| `face_detection.detector` | `null` | `"yunet"` — the shipped detector, nothing to install, the weights download into the Hugging Face cache on first use; `"custom"` — yours, registered from code ([custom-face-detector.md](custom-face-detector.md)); `null` — no detection and no tracking (either switch on is then a `ConfigError`) |
-| `face_detection.enabled` | `false` | Run the detector from session entry so `bridge.faces` reports who is there, whether or not the head follows. Needs no motors |
-| `motion.tracking` | `false` | The head follows the face the tracker chooses, from session entry. Implies detection. Needs no motors — the head moves once they are `enabled` |
-| `face_detection.width` | `320` | The width the shipped detector works at: its cost against its precision (640 quadruples the cost and halves the landmark error; `null` the full frame) |
-| `face_detection.target_fps` | `null` | A ceiling on detections per second, for any detector; `null` detects on every new frame (10 a second on a local daemon, 30 on a wireless robot's stream — the lever there) |
-
-The name alone starts nothing; one of the two switches does. At run time: `set_face_detection(enabled)`, `start_head_tracking(focus=False)` / `stop_head_tracking()`. Ten seconds into a detection run the loop logs one line with the detector's mean time and the rate it achieved — the numbers to tune `width` and `target_fps` against on your machine.
+Two things, and both are needed: a **detector** and a **switch**. `face_detection.detector` names what runs on the camera feed's frames — `"yunet"`, the shipped one (upstream's model run by the bridge: nothing to install, the weights download into the Hugging Face cache on first use), or `"custom"`, one you register from code ([custom-face-detector.md](custom-face-detector.md)); by default it is `null` and nothing is detected or tracked. The name alone starts nothing: `face_detection.enabled` runs the detector from session entry so `bridge.faces` reports who is there, `motion.tracking` makes the head follow the face the tracker chooses (and implies detection) — either switch on with no detector is a `ConfigError`. Neither needs motors: the head moves once they are `enabled`. At run time the same two switches are `set_face_detection(enabled)` and `start_head_tracking(focus=False)` / `stop_head_tracking()`. The two cost knobs, `face_detection.width` (the shipped detector's working width) and `face_detection.target_fps` (a ceiling on detections per second, for any detector — the lever on a wireless robot's 30 fps stream), are documented with their defaults in [../reference/configuration.md](../reference/configuration.md#face_detection--who-is-in-front-of-the-robot); ten seconds into a run the loop logs the detector's mean time and the rate it achieved, the numbers to tune them against.
 
 **Where the camera comes from.** On a robot, its eye camera (the wireless robot's over WebRTC at 30 fps). On the sim, `daemon.camera.source`: `"sim"` renders the scene from the eye camera — under the viewer anywhere, headless on Linux only — and `"webcam"` relays your computer's camera, so the simulated robot sees and follows **you**, headless or not ([running-daemons.md](running-daemons.md) "You in front of the sim"). The sim's rendered scene has nothing to look at unless the test scene's portrait is shown ([testing.md](testing.md) "Testing tracking without a person").
 
@@ -43,24 +35,36 @@ Both are `Observable`s, readable at any time and outliving the session — their
 
 ### Consuming them
 
+Four separate recipes — each is a fragment for a place in your program, not steps of one script (the two `async for` loops run forever, each in a task of its own that you cancel at shutdown — [../reference/api.md](../reference/api.md#lifecycle) "Applications own their tasks").
+
+**Read the newest state** — any time, from any thread, refreshed on every detection:
+
 ```python
-# The newest state, any time, from any thread: refreshed on every detection.
 report = bridge.faces.value
 if report.active:
     print(f"{len(report.faces)} people in view")
+```
 
-# Events: someone appeared / left, detection started / stopped. Never "a face moved".
+**Be told when someone appears or leaves**, or detection starts or stops — never "a face moved":
+
+```python
 async for report in bridge.faces.changes():
     if not report.active:
         print("not looking")
     else:
         print(f"now {len(report.faces)} in view")
+```
 
-# Whom the head follows — the tracker's event, not the detection's.
+**Be told whom the head follows** — the tracker's event, not the detection's:
+
+```python
 async for state in bridge.head_tracking.changes():
     print(state.attention, state.track_id)
+```
 
-# Wait until somebody is there (reacts to publications: a count change, not a refresh).
+**Wait until somebody is there** — reacts to publications, a count change, not a refresh:
+
+```python
 report = await bridge.faces.wait_for(lambda r: r.active and len(r.faces) > 0)
 ```
 

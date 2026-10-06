@@ -32,7 +32,7 @@ The bridge resamples whatever rate arrives to the speaker's 16 kHz and fans mono
 
 ## Sound files
 
-`play_sound(file)` plays a sound file on the robot's own file player and returns when it has been heard (the file's duration plus the same margin). The player holds **one file at a time, the newest wins**, and the library's recorded emotions carry a sound each: a `play_sound` during an emotion silences the emotion's sound (the move plays on), and an emotion starting during your `play_sound` replaces it — your call raises `SoundInterruptedError`. Speech and a sound file coexist, mixed at the speaker. Cancelling `play_sound` stops the file.
+`play_sound(file)` plays a sound file on the robot's own file player and returns when it has been heard (the file's duration plus the same margin). The argument is **a path on this machine**, or else **the name of one of the SDK's built-in sounds** (`"wake_up.wav"`, looked up in `reachy_mini`'s assets directory) — in that order; a name that is neither raises `FileNotFoundError`, a file whose duration cannot be read `ValueError`, both before anything plays. The player holds **one file at a time, the newest wins**, and the library's recorded emotions carry a sound each: a `play_sound` during an emotion silences the emotion's sound (the move plays on), and an emotion starting during your `play_sound` replaces it — your call raises `SoundInterruptedError`. Speech and a sound file coexist, mixed at the speaker. Cancelling `play_sound` stops the file.
 
 ## Head wobbling
 

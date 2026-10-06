@@ -14,6 +14,7 @@ The bridge's documentation, by what you want to do. The [README](../README.md) i
 | replace the breathing with my own idle move | [guides/custom-idle-move.md](guides/custom-idle-move.md) |
 | drive the robot from an LLM agent | [getting-started.md](getting-started.md#driving-it-from-an-agent) — tools as one-line wrappers over the verbs |
 | test my project against the bridge | [guides/testing.md](guides/testing.md) — unit tests on the fake, live tests with the shipped pytest harness and its sim scene |
+| find out why it does not connect, see, move or speak | [guides/troubleshooting.md](guides/troubleshooting.md) — the checks for each symptom, routed to the page that explains it |
 | look up a verb, a value, an error or a contract | [reference/api.md](reference/api.md) |
 | look up a config field | [reference/configuration.md](reference/configuration.md) |
 | try it without writing code | the Gradio [control panel](../examples/control_panel/) — every verb a button ([README](../README.md#try-it-from-a-browser)) |

@@ -56,6 +56,20 @@ FACE_MARKER_SIZE = 0.15
 FACE_MARKER_RGB = (0, 255, 0)
 
 
+@dataclass(frozen=True)
+class FaceView:
+    """What the camera tick draws, read from **one** face report so the markers, their
+    tilt and the highlighted one belong to the same frame: ``active`` (a detector is
+    looking), each face's normalised ``(x, y)`` in the report's order, its roll in radians
+    (``None`` when unknown) at the same index, and ``target``, the index of the face the
+    head follows (``None`` while it follows none, or that face is not reported)."""
+
+    active: bool
+    positions: list[tuple[float, float]]
+    rolls: list[float | None]
+    target: int | None
+
+
 @dataclass
 class PanelState:
     """Everything the panel displays, read in one go by :meth:`snapshot`."""
@@ -420,22 +434,19 @@ class ControlPanelController:
         """New face observations per second, ``None`` while no detector is looking."""
         return self._face_rate if self._bridge.faces.value.active else None
 
-    def face_positions(self) -> list[tuple[float, float]]:
-        """The reported faces' normalised ``(x, y)`` right now (no robot round trip)."""
+    def face_view(self) -> FaceView:
+        """The faces to draw right now, from one read of ``bridge.faces`` (no robot round
+        trip): positions, rolls and the followed face's index all from the same report,
+        so a report published between two reads cannot misalign them."""
         report = self._bridge.faces.value
-        return [(f.x, f.y) for f in report.faces] if report.active else []
-
-    def face_rolls(self) -> list[float | None]:
-        """The reported faces' roll in radians (``None`` when unknown), in the order of
-        :meth:`face_positions`."""
-        report = self._bridge.faces.value
-        return [f.roll for f in report.faces] if report.active else []
-
-    def face_target(self) -> int | None:
-        """The index in :meth:`face_positions` of the face the head follows — the
-        tracker's ``head_tracking.track_id`` (specs/motion/head_tracking.md) looked up in
-        the report; ``None`` while it follows none (or that face is not reported)."""
-        return self._face_target(self._bridge.faces.value)
+        if not report.active:
+            return FaceView(active=False, positions=[], rolls=[], target=None)
+        return FaceView(
+            active=True,
+            positions=[(f.x, f.y) for f in report.faces],
+            rolls=[f.roll for f in report.faces],
+            target=self._face_target(report),
+        )
 
     def _face_target(self, report: FaceReport) -> int | None:
         followed = self._bridge.head_tracking.value.track_id

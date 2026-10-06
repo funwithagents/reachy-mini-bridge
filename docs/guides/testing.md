@@ -129,15 +129,17 @@ loop stays fast and daemon-free.
 `requires_caps(live_bridge, ...)` accepts the capabilities the harness probes against the live
 daemon at setup:
 
-| Capability | Meaning | sim headless | sim headfull | real robot |
-|---|---|---|---|---|
-| `motion` | the backend reports a status | ✅ | ✅ | ✅ |
-| `audio` | recording yields a mic sample (a sound device — or a PulseAudio null sink, below) | ✅ | ✅ | ✅ |
-| `camera` | a camera frame comes back (needs a GL context) | ✅ Linux (rendered offscreen through EGL) · ❌ macOS | ✅ | ✅ |
-| `gravity_compensation` | hardware daemon on the Placo kinematics engine | ❌ | ❌ | ✅ with `reachy-mini[placo_kinematics]` |
-| `faces` | the daemon runs the bridge's test scene (every sim the harness spawns does), which has a pool of portraits (bodies of kind `face`) — hidden until spawned; the bridge's `yunet` detector, which `live_bridge` configures, finds it in the rendered camera | ✅ (on macOS nothing looks at it: no camera) | ✅ | ❌ |
-| `face_markers` | the daemon draws the faces the bridge sends it and returns them (`/api/sim/displays/face_markers`): every viewer sim the harness spawns; a test reads back where the bridge placed a face | ❌ no viewer | ✅ | ❌ |
-| `doa` | mic-array direction of arrival | ❌ | ❌ | ✅ (reserved) |
+| Capability | What the probe checks |
+|---|---|
+| `motion` | the backend reports a status |
+| `audio` | recording yields a mic sample (a sound device — or a PulseAudio null sink, below) |
+| `camera` | a camera frame comes back on `bridge.camera` (needs a GL context: offscreen through EGL on Linux, a window elsewhere) |
+| `gravity_compensation` | the hardware daemon runs the Placo kinematics engine (`reachy-mini[placo_kinematics]`) |
+| `faces` | the daemon runs the bridge's test scene (every sim the harness spawns does), which has a pool of portraits (bodies of kind `face`) — hidden until spawned; the bridge's `yunet` detector, which `live_bridge` configures, finds it in the rendered camera |
+| `face_markers` | the daemon draws the faces the bridge sends it and returns them (`/api/sim/displays/face_markers`): every viewer sim the harness spawns; a test reads back where the bridge placed a face |
+| `doa` | mic-array direction of arrival (reserved: no test uses it yet) |
+
+Which setup provides which — a headless sim's camera on Linux but not on macOS, gravity compensation on a robot only, the portrait invisible to a webcam — is the one matrix in [../reference/backends-and-capabilities.md](../reference/backends-and-capabilities.md#the-matrix); read a probe's absence as "those tests skip".
 
 **A Linux box without a sound card** (a server, a CI runner) has no default source or sink, so the daemon's audio comes up unavailable and `audio` probes absent: every audio test skips. A PulseAudio null sink, started before the daemon, makes it present — the daemon takes the sink and its monitor as the default devices, `say` and `play_sound` stream to a sink nobody hears, the mic tap reads silence, and the audio tests assert on the pipeline, not on what is heard:
 
