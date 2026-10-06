@@ -201,6 +201,20 @@ def test_every_profile_is_a_valid_config(profile: Path) -> None:
     assert config.backend in {"real", "sim", "fake"}
 
 
+@pytest.mark.parametrize(
+    "profile", [p for p in _PROFILES if p.name.startswith("sim-")], ids=lambda p: p.name
+)
+def test_the_readmes_headless_edit_keeps_a_sim_profile_valid(profile: Path) -> None:
+    """The profiles README tells a reader to run a sim profile headless by setting
+    ``headless`` *and* dropping the camera overlay; that documented edit must parse."""
+    data = json.loads(profile.read_text(encoding="utf-8"))
+    data["daemon"]["headless"] = True
+    data["daemon"]["sim_displays"] = {"camera_overlay": False}
+    config = ReachyMiniConfig.from_dict(data)
+    assert config.daemon.headless
+    assert not config.daemon.sim_displays.camera_overlay
+
+
 def test_every_profile_is_listed_in_its_readme() -> None:
     readme = (ROOT / "examples" / "configs" / "README.md").read_text(encoding="utf-8")
     assert _PROFILES, "no profiles under examples/configs/"

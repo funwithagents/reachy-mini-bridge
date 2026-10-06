@@ -53,7 +53,23 @@ await bridge.stop()
 - **A failed or cancelled start leaks nothing**: the steps already up are undone in reverse and the error (or the cancel) propagates. A repeated cancel during that cleanup is absorbed; the cleanup completes.
 - **`bridge.running`** says whether the session is up. `bridge.robot`, `say`, `play_sound`, `audio_input` and the mode verbs need a running session and raise `BridgeError` otherwise; `faces`, `head_tracking`, `camera` and the mode properties read at any time (their inactive values outside a session).
 - **A daemon the bridge started is stopped on exit** — a robot's goes to sleep; a borrowed daemon (`daemon.spawn: "auto"` finding one, or `"never"`) is left running.
-- **Applications own their tasks.** A task you start around the bridge — an ASR consumer over `audio_input()`, a subscriber on `faces.changes()` — is yours to cancel and await before the session ends; leaving the `async with` block does not cancel it. The mic tap and the `changes()` iterators end on their own when the session closes, so such a task finishes cleanly when awaited.
+- **Applications own their tasks.** A task you start around the bridge — an ASR consumer over `audio_input()`, a subscriber on `faces.changes()` — is yours to cancel and await; leaving the `async with` block does not cancel it. The mic tap ends on its own when the session closes, so a task draining it finishes cleanly when awaited. A `changes()` iterator does not: the observables belong to the bridge object and outlive its sessions ([specs/core/observable.md](../../specs/core/observable.md) "Semantics") — a subscriber is told of the close through a published value (`faces` and `head_tracking` turn inactive) and then waits for the next session's first publication. Cancel and await such a task yourself, or `break` on the inactive report, before awaiting it at shutdown:
+
+```python
+async def watch_faces(bridge: ReachyMiniBridge) -> None:
+    async for report in bridge.faces.changes():
+        print("present" if report.faces else "nobody")
+
+
+async with ReachyMiniBridge.from_json_file("robot.json") as bridge:
+    watcher = asyncio.create_task(watch_faces(bridge))
+    try:
+        await run_the_application(bridge)
+    finally:
+        watcher.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await watcher
+```
 
 ## Verbs
 
@@ -169,7 +185,11 @@ Every `BridgeError` subclass carries a message a tool can return to an agent as 
 
 ## Cancellation and concurrency
 
-**Cancelling the awaiting task is how you interrupt any verb** ([specs/core/bridge.md](../../specs/core/bridge.md) "Cancellation"), with three guarantees: the cancel returns promptly; the verb's effect stops with it — queued speech flushed, a sound file stopped, a trajectory no longer commanded, the wobbler reset; and the robot and the session stay usable for the next verb. There is no rewind: the head stays where the cancel caught it, and the idle move blends in from there. A cancel owns only its own effect — cancelling a `say` does not stop a `play_sound`, cancelling an emotion waiting in the queue stops nothing that plays.
+**Cancelling the awaiting task is how you interrupt a verb** ([specs/core/bridge.md](../../specs/core/bridge.md) "Cancellation"), with three guarantees: the cancel returns promptly; the verb's effect stops with it; and the robot and the session stay usable for the next verb. What "the effect stops" means depends on the verb's class:
+
+- **Spanning verbs** — `say`, `play_sound`, `play_emotion`, the `audio_input` stream — run for as long as their effect, and the cancel ends it: queued speech flushed, a sound file stopped, a trajectory no longer commanded, the wobbler reset. There is no rewind: the head stays where the cancel caught it, and the idle move blends in from there. A cancel owns only its own effect — cancelling a `say` does not stop a `play_sound`, cancelling an emotion waiting in the queue stops nothing that plays.
+- **Instant verbs** — `set_motors_state`, `get_motors_state`, `start_head_tracking` / `stop_head_tracking`, `set_wobbling`, `set_presence` / `set_idle` / `set_idle_move`, `set_face_detection`, `list_emotions` — hand one short command to the SDK or the motion loop. The cancel returns promptly, but **an accepted command completes**: cancelling `set_motors_state("enabled")` once the command is accepted does not keep the motors from enabling, nor the motion loop from resuming with them. What outlives the call is a mode, undone by its counterpart verb (`set_motors_state("disabled")`, `stop_head_tracking`, …), not by the cancel.
+- **Bring-up, `start()`**, is the one spanning verb whose cancel waits: the step in flight (a daemon spawn, the robot connect, a media start) cannot be interrupted in its thread, so it finishes and is undone before the `CancelledError` propagates — up to `daemon.startup_timeout` for a spawn. An `asyncio.timeout` around the `async with` therefore bounds the *start* of the cleanup, not its end: budget for the step when you set one.
 
 What runs together, and who wins:
 

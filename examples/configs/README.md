@@ -10,4 +10,11 @@ One short `ReachyMiniConfig` per way of running the bridge — copy the one that
 | [sim-webcam.json](sim-webcam.json) | the simulator seeing through your computer's webcam, in the viewer window with the webcam picture in its corner: it detects and follows **you** | `reachy-mini-bridge[sim]` | a webcam, with camera permission for the process that starts the daemon (macOS); an unlocked GUI session (the viewer; `mjpython` on macOS); the YuNet weights | motion, audio, camera (your webcam, treated as fixed at the robot's eye), face detection and tracking | locally, by hand |
 | [wireless.json](wireless.json) | a wireless Reachy Mini on the network, running its own daemon | `reachy-mini-bridge` (GStreamer packages only on Linux) | the robot's address in `robot.host`; the YuNet weights (detection runs on the host) | expected: motion, audio and camera over WebRTC, detection and tracking on the host | **untested** — the author has no wireless robot; the robot boots asleep with motors disabled and streams its camera at 30 fps, differences the bridge has not been checked against. A report of what happened, working or not, is welcome as an issue |
 
-The two sim profiles open the viewer window (`"headless": true` runs them without it: the webcam works headless too, the rendered camera only on Linux); the others run headless. None carries a voice: add a `tts` block ([docs/guides/audio.md](../../docs/guides/audio.md)) once the matching `tts-*` extra is installed, or pass your own synthesizer. The profiles are parsed by the bridge's tests, so they stay valid as the config evolves.
+The two sim profiles open the viewer window with the camera picture in its corner. To run one without the viewer, set `"headless": true` **and** drop the display, which needs the viewer (the config is rejected otherwise): the webcam works headless too, the rendered camera only on Linux.
+
+```json
+"headless": true,
+"sim_displays": {"camera_overlay": false}
+```
+
+The other profiles run headless. None carries a voice: add a `tts` block ([docs/guides/audio.md](../../docs/guides/audio.md)) once the matching `tts-*` extra is installed, or pass your own synthesizer. The profiles are parsed by the bridge's tests, so they stay valid as the config evolves.

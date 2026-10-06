@@ -55,7 +55,7 @@ asyncio.run(main())
 
 What happened, in order: the session started (on the fake, instantly; on a robot, the daemon, the connection, the media session, the camera feed, detection and the motion loop come up in order); the motors were enabled, which starts the idle behaviour — the robot breathes between verbs; the emotion played as the one primary move, blended in and out; `say` streamed the beep to the speaker and returned once it had been heard; the mic tap yielded one chunk; the camera feed's newest frame was read. Leaving the block eased the head to neutral and closed everything, a daemon the bridge had started included.
 
-**To interrupt any of these, cancel the task that awaits it.** The effect stops — speech flushed, the move no longer commanded — and the session stays usable for the next verb ([reference/api.md](reference/api.md) "Cancellation and concurrency").
+**To interrupt what spans time — the emotion, the speech, the mic stream — cancel the task that awaits it.** The effect stops — speech flushed, the move no longer commanded — and the session stays usable for the next verb. The instant verbs (`set_motors_state` here) complete once accepted, their effect a mode the counterpart verb switches off ([reference/api.md](reference/api.md) "Cancellation and concurrency").
 
 ## Running it on a simulator or a robot
 
