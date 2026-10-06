@@ -968,3 +968,65 @@ def test_invalid_replacement_is_released_before_a_valid_detector_runs(
         assert released == ["invalid"]
 
     _run(run)
+
+
+def test_overlapping_starts_build_one_detector_and_run_one_loop() -> None:
+    """Two starts released together: one factory call, one loop, the one detector
+    closed at stop (specs/vision/user_perception.md "Lifecycle")."""
+    scene = _Scene([_face(30, 24)])
+    entered, release = threading.Event(), threading.Event()
+    built: list[_ClosingDetector] = []
+    closed: list[str] = []
+
+    def factory() -> _ClosingDetector:
+        entered.set()
+        assert release.wait(5)
+        detector = _ClosingDetector(scene, closed, f"detector {len(built) + 1}")
+        built.append(detector)
+        return detector
+
+    async def run() -> tuple[int, int]:
+        async with _running_custom(scene, start=False, factory=factory) as loop:
+            first = asyncio.create_task(loop.detection.start())
+            second = asyncio.create_task(loop.detection.start())
+            await asyncio.to_thread(entered.wait, 2.0)
+            await asyncio.sleep(0.1)  # the second start has reached the lock
+            release.set()
+            await asyncio.gather(first, second)
+            loops = [t for t in asyncio.all_tasks() if t.get_name() == "face-detection"]
+            await _wait_for(lambda: bool(loop.faces.value.faces))
+            return len(built), len(loops)
+
+    built_count, loops = _run(run)
+    assert (built_count, loops) == (1, 1)
+    assert closed == ["detector 1"]
+
+
+def test_a_stop_during_a_start_stops_the_loop_it_built() -> None:
+    """A stop that arrives while the factory builds waits for it and then stops the loop
+    the start made — nothing runs on, the detector is closed."""
+    scene = _Scene([_face(30, 24)])
+    entered, release = threading.Event(), threading.Event()
+    closed: list[str] = []
+
+    def factory() -> _ClosingDetector:
+        entered.set()
+        assert release.wait(5)
+        return _ClosingDetector(scene, closed, "built")
+
+    async def run() -> tuple[bool, bool, list[str]]:
+        async with _running_custom(scene, start=False, factory=factory) as loop:
+            starting = asyncio.create_task(loop.detection.start())
+            await asyncio.to_thread(entered.wait, 2.0)
+            stopping = asyncio.create_task(loop.detection.stop())
+            await asyncio.sleep(0.1)
+            waited = not stopping.done()
+            release.set()
+            await asyncio.gather(starting, stopping)
+            await asyncio.sleep(0.1)
+            return waited, loop.detection.running, list(closed)
+
+    waited, running, closed_after = _run(run)
+    assert waited
+    assert not running
+    assert closed_after == ["built"]

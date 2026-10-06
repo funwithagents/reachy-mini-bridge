@@ -3194,3 +3194,161 @@ def test_face_track_ids_continue_across_sessions_restarts_and_replacement() -> N
             assert await face_id(independent) == 1
 
     asyncio.run(run())
+
+
+def test_overlapping_detection_starts_build_one_detector_and_stop_leaves_none() -> None:
+    """set_face_detection(True) and start_head_tracking() scheduled together build one
+    detector and run one loop; stop() leaves no loop and closes that one detector
+    (specs/vision/user_perception.md "Lifecycle")."""
+
+    async def run() -> None:
+        started, release = threading.Event(), threading.Event()
+        built: list[_OwnedFaceDetector] = []
+
+        def held_factory() -> _OwnedFaceDetector:
+            started.set()
+            assert release.wait(5)
+            detector = _OwnedFaceDetector()
+            built.append(detector)
+            return detector
+
+        cfg = ReachyMiniConfig(
+            backend="fake",
+            face_detection=FaceDetectionSettings(
+                detector="custom", face_detector=held_factory
+            ),
+            motion=MotionSettings(wobbling=False),
+        )
+        bridge = ReachyMiniBridge(cfg)
+        try:
+            await bridge.start()
+            first = asyncio.create_task(bridge.set_face_detection(True))
+            second = asyncio.create_task(bridge.start_head_tracking())
+            await _wait_until(started.is_set)
+            await asyncio.sleep(0.2)  # the second call has reached the sync by now
+            release.set()
+            await asyncio.wait_for(asyncio.gather(first, second), 3)
+            assert len(built) == 1
+            assert bridge.face_detection and bridge.tracking
+            loops = [t for t in asyncio.all_tasks() if t.get_name() == "face-detection"]
+            assert len(loops) == 1
+            await _wait_until(lambda: bool(bridge.faces.value.faces))
+        finally:
+            release.set()
+            await bridge.stop()
+        assert len(built) == 1 and built[0].closed == 1
+        assert not [t for t in asyncio.all_tasks() if t.get_name() == "face-detection"]
+        assert not bridge.faces.value.active
+
+    asyncio.run(run())
+
+
+def _hold_motor_call(
+    monkeypatch: pytest.MonkeyPatch, fake: FakeReachyMini, name: str
+) -> tuple[threading.Event, threading.Event]:
+    """Hold the fake's motor method ``name`` on a release event; returns (entered, release)."""
+    entered, release = threading.Event(), threading.Event()
+    original = getattr(fake, name)
+
+    def held(*args: object, **kwargs: object) -> None:
+        entered.set()
+        assert release.wait(5)
+        original(*args, **kwargs)
+
+    monkeypatch.setattr(fake, name, held)
+    return entered, release
+
+
+@pytest.mark.parametrize("state", ["enabled", "disabled"])
+def test_a_cancelled_motor_command_still_moves_the_loop(
+    state: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A set_motors_state cancelled inside the SDK call completes as a whole: the torque
+    changes *and* the loop resumes (enabled) or pauses (disabled) — specs/core/bridge.md
+    "Cancellation", specs/motion/motion.md "Motors"."""
+
+    async def run() -> None:
+        async with ReachyMiniBridge("fake") as bridge:
+            fake = _fake(bridge)
+            if state == "disabled":
+                await bridge.set_motors_state("enabled")
+                await asyncio.sleep(0.2)
+            method = "enable_motors" if state == "enabled" else "disable_motors"
+            entered, release = _hold_motor_call(monkeypatch, fake, method)
+            pending = asyncio.create_task(bridge.set_motors_state(state))
+            await _wait_until(entered.is_set)
+            pending.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(pending, 1)
+            assert fake.client.motor_control_mode != state  # the call is still held
+            release.set()
+            await _wait_until(lambda: fake.client.motor_control_mode == state)
+            await asyncio.sleep(0.2)  # the transition reaches the loop
+            before = len(fake.targets)
+            await asyncio.sleep(0.3)
+            after = len(fake.targets)
+            if state == "enabled":
+                assert after > before  # the loop resumed with the accepted command
+            else:
+                assert after == before  # the loop paused with it
+            await bridge.say("session stays usable", _ToneSynth())
+
+    asyncio.run(run())
+
+
+def test_motor_commands_apply_in_order_past_a_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A "disabled" sent right after a cancelled "enabled" waits for it and lands after
+    it: the state ends disabled and the loop paused."""
+
+    async def run() -> None:
+        async with ReachyMiniBridge("fake") as bridge:
+            fake = _fake(bridge)
+            entered, release = _hold_motor_call(monkeypatch, fake, "enable_motors")
+            pending = asyncio.create_task(bridge.set_motors_state("enabled"))
+            await _wait_until(entered.is_set)
+            pending.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await pending
+            follow = asyncio.create_task(bridge.set_motors_state("disabled"))
+            await asyncio.sleep(0.2)
+            assert not follow.done()  # queued behind the held command
+            release.set()
+            await asyncio.wait_for(follow, 2)
+            names = _command_names(bridge)
+            assert names.index("disable_motors") > names.index("enable_motors")
+            assert await bridge.get_motors_state() == "disabled"
+            await asyncio.sleep(0.2)
+            count = len(fake.targets)
+            await asyncio.sleep(0.3)
+            assert len(fake.targets) == count  # paused
+
+    asyncio.run(run())
+
+
+def test_teardown_drains_a_held_motor_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """stop() waits for an accepted motor command before the motion session stops."""
+
+    async def run() -> list[str]:
+        bridge = ReachyMiniBridge("fake")
+        await bridge.start()
+        fake = _fake(bridge)
+        entered, release = _hold_motor_call(monkeypatch, fake, "enable_motors")
+        pending = asyncio.create_task(bridge.set_motors_state("enabled"))
+        await _wait_until(entered.is_set)
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        stopping = asyncio.create_task(bridge.stop())
+        await asyncio.sleep(0.3)
+        assert not stopping.done()
+        release.set()
+        await asyncio.wait_for(stopping, 5)
+        assert not bridge.running
+        return [name for name, _args in fake.commands]
+
+    names = asyncio.run(run())
+    assert "enable_motors" in names

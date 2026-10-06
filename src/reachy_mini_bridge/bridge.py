@@ -51,7 +51,7 @@ from .robot import build_robot
 from .sim_displays import FaceMarkerPublisher, face_markers_url
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Callable
 
     import numpy as np
     import numpy.typing as npt
@@ -136,6 +136,45 @@ class _WobblingSession:
             await asyncio.to_thread(self.robot.disable_wobbling)
             self._may_be_enabled = False
         self.enabled = False
+
+
+class _MotorCommands:
+    """Own accepted motor commands past caller cancellation and through teardown
+    (specs/core/bridge.md "Cancellation" — instant verbs; specs/motion/motion.md "Motors"):
+    each command is the SDK call *and* the motion loop's transition that belongs to it,
+    run in order with the commands around it."""
+
+    def __init__(self) -> None:
+        self._tail: asyncio.Task[None] | None = None
+
+    def submit(
+        self, command: Callable[[], object], transition: Callable[[], None]
+    ) -> asyncio.Task[None]:
+        task = asyncio.create_task(self._apply(self._tail, command, transition))
+        self._tail = task
+        task.add_done_callback(self._observe)
+        return task
+
+    @staticmethod
+    def _observe(task: asyncio.Task[None]) -> None:
+        if not task.cancelled() and (error := task.exception()) is not None:
+            _logger.warning("motor command failed: %s", error)
+
+    async def _apply(
+        self,
+        previous: asyncio.Task[None] | None,
+        command: Callable[[], object],
+        transition: Callable[[], None],
+    ) -> None:
+        if previous is not None:
+            await asyncio.gather(previous, return_exceptions=True)
+        await asyncio.to_thread(command)
+        transition()
+
+    async def drain(self) -> None:
+        """Wait out the commands accepted so far (their failures already logged)."""
+        if self._tail is not None:
+            await asyncio.shield(asyncio.gather(self._tail, return_exceptions=True))
 
 
 def _daemon_kinematics_engine(robot: AnyReachyMini) -> str:
@@ -261,6 +300,7 @@ class ReachyMiniBridge:
         self._recorded_moves_future: asyncio.Future[Any] | None = None
         # The bridge's record of the wobbling mode (upstream has no getter).
         self._wobbling_session: _WobblingSession | None = None
+        self._motor_commands: _MotorCommands | None = None
         # The motion loop's switches (specs/motion/motion.md), initialized from the config and
         # reset to it on exit; set_presence/set_idle/set_idle_move change them while
         # entered.
@@ -286,6 +326,9 @@ class ReachyMiniBridge:
         )
         self._face_detection_wanted = self._config.face_detection.enabled
         self._detection: FaceDetection | None = None
+        # One mode verb at a time syncs the loop to the two switches (made per session:
+        # a lock binds to the loop it first waits on).
+        self._detection_sync = asyncio.Lock()
         self._next_face_track_id = 1  # identities outlive every session of this bridge
         # The custom detector's factory (config default, reset on exit); set_face_detector
         # changes it while entered.
@@ -481,6 +524,7 @@ class ReachyMiniBridge:
                 new_track_id=self._new_face_track_id,
             )
             self._detection = detection
+            self._detection_sync = asyncio.Lock()
             # Exits after the motion session, before wobbling's cleanup.
             stack.push_async_callback(self._stop_detection)
             if self._face_detection_wanted or self._tracking_wanted:
@@ -505,6 +549,10 @@ class ReachyMiniBridge:
             await motion.start()
             stack.push_async_callback(motion.stop)
             self._motion = motion
+            # Accepted motor commands finish — the SDK call and the loop transition —
+            # before the motion session stops (registered after it: unwound before).
+            commands = self._motor_commands = _MotorCommands()
+            stack.push_async_callback(commands.drain)
             if motors_enabled:
                 motion.resume()
         except BaseException:
@@ -513,6 +561,7 @@ class ReachyMiniBridge:
             self._robot = None
             self._media = None
             self._motion = None
+            self._motor_commands = None
             self._tracker = None
             # The stack's callbacks read the mode records (wobbling left on is disabled),
             # so they are cleared only once it has unwound.
@@ -541,6 +590,7 @@ class ReachyMiniBridge:
         self._robot = None
         self._media = None
         self._motion = None
+        self._motor_commands = None
         self._tracker = None
         self._recorded_moves_future = None
         try:
@@ -629,11 +679,12 @@ class ReachyMiniBridge:
         detection = self._detection
         if detection is None:
             return
-        wanted = self._face_detection_wanted or self._tracking_wanted
-        if wanted and not detection.running:
-            await self._start_detection(detection)
-        elif not wanted and detection.running:
-            await detection.stop()
+        async with self._detection_sync:
+            wanted = self._face_detection_wanted or self._tracking_wanted
+            if wanted and not detection.running:
+                await self._start_detection(detection)
+            elif not wanted and detection.running:
+                await detection.stop()
 
     # --- motors / torque ---
 
@@ -669,24 +720,28 @@ class ReachyMiniBridge:
         Also drives the motion loop (specs/motion/motion.md "Motors"): ``enabled`` resumes it
         — re-anchored on the present pose, so the head eases into the idle move rather
         than snapping, and the tracker's aim, if any, composed into it — and the two
-        resting states pause it.
+        resting states pause it. The SDK call and that transition are one accepted
+        command the bridge owns (specs/core/bridge.md "Cancellation"): a cancel returns
+        at once while the command completes as a whole, in order with the motor
+        commands around it, and teardown waits for it.
         """
         robot = self.robot
+        motion = self._require_motion()
         if state == "enabled":
-            await asyncio.to_thread(robot.enable_motors)
+            command, transition = robot.enable_motors, motion.resume
         elif state == "disabled":
-            await asyncio.to_thread(robot.disable_motors)
+            command, transition = robot.disable_motors, motion.pause
         elif state == "gravity_compensation":
             await self._require_gravity_compensation_support()
-            await asyncio.to_thread(robot.enable_gravity_compensation)
+            command, transition = robot.enable_gravity_compensation, motion.pause
         else:
             raise ValueError(
                 f"unknown motor state {state!r}; expected one of {_MOTOR_STATES}"
             )
-        if state == "enabled":
-            self._require_motion().resume()
-        else:
-            self._require_motion().pause()
+        commands = self._motor_commands
+        if commands is None:
+            raise BridgeError("the motor commands session is not available")
+        await asyncio.shield(commands.submit(command, transition))
 
     async def _require_gravity_compensation_support(self) -> None:
         robot = self.robot

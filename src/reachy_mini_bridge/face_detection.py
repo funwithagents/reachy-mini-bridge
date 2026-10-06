@@ -380,6 +380,10 @@ class FaceDetection:
         self._feed = feed
         self._detector_factory = detector_factory
         self._task: asyncio.Task[None] | None = None
+        # start() and stop() run one at a time (specs/vision/user_perception.md
+        # "Lifecycle"): a second start during one in flight waits and finds the loop
+        # running; a stop during a start waits for the build and stops what it built.
+        self._transition = asyncio.Lock()
         # A cancelled caller cannot cancel a factory's worker. Retain its disposal
         # task until it finishes, and drain those tasks when the loop closes.
         self._acquisition_cleanups: set[asyncio.Task[None]] = set()
@@ -450,15 +454,16 @@ class FaceDetection:
         whatever the detector's factory raises — a model that cannot load — with the
         loop left not running.
         """
-        if self.running:
-            return
-        factory = self._factory()
-        self._detector = await self._acquire(factory)
-        self._tracks = _FaceTracks(self._allocate_track_id)
-        self._last_detect_at = None
-        self._cost_since, self._cost_calls, self._cost_total_s = None, 0, 0.0
-        self._cost_logged = False
-        self._task = asyncio.create_task(self._run(), name="face-detection")
+        async with self._transition:
+            if self.running:
+                return
+            factory = self._factory()
+            self._detector = await self._acquire(factory)
+            self._tracks = _FaceTracks(self._allocate_track_id)
+            self._last_detect_at = None
+            self._cost_since, self._cost_calls, self._cost_total_s = None, 0, 0.0
+            self._cost_logged = False
+            self._task = asyncio.create_task(self._run(), name="face-detection")
 
     def restart(self, detector_factory: FaceDetectorFactory | None) -> None:
         """Register another detector factory (already checked). While the loop runs in
@@ -473,22 +478,23 @@ class FaceDetection:
 
     async def stop(self) -> None:
         """Stop sampling and publish the inactive report. A no-op on a loop that never
-        started."""
-        task = self._task
-        self._task = None
-        if task is not None and not task.done():
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
-        if self._acquisition_cleanups:
-            await asyncio.shield(asyncio.gather(*self._acquisition_cleanups))
-        detector, retired = self._detector, self._retired
-        self._detector = self._retired = None
-        for released in (retired, detector):
-            if released is not None:
-                await self._release(released)
-        if task is not None or self._faces.value.active:
-            self._faces.set(FaceReport.inactive(self._name))
+        started; a stop during a ``start()`` waits for it and stops the loop it built."""
+        async with self._transition:
+            task = self._task
+            self._task = None
+            if task is not None and not task.done():
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+            if self._acquisition_cleanups:
+                await asyncio.shield(asyncio.gather(*self._acquisition_cleanups))
+            detector, retired = self._detector, self._retired
+            self._detector = self._retired = None
+            for released in (retired, detector):
+                if released is not None:
+                    await self._release(released)
+            if task is not None or self._faces.value.active:
+                self._faces.set(FaceReport.inactive(self._name))
 
     async def _acquire(self, factory: FaceDetectorFactory) -> FaceDetector:
         build = asyncio.create_task(asyncio.to_thread(factory))
