@@ -37,7 +37,7 @@ __all__ = [
     "FACE_DETECTOR_NAMES",
     "FACE_POLL_HZ",
     "FACE_SOURCE_DOWN_S",
-    "TRACK_MAX_JUMP",
+    "TRACK_MAX_JUMP_FACES",
     "TRACK_MAX_MISSES",
     "Face",
     "FaceDetection",
@@ -73,7 +73,7 @@ FACE_COST_LOG_S = 10.0
 # units, [-1, 1] across the frame); a track is dropped after this many consecutive
 # observations without its face. Whom the head follows is the head tracker's choice
 # (specs/motion/head_tracking.md "Whom the head follows").
-TRACK_MAX_JUMP = 0.5
+TRACK_MAX_JUMP_FACES = 1.5  # a face continues a track within this many of its sizes
 TRACK_MAX_MISSES = 20
 
 # The detectors a config names (specs/vision/user_perception.md "Detectors"); `None` is none.
@@ -212,14 +212,22 @@ def _dist2(a: tuple[float, float], b: tuple[float, float]) -> float:
 @dataclass
 class _Track:
     track_id: int
-    centre: tuple[float, float]  # normalised, on its last observation
+    centre: tuple[float, float]  # in pixels, on its last observation
+    size: float  # the larger side of its box, in pixels, on its last observation
     misses: int = 0
+
+
+def _pixel_size(face: PixelFace) -> float:
+    return max(face.bbox[2], face.bbox[3], 1.0)
 
 
 class _FaceTracks:
     """Every face's ``track_id`` (specs/vision/user_perception.md "Tracks"): each observation's
-    faces continue the tracks whose centres lie nearest, within ``TRACK_MAX_JUMP`` —
-    pairs taken nearest first, each track and face used once; an unmatched face opens a
+    faces continue the tracks whose centres lie nearest, within ``TRACK_MAX_JUMP_FACES``
+    face sizes (a size is a box's larger side, in pixels; the smaller of the track's and
+    the face's, so a small face near a large track's last place is held to its own
+    size) — pairs taken nearest first,
+    each track and face used once; an unmatched face opens a
     track with ``new_id()``; an unmatched track counts a miss and is dropped after
     ``TRACK_MAX_MISSES``. Pure geometry, no smoothing, no face singled out — whom the
     head follows is the head tracker's choice."""
@@ -237,14 +245,17 @@ class _FaceTracks:
 
     def update(self, faces: Sequence[PixelFace], size: tuple[int, int]) -> list[int]:
         """The ``track_id`` of each of ``faces``, in their order."""
-        max_jump = TRACK_MAX_JUMP if self._max_jump is None else self._max_jump
+        max_jump = TRACK_MAX_JUMP_FACES if self._max_jump is None else self._max_jump
         max_misses = TRACK_MAX_MISSES if self._max_misses is None else self._max_misses
-        centres = [_normalised(*_pixel_centre(face), size) for face in faces]
+        del size  # the gate is in the face's own pixels, whatever the frame's size
+        centres = [_pixel_centre(face) for face in faces]
+        sizes = [_pixel_size(face) for face in faces]
         pairs = sorted(
             (d2, t, f)
             for t, track in enumerate(self._tracks)
             for f, centre in enumerate(centres)
-            if (d2 := _dist2(track.centre, centre)) <= max_jump**2
+            if (d2 := _dist2(track.centre, centre))
+            <= (max_jump * min(track.size, sizes[f])) ** 2
         )
         ids: list[int | None] = [None] * len(faces)
         matched: set[int] = set()
@@ -252,7 +263,7 @@ class _FaceTracks:
             if t in matched or ids[f] is not None:
                 continue
             track = self._tracks[t]
-            track.centre, track.misses = centres[f], 0
+            track.centre, track.size, track.misses = centres[f], sizes[f], 0
             ids[f] = track.track_id
             matched.add(t)
         survivors: list[_Track] = []
@@ -264,7 +275,7 @@ class _FaceTracks:
             survivors.append(track)
         for f, track_id in enumerate(ids):
             if track_id is None:
-                track = _Track(self._new_id(), centres[f])
+                track = _Track(self._new_id(), centres[f], sizes[f])
                 survivors.append(track)
                 ids[f] = track.track_id
         self._tracks = survivors
