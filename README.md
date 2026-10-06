@@ -113,7 +113,7 @@ then open `http://127.0.0.1:7860`. The example config opens the MuJoCo viewer wi
 
 ## What the API does
 
-All verbs are `async`; units are human (degrees, seconds, named emotions). The underlying `reachy_mini.ReachyMini` stays reachable as `bridge.robot` for anything the bridge does not cover.
+All verbs are `async`. What they take is human — named emotions, seconds, degrees and millimetres for a motion offset; what the reports carry states its own unit on each field — a face's position normalised to the frame, its box in pixels, its head angles in radians, a head pose a 4×4 matrix in metres, mic chunks int16 PCM. The underlying `reachy_mini.ReachyMini` stays reachable as `bridge.robot` for anything the bridge does not cover.
 
 | Area | Verbs |
 |---|---|
@@ -179,9 +179,10 @@ def make_tools(bridge: ReachyMiniBridge):
         await bridge.say(text)
         return "done"
 
-    async def who_is_there() -> int:
-        """Count the faces the robot currently sees."""
-        return len(bridge.faces.value.faces)
+    async def who_is_there() -> int | None:
+        """Count the faces the robot sees; None while no detector is looking."""
+        report = bridge.faces.value
+        return len(report.faces) if report.active else None
 
     return [play_emotion, list_emotions, say, who_is_there]
 ```
@@ -200,7 +201,7 @@ Cancelling the task that runs a tool stops the action on the robot (speech flush
 
 The `sim` backend is upstream's MuJoCo simulation, started through the bridge's own launcher, `python -m reachy_mini_bridge.sim_daemon` (a config with `"daemon": {"spawn": "auto"}` does it for you). The launcher runs upstream's daemon unchanged apart from these additions ([specs/daemon/sim_daemon.md](specs/daemon/sim_daemon.md)):
 
-- **Face tracking works.** The bridge detects faces itself, in the camera stream the daemon serves, and aims with its own tracker and a pinhole of the sim's eye camera — upstream's daemon-side tracking, which the sim never steps and whose camera matrix would put the head about 45° off the face, is left as upstream ships it and never armed. With the viewer open and `"face_detection": {"detector": "yunet"}`, the head turns onto a face and settles on it, breathing. The tracker's convergence is pinned by fast offline tests that project the test scene's portrait through the sim camera, and by the live tests below.
+- **Face tracking works.** The bridge detects faces itself, in the camera stream the daemon serves, and aims with its own tracker and a pinhole of the sim's eye camera — upstream's daemon-side tracking, which the sim never steps and whose camera matrix would put the head about 45° off the face, is left as upstream ships it and never armed. With the viewer open, `"face_detection": {"detector": "yunet"}, "motion": {"tracking": true}` and the motors `enabled`, the head turns onto a face and settles on it, breathing. The tracker's convergence is pinned by fast offline tests that project the test scene's portrait through the sim camera, and by the live tests below.
 - **Your webcam as the robot's camera.** With `"daemon": {"camera": {"source": "webcam"}}`, the sim's camera shows your computer's webcam instead of the rendered scene. Face tracking, `bridge.camera` and the control panel then see you, with or without the viewer window. The bridge's tracker treats the webcam as fixed where the robot's eye rests, so the head follows you without drifting. On macOS, the terminal or editor that starts the daemon needs camera permission.
 - **See what it sees.** With `"daemon": {"headless": false, "sim_displays": {"camera_overlay": true}}`, the viewer window shows the camera stream in its top-right corner — your webcam, or the rendered eye camera. The example config has it on.
 - **See where it looks, and where it places you.** `"sim_displays": {"robot_gaze": true, "face_markers": true}` adds, in the viewer's 3D scene, a line along the robot's gaze and an ellipsoid on each face the bridge detects (green for the one the head follows). Only the viewer shows them; the robot's camera never does. Details: [docs/running-the-sim-daemon.md](docs/running-the-sim-daemon.md).
@@ -370,7 +371,7 @@ Validation rules and the reasoning behind each block: [specs/core/config.md](spe
 
 ## Testing your own project
 
-Unit-test against `ReachyMiniBridge("fake")` and assert on `bridge.robot.commands`. For live tests, opt into the shipped pytest plugin and gate each test on the capabilities it needs:
+Unit-test against `ReachyMiniBridge("fake")` and assert on what the fake recorded: `bridge.robot.commands` for the SDK calls (motors, sounds, modes), `bridge.robot.targets` for the poses the motion loop streamed ([docs/testing-with-the-bridge.md](docs/testing-with-the-bridge.md)). For live tests, opt into the shipped pytest plugin and gate each test on the capabilities it needs:
 
 ```python
 # conftest.py

@@ -87,7 +87,7 @@ Detectors follow the same principle: a detector written against the bridge's `Fa
 - **[motion.md](../motion/motion.md):** `head_pose_at`, the feed's source of a frame's pose.
 - **[robot.md](../core/robot.md):** `media.get_frame` is consumed by the feed alone; the fake's paced frames.
 - **[control_panel.md](../examples/control_panel.md):** the panel's camera image is the feed's latest frame.
-- **[testing.md](../testing/testing.md):** the `camera` capability probe reads `robot.media.get_frame` directly, before the bridge's session exists; the live camera test reads the feed.
+- **[testing.md](../testing/testing.md):** the `camera` capability probe reads the running bridge's camera feed — never `get_frame()` beside it, which would steal the feed's frames; the live camera test reads the feed too.
 
 ## Open questions
 

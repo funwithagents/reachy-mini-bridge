@@ -5,9 +5,13 @@ finds and `bridge.faces` reports them, exactly as with the shipped detector. Des
 [specs/vision/user_perception.md](../specs/vision/user_perception.md) "Custom detectors".
 
 You need this only when the shipped detector is not what you want. `"face_detection":
-{"detector": "yunet"}` runs upstream's own YuNet model, wrapped by the bridge — nothing to
-install, the weights downloaded into the Hugging Face cache on first use — and is enough
-for a robot that looks at the person in front of it. The bridge ships that one detector
+{"detector": "yunet"}` names upstream's own YuNet model, wrapped by the bridge — nothing to
+install, the weights downloaded into the Hugging Face cache on first use. The name alone
+starts nothing: `"enabled": true` beside it runs the detector so `bridge.faces` reports who
+is there, and `"motion": {"tracking": true}` makes the robot look at the person in front of
+it (the head moves once its motors are `enabled`) — the README's [configuration
+reference](../README.md#face_detection--who-is-in-front-of-the-robot) has the fields. The
+bridge ships that one detector
 and no other, to stay lightweight: a model of your own, a vision library's detector
 (vision-modules' MediaPipe face landmarker, with a fitted head orientation), or a stand-in
 for tests plug in here, their dependencies yours.

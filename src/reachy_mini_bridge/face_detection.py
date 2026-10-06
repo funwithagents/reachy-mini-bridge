@@ -69,9 +69,9 @@ DETECT_WIDTH = 320
 # this long after its first observation — the numbers `width` / `target_fps` are tuned by.
 FACE_COST_LOG_S = 10.0
 # The tracks' gates (specs/vision/user_perception.md "Tracks"), upstream's association values:
-# a face continues a track whose last centre lies within this jump (normalised image
-# units, [-1, 1] across the frame); a track is dropped after this many consecutive
-# observations without its face. Whom the head follows is the head tracker's choice
+# a face continues a track whose last centre lies within this many face sizes of its
+# own (the smaller of the two boxes' larger sides, in pixels); a track is dropped after
+# this many consecutive observations without its face. Whom the head follows is the head tracker's choice
 # (specs/motion/head_tracking.md "Whom the head follows").
 TRACK_MAX_JUMP_FACES = 1.5  # a face continues a track within this many of its sizes
 TRACK_MAX_MISSES = 20

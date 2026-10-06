@@ -128,7 +128,7 @@ After any code change, run linting, type checking, and tests, and fix any failur
 ```
 uv sync --dev
 uv run ruff check .
-uv run ruff format .
+uv run ruff format src tests tests-e2e examples   # not `.`: ruff reformats the Python blocks in Markdown
 uv run pyright
 uv run pytest
 ```

@@ -29,7 +29,7 @@ class BridgeError(RuntimeError):
 class MotorsNotEnabledError(BridgeError):
     """A verb that moves the robot was called while motors were not ``enabled``.
 
-    Raised fail-fast by movement verbs (``play_emotion``, ``start_head_tracking``) after
+    Raised fail-fast by the movement verb (``play_emotion``; the modes need no motors) after
     reading the live motor state, rather than silently enabling torque or sending a
     command that does nothing. The caller enables motors via
     ``set_motors_state("enabled")`` first (see specs/core/bridge.md "Motors").

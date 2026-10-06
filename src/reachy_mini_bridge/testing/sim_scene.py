@@ -9,9 +9,9 @@ module closes all three gaps for the ``sim`` backend: a scene with a pool of nam
 — today **faces** (portrait planes, ``face_1`` … ``face_3``), room for other kinds later —
 that start **hidden** and that a test spawns, moves and despawns over HTTP while the
 daemon runs. Showing
-the face exercises the real daemon-side pipeline (offscreen render → GStreamer → YuNet
-face detector → tracking aim → head IK) and, on top of it, the bridge's attention
-hand-back (specs/core/bridge.md "Attention"); hiding it again leaves the scene exactly as a test
+the face exercises the real pipeline (the daemon's offscreen render → GStreamer → the
+bridge's camera feed → its face detector → its head tracker's aim → the motion loop →
+head IK) and, on top of it, the bridge's attention hand-back (specs/core/bridge.md "Attention"); hiding it again leaves the scene exactly as a test
 that needs no face found it.
 
 Three pieces, one process boundary:
@@ -23,7 +23,7 @@ Three pieces, one process boundary:
   **invisible**.
 - **Launcher** (daemon side, ``python -m reachy_mini_bridge.testing.sim_scene``) —
   ``run_daemon`` starts the bridge's sim daemon (``reachy_mini_bridge.sim_daemon``, with
-  its face-tracking corrections) on that file (``upstream_scene_name`` turns the path into
+  its camera source and viewer displays) on that file (``upstream_scene_name`` turns the path into
   the ``--scene`` value upstream resolves to it), with the scene's extension: a
   ``SceneDirector`` installed as MuJoCo's control callback once the model is built, so the
   mocap bodies follow commanded poses from inside the physics loop, and a small REST
@@ -711,8 +711,8 @@ def run_daemon(argv: Sequence[str] | None = None) -> None:
     ``mjpython`` for the viewer.
 
     ``--scene-path`` becomes the upstream scene name that resolves to the file; every
-    other flag goes to ``run_sim_daemon`` (specs/daemon/sim_daemon.md), which carries the
-    face-tracking corrections every bridge sim gets.
+    other flag goes to ``run_sim_daemon`` (specs/daemon/sim_daemon.md), which adds the
+    camera source and the viewer displays every bridge sim gets.
     """
     parser = argparse.ArgumentParser(
         prog="python -m reachy_mini_bridge.testing.sim_scene",

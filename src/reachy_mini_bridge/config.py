@@ -411,8 +411,8 @@ class FaceDetectionSettings:
 class MotionSettings:
     """Everything that shapes the robot's behaviour at rest, applied when the session
     starts (specs/motion/motion.md, specs/core/bridge.md): the loop's own idle modes (``presence``,
-    ``idle``, ``idle_move``) and the daemon-side modes the bridge arms around them (``wobbling``,
-    ``tracking``)."""
+    ``idle``, ``idle_move``), the daemon-side mode the bridge arms around them (``wobbling``)
+    and the bridge's own head tracking (``tracking``)."""
 
     # The background behaviour: idle moments are filled with the idle move.
     presence: bool = True
