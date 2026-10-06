@@ -230,7 +230,7 @@ def launch_command(
     HTTP API where they say, and ``start_daemon`` polls that same address for readiness.
     Without them it binds upstream's defaults (port 8000) whatever the caller asked.
 
-    ``sim`` (docs/running-the-sim-daemon.md) — every recipe runs the bridge's sim daemon
+    ``sim`` (docs/guides/running-daemons.md) — every recipe runs the bridge's sim daemon
     launcher (specs/daemon/sim_daemon.md: upstream's daemon with its face-tracking corrections and
     the ``config.camera`` source): headless ``<this interpreter> -m
     reachy_mini_bridge.sim_daemon --headless --[no-]preload-datasets [--scene S] [camera

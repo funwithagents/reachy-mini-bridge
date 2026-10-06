@@ -1,0 +1,19 @@
+{
+  "backend": "sim",
+  "daemon": {
+    "spawn": "auto",
+    "headless": false,
+    "camera": {
+      "source": "sim"
+    },
+    "sim_displays": {
+      "camera_overlay": true
+    }
+  },
+  "face_detection": {
+    "detector": "yunet"
+  },
+  "motion": {
+    "tracking": true
+  }
+}

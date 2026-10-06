@@ -2,15 +2,15 @@
 
 How to run a face detector of your own inside the bridge: the head follows the faces it
 finds and `bridge.faces` reports them, exactly as with the shipped detector. Design:
-[specs/vision/user_perception.md](../specs/vision/user_perception.md) "Custom detectors".
+[specs/vision/user_perception.md](../../specs/vision/user_perception.md) "Custom detectors".
 
 You need this only when the shipped detector is not what you want. `"face_detection":
 {"detector": "yunet"}` names upstream's own YuNet model, wrapped by the bridge — nothing to
 install, the weights downloaded into the Hugging Face cache on first use. The name alone
 starts nothing: `"enabled": true` beside it runs the detector so `bridge.faces` reports who
 is there, and `"motion": {"tracking": true}` makes the robot look at the person in front of
-it (the head moves once its motors are `enabled`) — the README's [configuration
-reference](../README.md#face_detection--who-is-in-front-of-the-robot) has the fields. The
+it (the head moves once its motors are `enabled`) — the [configuration
+reference](../reference/configuration.md#face_detection--who-is-in-front-of-the-robot) has the fields. The
 bridge ships that one detector
 and no other, to stay lightweight: a model of your own, a vision library's detector
 (vision-modules' MediaPipe face landmarker, with a fitted head orientation), or a stand-in
@@ -37,7 +37,7 @@ clockwise in the image, pitch positive when the face tilts down, yaw positive wh
 turns toward the image's right — and is preferred over the eye-line roll when given.
 
 The shipped detector is the worked example —
-[src/reachy_mini_bridge/yunet.py](../src/reachy_mini_bridge/yunet.py) is a class whose
+[src/reachy_mini_bridge/yunet.py](../../src/reachy_mini_bridge/yunet.py) is a class whose
 constructor builds the model and whose `detect` subsamples the frame, runs the model and
 scales its boxes, noses and eyes back into `PixelFace`s. A wrapper around a model of your
 own has the same shape:
@@ -128,10 +128,10 @@ pose it was taken from, so the tracker aims each face against the pose it was ac
 from. `source` reads `"custom"`. The head tracker then chooses whom to follow — the biggest
 face, kept while seen, a vanished face waited for before switching — and publishes that
 choice, by `track_id`, on `bridge.head_tracking`. The fields are in
-[specs/vision/user_perception.md](../specs/vision/user_perception.md) "The face report" and
-[specs/motion/head_tracking.md](../specs/motion/head_tracking.md) "Whom the head follows".
+[specs/vision/user_perception.md](../../specs/vision/user_perception.md) "The face report" and
+[specs/motion/head_tracking.md](../../specs/motion/head_tracking.md) "Whom the head follows".
 
-The live test [tests-e2e/test_custom_faces.py](../tests-e2e/test_custom_faces.py) registers
+The live test [tests-e2e/test_custom_faces.py](../../tests-e2e/test_custom_faces.py) registers
 the shipped `YuNetDetector` through this path on the viewer sim's camera and checks the
 head converges on the test scene's portrait with the same convergence kit the config-named
 detector is tested with (`reachy_mini_bridge.testing.gaze`) — the registration and the
@@ -160,5 +160,5 @@ by `track_id`. `bridge.head_tracking.value.track_id` says which of them the head
 A face detector you want the head to follow is registered with the bridge as above — the
 bridge drives it. The feed is what lets all of this coexist — every consumer samples the
 same frames and takes none from the others, which two callers of upstream's one-shot
-`get_frame()` would ([specs/vision/camera.md](../specs/vision/camera.md) "A valid upstream
+`get_frame()` would ([specs/vision/camera.md](../../specs/vision/camera.md) "A valid upstream
 for a vision graph").

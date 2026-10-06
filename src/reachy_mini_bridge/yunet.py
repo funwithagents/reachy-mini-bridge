@@ -11,7 +11,7 @@ Face cache, once) and the session opened — which is why the detection loop bui
 detectors on a worker thread, and why a config without the detector never pays for it.
 
 It is also the reference implementation of the ``FaceDetector`` contract — the wrapper a
-developer writes around a model of their own (docs/custom-face-detector.md).
+developer writes around a model of their own (docs/guides/custom-face-detector.md).
 """
 
 from __future__ import annotations

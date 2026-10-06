@@ -12,7 +12,7 @@ backends ([specs/core/robot.md]) the same way the bridge does:
   capability probing, and one event loop for the bridge's lifetime — run a test's
   coroutines through ``live_bridge.run(...)``), then gate each test with ``requires_caps``.
 
-See ../../../specs/testing/testing_support.md and ../../../docs/testing-with-the-bridge.md.
+See ../../../specs/testing/testing_support.md and ../../../docs/guides/testing.md.
 """
 
 from reachy_mini_bridge.testing.support import (

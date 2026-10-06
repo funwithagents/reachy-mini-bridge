@@ -1,9 +1,10 @@
 """The documentation's runnable examples, executed as written.
 
-The README's quick start and the testing guide's unit-test example are the first code a
-new user runs; each is extracted from its Markdown file and executed on the ``fake`` so
-neither can drift from the bridge again (specs/core/bridge.md "Front door";
-docs/testing-with-the-bridge.md "Unit tests").
+The first code a new user runs is extracted from its Markdown file and executed on the
+``fake`` so none of it can drift from the bridge: the README's quick start, the
+getting-started application (with its beep synthesizer), the custom idle move guide's
+move, and the testing guide's unit-test example (specs/core/bridge.md "Front door";
+docs/guides/testing.md "Unit tests").
 """
 
 from __future__ import annotations
@@ -24,24 +25,39 @@ def _first_python_block(path: Path, heading: str) -> str:
     return match.group(1)
 
 
-def test_the_readme_quick_start_runs_on_the_fake() -> None:
-    # The block ends with `asyncio.run(main())`: executing it runs the whole session —
-    # motors, the emotion, a camera frame — on the default config, which names no
-    # detector, so the quick start must not start tracking.
-    code = _first_python_block(ROOT / "README.md", "## Quick start")
+def _run_as_main(path: Path, heading: str) -> None:
+    # The block ends with `asyncio.run(main())`: executing it runs the whole session.
+    code = _first_python_block(path, heading)
     assert "asyncio.run(main())" in code
-    exec(compile(code, "README.md", "exec"), {"__name__": "__main__"})  # noqa: S102
+    exec(compile(code, path.name, "exec"), {"__name__": "__main__"})  # noqa: S102
+
+
+def test_the_readme_quick_start_runs_on_the_fake() -> None:
+    # Motors, the emotion, a camera frame — on the default config, which names no
+    # detector, so the quick start must not start tracking.
+    _run_as_main(ROOT / "README.md", "## Quick start")
+
+
+def test_the_getting_started_application_runs_on_the_fake() -> None:
+    # The complete first application: motors, an emotion, `say` through the page's own
+    # synthesizer, one mic chunk, a camera frame.
+    _run_as_main(ROOT / "docs" / "getting-started.md", "## Your first application")
+
+
+def test_the_custom_idle_move_guide_runs_on_the_fake() -> None:
+    # Registers the guide's move on a session in the custom idle mode and lets it play.
+    _run_as_main(ROOT / "docs" / "guides" / "custom-idle-move.md", "## The move")
 
 
 def test_the_testing_guide_unit_example_passes() -> None:
     # The guide defines `my_greeting` (the consumer's code) and the test that measures
     # it through the fake's recorded targets; run that test exactly as a consumer would.
     code = _first_python_block(
-        ROOT / "docs" / "testing-with-the-bridge.md",
+        ROOT / "docs" / "guides" / "testing.md",
         "## Unit tests — the `fake` backend",
     )
     namespace: dict[str, Any] = {"__name__": "docs_example"}
-    exec(compile(code, "testing-with-the-bridge.md", "exec"), namespace)  # noqa: S102
+    exec(compile(code, "testing.md", "exec"), namespace)  # noqa: S102
     tests = [v for k, v in namespace.items() if k.startswith("test_") and callable(v)]
     assert len(tests) == 1, "the guide's example defines one test"
     tests[0]()

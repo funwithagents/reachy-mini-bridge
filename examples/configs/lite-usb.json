@@ -1,0 +1,12 @@
+{
+  "backend": "real",
+  "daemon": {
+    "spawn": "auto"
+  },
+  "face_detection": {
+    "detector": "yunet"
+  },
+  "motion": {
+    "tracking": true
+  }
+}

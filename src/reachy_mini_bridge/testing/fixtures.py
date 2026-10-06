@@ -20,7 +20,7 @@ over it on one event loop that lives from ``start()`` to ``stop()`` (``BridgeLoo
 capabilities against the live daemon, and yields a ``LiveBridge`` — ``(bridge, capabilities)``
 plus ``run(coro)`` on that loop.
 See ../../../specs/testing/testing_support.md for the strategy and
-../../../docs/running-the-sim-daemon.md for the launch recipes.
+../../../docs/guides/running-daemons.md for the launch recipes.
 """
 
 from __future__ import annotations
@@ -67,7 +67,7 @@ def _probe_audio(media: Any) -> bool:
     Runs after the bridge's ``MediaSession`` has started recording and playback, and never
     starts or stops the pipeline itself: upstream records and plays through one shared
     pipeline whose device binding does not survive a restart on macOS — a stop/start
-    reopens both on the system default speaker and mic (docs/reachy-mini-api.md).
+    reopens both on the system default speaker and mic (docs/internals/upstream-sdk-notes.md).
     """
     try:
         deadline = time.monotonic() + _AUDIO_PROBE_TIMEOUT

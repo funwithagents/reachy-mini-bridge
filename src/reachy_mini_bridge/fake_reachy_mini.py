@@ -202,7 +202,7 @@ class _FakeMedia:
         """Stop the sound file `play_sound` started.
 
         Fake-only member: it models the `MediaManager.stop_sound()` upstream lacks
-        (docs/reachy-mini-api.md "Cancelling a move"); the bridge stops the real backend's
+        (docs/internals/upstream-sdk-notes.md "Cancelling a move"); the bridge stops the real backend's
         playbin itself meanwhile (specs/audio/audio.md "Stopping a sound file").
         """
         self._commands.append(("media.stop_sound", {}))

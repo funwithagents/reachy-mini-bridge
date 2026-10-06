@@ -1,0 +1,17 @@
+{
+  "backend": "real",
+  "robot": {
+    "host": "reachy-mini.local",
+    "port": 8000
+  },
+  "daemon": {
+    "spawn": "never"
+  },
+  "face_detection": {
+    "detector": "yunet",
+    "target_fps": 10
+  },
+  "motion": {
+    "tracking": true
+  }
+}

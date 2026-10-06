@@ -68,7 +68,7 @@ LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost"})
 
 # What a bridge-managed (spawned or borrowed local) daemon needs the client to use,
 # unless the caller set it: an externally started daemon serves neither the IPC
-# transport nor the WebRTC media path (docs/running-the-sim-daemon.md).
+# transport nor the WebRTC media path (docs/guides/running-daemons.md).
 _MANAGED_DAEMON_ROBOT_DEFAULTS: dict[str, Any] = {
     "host": "127.0.0.1",
     "port": 8000,

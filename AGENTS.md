@@ -11,7 +11,7 @@ Where things live. This is a coarse, module-level map — for the full file inve
 | Path | What's there |
 |---|---|
 | `.github/workflows/` | The CI workflow — the static gate and both test tiers, three jobs side by side on GitHub's hosted Linux runners on every pull request and push to `main`; spec: [specs/testing/ci.md](specs/testing/ci.md) |
-| `README.md` | Packaging front page — short intro + doc pointers |
+| `README.md` | The landing page — what the bridge is, its support status, install, the fake quick start, the control panel, and the links into `docs/`; its runnable quick start is executed by `tests/test_docs_examples.py` |
 | `CONTRIBUTING.md` | How the project is run today — solo development, feedback through issues, no external pull requests yet |
 | `config.example.json` | Every `ReachyMiniConfig` field with placeholder values — kept in sync with [specs/core/config.md](specs/core/config.md) |
 | `src/reachy_mini_bridge/` | The library itself — one module per core concept (see below) |
@@ -19,8 +19,8 @@ Where things live. This is a coarse, module-level map — for the full file inve
 | `plans/` | Implementation plans turning settled specs into buildable steps — indexed by [plans/_index.md](plans/_index.md) |
 | `tests/` | Fast, deterministic, no-network tests; mirrors the `src/reachy_mini_bridge/` module structure |
 | `tests-e2e/` | Opt-in live tests that call real external services (not collected by default `pytest`) |
-| `docs/` | Reference notes (not specs) — e.g. [docs/reachy-mini-api.md](docs/reachy-mini-api.md), what we learned about the upstream `reachy_mini` SDK |
-| `examples/` | Runnable example apps, not part of the package — `control_panel/`, a Gradio control panel over `ReachyMiniBridge` (`demo` dependency group; `uv run python -m examples.control_panel --config <file>`; spec: [specs/examples/control_panel.md](specs/examples/control_panel.md)) |
+| `docs/` | The consumer documentation, entered through [docs/index.md](docs/index.md): [getting-started.md](docs/getting-started.md); `reference/` — the API ([api.md](docs/reference/api.md): verbs, values, errors, lifecycle, cancellation and concurrency, units, extension contracts), the configuration ([configuration.md](docs/reference/configuration.md): every field, kept complete by `tests/test_docs_consistency.py`) and the one backends/capabilities matrix ([backends-and-capabilities.md](docs/reference/backends-and-capabilities.md)); `guides/` — task guides (audio, perception and tracking, a custom detector, a custom idle move, testing, running daemons, Linux); `internals/` — [upstream-sdk-notes.md](docs/internals/upstream-sdk-notes.md), what we learned about the upstream `reachy_mini` SDK, dated and versioned, never a bridge API promise. One home per fact: a reference owns it, every other page links there; the specs stay the normative design |
+| `examples/` | Runnable examples, not part of the package — `control_panel/`, a Gradio control panel over `ReachyMiniBridge` (`demo` dependency group; `uv run python -m examples.control_panel --config <file>`; spec: [specs/examples/control_panel.md](specs/examples/control_panel.md)); `configs/`, one minimal `ReachyMiniConfig` profile per setup (fake, Lite over USB, sim with the rendered camera, sim with a webcam, wireless) with a README of what each needs and gives — parsed by `tests/test_docs_consistency.py` |
 
 ### `src/reachy_mini_bridge/` modules
 
@@ -46,7 +46,7 @@ Where things live. This is a coarse, module-level map — for the full file inve
 | `src/reachy_mini_bridge/errors.py` | Bridge exception hierarchy — `BridgeError` base + `MotorsNotEnabledError`, `GravityCompensationUnsupportedError`, `SpeechInterruptedError`, `SoundInterruptedError`, `DaemonError`; `ConfigError(ValueError)` | [specs/core/bridge.md](specs/core/bridge.md), [specs/core/config.md](specs/core/config.md), [specs/daemon/daemon.md](specs/daemon/daemon.md) |
 | `src/reachy_mini_bridge/testing/` | Shipped testing harness (package) — the `live_bridge`, `sim_scene`, `face_scene` and `emotions_library` fixtures, `requires_caps`, `require_env` for consumers' e2e tests (`fixtures.py` plugin, private `_daemon.py` wrapping `daemon.py`, `support.py`); `sim_scene.py` — the bridge's test scene: a pool of hidden portraits (`face_1` … `face_3`, `assets/face.png`) a test spawns/moves/despawns — as many at once as it needs — through a `python -m reachy_mini_bridge.testing.sim_scene` launcher (`SceneDirector` + `/api/sim/inject` router) and `SimSceneClient`; `gaze.py` — the convergence kit of the head-tracking live tests (`track_onto` / `assert_tracked` / `arm_tracking`, the measured thresholds), importable by consumers | [specs/testing/testing_support.md](specs/testing/testing_support.md), [specs/testing/sim_scene.md](specs/testing/sim_scene.md) |
 
-**Keep this map current:** when you add, rename, or remove a top-level `src/reachy_mini_bridge/` module or a root directory, update the map in the same change — same discipline as keeping spec/plan statuses honest (below). A test (`tests/test_project_map.py`) enforces that every `src/reachy_mini_bridge/*.py` module appears here and vice-versa — and that the spec frontmatter (see below) stays honest too.
+**Keep this map current:** when you add, rename, or remove a top-level `src/reachy_mini_bridge/` module or a root directory, update the map in the same change — same discipline as keeping spec/plan statuses honest (below). A test (`tests/test_project_map.py`) enforces that every `src/reachy_mini_bridge/*.py` module appears here and vice-versa — and that the spec frontmatter (see below) stays honest too. `tests/test_docs_consistency.py` guards the documentation the same way: every local Markdown link resolves (plans excepted), every spec's and plan's status matches its index row, `config.example.json` and the configuration reference name every bridge-owned config field, and every profile under `examples/configs/` parses.
 
 ## Keeping statuses current
 
@@ -109,7 +109,7 @@ The `live_bridge` fixture brings up the daemon itself — **don't start one by h
 - **macOS permissions:** the process running the tests needs camera and microphone access; without it the camera probe finds no frame and the camera test skips.
 - **Every sim the harness spawns runs the bridge's test scene** (upstream's empty scene plus a pool of hidden portraits the tracking tests spawn), and **every sim runs through the bridge's launcher** ([specs/daemon/sim_daemon.md](specs/daemon/sim_daemon.md)), which adds the webcam camera source and the viewer overlay. Start `uv run python -m reachy_mini_bridge.sim_daemon` when you want one to borrow with those; the bridge's face detection works on upstream's `reachy-mini-daemon --sim` too.
 - **Manual testing with a webcam** is not a pytest target: run a sim config with `"daemon": {"camera": {"source": "webcam"}}` (e.g. through the control panel) and step in front of the computer — the simulated robot sees and follows you.
-- `REACHY_MINI_PORT` (default `8000`) moves the address. Details: [specs/testing/testing.md](specs/testing/testing.md) ("E2E targets & capabilities"), [docs/testing-with-the-bridge.md](docs/testing-with-the-bridge.md), [specs/daemon/daemon.md](specs/daemon/daemon.md) (launch recipes).
+- `REACHY_MINI_PORT` (default `8000`) moves the address. Details: [specs/testing/testing.md](specs/testing/testing.md) ("E2E targets & capabilities"), [docs/guides/testing.md](docs/guides/testing.md), [specs/daemon/daemon.md](specs/daemon/daemon.md) (launch recipes).
 
 ## Implementation plans
 

@@ -24,7 +24,7 @@ env:
   # Upstream reachy_mini on Linux: PyGObject is sdist-only in the locked range and builds
   # against these headers; GStreamer comes from the system (the introspection data, the
   # base/good/bad plugin sets — Ubuntu 24.04's bad set lacks webrtcdsp, so the daemon
-  # runs without software AEC (docs/linux.md) — the PulseAudio plugin). The live job adds PulseAudio itself and Mesa's EGL/OSMesa for the offscreen
+  # runs without software AEC (docs/guides/linux.md) — the PulseAudio plugin). The live job adds PulseAudio itself and Mesa's EGL/OSMesa for the offscreen
   # camera render.
   APT_BASE: >-
     libgirepository1.0-dev libcairo2-dev pkg-config

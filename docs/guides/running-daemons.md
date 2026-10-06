@@ -1,11 +1,11 @@
 # Running a Reachy Mini daemon (for e2e / dev)
 
-How to bring up a `reachy_mini` daemon — for the e2e tests, or for developing against a live daemon. Like [reachy-mini-api.md](reachy-mini-api.md), this is a reference note about the upstream SDK, not a spec. It's the operational companion to the e2e **strategy** in [../specs/testing/testing.md](../specs/testing/testing.md) ("E2E targets & capabilities"), which owns the capability matrix; this file records the concrete launch recipes and *why* they work.
+How to bring up a `reachy_mini` daemon — for the e2e tests, or for developing against a live daemon. Like [upstream-sdk-notes.md](../internals/upstream-sdk-notes.md), this is a reference note about the upstream SDK, not a spec. It's the operational companion to the e2e **strategy** in [../specs/testing/testing.md](../../specs/testing/testing.md) ("E2E targets & capabilities"), which owns the capability matrix; this file records the concrete launch recipes and *why* they work.
 
 ## Launch modes
 
 The bridge implements these recipes in `reachy_mini_bridge.daemon` (spec:
-[../specs/daemon/daemon.md](../specs/daemon/daemon.md)): a `ReachyMiniConfig` with `"backend": "sim"`
+[../specs/daemon/daemon.md](../../specs/daemon/daemon.md)): a `ReachyMiniConfig` with `"backend": "sim"`
 and `"daemon": {"spawn": "auto"}` makes `ReachyMiniBridge` spawn the headless daemon below
 (or the viewer with `"headless": false`), wait for readiness, and stop it on exit — and the
 e2e harness uses the same code. `"backend": "real"` with the same `daemon` block does the
@@ -13,7 +13,7 @@ same for a robot plugged into this machine over USB (see "Real robot" below). Th
 here are what it runs, for when you want to start a daemon by hand.
 
 **Every sim the bridge starts runs through its own launcher**, `python -m
-reachy_mini_bridge.sim_daemon` ([../specs/daemon/sim_daemon.md](../specs/daemon/sim_daemon.md)):
+reachy_mini_bridge.sim_daemon` ([../specs/daemon/sim_daemon.md](../../specs/daemon/sim_daemon.md)):
 upstream's daemon plus a choice of camera source (the rendered eye camera, or your webcam)
 and the viewer's camera overlay. It takes upstream's flags. Faces are detected by the
 bridge itself, on the host, from the camera stream the daemon serves — the daemon's own
@@ -33,7 +33,7 @@ reachy-mini-daemon --sim --headless --preload-datasets
 
 - Serves `http://127.0.0.1:8000` in ~1s (`--fastapi-port` moves it; a daemon the bridge spawns is bound to the config's `robot.host:port` the same way, so two sims on one machine take two HTTP ports — which keeps their APIs apart and nothing more: upstream's media server binds a fixed UDP port and a fixed camera socket path whatever the HTTP address, so two media-on daemons on one machine are not isolated from each other; run the second one `--no-media`). Add `--no-media` for a pure **motion** daemon (no camera/audio) — the lightest option for motion-only work; the e2e harness spawns media-on so it can probe audio.
 - **Media on** (omit `--no-media`) brings up **audio**: the daemon falls back to the host's default mic/speaker and enables **software AEC** (`No hardware AEC; enabled software echo cancellation`) where GStreamer has the `webrtcdsp` element — on macOS; Ubuntu 24.04's packages lack it, so there the daemon logs `webrtcdsp/webrtcechoprobe unavailable` and runs without it ([linux.md](linux.md)). The macOS `libgstpython.dylib` GStreamer warning is harmless.
-- **The rendered camera works headless on Linux, not on macOS.** Upstream starts the eye-camera render only under the viewer; the bridge's launcher starts it itself for a headless run wherever MuJoCo can draw without a display — on Linux, through Mesa's EGL (`MUJOCO_GL` defaulted to `egl`; `osmesa` works too if the environment names it; the `libegl1` / `libgl1-mesa-dri` packages, or `libosmesa6`), so a Linux headless sim serves frames and the face tests run on a CI runner ([specs/daemon/sim_daemon.md](../specs/daemon/sim_daemon.md) "The headless camera"). On macOS the only GL context is the window server's, so `get_frame()` returns `None` headless: use the viewer mode for the camera there — or a webcam (below), which works headless on either. A render context that cannot be created logs one `ERROR` and the daemon runs on without a camera.
+- **The rendered camera works headless on Linux, not on macOS.** Upstream starts the eye-camera render only under the viewer; the bridge's launcher starts it itself for a headless run wherever MuJoCo can draw without a display — on Linux, through Mesa's EGL (`MUJOCO_GL` defaulted to `egl`; `osmesa` works too if the environment names it; the `libegl1` / `libgl1-mesa-dri` packages, or `libosmesa6`), so a Linux headless sim serves frames and the face tests run on a CI runner ([specs/daemon/sim_daemon.md](../../specs/daemon/sim_daemon.md) "The headless camera"). On macOS the only GL context is the window server's, so `get_frame()` returns `None` headless: use the viewer mode for the camera there — or a webcam (below), which works headless on either. A render context that cannot be created logs one `ERROR` and the daemon runs on without a camera.
 
 ### Headfull / viewer sim — local (adds camera, watchable)
 
@@ -64,7 +64,7 @@ launchctl asuser $(id -u) \
 
 **See what the robot sees.** `--sim-display camera_overlay` draws the camera stream in the top-right corner of the viewer window — the rendered eye camera, or the webcam with `--camera webcam`, mirrored so you see yourself as in a mirror (the stream itself stays as the camera sees) — with the camera's name at the top left. In a config: `"daemon": {"headless": false, "sim_displays": {"camera_overlay": true}}` (the example config has it on). Viewer only: with `--headless` it is an argument error, and the config refuses it with `headless: true`. It needs the MuJoCo the `sim` extra installs (3.3.1 or later, "The MuJoCo version" above); an older one gets one warning and no picture.
 
-**See where it looks and where it places the faces.** Two more sim displays draw in the viewer's 3D scene (spec: [specs/daemon/sim_displays.md](../specs/daemon/sim_displays.md)):
+**See where it looks and where it places the faces.** Two more sim displays draw in the viewer's 3D scene (spec: [specs/daemon/sim_displays.md](../../specs/daemon/sim_displays.md)):
 
 - `--sim-display robot_gaze` draws a blue line along the eye camera's optical axis: where the robot is looking. It is the axis the head tracker aligns with the face it follows, and it turns with the simulated head whatever the camera source.
 - `--sim-display face_markers` draws a flat ellipsoid for each face the bridge detects, where the bridge places it in space: green for the face the head follows, yellow for the others, labelled with the face's track id. A bridge session whose config has `sim_displays.face_markers` on sends them to the daemon (`PUT /api/sim/displays/face_markers`); `curl localhost:8000/api/sim/displays/face_markers` shows what the daemon holds. A marker's direction is the face's pixel; its distance is estimated from the face's size, so it is approximate: one hard-coded face height, calibrated on the test scene's portrait, places every face, and a person in front of a webcam is drawn about a third nearer than they stand.
@@ -73,7 +73,7 @@ In a config: `"sim_displays": {"camera_overlay": true, "robot_gaze": true, "face
 
 ### A face in the sim (viewer + scene file)
 
-Upstream's scenes ship nothing to look at. The bridge's shipped testing package can write a **test scene** — hidden-by-default props, a portrait plane today — in front of the robot and run the daemon on it through its own launcher, which lets you show, place, move and hide the props while the daemon runs ([../specs/testing/sim_scene.md](../specs/testing/sim_scene.md)):
+Upstream's scenes ship nothing to look at. The bridge's shipped testing package can write a **test scene** — hidden-by-default props, a portrait plane today — in front of the robot and run the daemon on it through its own launcher, which lets you show, place, move and hide the props while the daemon runs ([../specs/testing/sim_scene.md](../../specs/testing/sim_scene.md)):
 
 ```python
 from reachy_mini_bridge.testing.sim_scene import write_test_scene
@@ -89,7 +89,7 @@ It is the sim daemon launcher with the scene added; a bridge configured with the
 
 ### You in front of the sim (a webcam as the camera)
 
-For manual tests of face-driven behaviour, the sim can see through the computer's webcam instead of its rendered eye camera ([../specs/daemon/sim_daemon.md](../specs/daemon/sim_daemon.md) "Camera sources"): the person in front of the screen is who the simulated robot detects and follows, with or without the viewer.
+For manual tests of face-driven behaviour, the sim can see through the computer's webcam instead of its rendered eye camera ([../specs/daemon/sim_daemon.md](../../specs/daemon/sim_daemon.md) "Camera sources"): the person in front of the screen is who the simulated robot detects and follows, with or without the viewer.
 
 ```
 mjpython -m reachy_mini_bridge.sim_daemon --camera webcam [--webcam-device 1] [--webcam-hfov 70] [--sim-display camera_overlay]
@@ -110,7 +110,7 @@ A robot plugged into this machine over USB (Reachy Mini Lite) needs the daemon r
 uv run python -m reachy_mini_bridge.real_daemon --kinematics-engine Placo --preload-datasets
 ```
 
-It is upstream's `reachy-mini-daemon` run in-process with the bridge's macOS camera check ([../specs/daemon/real_daemon.md](../specs/daemon/real_daemon.md)): upstream opens the camera by a device index that moves between runs, and the launcher reads back which device opened and rebuilds the pipeline until it is the robot's camera; flags it does not know go to upstream unchanged. It finds the robot's serial port itself, wakes the robot on start and puts it to sleep on stop (about 8 s). Pass `--kinematics-engine Placo` only with `reachy-mini[placo_kinematics]` installed — gravity compensation needs it. A `ReachyMiniConfig` with `"backend": "real"` and `"daemon": {"spawn": "auto"}` runs exactly this for you. Running `reachy-mini-daemon` directly is a different route: the stock daemon, without the camera check.
+It is upstream's `reachy-mini-daemon` run in-process with the bridge's macOS camera check ([../specs/daemon/real_daemon.md](../../specs/daemon/real_daemon.md)): upstream opens the camera by a device index that moves between runs, and the launcher reads back which device opened and rebuilds the pipeline until it is the robot's camera; flags it does not know go to upstream unchanged. It finds the robot's serial port itself, wakes the robot on start and puts it to sleep on stop (about 8 s). Pass `--kinematics-engine Placo` only with `reachy-mini[placo_kinematics]` installed — gravity compensation needs it. A `ReachyMiniConfig` with `"backend": "real"` and `"daemon": {"spawn": "auto"}` runs exactly this for you. Running `reachy-mini-daemon` directly is a different route: the stock daemon, without the camera check.
 
 ## Linux
 
@@ -133,7 +133,7 @@ with build_robot(
 
 (Through the bridge, these go in the config's `robot` block; when the bridge manages the
 daemon itself it fills `connection_mode="network"`, `host`, `port`, and
-`media_backend="local"` in for you — see [../specs/core/config.md](../specs/core/config.md).)
+`media_backend="local"` in for you — see [../specs/core/config.md](../../specs/core/config.md).)
 
 - **Connect over the network.** The default `auto`/`localhost` path uses an IPC transport an externally-started daemon doesn't serve.
 - **For media (camera/audio), pass `media_backend="local"`** (same machine as the daemon). The default WebRTC path errors with `KeyError: 'Producer reachymini not found.'`.
@@ -141,6 +141,6 @@ daemon itself it fills `connection_mode="network"`, `host`, `port`, and
 
 ## Gotchas
 
-- **Wait for *readiness*, not just the open port.** The daemon serves nothing until it has **woken** — keep the default autostart/wake (do *not* pass `--no-autostart` / `--no-wake-up-on-start`) — and once it serves, `GET /api/daemon/status` says whether the backend runs: confirm its `backend_status` is not `null`, since the endpoint (and `/ws/sdk`) answer even when the MuJoCo backend failed to start (e.g. no GL context). Probe with that plain GET, not with an SDK client built with `media_backend="no_media"`: in 1.10 / 1.11 such a client makes the daemon release and re-acquire its whole media pipeline (see [reachy-mini-api.md](reachy-mini-api.md) "Media release").
+- **Wait for *readiness*, not just the open port.** The daemon serves nothing until it has **woken** — keep the default autostart/wake (do *not* pass `--no-autostart` / `--no-wake-up-on-start`) — and once it serves, `GET /api/daemon/status` says whether the backend runs: confirm its `backend_status` is not `null`, since the endpoint (and `/ws/sdk`) answer even when the MuJoCo backend failed to start (e.g. no GL context). Probe with that plain GET, not with an SDK client built with `media_backend="no_media"`: in 1.10 / 1.11 such a client makes the daemon release and re-acquire its whole media pipeline (see [upstream-sdk-notes.md](../internals/upstream-sdk-notes.md) "Media release").
 - **A lighter `--mockup-sim` mode exists** (kinematic mock, no physics) and also runs headless, but the bridge's e2e tier uses the real MuJoCo backend — the in-process `FakeReachyMini` already covers the mock level.
 - **Spawning the daemon from a process that already imported `reachy_mini`?** Scrub the GStreamer-bundle env vars from the child's environment first (`GST_PLUGIN_PATH_1_0`, `GST_PLUGIN_SYSTEM_PATH_1_0`, `GST_REGISTRY_1_0`, `GST_PLUGIN_SCANNER_1_0`, `GI_TYPELIB_PATH`, `PYGI_DLL_DIRS`, `XDG_DATA_DIRS`, `XDG_CONFIG_DIRS`). `reachy_mini`'s `gstreamer_bundle.pth` **prepends** to these at every Python startup, so if the parent already set them the child's `.pth` doubles them (`scanner:scanner`) into a value GStreamer can't exec — the external plugin scanner then fails and the in-process fallback **segfaults on `libgstpython.dylib`** (exit 255). Scrubbing lets the child set fresh, correct values; upstream's own app launcher (`reachy_mini/apps/manager.py`) does exactly this, and so does the e2e harness. (Launched from a plain shell that never imported `reachy_mini`, the vars are unset and the warning really is harmless — as above.)

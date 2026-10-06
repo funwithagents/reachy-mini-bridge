@@ -44,7 +44,7 @@ Issues = "https://github.com/funwithagents/reachy-mini-bridge/issues"
 # (specs/daemon/sim_daemon.md). Requiring `mujoco` ourselves keeps the pin out of every
 # consumer's graph; `<3.4` stays on patch releases of the version upstream tests on.
 # When bumping reachy-mini, check its `mujoco` extra is still only `mujoco`. The
-# user-facing note: docs/running-the-sim-daemon.md "The MuJoCo version".
+# user-facing note: docs/guides/running-daemons.md "The MuJoCo version".
 sim = ["mujoco>=3.3.1,<3.4"]
 # One extra per tts-engine provider, mapping onto tts-engine's own extras (see
 # specs/audio/audio.md): the `tts` block's `module.type` picks the provider, and the matching

@@ -6,7 +6,7 @@ bridge tests itself: **unit tests against the `fake` backend, e2e tests against 
 (`reachy_mini_bridge.testing`), so you get the daemon lifecycle, its platform gotchas, and
 the capability-gating for free — you don't re-derive any of it.
 
-For the design behind this, see [specs/testing/testing_support.md](../specs/testing/testing_support.md).
+For the design behind this, see [specs/testing/testing_support.md](../../specs/testing/testing_support.md).
 
 ## Backends → tiers → extras
 
@@ -21,7 +21,7 @@ libs installed, **not** a running daemon. The `fake` path needs no daemon and no
 
 The `sim` extra installs MuJoCo 3.3.x itself rather than through `reachy_mini[mujoco]`,
 which pins 3.3.0; nothing to add on your side, but don't install that upstream extra next to
-it (see [running-the-sim-daemon.md](running-the-sim-daemon.md) "The MuJoCo version").
+it (see [running-daemons.md](running-daemons.md) "The MuJoCo version").
 
 ## Unit tests — the `fake` backend
 
@@ -148,7 +148,7 @@ pactl set-default-sink ci
 pactl set-default-source ci.monitor
 ```
 
-This is what the bridge's own CI does ([../specs/testing/ci.md](../specs/testing/ci.md)); the Linux packages and the webrtc plugin a daemon needs are in [linux.md](linux.md).
+This is what the bridge's own CI does ([../specs/testing/ci.md](../../specs/testing/ci.md)); the Linux packages and the webrtc plugin a daemon needs are in [linux.md](linux.md).
 
 Capabilities are **probed, not assumed** from the backend type — environment quirks decide
 what actually works.
@@ -220,15 +220,15 @@ def test_it_looks_at_whoever_is_there(live_bridge, face_scene):
 recorded move takes the `emotions_library` fixture, which fetches the library into the
 Hugging Face cache on a fresh machine and skips when it cannot.)
 
-See [specs/testing/sim_scene.md](../specs/testing/sim_scene.md) for the scene's geometry, the pool, the endpoint,
+See [specs/testing/sim_scene.md](../../specs/testing/sim_scene.md) for the scene's geometry, the pool, the endpoint,
 and the angles the head settles at. For trying things by hand with *yourself* in front of the
 sim, a sim config with `"daemon": {"camera": {"source": "webcam"}}` uses the computer's
-webcam as the robot's camera ([running-the-sim-daemon.md](running-the-sim-daemon.md)).
+webcam as the robot's camera ([running-daemons.md](running-daemons.md)).
 
 **Own it or borrow it:** the fixture reuses a daemon already reachable at the address
 (never tears it down); otherwise it spawns one and owns its teardown — a MuJoCo daemon for
 `sim`, and for `real` on a loopback address (a robot plugged into this machine over USB)
-the hardware daemon (upstream's `reachy-mini-daemon`, run through the bridge's real daemon launcher — [../specs/daemon/real_daemon.md](../specs/daemon/real_daemon.md)), which finds the robot's serial port itself, wakes
+the hardware daemon (upstream's `reachy-mini-daemon`, run through the bridge's real daemon launcher — [../specs/daemon/real_daemon.md](../../specs/daemon/real_daemon.md)), which finds the robot's serial port itself, wakes
 the robot, and puts it to sleep when the fixture stops it. A wireless robot runs its own
 daemon: point `REACHY_MINI_HOST` at it — the fixture then leaves the media backend to
 upstream's default, the WebRTC stream the robot serves (a local daemon gets the IPC path,
@@ -243,11 +243,11 @@ daemon you start yourself needs `--kinematics-engine Placo`. Without it,
 `bridge.set_motors_state("gravity_compensation")` raises `GravityCompensationUnsupportedError`
 (sending the mode would make the robot daemon close the connection), so gate such tests on
 `requires_caps(live_bridge, "gravity_compensation")`. See
-[running-the-sim-daemon.md](running-the-sim-daemon.md) for the launch recipes and the
+[running-daemons.md](running-daemons.md) for the launch recipes and the
 macOS viewer notes.
 
 **Outside pytest,** the same lifecycle is available to your application: a
 `ReachyMiniConfig` with `"backend": "sim"` (or `"real"`, for a robot plugged in over USB)
 and `"daemon": {"spawn": "auto"}` makes `async with ReachyMiniBridge(config)` spawn (or
 borrow) the daemon itself — see
-[specs/core/config.md](../specs/core/config.md) and [specs/daemon/daemon.md](../specs/daemon/daemon.md).
+[specs/core/config.md](../../specs/core/config.md) and [specs/daemon/daemon.md](../../specs/daemon/daemon.md).

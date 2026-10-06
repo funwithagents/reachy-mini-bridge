@@ -19,8 +19,8 @@ Issues are the way in, and every kind of feedback is welcome at [github.com/funw
 - **Bug reports.** Say what you ran (the backend and target: Lite over USB, wireless, sim or fake; the OS; the `reachy-mini` version; your config with any secrets removed), what you expected, what happened, and the log output. A small script that reproduces it is the best possible report.
 - **Reports from a wireless Reachy Mini.** The author has none to test on, so a report that the bridge works, or does not, on one is especially valuable, even when everything went fine.
 - **API and design feedback.** What you would want a verb, a config field or the motion behaviour to do differently, and why. At this stage the design is cheap to change and this is the most useful input there is. Pointing at the spec you are reacting to helps.
-- **Questions.** If the README or a spec left you guessing, that is a documentation bug worth an issue too.
+- **Questions.** If the README, a guide under [docs/](docs/index.md) or a spec left you guessing, that is a documentation bug worth an issue too.
 
 ## Working with the code anyway
 
-The code is MIT-licensed, so forking it and building on it is welcome. The commands to lint, type check and run the two test tiers are in the README's [Development](README.md#development) section, and [AGENTS.md](AGENTS.md) explains how the specs, plans and their statuses fit together. If your fork grows something you think belongs upstream, open an issue describing it: that is the conversation that will lead to accepting pull requests later.
+The code is MIT-licensed, so forking it and building on it is welcome. The commands to lint, type check and run the two test tiers are in [AGENTS.md](AGENTS.md) ("Commands", "Running the live e2e tests"), which also explains how the specs, plans and their statuses fit together; the consumer documentation starts at [docs/index.md](docs/index.md). If your fork grows something you think belongs upstream, open an issue describing it: that is the conversation that will lead to accepting pull requests later.
