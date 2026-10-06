@@ -26,7 +26,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self, cast
 
@@ -51,7 +51,7 @@ from .robot import build_robot
 from .sim_displays import FaceMarkerPublisher, face_markers_url
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable
+    from collections.abc import AsyncIterator, Callable, Coroutine
 
     import numpy as np
     import numpy.typing as npt
@@ -82,6 +82,21 @@ _MOTOR_STATES = ("enabled", "disabled", "gravity_compensation")
 
 # The only kinematics engine on which the robot daemon accepts gravity compensation.
 _GRAVITY_COMPENSATION_ENGINE = "Placo"
+
+
+async def _owned(work: Coroutine[Any, Any, object]) -> bool:
+    """Run ``work`` as a task of the bridge's own, awaited through any cancel of the
+    caller: a cancel arriving meanwhile is absorbed and reported (``True``) instead of
+    cutting the work short; the work's failure propagates once it has ended."""
+    task = asyncio.ensure_future(work)
+    interrupted = False
+    while not task.done():
+        with suppress(asyncio.CancelledError):
+            await asyncio.shield(task)
+            continue
+        interrupted = True
+    task.result()
+    return interrupted
 
 
 class _WobblingSession:
@@ -332,6 +347,10 @@ class ReachyMiniBridge:
         # One mode verb at a time syncs the loop to the two switches (made per session:
         # a lock binds to the loop it first waits on).
         self._detection_sync = asyncio.Lock()
+        # One tracking transition at a time — the flag, the loop sync and the tracker's
+        # start or stop as a whole — so a stop cannot slip between a start's sync and
+        # its tracker.start() (specs/core/bridge.md "Cancellation": one at a time per mode).
+        self._tracking_sync = asyncio.Lock()
         self._next_face_track_id = 1  # identities outlive every session of this bridge
         # The custom detector's factory (config default, reset on exit); set_face_detector
         # changes it while entered.
@@ -528,6 +547,7 @@ class ReachyMiniBridge:
             )
             self._detection = detection
             self._detection_sync = asyncio.Lock()
+            self._tracking_sync = asyncio.Lock()
             # Exits after the motion session, before wobbling's cleanup.
             stack.push_async_callback(self._stop_detection)
             if self._face_detection_wanted or self._tracking_wanted:
@@ -558,7 +578,7 @@ class ReachyMiniBridge:
             stack.push_async_callback(commands.drain)
             if motors_enabled:
                 motion.resume()
-        except BaseException:
+        except BaseException as exc:
             if self._wobbling_session is not None:
                 self._wobbling_session.closing = True
             self._robot = None
@@ -567,13 +587,18 @@ class ReachyMiniBridge:
             self._motor_commands = None
             self._tracker = None
             # The stack's callbacks read the mode records (wobbling left on is disabled),
-            # so they are cleared only once it has unwound.
+            # so they are cleared only once it has unwound. The unwind is owned past any
+            # further cancel (specs/core/bridge.md "Lifecycle": nothing is leaked) — a
+            # second cancel would otherwise cut a callback short, leaving the wobbling
+            # that a held enable delivers after the connection is gone.
             try:
-                await stack.aclose()
+                interrupted = await _owned(stack.aclose())
             finally:
                 self._wobbling_session = None
                 self._detection = None
                 self._reset_head_tracking()
+            if interrupted and not isinstance(exc, asyncio.CancelledError):
+                raise asyncio.CancelledError() from exc
             raise
         self._exit_stack = stack.pop_all()
 
@@ -921,23 +946,25 @@ class ReachyMiniBridge:
         """
         tracker = self._require_tracker()
         self._require_detector()
-        was_wanted = self._tracking_wanted
-        self._tracking_wanted = True
-        try:
-            await self._sync_detection()
-        except BaseException:
-            self._tracking_wanted = was_wanted
-            raise
-        tracker.start(focus=focus)
+        async with self._tracking_sync:
+            was_wanted = self._tracking_wanted
+            self._tracking_wanted = True
+            try:
+                await self._sync_detection()
+            except BaseException:
+                self._tracking_wanted = was_wanted
+                raise
+            tracker.start(focus=focus)
 
     async def stop_head_tracking(self) -> None:
         """Stop the head tracker: the aim is withdrawn and the head eases back onto the
         idle move. The detection loop keeps running while :attr:`face_detection` is on,
         and stops otherwise."""
         tracker = self._require_tracker()
-        self._tracking_wanted = False
-        tracker.stop()
-        await self._sync_detection()
+        async with self._tracking_sync:
+            self._tracking_wanted = False
+            tracker.stop()
+            await self._sync_detection()
 
     @property
     def tracking(self) -> bool:

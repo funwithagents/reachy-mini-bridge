@@ -3114,6 +3114,57 @@ def test_cancelled_startup_wobbling_enable_is_disabled_before_restart(
     asyncio.run(run())
 
 
+def test_startup_cancelled_twice_still_disables_the_held_wobbling_enable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A second cancel while the bring-up cleanup waits on the held enable does not
+    cut the wobbling session's stop short: the enable lands, the disable follows it,
+    and only then does the connection exit (specs/core/bridge.md "Lifecycle" — nothing
+    is leaked, a second cancel does not shorten the cleanup)."""
+    entered, release = threading.Event(), threading.Event()
+    robots: list[FakeReachyMini] = []
+    original = FakeReachyMini.enable_wobbling
+
+    def held(robot: FakeReachyMini) -> None:
+        robots.append(robot)
+        entered.set()
+        assert release.wait(5)
+        original(robot)
+
+    monkeypatch.setattr(FakeReachyMini, "enable_wobbling", held)
+
+    async def run() -> None:
+        bridge = ReachyMiniBridge("fake")
+        starting = asyncio.create_task(bridge.start())
+        try:
+            await _wait_until(entered.is_set)
+            starting.cancel()
+            await asyncio.sleep(0.05)  # the cleanup is now waiting on the held enable
+            assert not starting.done()
+            starting.cancel()
+            await asyncio.sleep(0.05)
+            assert not starting.done(), "the second cancel cut the cleanup short"
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(starting, 3)
+            names = [name for name, _ in robots[0].commands]
+            assert [n for n in names if "wobbling" in n] == [
+                "enable_wobbling",
+                "disable_wobbling",
+            ]
+            assert names.index("disable_wobbling") < names.index("__exit__")
+            assert not bridge.running and not bridge.wobbling
+            async with bridge:
+                assert bridge.wobbling
+                await bridge.say("restarted", _ToneSynth())
+        finally:
+            release.set()
+            await asyncio.gather(starting, return_exceptions=True)
+            await bridge.stop()
+
+    asyncio.run(run())
+
+
 def test_cancelled_enable_is_ordered_before_a_later_disable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3239,6 +3290,47 @@ def test_overlapping_detection_starts_build_one_detector_and_stop_leaves_none() 
         assert len(built) == 1 and built[0].closed == 1
         assert not [t for t in asyncio.all_tasks() if t.get_name() == "face-detection"]
         assert not bridge.faces.value.active
+
+    asyncio.run(run())
+
+
+def test_a_stop_during_a_held_tracking_start_leaves_tracking_off() -> None:
+    """stop_head_tracking() called while start_head_tracking() builds the detector:
+    the last call's value stands as a whole — tracking off, the tracker inactive, no
+    attention, the loop stopped — and tracking starts again afterwards
+    (specs/core/bridge.md "Cancellation": one mode verb at a time per mode)."""
+
+    async def run() -> None:
+        started, release = threading.Event(), threading.Event()
+
+        def held_factory() -> _OwnedFaceDetector:
+            started.set()
+            assert release.wait(5)
+            return _OwnedFaceDetector()
+
+        cfg = ReachyMiniConfig(
+            backend="fake",
+            face_detection=FaceDetectionSettings(
+                detector="custom", face_detector=held_factory
+            ),
+            motion=MotionSettings(wobbling=False),
+        )
+        async with ReachyMiniBridge(cfg) as bridge:
+            starting = asyncio.create_task(bridge.start_head_tracking())
+            await _wait_until(started.is_set)
+            stopping = asyncio.create_task(bridge.stop_head_tracking())
+            await asyncio.sleep(0.05)
+            release.set()
+            await asyncio.gather(starting, stopping)
+            await _wait_until(lambda: not bridge.faces.value.active)
+            assert not bridge.tracking
+            assert not bridge.head_tracking.value.active
+            assert bridge.attention is None
+            assert not bridge.faces.value.active
+            await bridge.start_head_tracking()
+            assert bridge.tracking and bridge.head_tracking.value.active
+            assert bridge.attention == "watching"
+            await _wait_until(lambda: bridge.faces.value.active)
 
     asyncio.run(run())
 
