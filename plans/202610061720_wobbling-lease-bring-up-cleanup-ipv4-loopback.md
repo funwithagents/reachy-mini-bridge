@@ -1,6 +1,6 @@
 # The wobbling lease over every request, bring-up cleanup past repeated cancels, IPv4 loopback only
 
-**Status:** Todo
+**Status:** Done
 
 Restores three narrower contracts: [motion.md](../specs/motion/motion.md) "Emotions through the loop" (wobbling paused from the first emotion's start to the last's end, whatever is requested meanwhile), [bridge.md](../specs/core/bridge.md) "Lifecycle" (a cancelled bring-up leaks nothing), and [config.md](../specs/core/config.md) (the loopback hosts a managed daemon accepts). Fixes R4, R5 and R6 of the [repository consistency review of 2026-10-06](../analysis/20261006_repository-consistency-review.md). R6 is decided as *IPv4 only*: upstream's SDK client builds `ws://{host}:{port}/ws/sdk` from the raw host, so `::1` can never connect — the bridge rejects it rather than half-supporting it.
 

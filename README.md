@@ -274,7 +274,7 @@ Keyword arguments forwarded verbatim to upstream's `ReachyMini(...)`, so their n
 | `automatic_body_yaw` | `true` | Upstream's automatic body-yaw following |
 | `log_level` | `"INFO"` | Upstream client log level |
 
-Two keys are **reserved**: `use_sim` (derived from `backend`) and `spawn_daemon` (use `daemon.spawn`) — either one is a config error pointing you at the right field. On `fake` the block is validated but unused. When the bridge manages the daemon (`daemon.spawn` other than `"never"`), it fills in what a local daemon needs for anything you left unset — `host` `127.0.0.1`, `port` `8000`, `connection_mode` `"network"`, `media_backend` `"local"` — and `host`, if you do set it, must be a loopback address.
+Two keys are **reserved**: `use_sim` (derived from `backend`) and `spawn_daemon` (use `daemon.spawn`) — either one is a config error pointing you at the right field. On `fake` the block is validated but unused. When the bridge manages the daemon (`daemon.spawn` other than `"never"`), it fills in what a local daemon needs for anything you left unset — `host` `127.0.0.1`, `port` `8000`, `connection_mode` `"network"`, `media_backend` `"local"` — and `host`, if you do set it, must be `127.0.0.1` or `localhost`.
 
 ### `daemon` — whether the bridge starts one
 

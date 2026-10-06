@@ -1149,3 +1149,32 @@ def test_adapter_provider_failure_and_cancel_leave_it_usable(
             assert _command_names(robot).count("audio.clear_player") == 2
 
     asyncio.run(run())
+
+
+def test_cancel_safe_step_undoes_the_step_through_a_second_cancel() -> None:
+    """A second cancel while the step finishes does not abandon it: the undo still runs
+    once the step returns, then the cancel propagates (specs/core/bridge.md "Lifecycle")."""
+    started, release = threading.Event(), threading.Event()
+    undone: list[object] = []
+
+    def step() -> int:
+        started.set()
+        release.wait(5)
+        return 7
+
+    async def run() -> None:
+        task = asyncio.create_task(cancel_safe_step(step, undone.append))
+        while not started.is_set():
+            await asyncio.sleep(0.01)
+        task.cancel()
+        await asyncio.sleep(0.05)  # the first cancel is caught, the wait is on
+        assert not task.done()
+        task.cancel()
+        await asyncio.sleep(0.05)
+        assert not task.done()  # the second cancel did not abandon the step
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+    assert undone == [7]

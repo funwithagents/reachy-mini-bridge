@@ -62,7 +62,9 @@ _RESERVED_ROBOT_KEYS = {
     "use_sim": "'backend' (the bridge derives use_sim from it)",
     "spawn_daemon": "'daemon.spawn' (the bridge manages the daemon itself)",
 }
-LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+# IPv4 only: upstream's SDK client forms its URLs from the raw host (`ws://{host}:{port}`),
+# so IPv6's `::1` could never be reached — refused rather than half-supported.
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost"})
 
 # What a bridge-managed (spawned or borrowed local) daemon needs the client to use,
 # unless the caller set it: an externally started daemon serves neither the IPC
@@ -513,7 +515,8 @@ class ReachyMiniConfig:
             if host is not None and host not in LOOPBACK_HOSTS:
                 raise ConfigError(
                     "'robot.host' must be a loopback address when 'daemon.spawn' is "
-                    f"{daemon.spawn!r} (the bridge only manages local daemons), got {host!r}"
+                    f"{daemon.spawn!r} (the bridge only manages local daemons): "
+                    f"'127.0.0.1' or 'localhost', got {host!r}"
                 )
 
         tts_raw = top.get("tts")

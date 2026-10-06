@@ -332,8 +332,7 @@ def _scene_is_path(scene: str) -> bool:
 
 def status_url(host: str, port: int) -> str:
     """The daemon's status endpoint at ``host:port`` (``GET /api/daemon/status``)."""
-    netloc = f"[{host}]" if ":" in host else host
-    return f"http://{netloc}:{port}/api/daemon/status"
+    return f"http://{host}:{port}/api/daemon/status"
 
 
 def is_daemon_ready(host: str, port: int) -> bool:

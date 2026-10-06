@@ -473,11 +473,13 @@ def test_is_daemon_ready_is_false_on_a_closed_port() -> None:
     assert daemon.is_daemon_ready("127.0.0.1", port) is False
 
 
-def test_status_url_brackets_an_ipv6_host() -> None:
+def test_status_url_is_the_daemon_status_endpoint() -> None:
     assert daemon.status_url("127.0.0.1", 8000) == (
         "http://127.0.0.1:8000/api/daemon/status"
     )
-    assert daemon.status_url("::1", 8001) == "http://[::1]:8001/api/daemon/status"
+    assert daemon.status_url("localhost", 8001) == (
+        "http://localhost:8001/api/daemon/status"
+    )
 
 
 # --- the spawn seam ------------------------------------------------------------------

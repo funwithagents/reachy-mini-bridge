@@ -117,8 +117,11 @@ class _WobblingSession:
     ) -> None:
         if previous is not None:
             await asyncio.gather(previous, return_exceptions=True)
-        # Restore the current request at execution time, after earlier mode changes.
-        target = self.enabled if enabled is None else enabled
+        # The request, read at execution time after earlier mode changes; what the
+        # robot gets is the request unless an emotion holds the pause (specs/motion/
+        # motion.md "Emotions through the loop") — the release restores the record.
+        requested = self.enabled if enabled is None else enabled
+        target = requested and self.leases == 0
         if target:
             self._may_be_enabled = True  # an SDK failure can follow a delivered enable
         await asyncio.to_thread(
@@ -126,7 +129,7 @@ class _WobblingSession:
         )
         self._may_be_enabled = target
         if record:
-            self.enabled = target
+            self.enabled = requested
 
     async def stop(self) -> None:
         self.closing = True

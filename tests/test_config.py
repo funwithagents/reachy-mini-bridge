@@ -192,10 +192,13 @@ def test_spawn_requires_loopback_host() -> None:
     base = {"backend": "sim", "daemon": {"spawn": "auto"}}
     with pytest.raises(ConfigError, match="loopback"):
         ReachyMiniConfig.from_dict({**base, "robot": {"host": "10.0.0.5"}})
-    for host in ("127.0.0.1", "localhost", "::1"):
+    for host in ("127.0.0.1", "localhost"):
         assert ReachyMiniConfig.from_dict({**base, "robot": {"host": host}}).robot == {
             "host": host
         }
+    # IPv6 loopback is refused: upstream's client cannot form a URL from it.
+    with pytest.raises(ConfigError, match="127.0.0.1"):
+        ReachyMiniConfig.from_dict({**base, "robot": {"host": "::1"}})
     # Without daemon management any host is fine.
     ReachyMiniConfig.from_dict({"backend": "sim", "robot": {"host": "10.0.0.5"}})
 

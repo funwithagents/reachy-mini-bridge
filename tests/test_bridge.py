@@ -3352,3 +3352,52 @@ def test_teardown_drains_a_held_motor_command(
 
     names = asyncio.run(run())
     assert "enable_motors" in names
+
+
+def _wobbling_calls(names: list[str]) -> list[str]:
+    return [n for n in names if n in ("enable_wobbling", "disable_wobbling")]
+
+
+@pytest.mark.parametrize("wobbling_at_entry", [True, False])
+def test_set_wobbling_on_during_an_emotion_takes_effect_at_its_end(
+    wobbling_at_entry: bool,
+) -> None:
+    """A set_wobbling(True) during the emotion's pause is recorded and sent only once
+    the emotion ends (specs/motion/motion.md "Emotions through the loop") — whether the
+    session entered with wobbling on (paused for the move) or off (never enabled)."""
+
+    async def run() -> tuple[list[str], list[str], bool]:
+        cfg = ReachyMiniConfig(
+            backend="fake", motion=MotionSettings(wobbling=wobbling_at_entry)
+        )
+        async with ReachyMiniBridge(cfg) as bridge:
+            await bridge.set_motors_state("enabled")
+            task = asyncio.create_task(bridge.play_emotion("happy"))
+            await _wait_until(lambda: "media.play_sound" in _command_names(bridge))
+            await bridge.set_wobbling(True)  # lands while the emotion plays
+            during = _command_names(bridge)
+            assert not task.done()
+            await task
+            return during, _command_names(bridge), bridge.wobbling
+
+    during, names, wobbling = asyncio.run(run())
+    sound_i = during.index("media.play_sound")
+    assert "enable_wobbling" not in during[sound_i:]  # nothing while the move plays
+    assert _wobbling_calls(names)[-1] == "enable_wobbling"  # the release sends it
+    assert wobbling is True
+
+
+def test_set_wobbling_off_during_an_emotion_stays_off_after_it() -> None:
+    async def run() -> tuple[list[str], bool]:
+        async with ReachyMiniBridge("fake") as bridge:  # wobbling on by default
+            await bridge.set_motors_state("enabled")
+            task = asyncio.create_task(bridge.play_emotion("happy"))
+            await _wait_until(lambda: "media.play_sound" in _command_names(bridge))
+            await bridge.set_wobbling(False)
+            await task
+            return _command_names(bridge), bridge.wobbling
+
+    names, wobbling = asyncio.run(run())
+    sound_i = names.index("media.play_sound")
+    assert "enable_wobbling" not in names[sound_i:]
+    assert wobbling is False

@@ -341,7 +341,7 @@ def test_check_required_capabilities_fails_naming_the_missing_ones(
         fixtures.check_required_capabilities(frozenset())
 
 
-@pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "::1"])
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost"])
 def test_robot_options_use_local_media_on_a_loopback_host(
     monkeypatch: pytest.MonkeyPatch, host: str
 ):

@@ -31,7 +31,7 @@ import threading
 import time
 import urllib.request
 import wave
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
 
@@ -557,21 +557,36 @@ async def cancel_safe_step[T](enter: Callable[[], T], undo: Callable[[T], object
     its result (also off the loop), and then re-raises the ``CancelledError`` — so a
     daemon spawn, a robot connect, or a media ``start_*`` is never leaked by an
     ``asyncio.timeout`` around the bridge's ``async with``. If ``enter`` itself fails
-    during that wait there is nothing to undo and the cancel still propagates. A
-    second cancel during the wait abandons the step (accepted, documented in
-    specs/core/bridge.md "Lifecycle").
+    during that wait there is nothing to undo and the cancel still propagates. The
+    wait-and-undo is a task of its own, awaited through any further cancel: a second
+    cancel does not shorten it (specs/core/bridge.md "Lifecycle" — nothing is leaked).
     """
     step = asyncio.ensure_future(asyncio.to_thread(enter))
     try:
         return await asyncio.shield(step)
     except asyncio.CancelledError as cancel:
-        try:
-            result = await step
-        except BaseException as exc:  # the step failed: nothing to undo
-            _logger.warning("bring-up step failed while being cancelled: %r", exc)
-            raise cancel from exc
-        await asyncio.to_thread(undo, result)
+        cleanup = asyncio.create_task(_finish_and_undo(step, undo))
+        while not cleanup.done():
+            with suppress(asyncio.CancelledError):
+                await asyncio.shield(cleanup)
+        failure = cleanup.result()
+        if failure is not None:
+            raise cancel from failure
         raise
+
+
+async def _finish_and_undo[T](
+    step: asyncio.Future[T], undo: Callable[[T], object]
+) -> BaseException | None:
+    """Wait for the step and undo its result; a failed step's exception is returned
+    (there is nothing to undo), never raised."""
+    try:
+        result = await step
+    except BaseException as exc:  # noqa: BLE001 - the step failed: nothing to undo, reported
+        _logger.warning("bring-up step failed while being cancelled: %r", exc)
+        return exc
+    await asyncio.to_thread(undo, result)
+    return None
 
 
 class _Utterance:
