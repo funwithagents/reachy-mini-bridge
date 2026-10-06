@@ -84,6 +84,60 @@ _MOTOR_STATES = ("enabled", "disabled", "gravity_compensation")
 _GRAVITY_COMPENSATION_ENGINE = "Placo"
 
 
+class _WobblingSession:
+    """Own accepted SDK commands past caller cancellation and through teardown."""
+
+    def __init__(self, robot: AnyReachyMini) -> None:
+        self.robot = robot
+        self.enabled = (
+            False  # requested mode; temporary emotion pauses do not change it
+        )
+        self.closing = False
+        self.leases = 0
+        self._may_be_enabled = False
+        self._tail: asyncio.Task[None] | None = None
+
+    def submit(
+        self, enabled: bool | None, *, record: bool = True
+    ) -> asyncio.Task[None]:
+        if self.closing:
+            raise BridgeError("the wobbling session is closing")
+        task = asyncio.create_task(self._apply(self._tail, enabled, record))
+        self._tail = task
+        task.add_done_callback(self._observe)
+        return task
+
+    @staticmethod
+    def _observe(task: asyncio.Task[None]) -> None:
+        if not task.cancelled() and (error := task.exception()) is not None:
+            _logger.warning("wobbling command failed: %s", error)
+
+    async def _apply(
+        self, previous: asyncio.Task[None] | None, enabled: bool | None, record: bool
+    ) -> None:
+        if previous is not None:
+            await asyncio.gather(previous, return_exceptions=True)
+        # Restore the current request at execution time, after earlier mode changes.
+        target = self.enabled if enabled is None else enabled
+        if target:
+            self._may_be_enabled = True  # an SDK failure can follow a delivered enable
+        await asyncio.to_thread(
+            self.robot.enable_wobbling if target else self.robot.disable_wobbling
+        )
+        self._may_be_enabled = target
+        if record:
+            self.enabled = target
+
+    async def stop(self) -> None:
+        self.closing = True
+        if self._tail is not None:
+            await asyncio.shield(asyncio.gather(self._tail, return_exceptions=True))
+        if self._may_be_enabled:
+            await asyncio.to_thread(self.robot.disable_wobbling)
+            self._may_be_enabled = False
+        self.enabled = False
+
+
 def _daemon_kinematics_engine(robot: AnyReachyMini) -> str:
     """The kinematics engine the robot's daemon runs (e.g. ``"Placo"``). Blocking.
 
@@ -206,9 +260,7 @@ class ReachyMiniBridge:
         # The emotions library: loaded lazily, once per connection (see _get_recorded_moves).
         self._recorded_moves_future: asyncio.Future[Any] | None = None
         # The bridge's record of the wobbling mode (upstream has no getter).
-        self._wobbling = False
-        # play_emotion calls in flight: the wobbling pause is held while any is.
-        self._emotion_leases = 0
+        self._wobbling_session: _WobblingSession | None = None
         # The motion loop's switches (specs/motion/motion.md), initialized from the config and
         # reset to it on exit; set_presence/set_idle/set_idle_move change them while
         # entered.
@@ -234,6 +286,7 @@ class ReachyMiniBridge:
         )
         self._face_detection_wanted = self._config.face_detection.enabled
         self._detection: FaceDetection | None = None
+        self._next_face_track_id = 1  # identities outlive every session of this bridge
         # The custom detector's factory (config default, reset on exit); set_face_detector
         # changes it while entered.
         self._face_detector: FaceDetectorFactory | None = (
@@ -310,10 +363,6 @@ class ReachyMiniBridge:
             )
         return self._media
 
-    def _stop_emotion_sound(self, token: object) -> None:
-        if isinstance(token, SoundToken):
-            self._require_media().stop_sound(token)
-
     def _require_motion(self) -> MotionSession:
         if self._motion is None:
             raise BridgeError(
@@ -375,6 +424,11 @@ class ReachyMiniBridge:
             await media.start()
             stack.push_async_callback(media.stop)
             self._media = media
+
+            def stop_emotion_sound(token: object) -> None:
+                if isinstance(token, SoundToken):
+                    media.stop_sound(token)
+
             # Constructed here, before the camera feed, the detection loop and the
             # tracker: the feed stamps frames through its head_pose_at, the tracker is
             # wired to its set_gaze / head_pose_history. Construction starts no thread;
@@ -388,8 +442,8 @@ class ReachyMiniBridge:
                 # The loop starts and stops the emotion's sound through the media
                 # session's one file player (specs/motion/motion.md "Emotions through
                 # the loop", specs/audio/audio.md "Sound files").
-                start_sound=lambda path: self._require_media().start_sound(path),
-                stop_sound=self._stop_emotion_sound,
+                start_sound=media.start_sound,
+                stop_sound=stop_emotion_sound,
             )
             # The camera feed (specs/vision/camera.md "Lifecycle"): the one reader of the
             # camera, started right after the media session and stopped right before it
@@ -398,10 +452,10 @@ class ReachyMiniBridge:
             camera.bind(frame_reader(robot), motion.head_pose_at)
             await camera.start()
             stack.push_async_callback(camera.stop)
-            # Registered before the enable, so a failing enable still unwinds cleanly
-            # (the mode is still off, so the callback is a no-op). It holds the robot
-            # itself: stop() clears `self._robot` before the stack closes.
-            stack.push_async_callback(self._disable_wobbling_if_on, robot)
+            # Registered before enable: even a cancelled or partially delivered command
+            # is drained and disabled. Holds the robot after public fields are cleared.
+            wobbling = self._wobbling_session = _WobblingSession(robot)
+            stack.push_async_callback(wobbling.stop)
             if cfg.motion.wobbling:
                 await self.set_wobbling(True)
             motors_enabled = await self.get_motors_state() == "enabled"
@@ -424,6 +478,7 @@ class ReachyMiniBridge:
                 detector_factory=self._face_detector,
                 width=cfg.face_detection.width,
                 target_fps=cfg.face_detection.target_fps,
+                new_track_id=self._new_face_track_id,
             )
             self._detection = detection
             # Exits after the motion session, before wobbling's cleanup.
@@ -453,6 +508,8 @@ class ReachyMiniBridge:
             if motors_enabled:
                 motion.resume()
         except BaseException:
+            if self._wobbling_session is not None:
+                self._wobbling_session.closing = True
             self._robot = None
             self._media = None
             self._motion = None
@@ -462,7 +519,7 @@ class ReachyMiniBridge:
             try:
                 await stack.aclose()
             finally:
-                self._wobbling = False
+                self._wobbling_session = None
                 self._detection = None
                 self._reset_head_tracking()
             raise
@@ -479,6 +536,8 @@ class ReachyMiniBridge:
             return
         # Read as not running even if a teardown step raises.
         self._exit_stack = None
+        if self._wobbling_session is not None:
+            self._wobbling_session.closing = True
         self._robot = None
         self._media = None
         self._motion = None
@@ -487,7 +546,7 @@ class ReachyMiniBridge:
         try:
             await stack.aclose()
         finally:
-            self._wobbling = False
+            self._wobbling_session = None
             self._tracking_wanted = self._config.motion.tracking
             self._presence = self._config.motion.presence
             self._idle = _idle_mode(self._config.motion.idle)
@@ -517,12 +576,6 @@ class ReachyMiniBridge:
 
     async def __aexit__(self, *exc: object) -> None:
         await self.stop()
-
-    async def _disable_wobbling_if_on(self, robot: AnyReachyMini) -> None:
-        # The daemon-side switch is shared across clients: never leave it armed.
-        if self._wobbling:
-            await asyncio.to_thread(robot.disable_wobbling)
-            self._wobbling = False
 
     async def _stop_detection(self) -> None:
         """Stop the detection loop and publish the inactive report; an exit-stack step."""
@@ -704,19 +757,19 @@ class ReachyMiniBridge:
         move = moves.get(name)  # ValueError on unknown name
         self._require_media()
         motion = self._require_motion()
-        robot = self.robot
+        wobbling = self._require_wobbling()
         sound_path = getattr(move, "sound_path", None)
         # The wobbling lease (specs/motion/motion.md "Emotions through the loop"): taken
         # before the disable call is awaited, so a cancel caught inside that call still
         # releases it below; the pause is one across consecutive emotions.
-        self._emotion_leases += 1
+        wobbling.leases += 1
         pause: asyncio.Future[None] | None = None
         primary = None
         try:
-            if self._emotion_leases == 1 and self._wobbling:
+            if wobbling.leases == 1 and wobbling.enabled:
                 # Shielded: a cancel returns at once while the call completes in its
                 # thread, and the release waits for it so the restore comes after.
-                pause = asyncio.ensure_future(asyncio.to_thread(robot.disable_wobbling))
+                pause = wobbling.submit(False, record=False)
                 await asyncio.shield(pause)
             primary = motion.submit(
                 move, None if sound_path is None else Path(sound_path)
@@ -731,26 +784,30 @@ class ReachyMiniBridge:
                 await asyncio.to_thread(primary.dropped.wait, _DROP_ACK_S)
             raise
         finally:
-            self._emotion_leases -= 1
-            if self._emotion_leases == 0:
+            wobbling.leases -= 1
+            if wobbling.leases == 0:
                 if pause is not None and not pause.done():
                     # A cancel caught inside the disable call: it completes in its
                     # thread while the cancel propagates at once, and the restore
                     # follows its completion (unless another emotion took the lease
                     # meanwhile — its own release restores then).
-                    pause.add_done_callback(self._restore_once_released)
+                    pause.add_done_callback(
+                        lambda done: self._restore_once_released(wobbling, done)
+                    )
                 else:
-                    await self._restore_layers_after_move()
+                    await self._restore_layers_after_move(wobbling)
 
-    def _restore_once_released(self, _pause: asyncio.Future[None]) -> None:
-        if self._emotion_leases == 0 and self._exit_stack is not None:
-            asyncio.ensure_future(self._restore_layers_after_move())
+    def _restore_once_released(
+        self, wobbling: _WobblingSession, _pause: asyncio.Future[None]
+    ) -> None:
+        if wobbling.leases == 0 and not wobbling.closing:
+            asyncio.ensure_future(self._restore_layers_after_move(wobbling))
 
-    async def _restore_layers_after_move(self) -> None:
+    async def _restore_layers_after_move(self, wobbling: _WobblingSession) -> None:
         """Release the wobbling pause: restored to the bridge's *current* record."""
-        if self._wobbling:
+        if not wobbling.closing and wobbling.enabled:
             try:
-                await asyncio.to_thread(self.robot.enable_wobbling)
+                await asyncio.shield(wobbling.submit(None, record=False))
             except Exception as e:  # noqa: BLE001 - never mask the verb's own outcome
                 _logger.warning("could not restore wobbling after the emotion: %s", e)
 
@@ -1013,11 +1070,19 @@ class ReachyMiniBridge:
         head is doing. A mode, not a move: it holds until changed and needs no motors.
         Wobbling left on is switched off again when the session exits.
         """
-        robot = self.robot
-        await asyncio.to_thread(
-            robot.enable_wobbling if enabled else robot.disable_wobbling
-        )
-        self._wobbling = enabled
+        await asyncio.shield(self._require_wobbling().submit(enabled))
+
+    def _require_wobbling(self) -> _WobblingSession:
+        _ = self.robot  # the same outside-session error as every SDK mode verb
+        session = self._wobbling_session
+        if session is None or session.closing:
+            raise BridgeError("the wobbling session is not available")
+        return session
+
+    def _new_face_track_id(self) -> int:
+        track_id = self._next_face_track_id
+        self._next_face_track_id += 1
+        return track_id
 
     @property
     def wobbling(self) -> bool:
@@ -1026,7 +1091,8 @@ class ReachyMiniBridge:
         On by default once entered (the config's ``wobbling`` flag); ``False`` outside a
         session.
         """
-        return self._wobbling
+        session = self._wobbling_session
+        return session is not None and not session.closing and session.enabled
 
     # --- presence & the idle move (background motion) ---
 

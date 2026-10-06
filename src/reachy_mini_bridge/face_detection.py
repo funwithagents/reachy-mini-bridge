@@ -359,6 +359,7 @@ class FaceDetection:
         detector_factory: FaceDetectorFactory | None = None,
         width: int | None = DETECT_WIDTH,
         target_fps: float | None = None,
+        new_track_id: Callable[[], int] | None = None,
     ) -> None:
         self._name = detector
         self._width = width
@@ -368,6 +369,10 @@ class FaceDetection:
         self._feed = feed
         self._detector_factory = detector_factory
         self._task: asyncio.Task[None] | None = None
+        # A cancelled caller cannot cancel a factory's worker. Retain its disposal
+        # task until it finishes, and drain those tasks when the loop closes.
+        self._acquisition_cleanups: set[asyncio.Task[None]] = set()
+        self._factory_generation = 0
         # The runner state: the detector in use (built from the factory at start and
         # rebuilt after `restart`), the tracks, the last frame handed over. Track ids
         # come from a counter that outlives runs, so an id is never reused.
@@ -378,7 +383,8 @@ class FaceDetection:
         # the detector only once that call has returned (the call runs on in its thread).
         self._detector_lock = threading.Lock()
         self._next_track_id = 1
-        self._tracks = _FaceTracks(self._new_track_id)
+        self._allocate_track_id = new_track_id or self._new_track_id
+        self._tracks = _FaceTracks(self._allocate_track_id)
         self._last_frame_id = 0
         # target_fps: when the detector last started; the cost log's window.
         self._last_detect_at: float | None = None
@@ -436,13 +442,8 @@ class FaceDetection:
         if self.running:
             return
         factory = self._factory()
-        built = await asyncio.to_thread(factory)
-        try:
-            self._detector = _check_face_detector(built)
-        except ValueError:
-            await self._release(cast("FaceDetector", built))
-            raise
-        self._tracks = _FaceTracks(self._new_track_id)
+        self._detector = await self._acquire(factory)
+        self._tracks = _FaceTracks(self._allocate_track_id)
         self._last_detect_at = None
         self._cost_since, self._cost_calls, self._cost_total_s = None, 0, 0.0
         self._cost_logged = False
@@ -454,6 +455,7 @@ class FaceDetection:
         starts its tracks afresh — the swap happens between two polls, the replaced
         detector released (``close()``) before its successor is built."""
         self._detector_factory = detector_factory
+        self._factory_generation += 1
         if self._detector is not None:
             self._retired = self._detector
         self._detector = None
@@ -467,6 +469,8 @@ class FaceDetection:
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
+        if self._acquisition_cleanups:
+            await asyncio.shield(asyncio.gather(*self._acquisition_cleanups))
         detector, retired = self._detector, self._retired
         self._detector = self._retired = None
         for released in (retired, detector):
@@ -475,19 +479,41 @@ class FaceDetection:
         if task is not None or self._faces.value.active:
             self._faces.set(FaceReport.inactive(self._name))
 
-    async def _release(self, detector: FaceDetector) -> None:
+    async def _acquire(self, factory: FaceDetectorFactory) -> FaceDetector:
+        build = asyncio.create_task(asyncio.to_thread(factory))
+        try:
+            built = await asyncio.shield(build)
+        except asyncio.CancelledError:
+            cleanup = asyncio.create_task(self._discard_acquisition(build))
+            self._acquisition_cleanups.add(cleanup)
+            cleanup.add_done_callback(self._acquisition_cleanups.discard)
+            raise
+        try:
+            return _check_face_detector(built)
+        except ValueError:
+            await self._release(built)
+            raise
+
+    async def _discard_acquisition(self, build: asyncio.Task[FaceDetector]) -> None:
+        try:
+            built = await build
+        except Exception as e:  # noqa: BLE001 - an abandoned factory has no caller
+            _logger.debug("face detection: abandoned factory failed: %s", e)
+        else:
+            await self._release(built)
+
+    async def _release(self, detector: object) -> None:
         """Call the detector's ``close()``, when it has one, on a worker thread — once
         any ``detect`` in flight has returned. A raise is logged and ignored."""
+        await asyncio.to_thread(self._close_detector, detector)
+
+    def _close_detector(self, detector: object) -> None:
         close = getattr(detector, "close", None)
         if not callable(close):
             return
-
-        def locked_close() -> None:
+        try:
             with self._detector_lock:
                 close()
-
-        try:
-            await asyncio.to_thread(locked_close)
         except Exception as e:  # noqa: BLE001 - releasing is best effort
             _logger.debug("face detection: the detector's close() failed: %s", e)
 
@@ -532,6 +558,7 @@ class FaceDetection:
             return None
         detector = self._detector
         if detector is None:
+            generation = self._factory_generation
             factory = self._detector_factory if self._name == "custom" else None
             if factory is None:
                 return (
@@ -540,8 +567,12 @@ class FaceDetection:
             retired, self._retired = self._retired, None
             if retired is not None:
                 await self._release(retired)
-            detector = self._detector = await asyncio.to_thread(factory)
-            self._tracks = _FaceTracks(self._new_track_id)
+            detector = await self._acquire(factory)
+            if generation != self._factory_generation:
+                await self._release(detector)
+                return None
+            self._detector = detector
+            self._tracks = _FaceTracks(self._allocate_track_id)
         frame = feed.latest()
         if frame is None or frame.frame_id == self._last_frame_id:
             return None  # nothing new: the detector runs once per frame

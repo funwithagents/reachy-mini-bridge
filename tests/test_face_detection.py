@@ -16,7 +16,7 @@ import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -912,3 +912,31 @@ def test_a_display_sampling_the_feed_costs_the_detector_no_frames() -> None:
     calls, frames = _run(run)
     assert abs(calls - frames) <= 1
     assert len(seen) >= 10
+
+
+@pytest.mark.parametrize("raises_on_close", [False, True])
+def test_invalid_replacement_is_released_before_a_valid_detector_runs(
+    raises_on_close: bool,
+) -> None:
+    scene = _Scene([_face(30, 24)])
+    released: list[str] = []
+
+    class Invalid:
+        def close(self) -> None:
+            released.append("invalid")
+            if raises_on_close:
+                raise RuntimeError("close failed")
+
+    replacements = iter([Invalid(), _StubDetector(scene)])
+
+    async def run() -> None:
+        async with _running_custom(scene) as loop:
+            await _wait_for(lambda: bool(loop.faces.value.faces))
+            loop.detection.restart(lambda: cast(Any, next(replacements)))
+            await _wait_for(lambda: bool(released))
+            scene.calls.clear()
+            await _wait_for(lambda: bool(scene.calls))
+            assert loop.faces.value.active
+        assert released == ["invalid"]
+
+    _run(run)

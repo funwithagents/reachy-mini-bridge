@@ -672,12 +672,17 @@ class TTSEngineSynthesizer:
         )
         self._sink = _QueueSink()
         self._engine = TTSEngine(engine_config, sink=self._sink)
+        # The engine serializes producers, but binding the sink must also wait for
+        # the previous producer's cancellation/drain to finish.
+        self._stream_lock = asyncio.Lock()
+        self._cleanups: set[asyncio.Task[None]] = set()
 
     @property
     def sample_rate(self) -> int:
         return self._engine.sample_rate
 
     async def stream(self, text: str) -> AsyncIterator[npt.NDArray[np.float32]]:
+        await self._stream_lock.acquire()
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[bytes | None] = asyncio.Queue()
         self._sink.bind(loop, queue)
@@ -694,6 +699,19 @@ class TTSEngineSynthesizer:
         finally:
             if not say_task.done():
                 say_task.cancel()
+            cleanup = asyncio.create_task(self._finish_stream(say_task))
+            self._cleanups.add(cleanup)
+            cleanup.add_done_callback(self._cleanups.discard)
+            # A second cancellation may end the consumer, but cleanup retains the
+            # binding until the producer can no longer call feed()/drain().
+            await asyncio.shield(cleanup)
+
+    async def _finish_stream(self, producer: asyncio.Task[None]) -> None:
+        try:
+            await asyncio.gather(producer, return_exceptions=True)
+        finally:
+            self._sink.unbind()
+            self._stream_lock.release()
 
 
 class _QueueSink:
@@ -716,11 +734,16 @@ class _QueueSink:
         self._queue = queue
 
     def feed(self, chunk: bytes) -> None:
-        if self._loop is None or self._queue is None or not chunk:
+        loop, queue = self._loop, self._queue
+        if loop is None or queue is None or not chunk:
             return
-        self._loop.call_soon_threadsafe(self._queue.put_nowait, chunk)
+        loop.call_soon_threadsafe(queue.put_nowait, chunk)
 
     def drain(self) -> None:
-        if self._loop is None or self._queue is None:
+        loop, queue = self._loop, self._queue
+        if loop is None or queue is None:
             return
-        self._loop.call_soon_threadsafe(self._queue.put_nowait, None)
+        loop.call_soon_threadsafe(queue.put_nowait, None)
+
+    def unbind(self) -> None:
+        self._loop = self._queue = None

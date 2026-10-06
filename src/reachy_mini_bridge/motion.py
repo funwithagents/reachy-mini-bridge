@@ -815,8 +815,9 @@ class MotionSession:
         self._queue.clear()
         if self._playing is not None and self._playing.primary is not None:
             pending.append(self._playing.primary)
-        self._playing = None
+        self._drop_playing()
         for primary in pending:
+            primary.dropped.set()
             if not primary.done.done():
                 primary.done.set_exception(
                     BridgeError("the motors left 'enabled': the motion loop paused")

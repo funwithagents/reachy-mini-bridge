@@ -13,6 +13,7 @@ import itertools
 import logging
 import math
 import random
+import threading
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -1398,3 +1399,40 @@ def test_a_failing_primary_has_its_sound_stopped_before_the_failure_is_raised() 
             return len(stops), primary.dropped.is_set()
 
     assert asyncio.run(run()) == (1, True)
+
+
+def test_motor_pause_stops_owned_sound_and_acknowledges_all_primaries() -> None:
+    async def run() -> None:
+        robot = FakeReachyMini()
+        stopped: list[object] = []
+        token = object()
+        started = threading.Event()
+
+        def start_sound(path: Path) -> object:
+            started.set()
+            return token
+
+        session = MotionSession(
+            robot,
+            presence=True,
+            idle="hold",
+            start_sound=start_sound,
+            stop_sound=stopped.append,
+        )
+        async with _running(session):
+            session.resume()
+            first = session.submit(_TestPrimary(2, 0.02), Path("one.ogg"))
+            second = session.submit(_TestPrimary(2, 0.02), Path("two.ogg"))
+            assert await asyncio.to_thread(started.wait, 2)
+            session.pause()
+            for primary in (first, second):
+                with pytest.raises(BridgeError, match="motors left"):
+                    await asyncio.wrap_future(primary.done)
+                assert primary.dropped.is_set()
+                assert stopped == [token]
+            session.resume()
+            await asyncio.wrap_future(
+                session.submit(_TestPrimary(0.05, 0.02), None).done
+            )
+
+    asyncio.run(run())

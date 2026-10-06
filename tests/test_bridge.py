@@ -1307,7 +1307,10 @@ def test_wobbling_turned_off_at_runtime_is_not_disabled_again_at_exit() -> None:
 def test_failing_wobbling_enable_unwinds_the_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    original_enable = FakeReachyMini.enable_wobbling
+
     def boom(self: FakeReachyMini) -> None:
+        original_enable(self)  # a delivered command can fail before acknowledgment
         raise RuntimeError("no wobbler")
 
     monkeypatch.setattr(FakeReachyMini, "enable_wobbling", boom)
@@ -1328,7 +1331,7 @@ def test_failing_wobbling_enable_unwinds_the_session(
     with pytest.raises(RuntimeError, match="no wobbler"):
         asyncio.run(run())
     names = [name for name, _ in robots[0].commands]
-    assert "disable_wobbling" not in names  # the mode never came on
+    assert names.index("enable_wobbling") < names.index("disable_wobbling")
     assert "media.stop_playing" in names and names[-1] == "__exit__"
     assert bridge.wobbling is False
     with pytest.raises(BridgeError):
@@ -2802,3 +2805,392 @@ def test_a_new_say_interrupts_the_one_playing_and_the_session_plays_on() -> None
     assert interrupted_after < 0.2  # the first ended at once, not after its second
     assert second_took >= 1.0  # the second played in full
     assert names.count("audio.clear_player") == 1  # the first's audio flushed, once
+
+
+@pytest.mark.parametrize("state", ["disabled", "gravity_compensation"])
+def test_motor_pause_stops_emotion_sound_before_its_failure(state: str) -> None:
+    async def run() -> None:
+        async with ReachyMiniBridge("fake") as bridge:
+            robot = _fake(bridge)
+            await bridge.set_motors_state("enabled")
+            emotion = asyncio.create_task(bridge.play_emotion("happy"))
+            await _wait_until(lambda: "media.play_sound" in _command_names(bridge))
+            await bridge.set_motors_state(state)
+            with pytest.raises(BridgeError, match="motors left"):
+                await emotion
+            assert "media.stop_sound" in _command_names(bridge)
+            count = len(robot.targets)
+            await asyncio.sleep(0.05)
+            assert len(robot.targets) == count
+            await bridge.set_motors_state("enabled")
+            await bridge.play_emotion("sad")
+
+    asyncio.run(run())
+
+
+def test_shutdown_stops_emotion_sound_before_media_and_allows_restart(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def run() -> None:
+        bridge = ReachyMiniBridge("fake")
+        await bridge.start()
+        robot = _fake(bridge)
+        await bridge.set_motors_state("enabled")
+        emotion = asyncio.create_task(bridge.play_emotion("happy"))
+        await _wait_until(lambda: "media.play_sound" in _command_names(bridge))
+        await bridge.stop()
+        with pytest.raises(asyncio.CancelledError):
+            await emotion
+        names = [name for name, _ in robot.commands]
+        assert names.index("media.stop_sound") < names.index("media.stop_playing")
+        assert not bridge.running
+        async with bridge:
+            await bridge.say("still works", _ToneSynth())
+
+    asyncio.run(run())
+    assert "could not stop the emotion's sound" not in caplog.text
+    assert "could not restore wobbling" not in caplog.text
+
+
+def test_motor_pause_spares_a_sound_replacing_the_emotion(tmp_path: Path) -> None:
+    async def run() -> None:
+        async with ReachyMiniBridge("fake") as bridge:
+            await bridge.set_motors_state("enabled")
+            emotion = asyncio.create_task(bridge.play_emotion("happy"))
+            await _wait_until(lambda: "media.play_sound" in _command_names(bridge))
+            sound = asyncio.create_task(bridge.play_sound(str(_wav(tmp_path, 0.15))))
+            await _wait_until(
+                lambda: _command_names(bridge).count("media.play_sound") == 2
+            )
+            await bridge.set_motors_state("disabled")
+            with pytest.raises(BridgeError):
+                await emotion
+            await sound
+            assert "media.stop_sound" not in _command_names(bridge)
+            await bridge.say("speaker works", _ToneSynth())
+
+    asyncio.run(run())
+
+
+def test_motor_pause_stops_emotion_sound_without_flushing_concurrent_speech() -> None:
+    async def run() -> None:
+        first_chunk, continue_speech = asyncio.Event(), asyncio.Event()
+
+        class Synth:
+            sample_rate = 16000
+
+            async def stream(self, text: str) -> AsyncIterator[npt.NDArray[np.float32]]:
+                yield np.full(400, 0.2, dtype=np.float32)
+                first_chunk.set()
+                await continue_speech.wait()
+                yield np.full(800, 0.3, dtype=np.float32)
+
+        async with ReachyMiniBridge("fake") as bridge:
+            await bridge.set_motors_state("enabled")
+            emotion = asyncio.create_task(bridge.play_emotion("happy"))
+            await _wait_until(lambda: "media.play_sound" in _command_names(bridge))
+            speech = asyncio.create_task(bridge.say("keep speaking", Synth()))
+            try:
+                await asyncio.wait_for(first_chunk.wait(), 2)
+                await bridge.set_motors_state("disabled")
+                with pytest.raises(BridgeError, match="motors left"):
+                    await emotion
+                assert "media.stop_sound" in _command_names(bridge)
+                continue_speech.set()
+                await asyncio.wait_for(speech, 2)
+                frames = [
+                    data["frames"]
+                    for name, data in _fake(bridge).commands
+                    if name == "media.push_audio_sample"
+                ]
+                assert frames == [400, 800]
+                assert "audio.clear_player" not in _command_names(bridge)
+            finally:
+                continue_speech.set()
+                speech.cancel()
+                await asyncio.gather(speech, return_exceptions=True)
+
+    asyncio.run(run())
+
+
+class _OwnedFaceDetector:
+    def __init__(self, x: float = 0) -> None:
+        self.closed = 0
+        self.x = x
+
+    def detect(self, frame_bgr: npt.NDArray[np.uint8], ts: float) -> list[PixelFace]:
+        assert not self.closed
+        return [_pixel_face(self.x)]
+
+    def close(self) -> None:
+        self.closed += 1
+
+
+@pytest.mark.parametrize("phase", ["start", "enable", "replacement"])
+def test_cancelled_detector_construction_is_closed_and_session_recovers(
+    phase: str,
+) -> None:
+    async def run() -> None:
+        started, release = threading.Event(), threading.Event()
+        built: list[_OwnedFaceDetector] = []
+
+        def held_factory() -> _OwnedFaceDetector:
+            started.set()
+            assert release.wait(5)
+            detector = _OwnedFaceDetector()
+            built.append(detector)
+            return detector
+
+        originals: list[_OwnedFaceDetector] = []
+
+        def original_factory() -> _OwnedFaceDetector:
+            detector = _OwnedFaceDetector()
+            originals.append(detector)
+            return detector
+
+        cfg = ReachyMiniConfig(
+            backend="fake",
+            face_detection=FaceDetectionSettings(
+                detector="custom",
+                enabled=phase != "enable",
+                face_detector=held_factory if phase == "start" else original_factory,
+            ),
+            motion=MotionSettings(wobbling=False),
+        )
+        bridge = ReachyMiniBridge(cfg)
+        pending: asyncio.Task[None] | None = None
+        try:
+            if phase == "start":
+                pending = asyncio.create_task(bridge.start())
+            else:
+                await bridge.start()
+                await bridge.set_face_detector(held_factory)
+                if phase == "enable":
+                    pending = asyncio.create_task(bridge.set_face_detection(True))
+            await _wait_until(started.is_set)
+            if phase == "replacement":
+                pending = asyncio.create_task(bridge.stop())
+            else:
+                assert pending is not None
+                pending.cancel()
+            if phase == "enable":
+                assert pending is not None
+                # Runtime cancellation returns while the model worker is still held.
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(pending, 1)
+                assert not bridge.face_detection and not bridge.faces.value.active
+                await bridge.say("session stays usable", _ToneSynth())
+                new = _OwnedFaceDetector(0.3)
+                await bridge.set_face_detector(lambda: new)
+                await bridge.set_face_detection(True)
+                await _wait_until(lambda: bool(bridge.faces.value.faces))
+                assert bridge.faces.value.faces[0].x == pytest.approx(0.3, abs=0.03)
+            release.set()
+            assert pending is not None
+            if phase == "start":
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(pending, 3)
+            elif phase == "replacement":
+                await asyncio.wait_for(pending, 3)
+                assert originals[0].closed == 1
+            await _wait_until(lambda: bool(built) and built[0].closed == 1)
+            if phase != "enable":
+                assert not bridge.running and not bridge.faces.value.active
+                async with bridge:
+                    await _wait_until(lambda: bool(bridge.faces.value.faces))
+            else:
+                assert bridge.faces.value.faces[0].x == pytest.approx(0.3, abs=0.03)
+        finally:
+            release.set()
+            if pending is not None:
+                await asyncio.gather(pending, return_exceptions=True)
+            await bridge.stop()
+        assert built[0].closed == 1
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "enabled,close_while_held", [(True, False), (False, False), (True, True)]
+)
+def test_cancelled_wobbling_command_keeps_completion_and_cleanup(
+    monkeypatch: pytest.MonkeyPatch, enabled: bool, close_while_held: bool
+) -> None:
+    async def run() -> None:
+        bridge = ReachyMiniBridge(
+            ReachyMiniConfig(
+                backend="fake", motion=MotionSettings(wobbling=not enabled)
+            )
+        )
+        await bridge.start()
+        robot = _fake(bridge)
+        entered, release, completed = (threading.Event() for _ in range(3))
+        original = robot.enable_wobbling if enabled else robot.disable_wobbling
+
+        def held() -> None:
+            entered.set()
+            assert release.wait(5)
+            original()
+            completed.set()
+
+        monkeypatch.setattr(
+            robot, "enable_wobbling" if enabled else "disable_wobbling", held
+        )
+        caller = asyncio.create_task(bridge.set_wobbling(enabled))
+        stopping: asyncio.Task[None] | None = None
+        try:
+            await _wait_until(entered.is_set)
+            caller.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(caller, 1)
+            assert not completed.is_set()
+            if close_while_held:
+                stopping = asyncio.create_task(bridge.stop())
+                await _wait_until(lambda: not bridge.running)
+                assert not stopping.done()
+            release.set()
+            await _wait_until(completed.is_set)
+            if stopping is not None:
+                await asyncio.wait_for(stopping, 3)
+            else:
+                await _wait_until(lambda: bridge.wobbling == enabled)
+                await bridge.say("usable", _ToneSynth())
+                await bridge.stop()
+            names = [name for name, _ in robot.commands if "wobbling" in name]
+            assert names == ["enable_wobbling", "disable_wobbling"]
+            assert not bridge.wobbling
+            async with bridge:
+                await bridge.say("next session", _ToneSynth())
+        finally:
+            release.set()
+            await asyncio.gather(
+                caller,
+                *([] if stopping is None else [stopping]),
+                return_exceptions=True,
+            )
+            await bridge.stop()
+
+    asyncio.run(run())
+
+
+def test_cancelled_startup_wobbling_enable_is_disabled_before_restart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entered, release = threading.Event(), threading.Event()
+    robots: list[FakeReachyMini] = []
+    original = FakeReachyMini.enable_wobbling
+
+    def held(robot: FakeReachyMini) -> None:
+        robots.append(robot)
+        entered.set()
+        assert release.wait(5)
+        original(robot)
+
+    monkeypatch.setattr(FakeReachyMini, "enable_wobbling", held)
+
+    async def run() -> None:
+        bridge = ReachyMiniBridge("fake")
+        starting = asyncio.create_task(bridge.start())
+        try:
+            await _wait_until(entered.is_set)
+            starting.cancel()
+            await asyncio.sleep(0)
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(starting, 3)
+            assert [name for name, _ in robots[0].commands if "wobbling" in name] == [
+                "enable_wobbling",
+                "disable_wobbling",
+            ]
+            assert not bridge.running and not bridge.wobbling
+            async with bridge:
+                assert bridge.wobbling
+                await bridge.say("restarted", _ToneSynth())
+        finally:
+            release.set()
+            await asyncio.gather(starting, return_exceptions=True)
+            await bridge.stop()
+
+    asyncio.run(run())
+
+
+def test_cancelled_enable_is_ordered_before_a_later_disable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        async with ReachyMiniBridge(
+            ReachyMiniConfig(backend="fake", motion=MotionSettings(wobbling=False))
+        ) as bridge:
+            robot = _fake(bridge)
+            entered, release = threading.Event(), threading.Event()
+            original = robot.enable_wobbling
+
+            def held() -> None:
+                entered.set()
+                assert release.wait(5)
+                original()
+
+            monkeypatch.setattr(robot, "enable_wobbling", held)
+            first = asyncio.create_task(bridge.set_wobbling(True))
+            second: asyncio.Task[None] | None = None
+            try:
+                await _wait_until(entered.is_set)
+                first.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(first, 1)
+                second = asyncio.create_task(bridge.set_wobbling(False))
+                await asyncio.sleep(0)
+                release.set()
+                await asyncio.wait_for(second, 3)
+                assert not bridge.wobbling
+                assert [name for name, _ in robot.commands if "wobbling" in name] == [
+                    "enable_wobbling",
+                    "disable_wobbling",
+                ]
+            finally:
+                release.set()
+                await asyncio.gather(
+                    first, *([] if second is None else [second]), return_exceptions=True
+                )
+
+    asyncio.run(run())
+
+
+def test_face_track_ids_continue_across_sessions_restarts_and_replacement() -> None:
+    cfg = ReachyMiniConfig(
+        backend="fake",
+        face_detection=FaceDetectionSettings(
+            detector="custom", enabled=True, face_detector=_OwnedFaceDetector
+        ),
+        motion=MotionSettings(wobbling=False),
+    )
+
+    async def face_id(bridge: ReachyMiniBridge) -> int:
+        await _wait_until(lambda: bool(bridge.faces.value.faces))
+        return bridge.faces.value.faces[0].track_id
+
+    async def run() -> None:
+        bridge = ReachyMiniBridge(cfg)
+        ids: list[int] = []
+        async with bridge:
+            ids.append(await face_id(bridge))
+            frame = bridge.faces.value.frame_id
+            await bridge.set_face_detection(False)
+            await bridge.set_face_detection(True)
+            ids.append(await face_id(bridge))
+            await bridge.set_face_detector(_OwnedFaceDetector)
+            await _wait_until(
+                lambda: (
+                    bool(bridge.faces.value.faces)
+                    and bridge.faces.value.faces[0].track_id > ids[-1]
+                )
+            )
+            ids.append(await face_id(bridge))
+        async with bridge:
+            ids.append(await face_id(bridge))
+            assert bridge.faces.value.frame_id > frame
+        assert ids == sorted(set(ids)) and ids[0] == 1
+        async with ReachyMiniBridge(cfg) as independent:
+            assert await face_id(independent) == 1
+
+    asyncio.run(run())

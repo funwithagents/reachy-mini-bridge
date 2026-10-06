@@ -1,7 +1,7 @@
 """Functional tests for the audio helpers and the media session (specs/audio/audio.md).
 
-Driven on the ``fake`` backend with a trivial in-test ``SpeechSynthesizer`` (a tone) —
-no ``reachy_mini``, no ``tts_engine``, no device. Async code runs via ``asyncio.run``,
+Driven on the ``fake`` backend with in-test synthesizers and the shipped adapter over a
+stub provider — no device, model or network. Async code runs via ``asyncio.run``,
 matching the fast tier's no-plugin convention (see tests/test_robot.py).
 """
 
@@ -25,6 +25,7 @@ import pytest
 from reachy_mini_bridge import audio as audio_module
 from reachy_mini_bridge.audio import (
     MediaSession,
+    TTSEngineSynthesizer,
     _PlaybackTracker,
     cancel_safe_step,
     downmix_to_mono,
@@ -1015,3 +1016,136 @@ def test_a_sound_file_and_a_say_play_together_and_a_stop_spares_the_say(
     assert "media.stop_sound" in names
     assert "audio.clear_player" not in names
     assert names.count("media.push_audio_sample") == 10
+
+
+@pytest.mark.parametrize("action", ["interrupt", "cancel", "cancel_twice", "supersede"])
+def test_adapter_cleanup_cannot_drain_or_feed_the_replacement(
+    monkeypatch: pytest.MonkeyPatch, action: str
+) -> None:
+    import tts_engine.engine as engine_module
+
+    async def run() -> None:
+        started, cleaning, release = (asyncio.Event() for _ in range(3))
+        produced: list[str] = []
+
+        class Provider:
+            sample_rate = 16000
+
+            async def stream(
+                self, text: str, options: Any, callback: Callable[[bytes], None]
+            ) -> None:
+                produced.append(text)
+                if text == "first":
+                    started.set()
+                    try:
+                        await asyncio.Event().wait()
+                    finally:
+                        cleaning.set()
+                        await release.wait()
+                        callback(np.full(16, 1000, dtype=np.int16).tobytes())
+                else:
+                    value = 3000 if text == "third" else 2000
+                    for _ in range(3):
+                        callback(np.full(16, value, dtype=np.int16).tobytes())
+                        await asyncio.sleep(0)
+
+        monkeypatch.setattr(engine_module, "load_module", lambda config: Provider())
+        synth = TTSEngineSynthesizer({"module": {"type": "tone"}})
+        robot = FakeReachyMini()
+        output: list[npt.NDArray[np.float32]] = []
+        original = robot.media.push_audio_sample
+
+        def record(pcm: npt.NDArray[np.float32]) -> None:
+            output.append(pcm.copy())
+            original(pcm)
+
+        monkeypatch.setattr(robot.media, "push_audio_sample", record)
+        async with _open(MediaSession(robot)) as session:
+            first = asyncio.create_task(session.say("first", synth))
+            tasks = [first]
+            try:
+                await asyncio.wait_for(started.wait(), 2)
+                if action.startswith("cancel"):
+                    first.cancel()
+                    await asyncio.wait_for(cleaning.wait(), 2)
+                    if action == "cancel_twice":
+                        first.cancel()
+                        # The consumer can leave while the producer still owns its sink.
+                        with pytest.raises(asyncio.CancelledError):
+                            await asyncio.wait_for(first, 2)
+                second = asyncio.create_task(session.say("second", synth))
+                tasks.append(second)
+                await asyncio.wait_for(cleaning.wait(), 2)
+                if action == "supersede":
+                    third = asyncio.create_task(session.say("third", synth))
+                    tasks.append(third)
+                    # Let newest-wins reach the second caller before releasing the producer.
+                    await asyncio.sleep(0)
+                    await asyncio.sleep(0)
+                release.set()
+                with pytest.raises(
+                    asyncio.CancelledError
+                    if action.startswith("cancel")
+                    else SpeechInterruptedError
+                ):
+                    await asyncio.wait_for(first, 2)
+                if action == "supersede":
+                    with pytest.raises(SpeechInterruptedError):
+                        await asyncio.wait_for(second, 2)
+                await asyncio.wait_for(tasks[-1], 2)
+                expected = 3000 if action == "supersede" else 2000
+                assert len(output) == 3
+                assert all(pcm.shape == (16, 2) for pcm in output)
+                assert all(np.all(pcm == expected / 32768) for pcm in output)
+                if action == "supersede":
+                    assert produced == ["first", "third"]
+                await session.say("second", synth)
+                assert len(output) == 6
+                assert all(np.all(pcm == 2000 / 32768) for pcm in output[3:])
+            finally:
+                release.set()
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+    asyncio.run(run())
+
+
+def test_adapter_provider_failure_and_cancel_leave_it_usable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tts_engine.engine as engine_module
+
+    async def run() -> None:
+        started = asyncio.Event()
+
+        class Provider:
+            sample_rate = 16000
+
+            async def stream(
+                self, text: str, options: Any, callback: Callable[[bytes], None]
+            ) -> None:
+                callback(np.full(32, 4000, dtype=np.int16).tobytes())
+                if text == "failure":
+                    raise RuntimeError("provider failed")
+                if text == "cancel":
+                    started.set()
+                    await asyncio.Event().wait()
+
+        monkeypatch.setattr(engine_module, "load_module", lambda config: Provider())
+        synth = TTSEngineSynthesizer({"module": {"type": "tone"}})
+        robot = FakeReachyMini()
+        async with _open(MediaSession(robot)) as session:
+            with pytest.raises(RuntimeError, match="provider failed"):
+                await session.say("failure", synth)
+            cancelled = asyncio.create_task(session.say("cancel", synth))
+            await asyncio.wait_for(started.wait(), 2)
+            cancelled.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(cancelled, 2)
+            before = len(_pushed_frames(robot))
+            await asyncio.wait_for(session.say("works", synth), 2)
+            assert _pushed_frames(robot)[before:] == [32]
+            assert _command_names(robot).count("audio.clear_player") == 2
+
+    asyncio.run(run())
