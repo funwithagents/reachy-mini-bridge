@@ -47,6 +47,11 @@ _logger = logging.getLogger(__name__)
 # one INFO when frames return). Module constants, read at run time so tests can shorten.
 CAMERA_RETRY_S = 0.1
 CAMERA_DOWN_S = 5.0
+# The floor an empty pass costs (specs/vision/camera.md "The feed"): a read that returned
+# None sooner than this waits out the difference on the stop event — a reader answering
+# at once (upstream's get_frame() on a client built without a camera) no longer spins the
+# thread; one that waited inside the call (the GStreamer reader's 20 ms) pays nothing.
+CAMERA_EMPTY_S = 0.02
 
 # What the feed reads: the next frame as ``(image, capture_time)`` — ``capture_time`` the
 # frame's time on ``time.monotonic()``'s clock when the backend knows it, ``None`` when
@@ -173,6 +178,7 @@ class CameraFeed:
         failing_since: float | None = None
         down = False
         while not self._stop.is_set():
+            read_at = time.monotonic()
             try:
                 got = read_frame()
             except Exception as e:  # noqa: BLE001 - a failed read is retried, never fatal
@@ -195,7 +201,11 @@ class CameraFeed:
                 down = False
                 _logger.info("camera feed: frames are back")
             if got is None:
-                continue  # no frame yet: one more pass (the read itself waited)
+                # No frame yet: one more pass, paced unless the read itself waited.
+                waited = time.monotonic() - read_at
+                if waited < CAMERA_EMPTY_S:
+                    self._stop.wait(CAMERA_EMPTY_S - waited)
+                continue
             image, capture_ts = got
             ts = time.monotonic() if capture_ts is None else capture_ts
             head_pose: npt.NDArray[np.float64] | None = None

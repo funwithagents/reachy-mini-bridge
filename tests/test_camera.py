@@ -272,3 +272,55 @@ def test_stop_before_start_is_a_noop_and_start_while_running_too() -> None:
     assert feed.running
     asyncio.run(feed.stop())
     assert feed.latest() is None and not feed.running
+
+
+class _EmptyReader:
+    """A `read_frame` with no camera behind it: `None` at once, or after `delay_s`."""
+
+    def __init__(self, delay_s: float = 0.0) -> None:
+        self._delay_s = delay_s
+        self.reads = 0
+
+    def __call__(self) -> Read:
+        self.reads += 1
+        if self._delay_s:
+            time.sleep(self._delay_s)
+        return None
+
+
+def test_an_empty_read_that_returns_at_once_is_paced() -> None:
+    """A reader answering None immediately is called at most 1 / CAMERA_EMPTY_S times a
+    second (specs/vision/camera.md "The feed") — not millions."""
+    reader = _EmptyReader()
+    feed = CameraFeed(reader, None)
+    asyncio.run(feed.start())
+    time.sleep(0.2)
+    reads = reader.reads
+    asyncio.run(feed.stop())
+    assert 3 <= reads <= 0.2 / camera_module.CAMERA_EMPTY_S + 5
+    assert feed.latest() is None
+
+
+def test_an_empty_read_that_waited_itself_is_not_slowed() -> None:
+    """A reader that blocks longer than the pace before answering None runs at its own
+    rate: the pace adds nothing on top of the read's wait."""
+    reader = _EmptyReader(delay_s=0.025)
+    feed = CameraFeed(reader, None)
+    asyncio.run(feed.start())
+    time.sleep(0.2)
+    reads = reader.reads
+    asyncio.run(feed.stop())
+    assert 5 <= reads <= 9
+
+
+def test_stop_returns_promptly_during_the_empty_pace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(camera_module, "CAMERA_EMPTY_S", 0.5)
+    reader = _EmptyReader()
+    feed = CameraFeed(reader, None)
+    asyncio.run(feed.start())
+    _wait_until(lambda: reader.reads >= 1)
+    started = time.monotonic()
+    asyncio.run(feed.stop())
+    assert time.monotonic() - started < 0.3

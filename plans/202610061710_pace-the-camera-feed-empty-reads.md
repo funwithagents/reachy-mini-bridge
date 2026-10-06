@@ -1,6 +1,6 @@
 # Pace the camera feed's empty reads
 
-**Status:** Todo
+**Status:** Done
 
 Implements the feed's reading rule in [camera.md](../specs/vision/camera.md) ("The feed"). Fixes R3 of the [repository consistency review of 2026-10-06](../analysis/20261006_repository-consistency-review.md): a reader that returns `None` at once no longer spins the feed's thread. Normal throughput and a prompt `stop()` are kept; the SDK's behaviour on an absent camera is upstream's.
 
