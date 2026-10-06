@@ -1,6 +1,6 @@
 # The panel's target by track id, a portrait's image identity kept
 
-**Status:** Todo
+**Status:** Done
 
 Brings the control panel in line with [user_perception.md](../specs/vision/user_perception.md) ("The face report" — faces in `track_id` order) and [head_tracking.md](../specs/motion/head_tracking.md) (whom the head follows is `bridge.head_tracking.value.track_id`), and the test scene in line with [sim_scene.md](../specs/testing/sim_scene.md) (a prop's image is its portrait file's stem). Fixes R7 and R8 of the [repository consistency review of 2026-10-06](../analysis/20261006_repository-consistency-review.md). The report's ordering does not change; the panel's spec is the one updated.
 

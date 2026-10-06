@@ -446,3 +446,45 @@ def test_stop_stops_the_bridge() -> None:
     assert controller.bridge.running
     controller.stop()
     assert not controller.bridge.running
+
+
+def test_snapshot_marks_the_tracked_face_by_track_id() -> None:
+    """The report lists faces by track id; the target is the one the tracker follows —
+    the biggest — found by its id, not the first (specs/examples/control_panel.md)."""
+    scene = _Scene()
+    with ControlPanelController(_faces_config(scene)) as controller:
+        _wait_until(lambda: controller.snapshot().face_rate is not None)
+        # a small face on the left first, a big one on the right second
+        scene.faces[:] = [
+            PixelFace(bbox=(13.0, 20.0, 6.0, 8.0), nose=(16.0, 24.0)),
+            PixelFace(bbox=(42.0, 14.0, 12.0, 20.0), nose=(48.0, 24.0)),
+        ]
+        _wait_until(lambda: controller.snapshot().face_target is not None, timeout=5)
+        state = controller.snapshot()
+        report = controller.bridge.faces.value
+        assert state.faces == 2 and state.face_target == 1
+        assert state.face_positions[0][0] < 0 < state.face_positions[1][0]
+        assert (
+            report.faces[1].track_id == controller.bridge.head_tracking.value.track_id
+        )
+        assert controller.face_target() == 1
+
+        controller.stop_head_tracking()
+        _wait_until(lambda: controller.snapshot().face_target is None)
+        assert controller.snapshot().faces == 2  # still reported, none followed
+
+
+def test_draw_faces_thickens_the_target_only() -> None:
+    frame = np.zeros((240, 480, 3), dtype=np.uint8)
+    positions = [(-0.5, 0.0), (0.5, 0.0)]
+
+    def green_per_side(marked: npt.NDArray[np.uint8]) -> tuple[int, int]:
+        green = (marked == FACE_MARKER_RGB).all(axis=2)
+        return int(green[:, :240].sum()), int(green[:, 240:].sum())
+
+    left, right = green_per_side(draw_faces(frame, positions, target=1))
+    assert right > left * 1.5  # the target's ring is twice as thick
+    left, right = green_per_side(draw_faces(frame, positions, target=0))
+    assert left > right * 1.5
+    left, right = green_per_side(draw_faces(frame, positions))
+    assert left == right  # no target: both thin

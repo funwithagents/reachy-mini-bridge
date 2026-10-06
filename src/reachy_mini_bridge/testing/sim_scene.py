@@ -46,6 +46,7 @@ import json
 import logging
 import math
 import os
+import re
 import threading
 import time
 import urllib.error
@@ -195,11 +196,16 @@ def write_test_scene(
         image = image.resolve()
         material = materials.get(image)
         if material is None:
+            if _SAME_STEM_SUFFIX.search(image.stem):
+                raise ValueError(
+                    f"face image {image.name!r}: a stem ending in '__<number>' cannot "
+                    "be carried by the scene (that suffix marks two files of one stem)"
+                )
             material = _PORTRAIT_MATERIAL_PREFIX + image.stem
             taken = set(materials.values())
             suffix = 2
             while material in taken:  # two files with the same stem
-                material = f"{_PORTRAIT_MATERIAL_PREFIX}{image.stem}_{suffix}"
+                material = f"{_PORTRAIT_MATERIAL_PREFIX}{image.stem}__{suffix}"
                 suffix += 1
             materials[image] = material
             assets.append(
@@ -311,12 +317,18 @@ def _kind_of(name: str) -> str:
     return head if sep and head and tail.isdigit() else name
 
 
+# The suffix ``write_test_scene`` adds to keep two same-stem files apart — two
+# underscores and a number, which a stem may not end in itself, so a stem always reads
+# back whole (``person_1.png`` is the image ``person_1``).
+_SAME_STEM_SUFFIX = re.compile(r"__\d+$")
+
+
 def _image_of(material: str | None) -> str | None:
-    """A portrait's image: its material's name without the ``portrait_`` prefix (and
-    without the suffix ``write_test_scene`` adds to keep two same-stem files apart)."""
+    """A portrait's image: its material's name without the ``portrait_`` prefix and
+    without the ``__<n>`` suffix ``write_test_scene`` adds for two same-stem files."""
     if not material or not material.startswith(_PORTRAIT_MATERIAL_PREFIX):
         return None
-    return _kind_of(material[len(_PORTRAIT_MATERIAL_PREFIX) :])
+    return _SAME_STEM_SUFFIX.sub("", material[len(_PORTRAIT_MATERIAL_PREFIX) :])
 
 
 def _vec3(value: Any) -> tuple[float, float, float]:

@@ -201,7 +201,7 @@ def test_same_stem_images_get_distinct_materials(tmp_path: Path) -> None:
     model = mujoco.MjModel.from_xml_path(
         str(write_test_scene(tmp_path, face_pool(2, images=[first, second])))
     )
-    assert sorted(_portrait_materials(model)) == ["portrait_face", "portrait_face_2"]
+    assert sorted(_portrait_materials(model)) == ["portrait_face", "portrait_face__2"]
     director = SceneDirector()
     director.attach(model, mujoco.MjData(model))
     # the uniqueness suffix is not part of the image's name
@@ -640,3 +640,26 @@ def test_run_daemon_viewer_keeps_upstream_headfull_and_passes_the_camera(
 def test_run_daemon_refuses_a_missing_scene(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         sim_scene.run_daemon(["--scene-path", str(tmp_path / "missing.xml")])
+
+
+def test_a_numbered_portrait_keeps_its_image_name(tmp_path: Path) -> None:
+    """``person_1.png`` is the image ``person_1`` — a trailing ``_<n>`` of the stem is
+    the file's own, not the writer's same-stem suffix (specs/testing/sim_scene.md)."""
+    person = tmp_path / "person_1.png"
+    person.write_bytes(DEFAULT_FACE_IMAGE.read_bytes())
+    path = write_test_scene(tmp_path, face_pool(2, images=[person]))
+    model = mujoco.MjModel.from_xml_path(str(path))
+    assert _portrait_materials(model) == ["portrait_person_1"]
+    director = SceneDirector()
+    director.attach(model, mujoco.MjData(model))
+    assert {s.image for s in director.states().values()} == {"person_1"}
+    assert director.spawn((0.5, 0.0, 0.2), image="person_1").name == "face_1"
+
+
+def test_the_writer_refuses_a_stem_that_looks_like_its_own_suffix(
+    tmp_path: Path,
+) -> None:
+    clash = tmp_path / "face__2.png"
+    clash.write_bytes(DEFAULT_FACE_IMAGE.read_bytes())
+    with pytest.raises(ValueError, match="face__2.png"):
+        write_test_scene(tmp_path, face_pool(1, images=[clash]))

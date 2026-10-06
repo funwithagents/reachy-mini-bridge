@@ -102,6 +102,7 @@ def refresh_camera(
     active = controller.bridge.faces.value.active
     positions = controller.face_positions()
     rolls = controller.face_rolls()
+    target = controller.face_target()
     text = faces_line(positions if active else None, controller.face_rate, rolls)
     try:
         frame = controller.camera_frame_rgb()
@@ -110,7 +111,7 @@ def refresh_camera(
         return None, text
     if frame is None:
         return None, text
-    marked = draw_faces(frame, positions, rolls)
+    marked = draw_faces(frame, positions, rolls, target)
     if MIRROR_CAMERA:
         marked = np.ascontiguousarray(marked[:, ::-1])
     return marked, text

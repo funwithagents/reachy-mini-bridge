@@ -35,6 +35,7 @@ from reachy_mini_bridge import (
     SpeechInterruptedError,
     SpeechSynthesizer,
 )
+from reachy_mini_bridge.face_detection import FaceReport
 
 _logger = logging.getLogger(__name__)
 
@@ -69,8 +70,12 @@ class PanelState:
     face_detection: bool
     # the number of faces the detection loop reports; -1 while no detector is looking
     faces: int
-    # each face's normalised (x, y), the target first; empty while no detector is looking
+    # each face's normalised (x, y), in the report's order (by track id); empty while no
+    # detector is looking
     face_positions: list[tuple[float, float]]
+    # the index in face_positions of the face the head follows (the tracker's
+    # `head_tracking.track_id`); None when it follows none
+    face_target: int | None
     # new face observations per second; None while no detector is looking
     face_rate: float | None
     voice: str
@@ -401,6 +406,7 @@ class ControlPanelController:
             face_detection=bridge.face_detection,
             faces=len(report.faces) if report.active else -1,
             face_positions=positions,
+            face_target=self._face_target(report),
             face_rate=self._face_rate if report.active else None,
             voice=self._voice(),
             mic_level=self._mic_level,
@@ -424,6 +430,21 @@ class ControlPanelController:
         :meth:`face_positions`."""
         report = self._bridge.faces.value
         return [f.roll for f in report.faces] if report.active else []
+
+    def face_target(self) -> int | None:
+        """The index in :meth:`face_positions` of the face the head follows — the
+        tracker's ``head_tracking.track_id`` (specs/motion/head_tracking.md) looked up in
+        the report; ``None`` while it follows none (or that face is not reported)."""
+        return self._face_target(self._bridge.faces.value)
+
+    def _face_target(self, report: FaceReport) -> int | None:
+        followed = self._bridge.head_tracking.value.track_id
+        if followed is None or not report.active:
+            return None
+        return next(
+            (i for i, face in enumerate(report.faces) if face.track_id == followed),
+            None,
+        )
 
     def camera_frame_rgb(self) -> npt.NDArray[np.uint8] | None:
         """The camera feed's newest frame as RGB, or ``None`` while there is none.
@@ -503,13 +524,15 @@ def draw_faces(
     frame: npt.NDArray[np.uint8],
     positions: Sequence[tuple[float, float]],
     rolls: Sequence[float | None] = (),
+    target: int | None = None,
 ) -> npt.NDArray[np.uint8]:
     """A copy of the RGB ``frame`` with a square outline on each face.
 
     ``positions`` are normalised image coordinates (``[-1, 1]``, x right, y down), as
-    ``bridge.faces`` reports them; the first — the target face — is drawn thicker.
-    ``rolls`` (radians, per face, ``None`` when unknown) tilt each square with the
-    face's eye line, in the frame's own coordinates.
+    ``bridge.faces`` reports them; the face at index ``target`` — the one the head
+    follows — is drawn thicker, none when ``None``. ``rolls`` (radians, per face,
+    ``None`` when unknown) tilt each square with the face's eye line, in the frame's
+    own coordinates.
     """
     out = frame.copy()
     height, width = out.shape[:2]
@@ -518,7 +541,7 @@ def draw_faces(
         roll = rolls[i] if i < len(rolls) else None
         cx = round((x + 1.0) * 0.5 * (width - 1))
         cy = round((y + 1.0) * 0.5 * (height - 1))
-        thick = max(1, height // (120 if i == 0 else 240))
+        thick = max(1, height // (120 if i == target else 240))
         reach = math.ceil(half * math.sqrt(2)) + 1  # the tilted square's bounding box
         x0, x1 = max(cx - reach, 0), min(cx + reach, width - 1)
         y0, y1 = max(cy - reach, 0), min(cy + reach, height - 1)
