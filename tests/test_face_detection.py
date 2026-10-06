@@ -405,11 +405,39 @@ def test_a_gap_within_the_miss_window_keeps_the_id_and_a_longer_one_does_not() -
 def test_a_jump_beyond_the_gate_opens_a_new_track() -> None:
     tracks = fd._FaceTracks(_counter())
     size = (WIDTH, HEIGHT)
-    assert tracks.update([_face(8, 24)], size) == [1]  # x = -0.75
-    # x = +0.9: a jump of 1.65 > TRACK_MAX_JUMP — someone else, not the same person
+    assert tracks.update([_face(8, 24)], size) == [1]
+    # a 52 px jump of a 12 px face: more than TRACK_MAX_JUMP_FACES of it — someone else
     assert tracks.update([_face(60, 24)], size) == [2]
     # the first track is still alive within its miss window
     assert tracks.update([_face(8, 24), _face(60, 24)], size) == [1, 2]
+
+
+def test_a_lone_face_a_few_sizes_away_does_not_continue_a_vanished_track() -> None:
+    """The two-portrait scene on a runner: the followed face gone, the other alone in
+    view 2.5 face sizes away must not inherit its id — the head would swing onto it."""
+    tracks = fd._FaceTracks(_counter())
+    size = (WIDTH, HEIGHT)
+    assert tracks.update([_face(20, 24), _face(50, 24)], size) == [1, 2]
+    for _ in range(3):
+        assert tracks.update([_face(20, 24)], size) == [1]  # the other flickers out
+    assert tracks.update([_face(50, 24)], size) == [2]  # back: its own track, not 1
+    for _ in range(fd.TRACK_MAX_MISSES + 1):
+        tracks.update([_face(20, 24)], size)  # long enough to drop track 2
+    assert tracks.update([_face(50, 24)], size) == [3]  # 30 px = 2.5 sizes: a new id
+
+
+def test_the_jump_gate_scales_with_the_face() -> None:
+    """The gate is in the face's own size: a near, large face may move farther between
+    two observations than a far, small one, and the smaller of the two sizes counts."""
+    tracks = fd._FaceTracks(_counter())
+    size = (WIDTH, HEIGHT)
+    big, small = _face(20, 24, w=32, h=48), _face(56, 4, w=8, h=12)
+    assert tracks.update([big, small], size) == [1, 2]
+    moved = tracks.update([_face(60, 24, w=32, h=48), _face(16, 4, w=8, h=12)], size)
+    assert moved == [1, 3]  # 40 px: within 1.5 × 48 for the big face, not 1.5 × 12
+    # a small face 30 px from the big track's last place: within 1.5 × 48 but not
+    # 1.5 × 12 — held to its own size, it opens a track rather than taking the big one
+    assert tracks.update([_face(30, 24, w=8, h=12)], size) == [4]
 
 
 # --- the runner over the camera feed ------------------------------------------------------

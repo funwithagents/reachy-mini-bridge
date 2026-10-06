@@ -22,6 +22,7 @@ import asyncio
 import math
 import time
 from collections.abc import Callable
+from contextlib import suppress
 from typing import Any
 
 from reachy_mini_bridge.bridge import ReachyMiniBridge
@@ -254,8 +255,13 @@ class _Changes:
         async for report in bridge.head_tracking.changes():
             self.woken.append(report)
 
-    def stop(self) -> None:
+    async def stop(self, settle: float = 0.2) -> None:
+        """Let a report published just before this call reach the subscriber (a poll of
+        `.value` can see it a loop turn earlier), then end the recording."""
+        await asyncio.sleep(settle)
         self._task.cancel()
+        with suppress(asyncio.CancelledError):
+            await self._task
 
 
 async def _both_in_view(bridge: ReachyMiniBridge, count: int = 2) -> None:
@@ -340,7 +346,7 @@ def test_a_nearer_face_arriving_does_not_take_the_head(
             expected_yaw_deg=far_yaw,
             min_seconds=1.0,
         )
-        changes.stop()
+        await changes.stop()
         return (
             first,
             after,
@@ -387,7 +393,7 @@ def test_a_face_hidden_briefly_is_waited_for_and_followed_again(
         assert again == followed_name  # the pool hands the same portrait back
         await _both_in_view(bridge)
         await asyncio.sleep(1.0)
-        changes.stop()
+        await changes.stop()
         return (
             before,
             yaws,
@@ -400,6 +406,13 @@ def test_a_face_hidden_briefly_is_waited_for_and_followed_again(
     print(
         f"\n[e2e] hold: yaw {before:+.1f} deg before, "
         f"{min(yaws):+.1f}..{max(yaws):+.1f} while the face was gone"
+    )
+    # The evidence a failure needs: a head that left the face either switched (a change
+    # naming another id — the hold already consumed by detection flicker) or followed
+    # its id onto another face (no change, the same id).
+    print(
+        f"[e2e] followed {followed}, at the end {after}, changes "
+        f"{[(r.attention, r.track_id) for r in woken]}"
     )
     assert all(abs(y - before) < 3.0 for y in yaws), "the head left the vanished face"
     assert after == followed and woken == []
@@ -434,7 +447,7 @@ def test_a_face_gone_for_good_hands_over_to_the_other_then_the_head_is_released(
             lambda: bridge.head_tracking.value.attention == "watching",
             TRACKING_LOST_S + 3.0,
         )
-        changes.stop()
+        await changes.stop()
         # What the detector and the tracker hold at the end — the evidence when a face
         # shows up after both portraits are gone (a phantom seen once on a CI runner).
         final = (bridge.head_tracking.value, bridge.faces.value)
