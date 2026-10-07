@@ -25,6 +25,7 @@ import pytest
 from reachy_mini_bridge import face_detection as fd
 from reachy_mini_bridge import fake_reachy_mini as fake_module
 from reachy_mini_bridge.camera import CameraFeed, CameraFrame, frame_reader
+from reachy_mini_bridge.errors import BridgeError
 from reachy_mini_bridge.face_detection import (
     FaceDetection,
     FaceReport,
@@ -702,8 +703,9 @@ def test_a_factory_that_raises_fails_the_start_and_starts_nothing() -> None:
         detection = FaceDetection(
             detector="custom", faces=faces, feed=feed, detector_factory=broken
         )
-        with pytest.raises(OSError, match="no network"):
+        with pytest.raises(BridgeError, match="could not be built.*no network") as info:
             await detection.start()
+        assert isinstance(info.value.__cause__, OSError)
         await asyncio.sleep(0.05)
         running = detection.running
         await detection.stop()  # a no-op on a loop that never started

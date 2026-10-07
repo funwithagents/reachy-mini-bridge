@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from .camera import CameraFeed, CameraFrame
 
 from .concurrency import owned
+from .errors import BridgeError
 from .observable import Observable
 
 __all__ = [
@@ -452,8 +453,9 @@ class FaceDetection:
         Raises ``ValueError`` for a detector this loop cannot run (no detector named,
         ``custom`` with none registered, no camera feed, a factory's result without a
         callable ``detect`` — released through its ``close()`` if it has one) and
-        whatever the detector's factory raises — a model that cannot load — with the
-        loop left not running.
+        ``BridgeError`` chaining whatever the detector's factory raised — a model that
+        cannot load, a ``ValueError`` of the factory's own included — with the loop
+        left not running (specs/vision/user_perception.md "Building the detector").
         """
         async with self._transition:
             if self.running:
@@ -512,6 +514,13 @@ class FaceDetection:
             self._acquisition_cleanups.add(cleanup)
             cleanup.add_done_callback(self._acquisition_cleanups.discard)
             raise
+        except Exception as e:
+            # Told apart from the result's validation here, where the factory runs: what
+            # it raises is a build failure, whatever its type.
+            raise BridgeError(
+                f"the face detector {self._name!r} could not be built: "
+                f"{type(e).__name__}: {e}"
+            ) from e
         try:
             return _check_face_detector(built)
         except ValueError:

@@ -542,7 +542,7 @@ class ReachyMiniBridge:
             # Exits after the motion session, before wobbling's cleanup.
             stack.push_async_callback(self._stop_detection)
             if self._face_detection_wanted or self._tracking_wanted:
-                await self._start_detection(detection)
+                await detection.start()
             # The sim's face markers (specs/daemon/sim_displays.md): the faces sent to the
             # daemon's viewer. Exits after the motion session, before the detection loop.
             if cfg.backend == "sim" and cfg.daemon.sim_displays.face_markers:
@@ -656,20 +656,6 @@ class ReachyMiniBridge:
         if detection is not None:
             await detection.stop()
 
-    async def _start_detection(self, detection: FaceDetection) -> None:
-        """Start the loop: a detector it cannot run is the caller's ``ValueError``; a
-        detector that cannot be built (a model that fails to load) is a ``BridgeError``
-        chaining the cause (specs/vision/user_perception.md "Building the detector")."""
-        try:
-            await detection.start()
-        except ValueError:
-            raise
-        except Exception as e:
-            raise BridgeError(
-                f"the face detector {self._config.face_detection.detector!r} could not be built: "
-                f"{type(e).__name__}: {e}"
-            ) from e
-
     def _daemon_address(self) -> tuple[str, int]:
         """The daemon's HTTP address: the robot options' host and port, else the local
         daemon's defaults (``start_daemon``'s)."""
@@ -705,7 +691,7 @@ class ReachyMiniBridge:
         async with self._detection_sync:
             wanted = self._face_detection_wanted or self._tracking_wanted
             if wanted and not detection.running:
-                await self._start_detection(detection)
+                await detection.start()
             elif not wanted and detection.running:
                 await detection.stop()
 

@@ -3693,3 +3693,31 @@ def test_a_cancelled_disable_completes_and_leaves_the_switch_off() -> None:
     assert switch is False and active is False
     assert closed == 1
     assert x == pytest.approx(0.2, abs=0.03)  # a fresh detector on the next enable
+
+
+def test_a_factory_raising_value_error_is_a_bridge_error_with_that_cause() -> None:
+    """specs/vision/user_perception.md "Building the detector": what the factory raises
+    is a build failure whatever its type — a `BridgeError` chaining it — while only a
+    build the loop cannot run is the caller's `ValueError`."""
+    scene = _Scene([])
+    config = _custom_config(scene, detection=False, tracking=False)
+
+    def invalid() -> Any:
+        raise ValueError("invalid model configuration")
+
+    async def run() -> tuple[BaseException | None, bool]:
+        async with ReachyMiniBridge(config) as bridge:
+            await bridge.set_face_detector(invalid)
+            with pytest.raises(BridgeError, match="could not be built.*invalid model"):
+                await bridge.set_face_detection(True)
+            cause = None
+            try:
+                await bridge.start_head_tracking()
+            except BridgeError as e:
+                cause = e.__cause__
+            await bridge.set_motors_state("enabled")  # the session still works
+            return cause, bridge.face_detection
+
+    cause, switch = asyncio.run(run())
+    assert isinstance(cause, ValueError)
+    assert switch is False
