@@ -149,6 +149,7 @@ daemon at setup:
 | `motion` | the backend reports a status |
 | `audio` | recording yields a mic sample (a sound device — or a PulseAudio null sink, below) |
 | `camera` | a camera frame comes back on `bridge.camera` (needs a GL context: offscreen through EGL on Linux, a window elsewhere) |
+| `motor_states` | the daemon honors `set_motors_state("enabled" / "disabled")`: any hardware daemon, read from its status (not a simulation); never a sim, which ignores the change and keeps reporting `enabled` |
 | `gravity_compensation` | the hardware daemon runs the Placo kinematics engine — a harness-spawned one does with `REACHY_MINI_E2E_KINEMATICS=placo` (the `placo` extra); never a sim, which accepts the mode and does nothing |
 | `faces` | the daemon runs the bridge's test scene (every sim the harness spawns does), which has a pool of portraits (bodies of kind `face`) — hidden until spawned; the bridge's `yunet` detector, which `live_bridge` configures, finds it in the rendered camera |
 | `face_markers` | the daemon draws the faces the bridge sends it and returns them (`/api/sim/displays/face_markers`): every viewer sim the harness spawns; a test reads back where the bridge placed a face |

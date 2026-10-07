@@ -579,6 +579,23 @@ def test_gravity_compensation_absent_when_the_daemon_does_not_answer(
     assert _probe(_StatusRobot()) is False
 
 
+# --- motor_states capability probe ---
+
+
+def test_motor_states_are_honored_by_hardware_only():
+    assert fixtures._probe_motor_states(_StatusRobot()) is True  # pyright: ignore[reportArgumentType]
+    assert fixtures._probe_motor_states(_StatusRobot(sim=True)) is False  # pyright: ignore[reportArgumentType]
+    assert fixtures._probe_motor_states(_StatusRobot(mockup=True)) is False  # pyright: ignore[reportArgumentType]
+
+
+def test_motor_states_absent_when_the_daemon_does_not_answer():
+    def fail() -> object:
+        raise ConnectionError("daemon gone")
+
+    robot = SimpleNamespace(client=SimpleNamespace(get_status=fail))
+    assert fixtures._probe_motor_states(robot) is False  # pyright: ignore[reportArgumentType]
+
+
 # --- audio capability probe ---
 
 

@@ -49,11 +49,11 @@ def test_motor_state_reads_and_dispatches_over_the_live_path(
     """`get_motors_state` reads a valid mode and each `set_motors_state` reaches the daemon.
 
     The e2e value here is that the read (a real daemon status round-trip) and each set
-    dispatch work over the network — not that a given target *honors* a state. Hardware
-    honors `disabled`/`enabled`, but the sim daemon ignores every motor-state change:
-    `disabled` keeps reporting `enabled` (headless and headfull viewer). That is why this
-    asserts validity, not equality; the fast tier pins the exact dispatch→state mapping
-    deterministically on the fake. Gravity compensation has its own capability-gated test
+    dispatch work over the network, and on a target that honors a state — hardware,
+    probed as `motor_states` — that each reads back as set. The sim daemon ignores every
+    motor-state change: `disabled` keeps reporting `enabled` (headless and headfull
+    viewer), so there it asserts validity only; the fast tier pins the exact
+    dispatch→state mapping deterministically on the fake. Gravity compensation has its own capability-gated test
     below: sending it to a daemon that can't hold it drops the connection.
 
     First in this file on purpose, and gentle on hardware: the head is lowered to the
@@ -69,7 +69,7 @@ def test_motor_state_reads_and_dispatches_over_the_live_path(
     )
 
     requires_caps(live_bridge, "motion")
-    bridge, _caps = live_bridge
+    bridge, caps = live_bridge
     # goto_target is upstream-only (not on the fake); this tier is live-only.
     robot: Any = bridge.robot
     valid = {"enabled", "disabled", "gravity_compensation"}
@@ -106,6 +106,8 @@ def test_motor_state_reads_and_dispatches_over_the_live_path(
     print(f"\n[e2e] motor states: original={original!r}, read back={results!r}")
     assert original in valid
     assert all(mode in valid for mode in results.values())
+    if "motor_states" in caps:
+        assert results == {"enabled": "enabled", "disabled": "disabled"}
 
 
 def test_gravity_compensation_dispatches_over_the_live_path(

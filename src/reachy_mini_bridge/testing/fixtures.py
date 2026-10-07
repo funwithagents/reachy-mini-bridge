@@ -95,6 +95,26 @@ def _probe_camera(feed: CameraFeed) -> bool:
         return False
 
 
+def _is_simulation(robot: AnyReachyMini) -> bool:
+    """True if the daemon status reports a simulation, MuJoCo or mockup."""
+    status = robot.client.get_status()
+    return bool(status.simulation_enabled or status.mockup_sim_enabled)
+
+
+def _probe_motor_states(robot: AnyReachyMini) -> bool:
+    """True if the daemon honors `set_motors_state("enabled" / "disabled")`: hardware, a
+    USB Lite or a wireless robot. A simulation ignores every motor-state change and keeps
+    reporting `enabled` (specs/core/bridge.md "Motors").
+
+    Read from the daemon status, never by switching: a probe that turned torque off at
+    setup would drop a head no test has lowered yet.
+    """
+    try:
+        return not _is_simulation(robot)
+    except Exception:  # noqa: BLE001  (unreadable ⇒ capability absent)
+        return False
+
+
 def _probe_gravity_compensation(robot: AnyReachyMini) -> bool:
     """True if the daemon holds gravity compensation: hardware on the Placo engine — a
     harness-spawned daemon runs it with `REACHY_MINI_E2E_KINEMATICS=placo`.
@@ -104,8 +124,7 @@ def _probe_gravity_compensation(robot: AnyReachyMini) -> bool:
     simulation) and the engine through the bridge's own read.
     """
     try:
-        status = robot.client.get_status()
-        if status.simulation_enabled or status.mockup_sim_enabled:
+        if _is_simulation(robot):
             return False
         return _daemon_kinematics_engine(robot) == "Placo"
     except Exception:  # noqa: BLE001  (unreadable ⇒ capability absent)
@@ -139,7 +158,7 @@ def _probe_capabilities(
     """Probe what the live daemon can actually do — never inferred from backend type.
 
     Environment quirks decide: audio needs a recording session (the bridge's), the sim camera
-    needs a GL context, gravity compensation needs hardware on the Placo kinematics engine,
+    needs a GL context, honored motor states need hardware, gravity compensation needs hardware on the Placo kinematics engine,
     etc. `faces` (probed at `address`, the daemon's HTTP port) means the daemon runs the
     bridge's generated face scene; `face_markers` that it draws the faces the bridge
     sends it. `doa` (mic-array direction of arrival) is robot-only
@@ -158,6 +177,8 @@ def _probe_capabilities(
         caps.add("audio")
     if camera is not None and _probe_camera(camera):
         caps.add("camera")
+    if _probe_motor_states(robot):
+        caps.add("motor_states")
     if _probe_gravity_compensation(robot):
         caps.add("gravity_compensation")
     if address is not None and _probe_faces(*address):
