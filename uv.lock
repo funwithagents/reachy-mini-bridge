@@ -2790,7 +2790,7 @@ wheels = [
 
 [[package]]
 name = "reachy-mini"
-version = "1.10.0"
+version = "1.11.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -2821,16 +2821,15 @@ dependencies = [
     { name = "requests" },
     { name = "rich" },
     { name = "rustypot" },
-    { name = "scipy" },
     { name = "starlette" },
     { name = "toml" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "websockets" },
     { name = "zeroconf" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f0/fa/81022319a5ee6dfa5d6e909e6d1c3b8dfe3dc54cff0f715b86c0aaf6f0a7/reachy_mini-1.10.0.tar.gz", hash = "sha256:eb8e84475441dcdc0758e2f70205900a599892731e61865ad548c0657ddd88a0", size = 24157502, upload-time = "2026-08-25T12:05:03.434Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/1d/1a/0b875f30145228b350e0a442fa6c523311da57d56a4e842c14726ca6e3ff/reachy_mini-1.11.0.tar.gz", hash = "sha256:5c7634c0565485276cb8ee1a58b1cb244a740c5d7549f07bf4d4a6e9dd65ccce", size = 24169927, upload-time = "2026-09-21T12:04:52.967Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/60/cf/a6aeefcff295e484f153cf5facd169903a590d163597c40fb0a24e4ec328/reachy_mini-1.10.0-py3-none-any.whl", hash = "sha256:82384a6310b89872839ad3544357451d43f81c52a65d7c8d24e439bacad502c3", size = 24246264, upload-time = "2026-08-25T12:04:59.285Z" },
+    { url = "https://files.pythonhosted.org/packages/a2/e4/83285d3af0b716cecaaebad2e1df8057ae867eec1f2e787b878f37916ef9/reachy_mini-1.11.0-py3-none-any.whl", hash = "sha256:5a1b59c9c1657c1a1a859e281a9fe543dedc91fd298cfb185c542801fc67ec79", size = 24258673, upload-time = "2026-09-21T12:04:49.349Z" },
 ]
 
 [package.optional-dependencies]
@@ -2885,6 +2884,7 @@ dev = [
     { name = "pytest-xdist" },
     { name = "reachy-mini-bridge", extra = ["placo", "sim", "test"] },
     { name = "ruff" },
+    { name = "scipy" },
 ]
 tts = [
     { name = "reachy-mini-bridge", extra = ["tts-elevenlabs", "tts-gradium", "tts-pocket"] },
@@ -2899,7 +2899,7 @@ requires-dist = [
     { name = "mujoco", marker = "extra == 'sim'", specifier = ">=3.3.1,<3.4" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=9.1.1" },
-    { name = "reachy-mini", specifier = ">=1.10" },
+    { name = "reachy-mini", specifier = ">=1.11" },
     { name = "reachy-mini", extras = ["placo-kinematics"], marker = "extra == 'placo'" },
     { name = "samplerate", specifier = ">=0.2" },
     { name = "tts-engine", git = "https://github.com/funwithagents/tts-engine?rev=main" },
@@ -2923,6 +2923,7 @@ dev = [
     { name = "reachy-mini-bridge", extras = ["sim"], editable = "." },
     { name = "reachy-mini-bridge", extras = ["test"], editable = "." },
     { name = "ruff", specifier = ">=0.16.6" },
+    { name = "scipy", specifier = ">=1.18.1" },
 ]
 tts = [
     { name = "reachy-mini-bridge", extras = ["tts-elevenlabs", "tts-gradium", "tts-pocket"], editable = "." },

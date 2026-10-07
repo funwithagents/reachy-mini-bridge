@@ -58,7 +58,7 @@ Keyword arguments forwarded verbatim to upstream's `ReachyMini(...)`, so their n
 |---|---|---|
 | `host` | `"reachy-mini.local"` | Where the daemon listens. A wireless robot's IP or hostname; `"127.0.0.1"` for a local daemon |
 | `port` | `8000` | The daemon's port |
-| `connection_mode` | `"auto"` | Transport to the daemon: `"auto"`, `"localhost_only"` or `"network"` (upstream 1.10's values; the bridge checks the key, upstream the value) |
+| `connection_mode` | `"auto"` | Transport to the daemon: `"auto"`, `"localhost_only"` or `"network"` (upstream 1.11's values; the bridge checks the key, upstream the value) |
 | `media_backend` | `"default"` | How audio/video are carried; `"local"` is what a local daemon serves, the default is the WebRTC stream a wireless robot serves |
 | `timeout` | `5.0` | Seconds to wait on the connection |
 | `robot_name` | `"reachy_mini"` | The robot's name on the daemon |

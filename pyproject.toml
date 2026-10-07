@@ -11,7 +11,7 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "numpy>=1.26",
-    "reachy-mini>=1.10",
+    "reachy-mini>=1.11",
     # Streaming, stateful resampler for the TTS output path (synth rate -> speaker
     # rate); MIT, wraps BSD-2-Clause libsamplerate, ships prebuilt wheels. Permissive
     # and small, so it sits in the core rather than an extra (see specs/audio/audio.md).
@@ -98,6 +98,9 @@ dev = [
     # config's choice and not the install's (specs/project.md).
     "reachy-mini-bridge[placo]",
     "pytest-xdist>=3.8.0",
+    # Rotations in the fast tier's pose assertions. reachy-mini 1.11 no longer requires it;
+    # the tests import it themselves, so they declare it.
+    "scipy>=1.18.1",
 ]
 # The TTS providers (specs/project.md "Dependency groups"): pocket so the real-TTS live
 # test runs with no credential, elevenlabs and gradium so the key-gated cloud tests run
