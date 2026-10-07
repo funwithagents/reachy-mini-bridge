@@ -13,6 +13,20 @@ uv add "reachy-mini-bridge[sim] @ git+https://github.com/funwithagents/reachy-mi
 
 The API changes between commits without a deprecation period while the bridge is at 0.1: pin a commit (`@<sha>`). Pinning the bridge does not pin what it depends on — `tts-engine` is declared from its `main` branch and `reachy-mini` as a version range — so lock your project's own resolved graph (`uv lock`, the lock file committed) and move it deliberately (`uv lock --upgrade-package reachy-mini-bridge`, or `--upgrade-package tts-engine`); the bridge's own lock file covers its development environment, not yours. The extras — `sim`, the `tts-*` voices, `test` — are listed in the [README](../README.md#install); importing the package imports `reachy_mini`, which needs its native libraries installed (GStreamer: with the wheels on macOS and Windows, from the system on Linux — [guides/linux.md](guides/linux.md)) but no running daemon.
 
+### On macOS: declare PyGObject's metadata before you add the bridge
+
+`reachy-mini` depends on PyGObject (and through it pycairo) on Linux only, but uv's lock covers every platform at once, and the PyGObject and pycairo versions in range ship no wheel: on a Mac, `uv add` (or `uv lock`) builds them from source just to read their dependencies, and fails without the system's cairo (`Dependency lookup for cairo with method 'pkg-config' failed`). Declaring their metadata in your project's `pyproject.toml` lets uv resolve the Linux side without building anything; on your Mac they are still not installed:
+
+```toml
+[tool.uv]
+dependency-metadata = [
+    { name = "pygobject", version = "3.46.0", requires-dist = ["pycairo>=1.16.0"] },
+    { name = "pycairo", version = "1.29.1" },
+]
+```
+
+These are the entries the bridge's own `pyproject.toml` carries; a consumer project needs its own copy, since uv reads `tool.uv` settings from your project only. Checked on 2026-10-07 with `reachy-mini` 1.11.0: a fresh project fails to lock without them and locks with them.
+
 ## Your first application
 
 Everything goes through `ReachyMiniBridge`, used as an async context manager: nothing connects until you enter it, leaving it tears everything down. This program runs on the offline `fake`, which needs no daemon, no hardware and no extra — and it brings its own voice, a beep, which is also the smallest complete `SpeechSynthesizer`:

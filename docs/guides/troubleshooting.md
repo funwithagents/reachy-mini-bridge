@@ -1,6 +1,11 @@
-# Troubleshooting — when it does not connect, see, move or speak
+# Troubleshooting — when it does not install, connect, see, move or speak
 
 The checks for each symptom, in the order to make them, each pointing at the page that owns the explanation. The errors themselves are listed in [../reference/api.md](../reference/api.md#errors).
+
+## It does not install — `uv add` fails building `pycairo` or `pygobject`
+
+- **On macOS**, your project's lock needs PyGObject's and pycairo's metadata declared, or uv builds them from source and fails on the missing cairo ([../getting-started.md](../getting-started.md#on-macos-declare-pygobjects-metadata-before-you-add-the-bridge)).
+- **On Linux** they are installed, so they build: the girepository and cairo headers come from the system ([linux.md](linux.md)).
 
 ## It does not connect — `start()` raises or hangs
 

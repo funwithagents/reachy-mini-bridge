@@ -33,7 +33,7 @@ uv add "reachy-mini-bridge[sim,test] @ ../reachy-mini-bridge"   # a checkout nex
 | `test` | `pytest` | The shipped `reachy_mini_bridge.testing` harness for your e2e tests |
 | `placo` | `reachy-mini[placo_kinematics]` | The Placo kinematics engine, selected with `"daemon": {"kinematics_engine": "placo"}` — the one engine with gravity compensation ([docs/reference/configuration.md](docs/reference/configuration.md#kinematics-engines)). Installing it changes nothing until a config asks for it; no Windows wheel |
 
-Importing the package imports `reachy_mini`, which needs its native libraries installed but not a running daemon.
+Importing the package imports `reachy_mini`, which needs its native libraries installed but not a running daemon. On macOS, add the two `dependency-metadata` entries of [docs/getting-started.md](docs/getting-started.md#on-macos-declare-pygobjects-metadata-before-you-add-the-bridge) to your project first, or the lock fails building PyGObject.
 
 **Platforms.** Developed on macOS; Linux is where CI runs the whole test suite, sim camera included; Windows is untested. On macOS and Windows, GStreamer comes with `reachy_mini`'s wheels. **On Linux it comes from the system**, and running a daemon on the machine — the sim, or a robot plugged in over USB — also needs the Rust GStreamer webrtc plugin, which no distribution packages; the headless sim's camera needs Mesa's EGL. The packages, the plugin's two routes, and what works without a sound card are in [docs/guides/linux.md](docs/guides/linux.md). What each setup — fake, sim, a Lite over USB, a wireless robot — needs installed and gives you, and how far it has been validated, is one table in [docs/reference/backends-and-capabilities.md](docs/reference/backends-and-capabilities.md).
 
