@@ -518,6 +518,8 @@ def test_gravity_compensation_is_refused_off_placo_without_sending() -> None:
                 await bridge.set_motors_state("gravity_compensation")
             message = str(excinfo.value)
             assert "AnalyticalKinematics" in message
+            # both fixes: the config field for a spawned daemon, the flag for one by hand
+            assert "'daemon.kinematics_engine' to 'placo'" in message
             assert "--kinematics-engine Placo" in message
             assert "enable_gravity_compensation" not in _command_names(bridge)
             assert await bridge.get_motors_state() == "enabled"  # untouched

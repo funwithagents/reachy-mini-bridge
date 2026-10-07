@@ -107,10 +107,10 @@ A wireless robot runs its own daemon — nothing to start. Point the client at i
 A robot plugged into this machine over USB (Reachy Mini Lite) needs the daemon running here — the bridge's launcher:
 
 ```
-uv run python -m reachy_mini_bridge.real_daemon --kinematics-engine Placo --preload-datasets
+uv run python -m reachy_mini_bridge.real_daemon --preload-datasets --kinematics-engine AnalyticalKinematics
 ```
 
-It is upstream's `reachy-mini-daemon` run in-process with the bridge's macOS camera check ([../specs/daemon/real_daemon.md](../../specs/daemon/real_daemon.md)): upstream opens the camera by a device index that moves between runs, and the launcher reads back which device opened and rebuilds the pipeline until it is the robot's camera; flags it does not know go to upstream unchanged. It finds the robot's serial port itself, wakes the robot on start and puts it to sleep on stop (about 8 s). Pass `--kinematics-engine Placo` only with `reachy-mini[placo_kinematics]` installed — gravity compensation needs it. A `ReachyMiniConfig` with `"backend": "real"` and `"daemon": {"spawn": "auto"}` runs exactly this for you. Running `reachy-mini-daemon` directly is a different route: the stock daemon, without the camera check.
+It is upstream's `reachy-mini-daemon` run in-process with the bridge's macOS camera check ([../specs/daemon/real_daemon.md](../../specs/daemon/real_daemon.md)): upstream opens the camera by a device index that moves between runs, and the launcher reads back which device opened and rebuilds the pipeline until it is the robot's camera; flags it does not know go to upstream unchanged. It finds the robot's serial port itself, wakes the robot on start and puts it to sleep on stop (about 8 s). `--kinematics-engine` names the engine the daemon solves every head pose through (`AnalyticalKinematics`, upstream's default; `Placo`, which needs the `placo` extra and is the one engine with gravity compensation; `NN`) — the bridge passes it on every daemon it starts, the sim's included, from `daemon.kinematics_engine` ([../reference/configuration.md](../reference/configuration.md#kinematics-engines)). A `ReachyMiniConfig` with `"backend": "real"` and `"daemon": {"spawn": "auto"}` runs exactly this for you. Running `reachy-mini-daemon` directly is a different route: the stock daemon, without the camera check.
 
 ## Linux
 

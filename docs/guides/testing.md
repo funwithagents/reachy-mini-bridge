@@ -149,7 +149,7 @@ daemon at setup:
 | `motion` | the backend reports a status |
 | `audio` | recording yields a mic sample (a sound device — or a PulseAudio null sink, below) |
 | `camera` | a camera frame comes back on `bridge.camera` (needs a GL context: offscreen through EGL on Linux, a window elsewhere) |
-| `gravity_compensation` | the hardware daemon runs the Placo kinematics engine (`reachy-mini[placo_kinematics]`) |
+| `gravity_compensation` | the hardware daemon runs the Placo kinematics engine — a harness-spawned one does with `REACHY_MINI_E2E_KINEMATICS=placo` (the `placo` extra); never a sim, which accepts the mode and does nothing |
 | `faces` | the daemon runs the bridge's test scene (every sim the harness spawns does), which has a pool of portraits (bodies of kind `face`) — hidden until spawned; the bridge's `yunet` detector, which `live_bridge` configures, finds it in the rendered camera |
 | `face_markers` | the daemon draws the faces the bridge sends it and returns them (`/api/sim/displays/face_markers`): every viewer sim the harness spawns; a test reads back where the bridge placed a face |
 | `doa` | mic-array direction of arrival (reserved: no test uses it yet) |
@@ -189,6 +189,7 @@ The `live_bridge` fixture reads the same knobs the bridge's own tier uses:
 | `REACHY_MINI_E2E_SIM_VIEWER` | unset | `1` to launch the headfull MuJoCo viewer (local; needs a GUI/GL context) |
 | `REACHY_MINI_E2E_REQUIRED_CAPS` | unset | comma-separated capabilities the run must have (`motion,audio,camera,faces` in the bridge's CI): a missing one, or a daemon the harness cannot bring up, **fails** the fixture instead of skipping |
 | `REACHY_MINI_E2E_MEDIA_BACKEND` | by host | the `media_backend` the fixture's bridge connects with; by default `local` on a loopback host and upstream's `default` (WebRTC) for a remote robot |
+| `REACHY_MINI_E2E_KINEMATICS` | `analytical` | the kinematics engine of the daemon the harness spawns, sim or real: `analytical`, `placo` (needs the `placo` extra) or `nn` — the same suite runs on each, and the sim solves every target through the engine chosen ([configuration.md](../reference/configuration.md#kinematics-engines)). On `nn` expect two head-tracking tests to fail on the image-centring check: the engine itself over-rotates by 3 to 4° at 18° of yaw, which is why the bridge's CI runs `analytical` and `placo` only. A borrowed daemon runs its own engine, so set this to match it. Another word fails the run |
 
 **Testing tracking without a person.** Every sim the harness spawns runs the bridge's test
 scene: upstream's empty scene plus a pool of portraits (`face_1` … `face_3`) that stay hidden until a test spawns them, so
@@ -254,12 +255,14 @@ answering), the test **skips** rather than failing — unless `REACHY_MINI_E2E_R
 names capabilities the run must have, in which case it fails, as it does when a required
 capability isn't probed (what the bridge's CI does with `motion,audio,camera,faces`).
 
-**Gravity compensation** needs the daemon's Placo kinematics engine. Install
-`reachy-mini[placo_kinematics]` and a harness-spawned `real` daemon uses it automatically; a
-daemon you start yourself needs `--kinematics-engine Placo`. Without it,
+**Gravity compensation** needs the daemon's Placo kinematics engine, which is a choice, not
+an install: with the `placo` extra installed, `REACHY_MINI_E2E_KINEMATICS=placo` makes a
+harness-spawned `real` daemon run it (the default run keeps upstream's analytical engine), and
+a daemon you start yourself needs `--kinematics-engine Placo`. On any other engine
 `bridge.set_motors_state("gravity_compensation")` raises `GravityCompensationUnsupportedError`
 (sending the mode would make the robot daemon close the connection), so gate such tests on
-`requires_caps(live_bridge, "gravity_compensation")`. See
+`requires_caps(live_bridge, "gravity_compensation")`. A sim never probes it, whatever its engine:
+it accepts the mode and does nothing. See
 [running-daemons.md](running-daemons.md) for the launch recipes and the
 macOS viewer notes.
 

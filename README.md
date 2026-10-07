@@ -31,6 +31,7 @@ uv add "reachy-mini-bridge[sim,test] @ ../reachy-mini-bridge"   # a checkout nex
 | `tts-elevenlabs` | `tts-engine[elevenlabs]` | The default voice for `say` on ElevenLabs (`ELEVENLABS_API_KEY`); a few MB |
 | `tts-gradium` | `tts-engine[gradium]` | The default voice for `say` on Gradium (`GRADIUM_API_KEY`); a few MB |
 | `test` | `pytest` | The shipped `reachy_mini_bridge.testing` harness for your e2e tests |
+| `placo` | `reachy-mini[placo_kinematics]` | The Placo kinematics engine, selected with `"daemon": {"kinematics_engine": "placo"}` — the one engine with gravity compensation ([docs/reference/configuration.md](docs/reference/configuration.md#kinematics-engines)). Installing it changes nothing until a config asks for it; no Windows wheel |
 
 Importing the package imports `reachy_mini`, which needs its native libraries installed but not a running daemon.
 

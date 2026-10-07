@@ -30,15 +30,16 @@ One file, `.github/workflows/ci.yml`. It triggers on `pull_request`, on `push` t
 |---|---|---|
 | `check` | every pull request and push to `main` | `uv sync --locked`, then `ruff check .`, `ruff format --check src tests tests-e2e examples`, `pyright` — the static gate, a minute and a half |
 | `fast-tier` | the same events | the same environment; `pytest` — the fast tier, with its parallel default |
-| `e2e-sim` | the same events | the same environment plus PulseAudio and Mesa; a null sink loaded; `pytest tests-e2e -rs` against the headless sim the harness spawns — the real pocket-TTS test included |
+| `e2e-sim` | the same events | the same environment plus PulseAudio and Mesa; a null sink loaded; `pytest tests-e2e -rs` against the headless sim the harness spawns — the real pocket-TTS test included — **once per kinematics engine the bridge supports at full accuracy**: a two-entry matrix (`analytical`, `placo`), each entry its own runner with `REACHY_MINI_E2E_KINEMATICS` set to it, `fail-fast: false` so one engine's failure leaves the other running |
 
-The three jobs run side by side, each on its own runner, and none waits on another: a run takes as long as its slowest job, the live tier, and the static verdict lands in a minute and a half whatever the tiers do. Gating the tiers behind the static gate would only save a sim run on a commit that fails lint, which costs nothing on a public repo, and would add the gate's time to every green run. Each job installs its own environment (the system packages and the sync, about a minute with warm caches); that repetition is the price of three jobs that read on their own.
+The four jobs — the static gate, the fast tier, the two live entries — run side by side, each on its own runner, and none waits on another: a run takes as long as its slowest job, a live entry, and the static verdict lands in a minute and a half whatever the tiers do. Gating the tiers behind the static gate would only save a sim run on a commit that fails lint, which costs nothing on a public repo, and would add the gate's time to every green run. Each job installs its own environment (the system packages and the sync, about a minute with warm caches); that repetition is the price of three jobs that read on their own.
 
 - **`--locked`.** The sync fails when `uv.lock` does not match `pyproject.toml`, so a dependency edit lands with its relock or not at all.
 - **Every group installs**, the `tts` providers included ([../project.md](../project.md) "Dependency groups"): on Linux the group resolves torch from the PyTorch CPU index — a 190 MB wheel the runner fetches in seconds — never the CUDA libraries, so there is nothing to leave out, and the real pocket-TTS test runs on every pull request. The group stays separate for a consumer who wants an environment without it, and the provider tests then skip on the missing module ([testing.md](testing.md) "Live tier: skip without credentials").
 - **The format check covers the code directories only.** `ruff format .` rewrites the Python blocks inside Markdown files (plans, docs, the README), so the gate is `ruff format --check src tests tests-e2e examples`, the same scope a local format run uses.
 - **The fast tier runs as locally**: `uv run pytest` with the `-n logical --maxprocesses 8` default of `pyproject.toml`, which on the runner's four vCPUs is four workers (`auto` would count its two physical cores, [testing.md](testing.md)); the tier is sleep-bound ([testing.md](testing.md)), so it takes roughly twice its local time.
 - **The live tier runs as locally**, serial, one daemon per run: the harness spawns the headless sim with the test scene ([testing.md](testing.md) "E2E targets & capabilities"); nothing in the workflow starts a daemon by hand. `-rs` prints every skip into the job log.
+- **One live entry per kinematics engine.** A sim solves its targets through one engine, and the matrix is where the bridge's poses meet Placo's limits on every push ([testing.md](testing.md) "One engine per run"): two runners, two daemons, never two on one machine's media ports. The `placo` package comes with the `dev` group ([../project.md](../project.md)), so the same `uv sync --locked` serves every entry; the entries differ by `REACHY_MINI_E2E_KINEMATICS` alone, and the engine check of `tests-e2e/test_motion.py` fails an entry whose daemon runs another engine. NN is not in CI: measured on the viewer sim, the head aiming at a face 18° to the side over-rotates by 3 to 4° (the tracker aims from the head pose the daemon reports, which on NN is the networks' forward kinematics, off from the true pose), the face lands 6% off the image centre and two tracking tests fail on the centring check; its still neutral also rests 8.5 mm forward ([testing.md](testing.md)); a tier that fails by the engine's design proves nothing about the bridge, so the NN run is a local measurement, and the entry is one word away should the networks improve.
 
 ### What the live job provides, and what it leaves absent
 
@@ -50,7 +51,7 @@ The three jobs run side by side, each on its own runner, and none waits on anoth
 
 | Skips on the runner | Why |
 |---|---|
-| `gravity_compensation` tests | hardware on the Placo engine; a sim never has it |
+| `gravity_compensation` tests | hardware on the Placo engine; a sim never has it — the `placo` entry included, whose sim accepts the mode and does nothing |
 | `face_markers` tests | the markers are drawn on the viewer window; no viewer in CI (headless they skip on `camera` first) |
 | the motor-mode test of `test_motors.py` | a simulation ignores motor modes, so the test skips on every sim target |
 | the ElevenLabs and Gradium `say` tests | only where the repository holds no key, or on a fork's pull request (`require_env`); with the two secrets set, they run |
@@ -60,16 +61,16 @@ The three jobs run side by side, each on its own runner, and none waits on anoth
 ### Secrets and protection
 
 - **No secret is required.** Every job is green with none: the cloud TTS tests skip on the missing key, and the pocket test needs none. The ElevenLabs and Gradium keys are repository secrets, mapped onto `ELEVENLABS_API_KEY` / `GRADIUM_API_KEY` for the live job's test step, so the two cloud `say` tests run on every pull request and push to `main` — a short synthesis each; a fork's pull request never receives a secret, the variables come out empty, and those two tests skip there.
-- **The three status checks to require on `main`** are `check`, `fast-tier` and `e2e-sim`. Requiring them is a repository setting on GitHub, outside the repo.
+- **The status checks to require on `main`** are `check`, `fast-tier` and the two `e2e-sim` entries. Requiring them is a repository setting on GitHub, outside the repo.
 
 ### Time budget
 
-With warm caches, `check` is in the order of a minute and a half (the system packages, the sync, pyright), `fast-tier` about three (the tier is sleep-bound, and the runner's four workers spread it less than a laptop's eight) and `e2e-sim` about four (the daemon's spawn, the breaths and blends the live tests wait through, the pocket model's load) — all three in parallel, so a run is about four minutes end to end. Each job carries a `timeout-minutes` well under GitHub's default, so a hung daemon fails the job in minutes rather than hours.
+With warm caches, `check` is in the order of a minute and a half (the system packages, the sync, pyright), `fast-tier` about three (the tier is sleep-bound, and the runner's four workers spread it less than a laptop's eight) and each `e2e-sim` entry about four (the daemon's spawn, the breaths and blends the live tests wait through, the pocket model's load; the Placo entry pays a QP per moving target on top, to be measured) — all four in parallel, so a run is about four minutes end to end. Each job carries a `timeout-minutes` well under GitHub's default, so a hung daemon fails the job in minutes rather than hours.
 
 ## Relationship to the other specs
 
 - **[testing.md](testing.md):** the two tiers, the headless target, the probed capabilities and the skip-without-credentials rule CI runs on. CI is the hosted run of that strategy, with no rule of its own about what a test does.
-- **[testing_support.md](testing_support.md):** the shipped harness the live jobs drive; `REACHY_MINI_E2E_*` stays at its defaults in CI (headless sim, port 8000, loopback) except `REACHY_MINI_E2E_REQUIRED_CAPS`, which names the runner's provisioned capabilities.
+- **[testing_support.md](testing_support.md):** the shipped harness the live jobs drive; `REACHY_MINI_E2E_*` stays at its defaults in CI (headless sim, port 8000, loopback) except `REACHY_MINI_E2E_REQUIRED_CAPS`, which names the runner's provisioned capabilities, and `REACHY_MINI_E2E_KINEMATICS`, the matrix entry's engine.
 - **[../project.md](../project.md):** the dependency groups CI installs whole, the PyTorch CPU index for Linux that makes the `tts` group cheap there, `.github/workflows/` in the repo shape.
 - **[../daemon/sim_daemon.md](../daemon/sim_daemon.md):** the headless camera on Linux, which turns the runner's sim into a camera target; **[../daemon/daemon.md](../daemon/daemon.md):** the headless launch recipe the harness spawns.
 - **[AGENTS.md](../../AGENTS.md):** the verification gate CI automates, and the skip-reading discipline it inherits.

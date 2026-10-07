@@ -96,7 +96,8 @@ def _probe_camera(feed: CameraFeed) -> bool:
 
 
 def _probe_gravity_compensation(robot: AnyReachyMini) -> bool:
-    """True if the daemon holds gravity compensation: hardware on the Placo engine.
+    """True if the daemon holds gravity compensation: hardware on the Placo engine — a
+    harness-spawned daemon runs it with `REACHY_MINI_E2E_KINEMATICS=placo`.
 
     The sim ignores the mode (nothing to test), and any other engine makes the bridge refuse
     it — so the probe never sends the command. It reads the daemon status (not a

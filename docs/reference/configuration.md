@@ -74,12 +74,25 @@ Two keys are **reserved**: `use_sim` (derived from `backend`) and `spawn_daemon`
 | `spawn` | `"never"` | `"never"`: only connect, to a daemon you run (what a wireless robot needs). `"auto"`: reuse one already listening at `host:port`, else start one and stop it on exit. `"always"`: insist on starting one — a port already in use is an error |
 | `headless` | `true` | *sim only.* `true` runs MuJoCo with no window: motion and audio, and on Linux the rendered camera too (offscreen through EGL); on macOS no camera. `false` opens the **viewer** (under `mjpython` on macOS), so you watch the robot and the `sim` camera works everywhere; needs an unlocked GUI session |
 | `scene` | `null` | *sim only.* An upstream scene name (`"empty"`, `"minimal"`), or the path of a scene `.xml` for the bridge's launcher — how the test scene's portrait gets loaded ([specs/testing/sim_scene.md](../../specs/testing/sim_scene.md)) |
+| `kinematics_engine` | `"analytical"` | The kinematics engine the daemon solves every head target through — `"analytical"`, `"placo"` or `"nn"`, sim and robot alike; see [Kinematics engines](#kinematics-engines) below. `"placo"` needs the `placo` extra, checked when the daemon starts |
 | `camera` | `{"source": "sim"}` | *sim only.* What the sim's camera shows — see the table below |
 | `sim_displays` | all `false` | *sim viewer only.* What the viewer window draws besides the scene — see the table below |
 | `preload_datasets` | `true` | Downloads the recorded-move datasets in the background at startup, so the first `play_emotion` doesn't wait on a download. Readiness isn't delayed either way |
 | `startup_timeout` | `45.0` | Seconds to wait for a spawned daemon to become ready (a positive, finite number) |
 
-`spawn` other than `"never"` needs `backend` `"sim"` or `"real"` (`fake` has no daemon). On `real` it starts the hardware daemon of a robot plugged into **this machine** over USB — it wakes the robot, and puts it to sleep on exit. `headless`, `scene`, `camera` and `sim_displays` are MuJoCo knobs and play no part on `real`. The commands the bridge runs, for starting a daemon by hand: [../guides/running-daemons.md](../guides/running-daemons.md).
+`spawn` other than `"never"` needs `backend` `"sim"` or `"real"` (`fake` has no daemon). On `real` it starts the hardware daemon of a robot plugged into **this machine** over USB — it wakes the robot, and puts it to sleep on exit. `headless`, `scene`, `camera` and `sim_displays` are MuJoCo knobs and play no part on `real`; `kinematics_engine` applies to both. Every field here describes a daemon the bridge starts: a daemon you run yourself, a wireless robot's included, keeps whatever it was started with. The commands the bridge runs, for starting a daemon by hand: [../guides/running-daemons.md](../guides/running-daemons.md).
+
+### Kinematics engines
+
+The daemon turns every head pose into motor angles through one kinematics engine, chosen when it starts. The bridge passes the one the config names to every daemon it spawns, the simulator's included, so the sim rejects and accepts the same poses as a robot on that engine would.
+
+| `kinematics_engine` | What it is | Needs | Head limits | Gravity compensation |
+|---|---|---|---|---|
+| `"analytical"` (default) | upstream's default: a closed-form solver, never fails to solve | nothing beyond the base package | relative head/body yaw 65°, body yaw 160° | no — `set_motors_state("gravity_compensation")` raises |
+| `"placo"` | a whole-body solver over the robot's URDF; a pose it cannot reach is rejected by the daemon | the `placo` extra (`reachy-mini-bridge[placo]`); a spawn without it fails naming the extra | tilt cone 35°, relative yaw 55° | yes, on a robot (the only engine that computes the compensating currents); the sim accepts the mode and does nothing |
+| `"nn"` | two neural networks fitted from the Placo solver's data — less accurate: the head rests 8.5 mm forward of neutral and over-rotates by 3 to 4° at 18° of yaw, so a followed face sits a little off centre | nothing beyond the base package | not characterised | no |
+
+Installing the `placo` extra changes nothing by itself: the engine is this field's choice. A stock wireless robot's own daemon runs the analytical engine ([backends-and-capabilities.md](backends-and-capabilities.md)); to run on another, start that daemon yourself with upstream's `--kinematics-engine` flag. What the bridge learned about the three engines is in [../internals/upstream-sdk-notes.md](../internals/upstream-sdk-notes.md).
 
 **`daemon.camera`** — the sim's eyes ([specs/daemon/sim_daemon.md](../../specs/daemon/sim_daemon.md)):
 
@@ -175,7 +188,7 @@ Omit the block and `say` raises unless you pass your own `SpeechSynthesizer`. A 
 
 Every `from_*` constructor path validates identically, as it parses — before the bridge is constructed; a failure is a `ConfigError` (a `ValueError`) naming the field. The rules in full are in [specs/core/config.md](../../specs/core/config.md) "Validation rules"; the ones a consumer meets:
 
-- `backend` is `real`, `sim` or `fake`; `daemon.spawn` is `never`, `auto` or `always`, and anything but `never` needs `sim` or `real`.
+- `backend` is `real`, `sim` or `fake`; `daemon.spawn` is `never`, `auto` or `always`, and anything but `never` needs `sim` or `real`; `daemon.kinematics_engine` is `analytical`, `placo` or `nn`.
 - `face_detection.enabled: true` or `motion.tracking: true` with no `face_detection.detector` is an error naming both fields.
 - `daemon.sim_displays` entries `true` with `daemon.headless: true` is an error naming both.
 - `robot.host`, when the bridge manages the daemon, must be `127.0.0.1` or `localhost`; `robot.use_sim` and `robot.spawn_daemon` are refused.

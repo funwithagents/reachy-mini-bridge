@@ -1,7 +1,8 @@
-"""E2E tier — the motion loop over a live daemon (specs/motion/motion.md): breathing on the
-z axis and the still hold, a caller's custom idle move, an emotion from the library
-played through the loop and back to neutral, an emotion cancelled mid-flight — motion
-and sound stopped (specs/core/bridge.md "Cancellation").
+"""E2E tier — the motion loop over a live daemon (specs/motion/motion.md): the daemon on the
+kinematics engine the run asked for (specs/testing/testing.md "One engine per run"),
+breathing on the z axis and the still hold, a caller's custom idle move, an emotion from
+the library played through the loop and back to neutral, an emotion cancelled mid-flight
+— motion and sound stopped (specs/core/bridge.md "Cancellation").
 
 Gated on `motion` (every target). The emotion tests take the `emotions_library` fixture
 (conftest.py), which skips when the library cannot be fetched.
@@ -10,6 +11,7 @@ Run explicitly:
     uv run pytest tests-e2e/test_motion.py -rs
     REACHY_MINI_E2E_SIM_VIEWER=1 uv run pytest tests-e2e/test_motion.py -rs
     REACHY_MINI_E2E_TARGET=real uv run pytest tests-e2e/test_motion.py -rs
+    REACHY_MINI_E2E_KINEMATICS=placo uv run pytest tests-e2e/test_motion.py -rs
 
 Every test awaits the bridge through `live_bridge.run(...)`, the harness's one event
 loop (specs/testing/testing_support.md "Public surface"); the daemon is the run's, the
@@ -26,6 +28,8 @@ import numpy.typing as npt
 import pytest
 from reachy_mini import ReachyMini
 
+from reachy_mini_bridge.bridge import _daemon_kinematics_engine
+from reachy_mini_bridge.config import UPSTREAM_KINEMATICS_ENGINES
 from reachy_mini_bridge.motion import (
     BLEND_S,
     BREATH_REST_S,
@@ -34,6 +38,29 @@ from reachy_mini_bridge.motion import (
     IdleOffsets,
 )
 from reachy_mini_bridge.testing import LiveBridge, requires_caps
+from reachy_mini_bridge.testing._daemon import kinematics_engine
+
+
+def test_daemon_runs_the_engine_the_run_asked_for(live_bridge: LiveBridge) -> None:
+    """The daemon solves this run's targets through the engine `REACHY_MINI_E2E_KINEMATICS`
+    names (`analytical` by default) — read back from `GET /api/kinematics/info` through
+    the bridge's own reader, the one the gravity-compensation guard uses.
+
+    A failure, never a skip: every other test in the tier runs unchanged on each engine,
+    and this is what says which one they ran on. A borrowed daemon on another engine
+    fails here instead of silently testing the wrong engine — set the variable to what
+    it runs (specs/testing/testing.md "One engine per run").
+    """
+    requires_caps(live_bridge, "motion")
+    bridge, _caps = live_bridge
+    asked = kinematics_engine()
+    engine = live_bridge.run(asyncio.to_thread(_daemon_kinematics_engine, bridge.robot))
+    print(f"\n[e2e] kinematics engine: asked {asked!r}, daemon runs {engine!r}")
+    assert engine == UPSTREAM_KINEMATICS_ENGINES[asked], (
+        f"the daemon runs the {engine!r} kinematics engine, this run asked for {asked!r}; "
+        "a borrowed daemon runs whatever it was started with — set "
+        "REACHY_MINI_E2E_KINEMATICS to match it"
+    )
 
 
 def test_breathing_moves_the_head_and_breathing_off_holds_it(
@@ -149,12 +176,17 @@ def test_play_emotion_plays_a_real_move(
         # random 0.4-2.5 s rest, and whether the sample lands in the rest or in the
         # roam was a coin toss (specs/motion/motion.md "Antenna tracks").
         await bridge.set_idle("hold")
+        robot: Any = bridge.robot
         try:
+            # Where the hold rests *on this engine*: analytical and Placo put the neutral
+            # within 0.1 mm of the origin, NN 8.5 mm forward and 1.45 deg pitched (its
+            # fit, measured on the headless sim) — "back to neutral" is back to here.
+            await asyncio.sleep(BLEND_S + 0.5)
+            rest = await asyncio.to_thread(robot.get_current_head_pose)
             await bridge.play_emotion(
                 names[0]
             )  # completes only if the move actually played
             await asyncio.sleep(BLEND_S + 1.0)  # the return blend eases back to neutral
-            robot: Any = bridge.robot
             pose = await asyncio.to_thread(robot.get_current_head_pose)
             _joints, antennas = await asyncio.to_thread(
                 robot.get_current_joint_positions
@@ -162,11 +194,12 @@ def test_play_emotion_plays_a_real_move(
         finally:
             await bridge.set_idle("breathing")
         deviation = np.abs(np.asarray(antennas) - NEUTRAL_ANTENNAS)
-        return names[0], float(np.linalg.norm(pose[:3, 3])), float(deviation.max())
+        back = float(np.linalg.norm(pose[:3, 3] - rest[:3, 3]))
+        return names[0], back, float(deviation.max())
 
     played, translation, antenna_deviation = live_bridge.run(scenario())
     print(
-        f"\n[e2e] played emotion: {played!r}, back to neutral: "
+        f"\n[e2e] played emotion: {played!r}, back to the hold's rest: "
         f"translation {translation:.4f} m, antenna deviation {antenna_deviation:.3f} rad"
     )
     assert translation < 0.008

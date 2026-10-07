@@ -14,6 +14,8 @@ from typing import Any
 import pytest
 
 from reachy_mini_bridge.config import (
+    KINEMATICS_ENGINES,
+    UPSTREAM_KINEMATICS_ENGINES,
     DaemonConfig,
     FaceDetectionSettings,
     MotionSettings,
@@ -259,11 +261,42 @@ def test_audio_xvf3800_shape() -> None:
         ({"startup_timeout": float("nan")}, "startup_timeout.*finite"),
         ({"scene": ""}, "daemon"),
         ({"scene": 3}, "daemon"),
+        ({"kinematics_engine": "Placo"}, "kinematics_engine"),
+        ({"kinematics_engine": 1}, "kinematics_engine"),
+        ({"kinematics_engine": None}, "kinematics_engine"),
     ],
 )
 def test_daemon_field_types(daemon: dict[str, object], fragment: str) -> None:
     with pytest.raises(ConfigError, match=fragment):
         ReachyMiniConfig.from_dict({"backend": "sim", "daemon": daemon})
+
+
+def test_daemon_kinematics_engine_is_a_config_choice() -> None:
+    """`daemon.kinematics_engine` takes the bridge's three words, defaults to upstream's
+    analytical engine, and maps each word onto the name upstream's flag takes
+    (specs/core/config.md "Kinematics engines"); the choice loads whatever is installed."""
+    assert ReachyMiniConfig.from_dict({"backend": "sim"}).daemon.kinematics_engine == (
+        "analytical"
+    )
+    for engine in KINEMATICS_ENGINES:
+        config = ReachyMiniConfig.from_dict(
+            {
+                "backend": "real",
+                "daemon": {"spawn": "auto", "kinematics_engine": engine},
+            }
+        )
+        assert config.daemon.kinematics_engine == engine
+    assert set(UPSTREAM_KINEMATICS_ENGINES) == set(KINEMATICS_ENGINES)
+    assert UPSTREAM_KINEMATICS_ENGINES == {
+        "analytical": "AnalyticalKinematics",
+        "placo": "Placo",
+        "nn": "NN",
+    }
+    # Upstream's own name is not a bridge word: the error names the field and the words.
+    with pytest.raises(ConfigError, match="kinematics_engine.*analytical.*placo.*nn"):
+        ReachyMiniConfig.from_dict(
+            {"backend": "sim", "daemon": {"kinematics_engine": "AnalyticalKinematics"}}
+        )
 
 
 def test_daemon_camera_selects_a_webcam() -> None:

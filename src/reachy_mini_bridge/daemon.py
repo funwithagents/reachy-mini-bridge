@@ -32,7 +32,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import IO, Protocol
 
-from .config import DAEMON_BACKENDS, DaemonConfig
+from .config import DAEMON_BACKENDS, UPSTREAM_KINEMATICS_ENGINES, DaemonConfig
 from .errors import DaemonError
 
 __all__ = [
@@ -231,10 +231,10 @@ def launch_command(
     Without them it binds upstream's defaults (port 8000) whatever the caller asked.
 
     ``sim`` (docs/guides/running-daemons.md) — every recipe runs the bridge's sim daemon
-    launcher (specs/daemon/sim_daemon.md: upstream's daemon with its face-tracking corrections and
-    the ``config.camera`` source): headless ``<this interpreter> -m
-    reachy_mini_bridge.sim_daemon --headless --[no-]preload-datasets [--scene S] [camera
-    flags]`` — on Linux with the eye camera rendered offscreen, on macOS camera-less
+    launcher (specs/daemon/sim_daemon.md: upstream's daemon with the ``config.camera``
+    source and the sim displays): headless ``<this interpreter> -m
+    reachy_mini_bridge.sim_daemon --headless --[no-]preload-datasets --kinematics-engine
+    E [--scene S] [camera flags]`` — on Linux with the eye camera rendered offscreen, on macOS camera-less
     (specs/daemon/sim_daemon.md "The headless camera"); viewer ``<viewer interpreter> -m
     reachy_mini_bridge.sim_daemon [...] [display flags]`` (the window's GL context; needs
     a GUI session; ``--sim-display <name>`` per display on in ``config.sim_displays``),
@@ -243,19 +243,22 @@ def launch_command(
     word, read when omitted). A ``config.scene`` ending in ``.xml`` is a scene *file*,
     run by the test scene's launcher (``reachy_mini_bridge.testing.sim_scene``,
     specs/testing/sim_scene.md) built on it. ``real`` — a USB-attached robot: ``<this interpreter>
-    -m reachy_mini_bridge.real_daemon [--kinematics-engine Placo] --[no-]preload-datasets``
+    -m reachy_mini_bridge.real_daemon --[no-]preload-datasets --kinematics-engine E``
     — the bridge's real daemon launcher (specs/daemon/real_daemon.md: upstream's hardware daemon
-    with the macOS camera check), Placo whenever it is importable (gravity compensation
-    needs it). Media stays on. Raises ``DaemonError`` when a sim launcher is not on
-    ``PATH``.
+    with the macOS camera check). The engine flag is on every recipe, sim and real
+    alike, always explicit, ``E`` being upstream's name for ``config.kinematics_engine``
+    (specs/core/config.md "Kinematics engines"); the sim solves its targets through it as
+    the robot does. Media stays on. Raises ``DaemonError`` when a sim launcher is not on
+    ``PATH``, and when the engine is ``placo`` with no ``placo`` package importable
+    (the ``placo`` extra) — before anything is spawned, the child being this
+    interpreter's environment.
     """
     _check_backend(backend)
+    engine = _engine_flags(config)
     if backend == "real":
         cmd = [sys.executable, "-m", "reachy_mini_bridge.real_daemon"]
-        if _placo_available():
-            cmd += ["--kinematics-engine", "Placo"]
         cmd.append(_preload_flag(config))
-        return cmd + _address_flags(host, port)
+        return cmd + engine + _address_flags(host, port)
     if shutil.which("reachy-mini-daemon") is None:
         raise DaemonError(
             "no 'reachy-mini-daemon' launcher on PATH — install the sim extra "
@@ -272,7 +275,7 @@ def launch_command(
     if config.headless:
         cmd.append("--headless")
     cmd.append(_preload_flag(config))
-    cmd += _camera_flags(config) + _display_flags(config)
+    cmd += engine + _camera_flags(config) + _display_flags(config)
     return cmd + _address_flags(host, port)
 
 
@@ -294,6 +297,23 @@ def _viewer_interpreter(system: str | None) -> str:
 def _address_flags(host: str, port: int) -> list[str]:
     """The address every daemon binds to, forwarded by the launchers to upstream."""
     return ["--fastapi-host", host, "--fastapi-port", str(port)]
+
+
+def _engine_flags(config: DaemonConfig) -> list[str]:
+    """``--kinematics-engine <upstream name>`` for ``config.kinematics_engine``, on every
+    recipe (specs/daemon/daemon.md "The launch command"): always explicit, so a spawned
+    daemon runs the config's engine whatever upstream's default becomes. ``placo`` with
+    no ``placo`` package importable is a ``DaemonError`` naming the extra, raised here
+    before any spawn — the same shape as the missing-sim-extra error."""
+    if config.kinematics_engine == "placo" and not _placo_available():
+        raise DaemonError(
+            "'daemon.kinematics_engine' is 'placo' but the placo package is not "
+            "installed — install the placo extra (reachy-mini-bridge[placo])"
+        )
+    return [
+        "--kinematics-engine",
+        UPSTREAM_KINEMATICS_ENGINES[config.kinematics_engine],
+    ]
 
 
 def _preload_flag(config: DaemonConfig) -> str:
