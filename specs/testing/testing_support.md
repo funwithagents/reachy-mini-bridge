@@ -11,7 +11,7 @@ tests:
 
 # Testing support (shipped harness)
 
-**Status:** Updated
+**Status:** Implemented
 
 ## Purpose
 

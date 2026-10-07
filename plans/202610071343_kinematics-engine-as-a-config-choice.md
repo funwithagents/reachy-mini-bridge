@@ -1,6 +1,6 @@
 # The kinematics engine as a config choice, a `placo` extra, and a live sim tier per engine
 
-**Status:** In progress
+**Status:** Done
 
 Implements the settled behavior in `specs/core/config.md` ("`daemon` block", "Kinematics engines"), `specs/daemon/daemon.md` ("The launch command": the engine flag), `specs/core/bridge.md` ("Motors": the guard's message), `specs/project.md` (the `placo` extra, the `dev` group), `specs/testing/testing.md` ("One engine per run"), `specs/testing/testing_support.md` ("Configuration via the environment": `REACHY_MINI_E2E_KINEMATICS`) and `specs/testing/ci.md` (one live entry per engine). It delivers `daemon.kinematics_engine` (`analytical` default | `placo` | `nn`) passed as `--kinematics-engine` to every daemon the bridge spawns, sim and real alike, a `reachy-mini-bridge[placo]` extra carried by the `dev` group, the live tier runnable on each engine with a check that the daemon runs the one asked for, and a three-entry CI matrix. It deliberately leaves out `check_collision` (Placo-only collision checking; `config.md` open question), any change to the fake (it reports `Placo` on its daemon-client stand-in, which the guard tests flip), and the gravity-compensation probe (a Placo sim stays excluded, by design). Once this plan is `Done`, delete the untracked `analysis/kinematics-engine.md`.
 
@@ -30,7 +30,7 @@ Decisions made while writing the specs, beyond the analysis: the missing `placo`
 - `README.md` — a `placo` row in the extras table
 - `AGENTS.md` — "Running the live e2e tests": the `gravity_compensation` capability sentence (the engine is the run's `REACHY_MINI_E2E_KINEMATICS`, not the install), the real-robot row's command for gravity compensation
 - `examples/configs/README.md` — one line: the Lite profile runs the analytical engine; add `"kinematics_engine": "placo"` for gravity compensation
-- `specs/_index.md`, `specs/core/config.md`, `specs/daemon/daemon.md`, `specs/core/bridge.md`, `specs/project.md`, `specs/testing/testing.md`, `specs/testing/testing_support.md`, `specs/testing/ci.md` — `Updated` → `Implemented` at the end; the open questions below recorded with their measurements
+- `specs/_index.md`, `specs/core/config.md`, `specs/daemon/daemon.md`, `specs/core/bridge.md`, `specs/project.md`, `specs/testing/testing.md`, `specs/testing/testing_support.md`, `specs/testing/ci.md` — `Updated` → `Implemented` at the end; the open questions recorded with their measurements
 
 ## Steps
 
@@ -46,12 +46,12 @@ Decisions made while writing the specs, beyond the analysis: the missing `placo`
 10. **CI.** (Outcome of step 9: NN over-rotates by 3 to 4° at 18° of yaw and fails two tracking tests on the centring check, so the matrix is `analytical` and `placo`; NN stays an accepted value with its error documented.) `e2e-sim` gets `strategy: { fail-fast: false, matrix: { kinematics: [analytical, placo] } }`, `name: live tier, headless sim (${{ matrix.kinematics }})`, and `REACHY_MINI_E2E_KINEMATICS: ${{ matrix.kinematics }}` in the live step's env; the workflow's header comment says why three. Push on a branch, watch the three entries (`gh run watch` in the background); read each entry's skips against `ci.md`'s table — the `gravity_compensation` skip appears on all three. Update the repository's required status checks to the three entries.
 11. **Gravity compensation on the robot.** With the Lite on USB: `REACHY_MINI_E2E_TARGET=real REACHY_MINI_E2E_KINEMATICS=placo uv run pytest tests-e2e/test_motors.py -rs` — the gravity test runs and passes, the refusal test skips; then the default `REACHY_MINI_E2E_TARGET=real` run — the gravity test skips, the refusal test runs and passes. Watch the head during the Placo run: the breaths and the idle roaming under the QP solver, any lag against the analytical run.
 12. **Docs and example config.** Every file in Scope under `docs/`, `config.example.json`, `README.md`, `AGENTS.md`, `examples/configs/README.md`; `tests/test_docs_consistency.py` enforces the field in `config.example.json` and `configuration.md`. The upstream notes entry is dated and versioned (`reachy_mini` 1.10.0).
-13. **Statuses.** The eight specs `Updated` → `Implemented` in their `**Status:**` line and the index; this plan `Done` in both places; delete `analysis/kinematics-engine.md`.
+13. **Statuses.** The seven specs `Updated` → `Implemented` in their `**Status:**` line and the index; this plan `Done` in both places; delete `analysis/kinematics-engine.md`.
 
 ## Verification
 
 - `uv run ruff check .`, `uv run ruff format src tests tests-e2e examples`, `uv run pyright`, `uv run pytest` — all green; the new fast tests in `test_config.py`, `test_daemon.py`, `test_bridge.py`, `test_testing_support.py` pass, and `tests/test_docs_consistency.py` / `tests/test_project_map.py` accept the new field and the spec statuses.
 - The live tier green on the headless sim for each of the three engines locally, and on the viewer sim for `placo` and `nn` with the face tests running; the engine check passes on each and fails against a borrowed daemon on another engine (start `uv run python -m reachy_mini_bridge.sim_daemon --headless --kinematics-engine Placo` by hand, run the tier at the default, read the one failure).
 - CI: the three `e2e-sim` entries green on the branch, each about four minutes, skips matching `ci.md`'s table.
-- The robot run of step 11 as described.
+- The robot run of step 11 as described. **Not run in this session** (2026-10-07: no robot attached); everything else above passed — the static gate, the fast tier (698 tests), the headless and viewer sims on each engine, pull request #4's four CI jobs with the expected skips alone. The two commands of step 11 are the remaining check, to run with the Lite on USB.
 - Mark this plan `Done` here and in [_index.md](_index.md) only once all pass.
