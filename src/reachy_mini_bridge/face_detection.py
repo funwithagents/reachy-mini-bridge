@@ -17,7 +17,6 @@ import logging
 import math
 import threading
 import time
-from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol, cast
 
@@ -28,7 +27,9 @@ if TYPE_CHECKING:
     import numpy.typing as npt
 
     from .camera import CameraFeed, CameraFrame
-    from .observable import Observable
+
+from .concurrency import owned
+from .observable import Observable
 
 __all__ = [
     "DETECT_WIDTH",
@@ -478,14 +479,20 @@ class FaceDetection:
 
     async def stop(self) -> None:
         """Stop sampling and publish the inactive report. A no-op on a loop that never
-        started; a stop during a ``start()`` waits for it and stops the loop it built."""
+        started; a stop during a ``start()`` waits for it and stops the loop it built.
+        Owned once called (specs/vision/user_perception.md "Lifecycle"): a cancel of the
+        caller is absorbed until the loop has stopped and its detector is released, and
+        propagates then — the switch that asked for the stop stands."""
+        if await owned(self._stop()):
+            raise asyncio.CancelledError()
+
+    async def _stop(self) -> None:
         async with self._transition:
             task = self._task
             self._task = None
             if task is not None and not task.done():
                 task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await task
+                await asyncio.wait({task})  # its own cancel is its outcome, not ours
             if self._acquisition_cleanups:
                 await asyncio.shield(asyncio.gather(*self._acquisition_cleanups))
             detector, retired = self._detector, self._retired

@@ -52,6 +52,7 @@ from reachy_mini_bridge.motion import (
     BLEND_S,
     BREATH_Z_M,
     NEUTRAL_ANTENNAS,
+    NEUTRAL_HEAD,
     HoldMove,
     IdleMove,
     IdleOffsets,
@@ -3493,3 +3494,202 @@ def test_set_wobbling_off_during_an_emotion_stays_off_after_it() -> None:
     sound_i = names.index("media.play_sound")
     assert "enable_wobbling" not in names[sound_i:]
     assert wobbling is False
+
+
+# --- teardown and mode transitions owned past a cancel (specs/core/bridge.md "Lifecycle",
+# "Cancellation"; specs/vision/user_perception.md "Lifecycle") ---------------------------
+
+
+def test_a_cancelled_stop_joins_the_motion_thread_before_the_connection_closes() -> (
+    None
+):
+    """`stop()` is owned once begun: a cancel during the exit blend is absorbed until
+    every step has run — the blend played to neutral and the thread joined before the
+    connection exits, so no target follows it — and propagates then; the bridge starts
+    again afterwards."""
+
+    async def run() -> tuple[list[str], int, int, bool]:
+        cfg = ReachyMiniConfig(backend="fake", motion=MotionSettings(wobbling=False))
+        bridge = ReachyMiniBridge(cfg)
+        await bridge.start()
+        robot = _fake(bridge)
+        await bridge.set_motors_state("enabled")
+        await _wait_until(lambda: len(robot.targets) > 5)  # commanding the idle move
+        stop = asyncio.create_task(bridge.stop())
+        await asyncio.sleep(0.1)  # inside the BLEND_S exit blend
+        stop.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await stop
+        names = [name for name, _ in robot.commands]
+        sent_at_return = len(robot.targets)
+        last_head = robot.targets[-1][0]
+        assert last_head is not None
+        assert np.allclose(last_head, NEUTRAL_HEAD, atol=1e-6)  # the blend ran out
+        await asyncio.sleep(0.2)
+        sent_after = len(robot.targets)
+        await bridge.start()
+        restarted = bridge.running
+        await bridge.stop()
+        return names, sent_at_return, sent_after, restarted
+
+    names, sent_at_return, sent_after, restarted = asyncio.run(run())
+    assert "__exit__" in names
+    assert sent_after == sent_at_return  # nothing sent once stop() has returned
+    assert restarted
+
+
+def test_an_emotion_failing_at_its_entry_raises_and_restores_wobbling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """specs/motion/motion.md "Lifecycle": a move whose start pose cannot be evaluated
+    fails the `play_emotion` that queued it — promptly, wobbling restored — and the
+    session plays the next emotion."""
+
+    class _BadMove(bridge_module._FakeRecordedMove):
+        def evaluate(
+            self, t: float
+        ) -> tuple[
+            npt.NDArray[np.float64] | None, npt.NDArray[np.float64] | None, float | None
+        ]:
+            raise RuntimeError("bad pose")
+
+    real_get = bridge_module._FakeRecordedMoves.get
+
+    def get(self: Any, name: str) -> Any:
+        return _BadMove(name) if name == "sad" else real_get(self, name)
+
+    monkeypatch.setattr(bridge_module._FakeRecordedMoves, "get", get)
+
+    async def run() -> tuple[float, list[str]]:
+        async with ReachyMiniBridge("fake") as bridge:
+            await bridge.set_motors_state("enabled")
+            t0 = time.monotonic()
+            with pytest.raises(RuntimeError, match="bad pose"):
+                await asyncio.wait_for(bridge.play_emotion("sad"), 1.0)
+            elapsed = time.monotonic() - t0
+            names = _command_names(bridge)
+            await bridge.play_emotion("happy")  # the session plays on
+            return elapsed, names
+
+    elapsed, names = asyncio.run(run())
+    assert elapsed < 0.5
+    paused = names.index("disable_wobbling")
+    assert "enable_wobbling" in names[paused + 1 :]  # restored on the failure path
+
+
+def test_a_failed_enable_does_not_erase_a_later_enable() -> None:
+    """specs/core/bridge.md "Cancellation": one detection transition at a time, the last
+    call's value standing — the first enable's build fails after the second was called,
+    and its rollback restores its own change only: the second builds and runs."""
+
+    async def run() -> tuple[type[BaseException] | None, bool, float | None, int]:
+        started, release = threading.Event(), threading.Event()
+        builds = 0
+
+        def factory() -> _OwnedFaceDetector:
+            nonlocal builds
+            builds += 1
+            if builds == 1:
+                started.set()
+                assert release.wait(5)
+                raise OSError("no network")
+            return _OwnedFaceDetector(0.3)
+
+        cfg = ReachyMiniConfig(
+            backend="fake",
+            face_detection=FaceDetectionSettings(
+                detector="custom", face_detector=factory
+            ),
+            motion=MotionSettings(wobbling=False),
+        )
+        async with ReachyMiniBridge(cfg) as bridge:
+            first = asyncio.create_task(bridge.set_face_detection(True))
+            await _wait_until(started.is_set)
+            second = asyncio.create_task(bridge.set_face_detection(True))
+            await asyncio.sleep(0.05)  # queued behind the first
+            release.set()
+            first_error = None
+            try:
+                await first
+            except BridgeError as e:
+                first_error = type(e)
+            await second
+            await _wait_until(lambda: bool(bridge.faces.value.faces))
+            x = bridge.faces.value.faces[0].x
+            return first_error, bridge.face_detection, x, builds
+
+    first_error, switch, x, builds = asyncio.run(run())
+    assert first_error is BridgeError
+    assert switch is True
+    assert x == pytest.approx(0.3, abs=0.03)
+    assert builds == 2
+
+
+def test_a_cancelled_disable_completes_and_leaves_the_switch_off() -> None:
+    """A disable, once begun, is owned: the cancel arriving while the detector's release
+    waits on a `detect` in flight is absorbed until the release is done — the switch off,
+    the loop stopped, the detector closed — and propagates then; detection then turns on
+    again on a fresh detector."""
+
+    class _HeldDetector:
+        def __init__(self, gate: threading.Event, x: float) -> None:
+            self.gate, self.x, self.closed, self.calls = gate, x, 0, 0
+
+        def detect(
+            self, frame_bgr: npt.NDArray[np.uint8], ts: float
+        ) -> list[PixelFace]:
+            self.calls += 1
+            assert self.gate.wait(5)
+            return [_pixel_face(self.x)]
+
+        def close(self) -> None:
+            self.closed += 1
+
+    async def run() -> tuple[bool, bool, int, bool, float | None]:
+        gate = threading.Event()
+        gate.set()
+        detectors: list[_HeldDetector] = []
+
+        def factory() -> _HeldDetector:
+            detector = _HeldDetector(gate, 0.1 * (len(detectors) + 1))
+            detectors.append(detector)
+            return detector
+
+        cfg = ReachyMiniConfig(
+            backend="fake",
+            face_detection=FaceDetectionSettings(
+                detector="custom", face_detector=factory
+            ),
+            motion=MotionSettings(wobbling=False),
+        )
+        async with ReachyMiniBridge(cfg) as bridge:
+            await bridge.set_face_detection(True)
+            await _wait_until(lambda: bool(bridge.faces.value.faces))
+            gate.clear()
+            held = detectors[0]
+            calls = held.calls
+            await _wait_until(lambda: held.calls > calls)  # a detect now blocks
+            off = asyncio.create_task(bridge.set_face_detection(False))
+            await asyncio.sleep(0.2)  # the release waits for that detect to return
+            off.cancel()
+            gate.set()
+            cancelled = False
+            try:
+                await off
+            except asyncio.CancelledError:
+                cancelled = True
+            switch, active, closed = (
+                bridge.face_detection,
+                bridge.faces.value.active,
+                held.closed,
+            )
+            await bridge.set_face_detection(True)
+            await _wait_until(lambda: bool(bridge.faces.value.faces))
+            x = bridge.faces.value.faces[0].x
+            return cancelled, switch, closed, active, x
+
+    cancelled, switch, closed, active, x = asyncio.run(run())
+    assert cancelled  # the cancel is neither swallowed nor served before the release
+    assert switch is False and active is False
+    assert closed == 1
+    assert x == pytest.approx(0.2, abs=0.03)  # a fresh detector on the next enable

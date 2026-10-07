@@ -1042,11 +1042,26 @@ class MotionSession:
                 self._stop_commanding()
                 return
             move, primary = selected
-            source = (
-                self._last_target if self._commanding else self._read_present_pose()
-            )
+            # The entry's fallible work — the present pose read, the move's start pose
+            # — runs before the primary is the playing one, so its failure is routed
+            # here (specs/motion/motion.md "Lifecycle"): a lost connection hands the
+            # primary back to the queue for _on_lost_connection to fail with the rest,
+            # any other error fails it at once; the loop re-selects on its next tick.
+            try:
+                source = (
+                    self._last_target if self._commanding else self._read_present_pose()
+                )
+                entry = blend_into(source, move)
+            except _LOST_CONNECTION_ERRORS:
+                if primary is not None:
+                    self._queue.insert(0, primary)
+                raise
+            except Exception as e:
+                if primary is not None:
+                    self._fail_primary(primary, e)
+                raise
             playing = _Playing(
-                stages=[blend_into(source, move), move],
+                stages=[entry, move],
                 primary=primary,
                 stage=0,
                 stage_start=now,
@@ -1178,10 +1193,13 @@ class MotionSession:
         playing = self._playing
         self._drop_playing()  # the sound stopped before the failure reaches the verb
         if playing is not None and playing.primary is not None:
-            primary = playing.primary
-            if not primary.done.done():
-                primary.done.set_exception(error)
-            primary.dropped.set()
+            self._fail_primary(playing.primary, error)
+
+    @staticmethod
+    def _fail_primary(primary: _Primary, error: Exception) -> None:
+        if not primary.done.done():
+            primary.done.set_exception(error)
+        primary.dropped.set()
 
     def _on_custom_idle_failure(self, error: Exception) -> None:
         """The caller's idle move misbehaved (specs/motion/motion.md "Custom idle moves"): one

@@ -26,7 +26,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from contextlib import AsyncExitStack, suppress
+from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self, cast
 
@@ -36,6 +36,7 @@ from . import daemon as _daemon
 from . import robot as _robot
 from .audio import MediaSession, SoundToken, TTSEngineSynthesizer, cancel_safe_step
 from .camera import CameraFeed, frame_reader
+from .concurrency import owned
 from .config import IDLE_MODES, ReachyMiniConfig
 from .errors import (
     BridgeError,
@@ -51,7 +52,7 @@ from .robot import build_robot
 from .sim_displays import FaceMarkerPublisher, face_markers_url
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Coroutine
+    from collections.abc import AsyncIterator, Callable
 
     import numpy as np
     import numpy.typing as npt
@@ -82,21 +83,6 @@ _MOTOR_STATES = ("enabled", "disabled", "gravity_compensation")
 
 # The only kinematics engine on which the robot daemon accepts gravity compensation.
 _GRAVITY_COMPENSATION_ENGINE = "Placo"
-
-
-async def _owned(work: Coroutine[Any, Any, object]) -> bool:
-    """Run ``work`` as a task of the bridge's own, awaited through any cancel of the
-    caller: a cancel arriving meanwhile is absorbed and reported (``True``) instead of
-    cutting the work short; the work's failure propagates once it has ended."""
-    task = asyncio.ensure_future(work)
-    interrupted = False
-    while not task.done():
-        with suppress(asyncio.CancelledError):
-            await asyncio.shield(task)
-            continue
-        interrupted = True
-    task.result()
-    return interrupted
 
 
 class _WobblingSession:
@@ -351,6 +337,10 @@ class ReachyMiniBridge:
         # start or stop as a whole — so a stop cannot slip between a start's sync and
         # its tracker.start() (specs/core/bridge.md "Cancellation": one at a time per mode).
         self._tracking_sync = asyncio.Lock()
+        # Its sibling for the detection switch: the flip, the loop sync and the rollback
+        # on failure as one transition, so a failed enable's rollback never erases a
+        # later call's value.
+        self._face_detection_sync = asyncio.Lock()
         self._next_face_track_id = 1  # identities outlive every session of this bridge
         # The custom detector's factory (config default, reset on exit); set_face_detector
         # changes it while entered.
@@ -548,6 +538,7 @@ class ReachyMiniBridge:
             self._detection = detection
             self._detection_sync = asyncio.Lock()
             self._tracking_sync = asyncio.Lock()
+            self._face_detection_sync = asyncio.Lock()
             # Exits after the motion session, before wobbling's cleanup.
             stack.push_async_callback(self._stop_detection)
             if self._face_detection_wanted or self._tracking_wanted:
@@ -592,7 +583,7 @@ class ReachyMiniBridge:
             # second cancel would otherwise cut a callback short, leaving the wobbling
             # that a held enable delivers after the connection is gone.
             try:
-                interrupted = await _owned(stack.aclose())
+                interrupted = await owned(stack.aclose())
             finally:
                 self._wobbling_session = None
                 self._detection = None
@@ -607,7 +598,9 @@ class ReachyMiniBridge:
         neutral), the detection loop, wobbling, the camera feed, the media session, the
         robot, an owned daemon — each even when another fails, and reset the modes to
         the config's values so ``start()`` may follow. A no-op on a bridge that is not
-        running."""
+        running. Owned once begun (specs/core/bridge.md "Lifecycle"): a cancel arriving
+        meanwhile is absorbed until every step has run — the motion thread joined before
+        the connection closes — and propagates then."""
         stack = self._exit_stack
         if stack is None:
             return
@@ -622,7 +615,7 @@ class ReachyMiniBridge:
         self._tracker = None
         self._recorded_moves_future = None
         try:
-            await stack.aclose()
+            interrupted = await owned(stack.aclose())
         finally:
             self._wobbling_session = None
             self._tracking_wanted = self._config.motion.tracking
@@ -637,6 +630,8 @@ class ReachyMiniBridge:
                     FaceReport.inactive(self._config.face_detection.detector)
                 )
             self._reset_head_tracking()
+        if interrupted:
+            raise asyncio.CancelledError()
 
     def _reset_head_tracking(self) -> None:
         """Publish the inactive head tracking report, once, when a session ends."""
@@ -1022,6 +1017,12 @@ class ReachyMiniBridge:
         what is actually running. Needs an entered session (:class:`BridgeError`
         otherwise); a detector that cannot be built raises ``BridgeError`` and leaves
         the switch as it was.
+
+        One transition at a time (specs/core/bridge.md "Cancellation"): the switch, the
+        loop and the rollback on failure change under one lock, so the last call's
+        value stands. A cancel during an enable leaves the switch off and the build
+        discarded; a disable, once begun, completes — the loop stopped and its detector
+        released — before the cancel propagates.
         """
         if self._detection is None:
             raise BridgeError(
@@ -1029,13 +1030,18 @@ class ReachyMiniBridge:
             )
         if enabled:
             self._require_detector()
-        was_wanted = self._face_detection_wanted
-        self._face_detection_wanted = enabled
-        try:
-            await self._sync_detection()
-        except BaseException:
-            self._face_detection_wanted = was_wanted
-            raise
+        async with self._face_detection_sync:
+            was_wanted = self._face_detection_wanted
+            self._face_detection_wanted = enabled
+            try:
+                await self._sync_detection()
+            except asyncio.CancelledError:
+                if enabled:  # the loop never started: nothing to stand behind
+                    self._face_detection_wanted = was_wanted
+                raise
+            except BaseException:
+                self._face_detection_wanted = was_wanted
+                raise
 
     @property
     def face_detection(self) -> bool:

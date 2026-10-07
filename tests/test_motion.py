@@ -1436,3 +1436,69 @@ def test_motor_pause_stops_owned_sound_and_acknowledges_all_primaries() -> None:
             )
 
     asyncio.run(run())
+
+
+# --- a primary failing at its entry (specs/motion/motion.md "Lifecycle") ------------------
+
+
+def test_a_primary_failing_at_its_entry_blend_fails_its_future() -> None:
+    """The entry blend evaluates the move's start pose before the primary plays: that
+    failure fails the primary's future at once and the loop re-selects on its next tick
+    — the idle move goes on and the next primary plays."""
+
+    async def run() -> tuple[BaseException | None, int, int]:
+        robot = FakeReachyMini()
+        async with _running(
+            MotionSession(robot, presence=True, idle="breathing")
+        ) as session:
+            session.resume()
+            future = session.submit(_TestPrimary(1.0, 0.02, fail_after=-1.0), None).done
+            exc: BaseException | None = None
+            try:
+                await asyncio.wait_for(asyncio.wrap_future(future), timeout=1)
+            except Exception as e:  # noqa: BLE001 - captured for the assertion below
+                exc = e
+            before = len(robot.targets)
+            await asyncio.sleep(0.2)
+            after = len(robot.targets)
+            played = session.submit(_TestPrimary(0.15, 0.01), None).done
+            await asyncio.wait_for(asyncio.wrap_future(played), timeout=2)
+        return exc, before, after
+
+    exc, before, after = asyncio.run(run())
+    assert isinstance(exc, RuntimeError)
+    assert after > before
+
+
+def test_a_lost_connection_at_a_primary_entry_fails_it_with_the_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A present-pose read failing with a lost connection as a primary enters hands it
+    back to the queue: every queued primary fails with the lost-connection `BridgeError`
+    and the loop pauses for good."""
+    error = ConnectionError("Lost connection with the server.")
+
+    async def run() -> tuple[
+        concurrent.futures.Future[None], concurrent.futures.Future[None], int
+    ]:
+        robot = FakeReachyMini()
+
+        def head_pose() -> npt.NDArray[np.float64]:
+            raise error
+
+        session = MotionSession(robot, presence=False, idle="breathing")
+        async with _running(session):
+            session.resume()
+            await asyncio.sleep(0.1)  # presence off: idle, nothing commanded
+            monkeypatch.setattr(robot, "get_current_head_pose", head_pose)
+            first = session.submit(_TestPrimary(0.5, 0.02), None).done
+            second = session.submit(_TestPrimary(0.5, 0.02), None).done
+            await asyncio.sleep(0.2)
+            sent = len(robot.targets)
+        return first, second, sent
+
+    first, second, sent = asyncio.run(run())
+    for future in (first, second):
+        exc = future.exception(timeout=1)
+        assert isinstance(exc, BridgeError) and exc.__cause__ is error
+    assert sent == 0
