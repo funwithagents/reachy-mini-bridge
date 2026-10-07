@@ -1,5 +1,7 @@
 # Config profiles
 
+> **No profile carries a voice.** The profiles differ by what you have (a robot, a simulator, a camera), and a voice is a separate choice with its own install step: a `tts-*` extra per provider, and a key for the cloud ones. Without a `tts` block the session runs, `say` raises `BridgeError` and the cause sits on `bridge.synthesizer_error`; everything else works. To hear the robot, paste one of the [voice templates](#adding-a-voice) at the end of this page into your copy, or pass your own synthesizer.
+
 One short `ReachyMiniConfig` per way of running the bridge — copy the one that matches what you have and pass it to `ReachyMiniBridge.from_json_file(...)` (or `uv run python -m examples.control_panel --config <file>`). Each is the minimal setup for its target: the repo's [config.example.json](../../config.example.json) is the opposite, the inventory of every field in the maximal setup (the viewer, a webcam, a detector, a voice). Every field is documented in [docs/reference/configuration.md](../../docs/reference/configuration.md); what each setup gives and how far it is validated, in one table, in [docs/reference/backends-and-capabilities.md](../../docs/reference/backends-and-capabilities.md).
 
 | Profile | For | What differs in the file | Devices and first-use downloads |
@@ -19,4 +21,47 @@ The two sim profiles open the viewer window with the camera picture in its corne
 "sim_displays": {"camera_overlay": false}
 ```
 
-The other profiles run headless. None carries a voice: add a `tts` block ([docs/guides/audio.md](../../docs/guides/audio.md)) once the matching `tts-*` extra is installed, or pass your own synthesizer. The profiles are parsed by the bridge's tests, so they stay valid as the config evolves.
+The other profiles run headless. The profiles are parsed by the bridge's tests, so they stay valid as the config evolves.
+
+## Adding a voice
+
+A `tts` block is a [tts-engine](https://github.com/funwithagents/tts-engine) `engine` block carried through verbatim: `module.type` picks the provider, the matching extra installs it, and the remaining keys are the provider's own. One template per provider, to paste as a top-level `"tts"` key next to `"backend"` in any profile; the field-by-field documentation is the `tts` section of [docs/reference/configuration.md](../../docs/reference/configuration.md#tts--the-default-voice-for-say), and setting a voice up task by task, [docs/guides/audio.md](../../docs/guides/audio.md).
+
+**pocket** (`reachy-mini-bridge[tts-pocket]`) — the local model: no key, no network once its weights are cached; pulls torch.
+
+```json
+"tts": {
+  "module": {
+    "type": "pocket",
+    "voice": "george",
+    "device": "auto"
+  }
+}
+```
+
+**elevenlabs** (`reachy-mini-bridge[tts-elevenlabs]`) — a cloud provider; the key is read from the environment variable `api_key_env` names.
+
+```json
+"tts": {
+  "module": {
+    "type": "elevenlabs",
+    "api_key_env": "ELEVENLABS_API_KEY",
+    "voice_id": "..."
+  }
+}
+```
+
+**gradium** (`reachy-mini-bridge[tts-gradium]`) — a cloud provider, keyed the same way; `sample_rate: 16000` makes it emit the speaker's rate, so nothing is resampled.
+
+```json
+"tts": {
+  "module": {
+    "type": "gradium",
+    "api_key_env": "GRADIUM_API_KEY",
+    "voice_id": "...",
+    "sample_rate": 16000
+  }
+}
+```
+
+Whatever the provider, `say` resamples what arrives to the speaker's 16 kHz. A block that fails to build, the extra not installed or the key unset, leaves the robot usable without a voice, as above. Two of these profiles with the `pocket` template added, `sim-webcam` and `lite-usb`, are what the greeter demo runs on: [examples/greeter/configs/](../greeter/configs/) ([its README](../greeter/README.md)).
