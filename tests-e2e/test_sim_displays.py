@@ -101,7 +101,7 @@ def test_a_face_marker_lands_on_the_portrait(
 
     async def scenario() -> list[npt.NDArray[np.float64]]:
         await bridge.set_motors_state("enabled")
-        await bridge.stop_head_tracking()  # the head stays out of it
+        # tracking stays off: the head stays out of it
         await bridge.set_face_detection(True)
         await bridge.set_idle("hold")
         found = []
@@ -116,7 +116,6 @@ def test_a_face_marker_lands_on_the_portrait(
                 found.append(await _mean_marker(bridge))
         finally:
             await bridge.set_idle("breathing")
-            await bridge.start_head_tracking()  # the module's default state
         return found
 
     found = live_bridge.run(scenario())

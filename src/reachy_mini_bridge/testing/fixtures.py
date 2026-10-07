@@ -36,7 +36,6 @@ from reachy_mini_bridge.camera import CameraFeed
 from reachy_mini_bridge.config import (
     DaemonConfig,
     FaceDetectionSettings,
-    MotionSettings,
     ReachyMiniConfig,
 )
 from reachy_mini_bridge.errors import SimSceneError
@@ -250,16 +249,17 @@ def live_bridge(
     # client to the daemon `_live_daemon` already manages — the run's one daemon, this
     # module's own session over it — its media backend by the host's locality
     # (`_daemon.robot_options`). See `_daemon.backend` for why the label is safe here.
-    # The live tier's subject is the robot that follows a face, so the config names the
-    # shipped `yunet` detector with detection and tracking on (the defaults run no
-    # detector — specs/vision/user_perception.md "Configuration"). The model downloads into the
-    # Hugging Face cache on the first live run, as the emotions library does.
+    # The config names the shipped `yunet` detector (the defaults run none —
+    # specs/vision/user_perception.md "Configuration") with detection and tracking off: a
+    # face test turns on what it needs and `face_scene` turns both off after it, so every
+    # other test keeps the head on its idle move whoever stands in front of a real robot.
+    # The model downloads into the Hugging Face cache on the first live run, as the
+    # emotions library does.
     bridge = ReachyMiniBridge(
         ReachyMiniConfig(
             backend=_daemon.backend(),
             robot=_daemon.robot_options(host, port),
-            face_detection=FaceDetectionSettings(detector="yunet", enabled=True),
-            motion=MotionSettings(tracking=True),
+            face_detection=FaceDetectionSettings(detector="yunet"),
             daemon=_bridge_daemon_config(),
         )
     )
@@ -281,12 +281,18 @@ def face_scene(
     gated on ``camera`` and ``faces`` (it skips where ``live_bridge`` probed neither), the
     pool of portraits cleared before the test and again after it, so a test starts with an
     empty view whatever the previous one left and leaves none behind
-    (specs/testing/sim_scene.md "A pool of portraits"). A test on a session of its own
-    (not ``live_bridge``) writes the same four lines against that session."""
+    (specs/testing/sim_scene.md "A pool of portraits"). After the test the bridge's
+    detection and tracking are back off, the state ``live_bridge`` starts in, whatever the
+    test turned on. A test on a session of its own (not ``live_bridge``) writes the same
+    gate and clears against that session."""
     requires_caps(live_bridge, "camera", "faces")
     sim_scene.clear()
-    yield sim_scene
-    sim_scene.clear()
+    try:
+        yield sim_scene
+    finally:
+        sim_scene.clear()
+        live_bridge.run(live_bridge.bridge.stop_head_tracking())
+        live_bridge.run(live_bridge.bridge.set_face_detection(False))
 
 
 @pytest.fixture

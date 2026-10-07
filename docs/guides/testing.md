@@ -124,7 +124,10 @@ die with that loop. `BridgeLoop`, from the same package, is the mechanism for a 
 of your own — a second bridge session, say.
 
 (A test that needs the robot to *see* something gates on `camera`, and on `faces` when it
-uses the sim's portrait — see "Testing tracking without a person" below.)
+uses the sim's portrait — see "Testing tracking without a person" below. `live_bridge`
+starts with detection and tracking off: a test turns on what it needs, and the
+`face_scene` fixture turns both off again after it, so a test that measures the head is
+never pulled off its pose by someone standing in front of the robot.)
 
 `require_env("SOME_API_KEY")` is the credential counterpart: it skips the test when the
 variable is unset, so a contributor with no keys is never broken. An optional dependency

@@ -68,17 +68,16 @@ from reachy_mini_bridge.testing.sim_scene import DEFAULT_FACE_POS, SimSceneClien
 # viewer: the head turns onto the portrait, keeps breathing while it looks, follows it,
 # and idles in full again once it is gone.
 #
-# `live_bridge` is module-scoped and its detection loop lives the whole module, so a
-# tracking test starts by `arm_tracking` (reachy_mini_bridge.testing.gaze — the
-# convergence kit every assertion here comes from): tracking on (a detection-only test
-# before it may have turned it off) and the previous test's aim released — which the
-# tracker only does if the loop kept ticking it between tests.
+# `live_bridge` starts with detection and tracking off and `face_scene` turns both off
+# after every test, so a tracking test starts by `arm_tracking`
+# (reachy_mini_bridge.testing.gaze — the convergence kit every assertion here comes from):
+# tracking on, with no aim held — which the tracker only reaches if the loop ticks it.
 
 
 def test_head_tracking_turns_onto_a_face_and_follows_it(
     live_bridge: LiveBridge, face_scene: SimSceneClient
 ) -> None:
-    """specs/core/bridge.md "Attention / gaze": with tracking on (the config default), the head
+    """specs/core/bridge.md "Attention / gaze": with tracking on, the head
     turns onto a face that appears ahead, then follows it 0.15 m to either side and back:
     each time toward the face, past it at most once by a bounded amount, settling at the
     yaw its position implies with the face at the image centre and the pitch unchanged.
@@ -233,7 +232,7 @@ def test_emotion_plays_over_tracking_and_the_head_returns_to_the_face(
 #
 # Portraits from the test scene's pool: near at 0.35 m and far at 0.60 m give the size
 # difference, ±0.15 m to either side. Portraits that must be in view together are spawned
-# with tracking stopped and tracking started once both are reported, so the choice is made
+# with tracking off and tracking started once both are reported, so the choice is made
 # with both there. Each asserts through `bridge.head_tracking` and the head's yaw.
 
 NEAR_X, FAR_X = 0.35, 0.60
@@ -287,7 +286,6 @@ async def _until(predicate: Callable[[], bool], timeout: float) -> float:
 async def _prepare(bridge: ReachyMiniBridge) -> None:
     await bridge.set_motors_state("enabled")
     await bridge.set_face_detection(True)
-    await bridge.stop_head_tracking()
 
 
 def test_the_head_follows_the_biggest_of_two_faces(

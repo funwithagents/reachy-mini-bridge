@@ -274,14 +274,13 @@ def assert_tracked(track: Track, *, pitch_ahead: float | None = None) -> None:
 
 
 async def arm_tracking(bridge: ReachyMiniBridge, *, focus: bool = False) -> None:
-    """Tracking on (a detection-only test before may have turned it off) with the
-    previous test's aim released — ``attention`` back to ``watching`` within
-    ``TRACKING_LOST_S`` of nobody in view — which the tracker only does if the detection
-    loop kept ticking it between tests: the check that the loop is alive."""
+    """Tracking on (``live_bridge`` starts with it off) and no aim held — ``attention``
+    at ``watching`` within ``TRACKING_LOST_S`` of nobody in view, which the tracker only
+    reaches if the detection loop ticks it: the check that the loop is alive."""
     await bridge.start_head_tracking(focus=focus)
     assert await wait_for(
         lambda: bridge.attention == "watching", TRACKING_LOST_S + 2.0
-    ), "the previous test's aim was never released: is the detection loop alive?"
+    ), "an aim held with nobody in view: is the detection loop alive?"
 
 
 async def sample_idle(robot: Any, seconds: float) -> tuple[float, float]:

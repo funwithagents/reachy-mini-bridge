@@ -35,6 +35,7 @@ from reachy_mini_bridge.motion import (
     BLEND_S,
 )
 from reachy_mini_bridge.testing import LiveBridge, require_env, requires_caps
+from reachy_mini_bridge.testing.gaze import angle_from_neutral_deg
 
 
 class _ToneSynth:
@@ -188,6 +189,15 @@ def _head_deviation_deg(
     return float(np.degrees(delta_angle_between_mat_rot(start[:3, :3], pose[:3, :3])))
 
 
+# The head at rest after a sway, on a Lite over USB: it holds still to the encoder's
+# resolution (0.00 deg over a second) but anywhere within 4.3 deg of neutral, the motors
+# stopping short of the commanded pose by a different amount each time — so a rest is
+# checked as stillness near neutral, never against an earlier rest (two such errors add
+# up to 5.2 deg). The sway itself peaks at 11 deg on the sim, 15 deg on the robot.
+REST_FROM_NEUTRAL_DEG = 6.0
+STILL_DEG = 0.3
+
+
 async def _still_head_pose(bridge: ReachyMiniBridge) -> npt.NDArray[np.float64]:
     """The head pose once the head has stopped moving (a previous sway may be decaying)."""
     robot: Any = bridge.robot
@@ -229,36 +239,47 @@ def test_wobbling_is_on_by_default_and_sways_the_head(
     """Out of the box, speech sways the head, which then returns to rest on its own.
 
     The fixture's bridge uses the default config, so wobbling is on without any toggle —
-    the same for this tone as for real TTS. With wobbling still on, the head comes back
-    near its starting orientation once the audio ends (the motors' own dynamics: about a
-    second on the sim, hence the polled deadline). "Near" is 3 deg: the check is that the
-    sway ends, and hardware can settle a degree or two off after it.
+    the same for this tone as for real TTS. With wobbling still on, the head comes to
+    rest once the audio ends (the motors' own dynamics: about a second on the sim, hence
+    the polled deadline): still, within `REST_FROM_NEUTRAL_DEG` of the neutral the hold
+    commands — the check that the sway ends rather than freezing mid-swing.
     """
     requires_caps(live_bridge, "audio", "motion")
     bridge, _caps = live_bridge
     assert bridge.wobbling is True
     robot: Any = bridge.robot
 
-    async def scenario() -> tuple[float, float]:
+    async def scenario() -> tuple[float, float, float]:
         await bridge.set_idle("hold")  # isolate the wobble from breathing's own sway
         await asyncio.sleep(BLEND_S + 0.5)
         try:
             start = await _still_head_pose(bridge)
             peak = await _peak_deviation_during_loud_say(bridge, start)
-            deadline = time.monotonic() + 3.0
-            while True:
-                pose = await asyncio.to_thread(robot.get_current_head_pose)
-                settled = _head_deviation_deg(start, pose)
-                if settled < 3.0 or time.monotonic() > deadline:
-                    return peak, settled
+            # The rest: half a second of samples within `STILL_DEG` of the window's
+            # first, reached within 3 s of the audio's end.
+            t0 = time.monotonic()
+            window = [await asyncio.to_thread(robot.get_current_head_pose)]
+            while len(window) < 10 and time.monotonic() - t0 < 3.0:
                 await asyncio.sleep(0.05)
+                pose = await asyncio.to_thread(robot.get_current_head_pose)
+                if _head_deviation_deg(window[0], pose) >= STILL_DEG:
+                    window = []
+                window.append(pose)
+            rest_s = time.monotonic() - t0 if len(window) >= 10 else float("inf")
+            return peak, rest_s, angle_from_neutral_deg(window[-1])
         finally:
             await bridge.set_idle("breathing")
 
-    peak, settled = live_bridge.run(scenario())
-    print(f"\n[e2e] wobble on: peak {peak:.2f} deg, settled {settled:.2f} deg")
+    peak, rest_s, from_neutral = live_bridge.run(scenario())
+    print(
+        f"\n[e2e] wobble on: peak {peak:.2f} deg, still {rest_s:.1f} s after the audio, "
+        f"{from_neutral:.2f} deg from neutral"
+    )
     assert peak > 1.0, f"head did not sway (peak deviation {peak:.2f} deg)"
-    assert settled < 3.0, f"head did not return to rest (deviation {settled:.2f} deg)"
+    assert rest_s < 3.0, "the head was still moving 3 s after the audio ended"
+    assert from_neutral < REST_FROM_NEUTRAL_DEG, (
+        f"head came to rest {from_neutral:.2f} deg from neutral: a sway frozen mid-swing?"
+    )
 
 
 def test_wobbling_off_keeps_the_head_still_while_audio_plays(
@@ -299,8 +320,10 @@ def test_cancelled_say_stops_the_sound_and_the_next_say_works(
     only `clear_player` called (the fast tier's view) — and the next `say` plays.
 
     The proof that the speaker went quiet is the head: with wobbling on and the idle
-    held, a loud 3 s tone sways it about 11 deg on the sim; cancelled at 1 s, the sway
-    must be gone a second later, where the uncancelled tone would still be driving it.
+    held, a loud 3 s tone sways it about 11 deg on the sim; cancelled at 1 s, the head
+    must hold still from a second later, where the uncancelled tone would still be
+    swinging it — still, not back on its starting pose, which hardware misses by a few
+    degrees (`REST_FROM_NEUTRAL_DEG`).
     """
     requires_caps(live_bridge, "audio", "motion")
     bridge, _caps = live_bridge
@@ -321,28 +344,31 @@ def test_cancelled_say_stops_the_sound_and_the_next_say_works(
             with pytest.raises(asyncio.CancelledError):
                 await say
             latency = time.monotonic() - t0
-            # Sample the sway after the cancel: the first second is the motors' own
+            # Sample the head after the cancel: the first second is the motors' own
             # settling, the window after it must be still.
             settling: list[float] = []
-            quiet: list[float] = []
+            quiet: list[npt.NDArray[np.float64]] = []
             while time.monotonic() - t0 < 2.5:
                 pose = await asyncio.to_thread(robot.get_current_head_pose)
-                deviation = _head_deviation_deg(start, pose)
-                (settling if time.monotonic() - t0 < 1.0 else quiet).append(deviation)
+                if time.monotonic() - t0 < 1.0:
+                    settling.append(_head_deviation_deg(start, pose))
+                else:
+                    quiet.append(pose)
                 await asyncio.sleep(0.05)
             await bridge.say("ignored", _ToneSynth(seconds=0.3))  # the session plays on
-            return latency, max(settling), max(quiet)
+            motion = max(_head_deviation_deg(quiet[0], p) for p in quiet)
+            return latency, max(settling), motion
         finally:
             await bridge.set_idle("breathing")
 
-    latency, settling_peak, quiet_peak = live_bridge.run(scenario())
+    latency, settling_peak, quiet_motion = live_bridge.run(scenario())
     print(
         f"\n[e2e] cancelled say: latency {latency * 1000:.0f} ms, head within "
-        f"{settling_peak:.2f} deg while settling, {quiet_peak:.2f} deg after"
+        f"{settling_peak:.2f} deg while settling, moving {quiet_motion:.2f} deg after"
     )
     assert latency < 0.1
-    assert quiet_peak < 2.0, (
-        f"the head still swayed {quiet_peak:.2f} deg a second after the cancel: "
+    assert quiet_motion < 1.0, (
+        f"the head still swayed {quiet_motion:.2f} deg a second after the cancel: "
         "is the speaker still playing the cancelled utterance?"
     )
 
