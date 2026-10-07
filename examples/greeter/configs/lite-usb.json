@@ -1,0 +1,19 @@
+{
+  "backend": "real",
+  "daemon": {
+    "spawn": "auto"
+  },
+  "tts": {
+    "module": {
+      "type": "pocket",
+      "voice": "george",
+      "device": "auto"
+    }
+  },
+  "face_detection": {
+    "detector": "yunet"
+  },
+  "motion": {
+    "tracking": true
+  }
+}

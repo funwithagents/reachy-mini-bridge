@@ -1,0 +1,27 @@
+{
+  "backend": "sim",
+  "daemon": {
+    "spawn": "auto",
+    "headless": false,
+    "camera": {
+      "source": "webcam",
+      "hfov_deg": 70.0
+    },
+    "sim_displays": {
+      "camera_overlay": true
+    }
+  },
+  "tts": {
+    "module": {
+      "type": "pocket",
+      "voice": "george",
+      "device": "auto"
+    }
+  },
+  "face_detection": {
+    "detector": "yunet"
+  },
+  "motion": {
+    "tracking": true
+  }
+}

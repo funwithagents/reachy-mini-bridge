@@ -4,7 +4,7 @@ Every local Markdown link in the documentation resolves — its heading fragment
 heading of the page it names — and every ``tests/...py::test_...`` reference names a test
 that exists; every spec's and plan's ``**Status:**`` line matches its index row; the example config and the configuration
 reference name every bridge-owned config field, and nothing else; every profile under
-``examples/configs/`` is a valid ``ReachyMiniConfig``. Implementation plans are history
+``examples/configs/`` and every greeter config is a valid ``ReachyMiniConfig``. Implementation plans are history
 and are not link-checked; the spec and plan templates carry deliberate placeholders.
 """
 
@@ -253,9 +253,10 @@ def test_the_configuration_reference_documents_every_field() -> None:
 # --- the profiles -----------------------------------------------------------------------
 
 _PROFILES = sorted((ROOT / "examples" / "configs").glob("*.json"))
+_GREETER_CONFIGS = sorted((ROOT / "examples" / "greeter" / "configs").glob("*.json"))
 
 
-@pytest.mark.parametrize("profile", _PROFILES, ids=lambda p: p.name)
+@pytest.mark.parametrize("profile", _PROFILES + _GREETER_CONFIGS, ids=lambda p: p.name)
 def test_every_profile_is_a_valid_config(profile: Path) -> None:
     config = ReachyMiniConfig.from_json_file(profile)
     assert config.backend in {"real", "sim", "fake"}
