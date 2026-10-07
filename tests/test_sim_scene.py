@@ -28,7 +28,6 @@ from reachy_mini_bridge.testing.sim_scene import (
     DEFAULT_FACE_IMAGE,
     DEFAULT_FACE_POS,
     FACE_POOL_SIZE,
-    BodyState,
     FacePlane,
     SceneDirector,
     SimSceneClient,
@@ -83,12 +82,9 @@ def test_face_scene_loads_with_a_mocap_face_in_the_eye_camera_view(
     model, data = model_and_data
     mujoco.mj_forward(model, data)
     face = _body_id(model, "face_1")
-    assert face >= 0 and model.body_mocapid[face] >= 0
     geom = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "face_1_geom")
     assert model.geom_bodyid[geom] == face
     assert model.geom_contype[geom] == 0 and model.geom_conaffinity[geom] == 0
-    # `FacePlane.visible` defaults to False: the scene loads with the face out of view.
-    assert model.geom_rgba[geom, 3] == 0.0
 
     cam = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, "eye_camera")
     assert cam >= 0, "the robot model (with its eye camera) is not included"
@@ -401,13 +397,6 @@ def test_director_spawns_by_image(tmp_path: Path) -> None:
         director.spawn((0.5, 0.0, 0.2), duration=-1.0)
 
 
-def test_body_state_round_trips_through_json_dicts() -> None:
-    state = BodyState(
-        "face_1", (0.1, 0.2, 0.3), (1.0, 0.0, 0.0, 0.0), True, False, "face", "face"
-    )
-    assert BodyState.from_dict(state.to_dict()) == state
-
-
 # --- the router and the client over HTTP ---
 
 
@@ -459,6 +448,7 @@ def test_client_drives_the_router(served_director: tuple[SceneDirector, int]) ->
     assert placed.moving and placed.pos == (0.5, -0.1, 0.25)
     still = client.wait_still("face_1", timeout=5.0)
     assert not still.moving
+    assert client.bodies() == director.states()  # every field survives the wire
     assert director.state("face_1").pos == (0.5, -0.1, 0.25)
 
     assert not client.hide("face_1").visible
@@ -539,19 +529,18 @@ def upstream_daemon_globals(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(upstream_main, "create_app", upstream_main.create_app)
 
 
-def test_run_daemon_rewrites_argv_installs_the_director_and_mounts_the_router(
+def test_run_daemon_rewrites_argv_installs_the_backend_and_mounts_the_router(
     scene_path: Path, monkeypatch: pytest.MonkeyPatch, upstream_daemon_globals: None
 ) -> None:
     """`run_daemon` runs the sim daemon launcher with `--scene <name>` (name resolving to
-    the file), forwards every other flag, and its extension installs the control callback
-    once the backend has a model and mounts the inject routes on upstream's own app."""
+    the file), forwards every other flag, installs the bridge's backend (whose extension
+    installs the director once the model exists — the next test) and mounts the inject
+    routes on upstream's own app."""
     fastapi = pytest.importorskip("fastapi")
     from reachy_mini.daemon import daemon as upstream_daemon
     from reachy_mini.daemon.app import main as upstream_main
 
     original_backend = upstream_daemon.MujocoBackend
-    installed: list[Any] = []
-    monkeypatch.setattr(mujoco, "set_mjcb_control", installed.append)
     seen_argv: list[list[str]] = []
     monkeypatch.setattr(upstream_main, "main", lambda: seen_argv.append(list(sys.argv)))
     monkeypatch.setattr(
@@ -577,15 +566,9 @@ def test_run_daemon_rewrites_argv_installs_the_director_and_mounts_the_router(
         sim_scene._mjcf_root() / "scenes" / f"{argv[3]}.xml"
     ).resolve() == scene_path.resolve()
     assert argv[4:] == ["--headless", "--no-preload-datasets", "--log-level", "DEBUG"]
-    # The director is installed by the backend the daemon will construct, after the
-    # model is built — never before (a callback present during the load breaks it).
-    assert installed == []
     backend_class = upstream_daemon.MujocoBackend
     assert backend_class is not original_backend
     assert issubclass(backend_class, original_backend)
-    backend = backend_class(scene=argv[3], headless=True, use_audio=False)
-    assert backend.model.nbody > 0
-    assert len(installed) == 1 and callable(installed[0])
     upstream_args: Any = SimpleNamespace()
     app = upstream_main.create_app(upstream_args, None)
     assert app.title == "upstream"

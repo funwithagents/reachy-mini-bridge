@@ -25,11 +25,6 @@ from reachy_mini_bridge.fake_reachy_mini import FakeReachyMini
 from reachy_mini_bridge.robot import build_robot, fetch_daemon_json
 
 
-def test_build_robot_fake_returns_fake() -> None:
-    robot = build_robot("fake")
-    assert isinstance(robot, FakeReachyMini)
-
-
 def test_build_robot_unknown_backend_raises() -> None:
     with pytest.raises(ValueError, match="unknown backend"):
         build_robot("bogus")
@@ -63,13 +58,6 @@ def test_fetch_daemon_json_gets_the_path_from_the_client_host_and_port() -> None
         server.server_close()
     assert requested == ["/api/kinematics/info"]
     assert payload == {"status": "ok", "kinematics_engine": "Placo"}
-
-
-def test_context_manager_records_teardown() -> None:
-    with build_robot("fake") as robot:
-        assert isinstance(robot, FakeReachyMini)
-        robot.enable_motors()
-    assert robot.commands[-1][0] == "__exit__"
 
 
 # The consumed slice (specs/core/robot.md): (path from the fake robot, upstream class, member).

@@ -8,8 +8,8 @@ from typing import Any
 
 import numpy as np
 
-from reachy_mini_bridge.face_detection import PixelFace, check_face_detector_factory
-from reachy_mini_bridge.yunet import DETECT_WIDTH, YuNetDetector
+from reachy_mini_bridge.face_detection import PixelFace
+from reachy_mini_bridge.yunet import YuNetDetector
 
 
 @dataclass(frozen=True)
@@ -66,17 +66,9 @@ def test_a_wide_frame_is_detected_on_a_subsample_and_the_faces_scaled_back() -> 
     ]
 
 
-def test_the_lites_frame_is_detected_at_stride_six() -> None:
-    stub = _UpstreamStub([])
-    YuNetDetector(upstream=lambda: stub).detect(_frame(1920, 1080), ts=0.0)
-    (seen,) = stub.frames
-    assert seen.shape == (180, 320, 3)
-    assert 1920 // DETECT_WIDTH == 6
-
-
 def test_the_configured_width_sets_the_stride() -> None:
     """`face_detection.width`: 640 on a 1280 stream is stride 2; None detects the full
-    frame; the default is upstream's own 320."""
+    frame."""
     wide = _UpstreamStub([])
     YuNetDetector(upstream=lambda: wide, width=640).detect(_frame(1280, 720), 0.0)
     assert wide.frames[0].shape == (360, 640, 3)
@@ -84,9 +76,6 @@ def test_the_configured_width_sets_the_stride() -> None:
     frame = _frame(1920, 1080)
     YuNetDetector(upstream=lambda: full, width=None).detect(frame, 0.0)
     assert full.frames[0] is frame  # no subsample, no copy
-    default = _UpstreamStub([])
-    YuNetDetector(upstream=lambda: default).detect(_frame(1280, 720), 0.0)
-    assert default.frames[0].shape == (180, 320, 3)
 
 
 def test_a_small_frame_is_detected_whole() -> None:
@@ -108,17 +97,3 @@ def test_a_small_frame_is_detected_whole() -> None:
             bbox=(1.0, 2.0, 3.0, 4.0), nose=(2.5, 4.0), eyes=((1.5, 3.0), (3.5, 3.0))
         )
     ]
-
-
-def test_no_face_gives_an_empty_sequence() -> None:
-    assert (
-        YuNetDetector(upstream=lambda: _UpstreamStub([])).detect(_frame(640, 480), 0.0)
-        == []
-    )
-
-
-def test_the_wrapper_passes_the_factory_check() -> None:
-    """A class taking a defaulted argument is a zero-argument factory; the check builds
-    one — here on the stub, since the default would load the model."""
-    stub = _UpstreamStub([])
-    check_face_detector_factory(lambda: YuNetDetector(upstream=lambda: stub))

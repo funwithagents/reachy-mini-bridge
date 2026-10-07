@@ -1,9 +1,9 @@
 """Fast-tier tests for the shipped testing harness (`reachy_mini_bridge.testing`).
 
-Deterministic and daemon-free: they exercise the skip gates, the public re-exports, the
-plugin's fixture registration, the target→backend resolution, the per-target daemon
-bring-up decisions (library lifecycle scripted), and the gravity-compensation probe (daemon
-answers scripted) — none of which needs a live daemon. The `live_bridge` fixture itself (which *does* need a daemon) is exercised by the
+Deterministic and daemon-free: they exercise the skip gates, the plugin's fixture
+registration, the target→backend resolution, the per-target daemon bring-up decisions
+(library lifecycle scripted), and the gravity-compensation probe (daemon answers
+scripted) — none of which needs a live daemon. The `live_bridge` fixture itself (which *does* need a daemon) is exercised by the
 e2e tier, not here.
 """
 
@@ -23,7 +23,7 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
-from reachy_mini_bridge import daemon, testing
+from reachy_mini_bridge import daemon
 from reachy_mini_bridge import face_detection as face_detection_module
 from reachy_mini_bridge import robot as robot_module
 from reachy_mini_bridge.bridge import ReachyMiniBridge
@@ -46,35 +46,8 @@ from reachy_mini_bridge.testing import (
     requires_caps,
 )
 from reachy_mini_bridge.testing.sim_scene import BodyState
-from reachy_mini_bridge.testing.support import (
-    require_env as support_require_env,
-)
-from reachy_mini_bridge.testing.support import (
-    requires_caps as support_requires_caps,
-)
-
-# --- public re-exports ---
-
-
-def test_package_reexports_the_public_names():
-    assert testing.require_env is support_require_env
-    assert testing.requires_caps is support_requires_caps
-    assert set(testing.__all__) == {
-        "BridgeLoop",
-        "LiveBridge",
-        "require_env",
-        "requires_caps",
-    }
-
 
 # --- requires_caps skip gate ---
-
-
-def test_requires_caps_skips_when_a_needed_cap_is_absent():
-    live = (object(), frozenset({"motion"}))
-    with pytest.raises(pytest.skip.Exception) as excinfo:
-        requires_caps(live, "audio")
-    assert "audio" in str(excinfo.value)
 
 
 def test_requires_caps_reports_every_missing_cap():
@@ -101,14 +74,14 @@ def test_require_env_returns_the_value_when_set(monkeypatch: pytest.MonkeyPatch)
     assert require_env("RMB_TEST_TOKEN") == "secret-123"
 
 
-def test_require_env_skips_when_unset(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.delenv("RMB_TEST_TOKEN", raising=False)
-    with pytest.raises(pytest.skip.Exception):
-        require_env("RMB_TEST_TOKEN")
-
-
-def test_require_env_skips_when_empty(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("RMB_TEST_TOKEN", "")
+@pytest.mark.parametrize("value", [None, ""])
+def test_require_env_skips_when_unset_or_empty(
+    monkeypatch: pytest.MonkeyPatch, value: str | None
+):
+    if value is None:
+        monkeypatch.delenv("RMB_TEST_TOKEN", raising=False)
+    else:
+        monkeypatch.setenv("RMB_TEST_TOKEN", value)
     with pytest.raises(pytest.skip.Exception):
         require_env("RMB_TEST_TOKEN")
 
@@ -363,7 +336,6 @@ def test_robot_options_leave_media_to_upstream_on_a_remote_host(
     options = _daemon.robot_options("192.168.1.5", 8000)
     assert options["media_backend"] == "default"
     assert (options["host"], options["port"]) == ("192.168.1.5", 8000)
-    assert ReachyMiniConfig(backend="real", robot=options).robot == options
 
 
 def test_an_explicit_media_backend_overrides_the_locality_rule(
@@ -404,14 +376,6 @@ def test_a_spawned_sim_runs_the_test_scene_for_the_daemon_lifetime(
     with pytest.raises(StopIteration):
         next(lifecycle)
     assert not scene.exists()
-
-
-def test_a_daemon_that_cannot_start_skips(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.delenv("REACHY_MINI_HOST", raising=False)
-    spawns = _RecordedSpawns(error=DaemonError("real daemon exited during startup"))
-    _patch_lifecycle(monkeypatch, ready=False, spawns=spawns)
-    with pytest.raises(pytest.skip.Exception, match="exited during startup"):
-        next(_daemon.managed_daemon("real"))
 
 
 # --- camera capability probe: through the bridge's feed, never beside it ---

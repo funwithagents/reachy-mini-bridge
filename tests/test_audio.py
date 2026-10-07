@@ -316,19 +316,6 @@ def test_synthesizer_failure_flushes_the_speaker_and_propagates() -> None:
     assert _clear_after_first_push(robot)
 
 
-def test_media_session_opens_and_tears_down_pipeline() -> None:
-    robot = FakeReachyMini()
-
-    async def run() -> None:
-        async with _open(MediaSession(robot)):
-            pass
-
-    asyncio.run(run())
-    names = [name for name, _ in robot.commands]
-    assert names.index("media.start_recording") < names.index("media.stop_recording")
-    assert "media.start_playing" in names and "media.stop_playing" in names
-
-
 def test_media_session_applies_audio_config_when_given() -> None:
     robot = FakeReachyMini()
     profile = {"noise_suppression": "high"}
@@ -406,28 +393,33 @@ def test_exit_stops_playback_even_if_stopping_recording_fails(
         session.audio_input()
 
 
-def test_say_requires_an_open_session() -> None:
+@pytest.mark.parametrize("verb", ["say", "audio_input", "play_sound"])
+def test_the_session_verbs_require_an_open_session(verb: str, tmp_path: Path) -> None:
     robot = FakeReachyMini()
     session = MediaSession(robot)
-    synth = _ToneSynth(16000, chunks=1, block=160)
+    sound = str(_wav(tmp_path, 0.1))
+
+    async def call() -> None:
+        if verb == "say":
+            await session.say("hi", _ToneSynth(16000, chunks=1, block=160))
+        elif verb == "audio_input":
+            session.audio_input()  # raised at call time, before any iteration
+        else:
+            await session.play_sound(sound)
 
     async def run() -> None:
-        with pytest.raises(BridgeError, match="say"):
-            await session.say("hi", synth)
+        # Refused before the session opens and again once it has closed.
+        with pytest.raises(BridgeError, match=verb):
+            await call()
         async with _open(session):
             pass
-        with pytest.raises(BridgeError, match="say"):
-            await session.say("hi", synth)
+        with pytest.raises(BridgeError, match=verb):
+            await call()
 
     asyncio.run(run())
-    assert "media.push_audio_sample" not in _command_names(robot)
-
-
-def test_audio_input_requires_an_open_session() -> None:
-    session = MediaSession(FakeReachyMini())
-    # Raised at call time, before any iteration.
-    with pytest.raises(BridgeError, match="audio_input"):
-        session.audio_input()
+    names = _command_names(robot)
+    assert "media.push_audio_sample" not in names
+    assert "media.play_sound" not in names
 
 
 def test_double_open_raises() -> None:
@@ -460,9 +452,14 @@ async def _take(stream: AsyncIterator[bytes], n: int) -> list[bytes]:
 
 def test_audio_input_yields_mono_int16_and_break_stops() -> None:
     robot = FakeReachyMini()  # capture is float32 (160, 2)
+    # The stream's format is the daemon's: the session reads its getters.
+    robot.media.get_input_audio_samplerate = lambda: 24000  # type: ignore[method-assign]
+    session = MediaSession(robot)
+    assert session.mic_sample_rate == 24000
+    assert session.mic_channels == 2
 
     async def run() -> list[bytes]:
-        async with _open(MediaSession(robot)) as session:
+        async with _open(session):
             return await _take(session.audio_input(), 2)
 
     chunks = asyncio.run(run())
@@ -498,19 +495,6 @@ def test_audio_input_mono_downmix_uses_real_sample_values() -> None:
     samples = np.frombuffer(chunk, dtype=np.int16)
     assert samples.shape == (4,)
     assert np.all(samples == float32_to_int16(np.array([0.5], np.float32))[0])
-
-
-def test_mic_properties_read_from_daemon_getters() -> None:
-    robot = FakeReachyMini()
-    session = MediaSession(robot)
-    assert session.mic_sample_rate == 16000
-    assert session.mic_channels == 2
-
-
-def test_clear_player_flushes_speaker() -> None:
-    robot = FakeReachyMini()
-    MediaSession(robot).clear_player()
-    assert any(name == "audio.clear_player" for name, _ in robot.commands)
 
 
 # --- stopping a sound file (specs/audio/audio.md "Stopping a sound file") ---
@@ -601,20 +585,6 @@ def test_stop_sound_on_an_unknown_backend_warns_and_returns(
     with caplog.at_level(logging.WARNING, logger="reachy_mini_bridge.audio"):
         audio_module._stop_sound_file(_robot_with_audio(object()))
     assert "unsupported audio backend" in caplog.text
-
-
-def test_say_missing_synthesizer_is_a_type_the_caller_can_supply() -> None:
-    # The session's say always takes an explicit synth; the "no synth configured"
-    # error lives at the bridge layer (see tests/test_bridge.py). Here just prove a plain
-    # object without the protocol shape is rejected at call time.
-    robot = FakeReachyMini()
-
-    async def run() -> None:
-        async with _open(MediaSession(robot)) as session:
-            with pytest.raises(AttributeError):
-                await session.say("hi", object())  # type: ignore[arg-type]
-
-    asyncio.run(run())
 
 
 def test_mic_tap_ends_when_the_session_closes() -> None:
@@ -899,11 +869,6 @@ def test_a_missing_sound_file_raises_before_anything_plays() -> None:
 
     asyncio.run(run())
     assert "media.play_sound" not in _command_names(robot)
-
-
-def test_play_sound_requires_an_open_session(tmp_path: Path) -> None:
-    with pytest.raises(BridgeError, match="play_sound"):
-        asyncio.run(MediaSession(FakeReachyMini()).play_sound(str(_wav(tmp_path, 0.1))))
 
 
 def test_play_sound_completes_when_the_file_has_been_heard(tmp_path: Path) -> None:

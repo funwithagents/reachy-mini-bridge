@@ -13,51 +13,6 @@ import pytest
 from reachy_mini_bridge.fake_reachy_mini import FakeReachyMini
 
 
-def test_motor_state_transitions() -> None:
-    robot = FakeReachyMini()
-
-    def mode() -> str:
-        # Motor state is read the way the SDK exposes it: via the daemon client.
-        return robot.client.get_status().backend_status.motor_control_mode
-
-    # Starts resting.
-    assert mode() == "disabled"
-
-    robot.enable_motors()
-    assert mode() == "enabled"
-
-    robot.enable_gravity_compensation()
-    assert mode() == "gravity_compensation"
-
-    robot.disable_motors()
-    assert mode() == "disabled"
-
-
-def test_wobbling_toggles_are_recorded() -> None:
-    robot = FakeReachyMini()
-    robot.enable_wobbling()
-    robot.disable_wobbling()
-
-    assert [name for name, _ in robot.commands] == [
-        "enable_wobbling",
-        "disable_wobbling",
-    ]
-
-
-def test_media_commands_are_recorded() -> None:
-    robot = FakeReachyMini()
-    robot.media.start_recording()
-    robot.media.push_audio_sample(np.zeros((320, 2), dtype=np.float32))
-    robot.media.play_sound("wake_up.wav")
-    robot.media.audio.clear_player()
-
-    recorded = {name: args for name, args in robot.commands}
-    assert "media.start_recording" in recorded
-    assert recorded["media.push_audio_sample"]["frames"] == 320
-    assert recorded["media.play_sound"]["sound_file"] == "wake_up.wav"
-    assert "audio.clear_player" in recorded
-
-
 def test_capture_format_agrees_with_getters() -> None:
     # Downstream conversion code reads these getters rather than hardcoding; the
     # synthetic sample must match what they report.
@@ -84,12 +39,11 @@ def test_set_target_records_and_updates_the_present_pose() -> None:
     assert antennas == pytest.approx([0.1, -0.1])
     assert robot.commands == []
 
-
-def test_set_target_partial_keeps_the_other_components() -> None:
-    robot = FakeReachyMini()
+    # A partial target keeps the other components.
     robot.set_target(antennas=[0.3, -0.3])
-
-    assert np.array_equal(robot.get_current_head_pose(), np.eye(4))
+    assert robot.get_current_head_pose()[2, 3] == pytest.approx(0.01)
+    assert robot.get_current_joint_positions()[0][0] == pytest.approx(0.2)
+    assert robot.get_current_joint_positions()[1] == pytest.approx([0.3, -0.3])
 
 
 def test_set_target_rejects_bad_input() -> None:

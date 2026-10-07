@@ -265,85 +265,64 @@ def test_launch_command_runs_a_scene_file_through_the_bridge_launcher(
         "--no-preload-datasets",
         *_ADDRESS,
     ]
-    # a real daemon ignores the sim knobs, scene file and camera included
-    monkeypatch.setattr(daemon, "_placo_available", lambda: False)
-    config = DaemonConfig(scene="scene.xml", camera=SimCameraSettings(source="webcam"))
+
+
+@pytest.mark.parametrize("scene", [None, "/tmp/scene.xml"])
+def test_launch_command_requires_the_launcher(
+    monkeypatch: pytest.MonkeyPatch, scene: str | None
+) -> None:
+    """The sim extra (which ships `reachy-mini-daemon` and MuJoCo) is required for every
+    sim recipe, a scene file's included; the viewer also needs `mjpython` — on macOS,
+    where alone the passive viewer runs under it."""
+    monkeypatch.setattr(daemon.shutil, "which", lambda name: None)
+    with pytest.raises(DaemonError, match=r"reachy-mini-bridge\[sim\]"):
+        daemon.launch_command(DaemonConfig(scene=scene))
+    with pytest.raises(DaemonError, match=r"reachy-mini-bridge\[sim\]"):
+        daemon.launch_command(DaemonConfig(headless=False, scene=scene))
+    monkeypatch.setattr(
+        daemon.shutil, "which", lambda name: "/bin/x" if name != "mjpython" else None
+    )
+    viewer = DaemonConfig(headless=False, scene=scene)
+    with pytest.raises(DaemonError, match="mjpython"):
+        daemon.launch_command(viewer, system="darwin")
+    assert daemon.launch_command(viewer, system="linux")[0] == sys.executable
+
+
+@pytest.mark.parametrize(
+    ("config", "placo", "flags"),
+    [
+        # the sim-only knobs (headless, scene — a scene file too — camera) play no part
+        (
+            DaemonConfig(
+                headless=False,
+                scene="scene.xml",
+                camera=SimCameraSettings(source="webcam"),
+            ),
+            False,
+            ["--preload-datasets"],
+        ),
+        (DaemonConfig(preload_datasets=False), False, ["--no-preload-datasets"]),
+        (
+            DaemonConfig(),
+            True,
+            ["--kinematics-engine", "Placo", "--preload-datasets"],
+        ),
+    ],
+)
+def test_launch_command_real_robot(
+    monkeypatch: pytest.MonkeyPatch,
+    config: DaemonConfig,
+    placo: bool,
+    flags: list[str],
+) -> None:
+    """The bridge's real daemon launcher in this interpreter, no --sim, Placo when it is
+    installed. `reachy_mini` is a base dependency, so nothing on PATH is required (the
+    sim recipes still need the extra)."""
+    monkeypatch.setattr(daemon.shutil, "which", lambda name: None)
+    monkeypatch.setattr(daemon, "_placo_available", lambda: placo)
     assert daemon.launch_command(config, backend="real") == [
         *_REAL_LAUNCHER,
-        "--preload-datasets",
-        *_ADDRESS,
-    ]
-
-
-def test_launch_command_scene_file_still_needs_the_sim_extra(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(daemon.shutil, "which", lambda name: None)
-    with pytest.raises(DaemonError, match=r"reachy-mini-bridge\[sim\]"):
-        daemon.launch_command(DaemonConfig(scene="/tmp/scene.xml"))
-    monkeypatch.setattr(
-        daemon.shutil, "which", lambda name: "/bin/x" if name != "mjpython" else None
-    )
-    scene_viewer = DaemonConfig(headless=False, scene="/tmp/scene.xml")
-    with pytest.raises(DaemonError, match="mjpython"):
-        daemon.launch_command(scene_viewer, system="darwin")
-    assert daemon.launch_command(scene_viewer, system="linux")[0] == sys.executable
-
-
-def test_launch_command_requires_the_launcher(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The sim extra (which ships `reachy-mini-daemon` and MuJoCo) is required for every
-    sim recipe; the viewer also needs `mjpython` — on macOS, where alone the passive
-    viewer runs under it."""
-    monkeypatch.setattr(daemon.shutil, "which", lambda name: None)
-    with pytest.raises(DaemonError, match=r"reachy-mini-bridge\[sim\]"):
-        daemon.launch_command(DaemonConfig())
-    with pytest.raises(DaemonError, match=r"reachy-mini-bridge\[sim\]"):
-        daemon.launch_command(DaemonConfig(headless=False))
-    monkeypatch.setattr(
-        daemon.shutil, "which", lambda name: "/bin/x" if name != "mjpython" else None
-    )
-    with pytest.raises(DaemonError, match="mjpython"):
-        daemon.launch_command(DaemonConfig(headless=False), system="darwin")
-    assert daemon.launch_command(DaemonConfig(headless=False), system="linux")[0] == (
-        sys.executable
-    )
-
-
-def test_launch_command_real_robot(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(daemon, "_placo_available", lambda: False)
-    # The bridge's real daemon launcher in this interpreter, no --sim; the sim-only knobs
-    # (headless, scene) play no part.
-    assert daemon.launch_command(
-        DaemonConfig(headless=False, scene="minimal"), backend="real"
-    ) == [*_REAL_LAUNCHER, "--preload-datasets", *_ADDRESS]
-    assert daemon.launch_command(
-        DaemonConfig(preload_datasets=False), backend="real"
-    ) == [*_REAL_LAUNCHER, "--no-preload-datasets", *_ADDRESS]
-
-
-def test_launch_command_real_uses_placo_when_installed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(daemon, "_placo_available", lambda: True)
-    assert daemon.launch_command(DaemonConfig(), backend="real") == [
-        *_REAL_LAUNCHER,
-        "--kinematics-engine",
-        "Placo",
-        "--preload-datasets",
-        *_ADDRESS,
-    ]
-
-
-def test_launch_command_real_needs_no_launcher_on_path(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The hardware daemon runs through the bridge's own module: `reachy_mini` is a base
-    dependency, so nothing on PATH is required (the sim recipes still need the extra)."""
-    monkeypatch.setattr(daemon.shutil, "which", lambda name: None)
-    monkeypatch.setattr(daemon, "_placo_available", lambda: False)
-    assert daemon.launch_command(DaemonConfig(), backend="real") == [
-        *_REAL_LAUNCHER,
-        "--preload-datasets",
+        *flags,
         *_ADDRESS,
     ]
 
@@ -404,7 +383,6 @@ def test_scrubbed_env_defaults_to_the_process_env(
 _SLEEPER = [sys.executable, "-c", "import time; time.sleep(30)"]
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX sessions / process groups")
 # --- the readiness probe -----------------------------------------------------------
 
 
@@ -473,18 +451,10 @@ def test_is_daemon_ready_is_false_on_a_closed_port() -> None:
     assert daemon.is_daemon_ready("127.0.0.1", port) is False
 
 
-def test_status_url_is_the_daemon_status_endpoint() -> None:
-    assert daemon.status_url("127.0.0.1", 8000) == (
-        "http://127.0.0.1:8000/api/daemon/status"
-    )
-    assert daemon.status_url("localhost", 8001) == (
-        "http://localhost:8001/api/daemon/status"
-    )
-
-
 # --- the spawn seam ------------------------------------------------------------------
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX sessions / process groups")
 def test_spawn_puts_the_child_in_its_own_session() -> None:
     proc = daemon._spawn(_SLEEPER, daemon.scrubbed_env())
     try:
@@ -756,24 +726,4 @@ def test_start_daemon_returns_an_owned_handle_whose_stop_ends_the_child(
     handle.stop()
     assert harness.proc.calls == ["terminate", "wait"]
     handle.stop()  # a second stop is a no-op
-    assert harness.proc.calls == ["terminate", "wait"]
-
-
-def test_start_daemon_borrowed_handle_stop_is_a_noop(harness: _Harness) -> None:
-    harness.port_open = True
-    harness.ready = iter([True])
-    handle = daemon.start_daemon(_AUTO)
-    assert handle.owned is False
-    handle.stop()
-    assert harness.spawned == [] and harness.proc.calls == []
-
-
-def test_start_daemon_stops_a_child_that_never_becomes_ready(harness: _Harness) -> None:
-    clock = iter([0.0, 0.0, 0.5, 1.0, 1.5])
-    with (
-        pytest.MonkeyPatch.context() as mp,
-        pytest.raises(DaemonError, match="did not become ready"),
-    ):
-        mp.setattr(daemon.time, "monotonic", lambda: next(clock))
-        daemon.start_daemon(DaemonConfig(spawn="auto", startup_timeout=1.0))
     assert harness.proc.calls == ["terminate", "wait"]

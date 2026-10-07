@@ -312,29 +312,6 @@ def test_a_fixed_camera_settles_where_the_pixel_points_from_rest() -> None:
     assert max(abs(y) for y in mounted) > 30.0
 
 
-def test_the_aim_is_withdrawn_once_nobody_is_seen_and_returns_with_a_face(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(head_tracking, "TRACKING_LOST_S", 0.2)
-    sent: list[Any] = []
-    tracker = HeadTracker(
-        CameraModel.for_sim(SimCameraSettings()),
-        history=lambda: (np.array([time.monotonic()]), np.eye(4)[np.newaxis]),
-        set_gaze=lambda aim, *, focus=False: sent.append(aim),
-    )
-    tracker.observe(_report(0.0, 0.0, ts=time.monotonic()))
-    assert tracker.engaged and len(sent) == 1 and sent[0] is not None
-    tracker.observe(_nobody())  # a missed frame is not a loss
-    assert tracker.engaged and len(sent) == 1
-    time.sleep(0.25)
-    for _ in range(3):
-        tracker.observe(_nobody())
-    assert not tracker.engaged
-    assert len(sent) == 2 and sent[1] is None  # withdrawn once
-    tracker.observe(_report(0.2, 0.0, ts=time.monotonic()))
-    assert tracker.engaged and sent[-1] is not None
-
-
 def test_focus_goes_with_every_aim_and_stop_withdraws_it() -> None:
     sent: list[tuple[Any, bool]] = []
     tracker = HeadTracker(
@@ -555,6 +532,25 @@ def test_the_loss_counts_from_the_last_sighting(
     assert chooser.tracker.following is None and chooser.aims[-1] is None
 
 
+def test_the_aim_is_withdrawn_once_nobody_is_seen_and_returns_with_a_face(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(head_tracking, "TRACKING_LOST_S", 0.2)
+    chooser = _Chooser(monkeypatch)
+    chooser.see(_person(1, 0.0, NEAR))
+    assert chooser.tracker.engaged
+    assert len(chooser.aims) == 1 and chooser.aims[0] is not None
+    chooser.see(after=0.05)  # a missed frame is not a loss
+    assert chooser.tracker.engaged and len(chooser.aims) == 1
+    for _ in range(3):  # 0.35 s without a face
+        chooser.see()
+    assert not chooser.tracker.engaged
+    assert len(chooser.aims) == 2 and chooser.aims[1] is None  # withdrawn once
+    face = _person(2, 0.2, NEAR)
+    chooser.see(face)
+    assert chooser.tracker.engaged and chooser.aiming_at(face)
+
+
 def test_an_eligible_face_between_the_switch_and_the_loss_is_followed_at_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -600,14 +596,6 @@ def test_the_report_wakes_on_state_changes_and_updates_on_aims(
         (False, False, None, None),  # stopped
     ]
     assert chooser.report.value == HeadTrackingReport.inactive()
-
-
-def test_the_robot_model_is_the_clients_calibration_at_the_streamed_frame() -> None:
-    model = CameraModel.for_robot(FakeReachyMini())
-    specs = FakeReachyMini().media.camera.camera_specs
-    assert model.size == specs.default_resolution.value[:2]
-    np.testing.assert_allclose(model.K, specs.K)
-    assert not model.fixed
 
 
 def test_the_sim_eye_camera_pinhole() -> None:

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import functools
 import itertools
 import logging
 import math
@@ -61,7 +62,7 @@ from reachy_mini_bridge.motion import (
 if TYPE_CHECKING:
     import numpy.typing as npt
 
-    from reachy_mini_bridge.motion import IdleMoveFactory
+    from reachy_mini_bridge.motion import IdleMode, IdleMoveFactory
 
 
 @asynccontextmanager
@@ -225,18 +226,32 @@ def test_breathing_is_continuous_and_pure() -> None:
     assert np.array_equal(head_10, head_10_ref) and np.array_equal(ant_10, ant_10_ref)
 
 
+@functools.cache
+def _roaming_300s(
+    seed: int,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], list[float]]:
+    """One seed's plan sampled at the control rate over 300 s, shared by the roaming
+    tests below: the head's roll, pitch and yaw offsets in rad, each antenna's outward
+    lean in degrees, and the head's angle from neutral every 7th tick."""
+    move = BreathingMove(random.Random(seed))
+    ts = [k / CONTROL_HZ for k in range(int(300 * CONTROL_HZ))]
+    rpy = np.array([_rpy_rad(move, t) for t in ts])
+    leans = np.degrees(np.array([_outward(move, t) for t in ts]))
+    angles = [_angle_from_neutral_deg(move, t) for t in ts[::7]]
+    rpy.flags.writeable = False
+    leans.flags.writeable = False
+    return rpy, leans, angles
+
+
 @pytest.mark.parametrize("seed", range(5))
 def test_head_rotation_roams_within_its_envelope(seed: int) -> None:
     """specs/motion/motion.md "The moves": the idle head looks about on three independent
     rotation tracks, reaching each axis' limit without ever passing it."""
-    move = BreathingMove(random.Random(seed))
-    ts = [k / CONTROL_HZ for k in range(int(300 * CONTROL_HZ))]  # 300 s
-    rpy = np.array([_rpy_rad(move, t) for t in ts])
+    rpy, _leans, angles = _roaming_300s(seed)
     assert np.all(np.abs(rpy) <= ROTATION_LIMITS + 1e-9)
     # each axis uses its range in both directions (measured >= 0.95 of the limit)
     assert np.all(rpy.max(axis=0) >= 0.7 * ROTATION_LIMITS), "an axis never roamed +"
     assert np.all((-rpy).max(axis=0) >= 0.7 * ROTATION_LIMITS), "an axis never roamed -"
-    angles = [_angle_from_neutral_deg(move, t) for t in ts[::7]]
     assert max(angles) <= ROTATION_CORNER_DEG + 1.0
     # the head lives a few degrees off neutral rather than hugging it or the corner
     assert 4.0 < float(np.median(angles)) < 8.0
@@ -246,9 +261,7 @@ def test_head_rotation_roams_within_its_envelope(seed: int) -> None:
 def test_head_rotation_keeps_at_least_one_axis_moving(seed: int) -> None:
     """specs/motion/motion.md "The moves": three independent tracks mean the head is almost
     always doing something — the idle head before them held one fixed heading."""
-    move = BreathingMove(random.Random(seed))
-    ts = [k / CONTROL_HZ for k in range(int(300 * CONTROL_HZ))]
-    rpy = np.array([_rpy_rad(move, t) for t in ts])
+    rpy, _leans, _angles = _roaming_300s(seed)
     speeds = np.abs(np.diff(rpy, axis=0)) * CONTROL_HZ
     moving = float((speeds > math.radians(0.5)).any(axis=1).mean())
     assert moving > 0.5, f"the head rotated only {moving:.0%} of the time"
@@ -259,9 +272,7 @@ def test_antennas_move_fast_enough_to_read_and_flick(seed: int) -> None:
     """specs/motion/motion.md "The moves": drawing a speed (not a duration) and punctuating the
     roaming with flicks puts the antennas in the band the emotions library commands.
     A fixed-duration plan over the same window reads 4 deg/s at p90 and 13 at p99."""
-    move = BreathingMove(random.Random(seed))
-    ts = [k / CONTROL_HZ for k in range(int(300 * CONTROL_HZ))]
-    leans = np.degrees(np.array([_outward(move, t) for t in ts]))
+    _rpy, leans, _angles = _roaming_300s(seed)
     speeds = np.abs(np.diff(leans, axis=0)) * CONTROL_HZ
     p90, p99 = np.percentile(speeds, [90, 99])
     assert p90 > 20.0, f"antenna speed p90 only {p90:.1f} deg/s"
@@ -440,28 +451,32 @@ def test_resume_blends_from_the_present_pose_into_breathing() -> None:
     assert 40 <= rate <= 75
 
 
-def test_breathing_off_holds_neutral() -> None:
+@pytest.mark.parametrize(
+    "idle", ["hold", "custom"], ids=["hold", "custom-without-a-move"]
+)
+def test_the_idle_holds_neutral(idle: IdleMode) -> None:
     async def run() -> list[float]:
         robot = FakeReachyMini()
-        async with _running(
-            MotionSession(robot, presence=True, idle="hold")
-        ) as session:
+        async with _running(MotionSession(robot, presence=True, idle=idle)) as session:
             session.resume()
             await asyncio.sleep(BLEND_S + 0.2)
             return _head_zs(robot)
 
     zs = asyncio.run(run())
     assert zs
-    assert all(z == pytest.approx(0.0, abs=1e-6) for z in zs[-5:])
+    assert all(z == pytest.approx(0.0, abs=1e-6) for z in zs)
 
 
 def test_presence_off_goes_quiet_when_idle() -> None:
+    """Quiet whatever the gaze layer holds: an aim moves nothing either."""
+
     async def run() -> tuple[int, int, int]:
         robot = FakeReachyMini()
         async with _running(
             MotionSession(robot, presence=False, idle="breathing")
         ) as session:
             session.resume()
+            session.set_gaze(_yaw_pose(AIM_YAW_DEG))
             await asyncio.sleep(0.3)
             idle_count = len(robot.targets)
             future = session.submit(_TestPrimary(0.15, 0.01), None).done
@@ -564,46 +579,41 @@ def test_cancelled_future_drops_the_primary_within_a_tick() -> None:
 
 
 def test_toggle_during_a_primary_is_deferred() -> None:
-    async def run() -> tuple[list[float], list[float]]:
+    """specs/motion/motion.md "Presence and the idle mode": a mode changed while a primary plays is
+    recorded at once and takes effect when the queue drains — the primary plays its
+    whole trajectory to its own end, then the idle re-entry blends from its end pose
+    into the new mode."""
+
+    async def run() -> tuple[str, float, list[float]]:
         robot = FakeReachyMini()
         async with _running(
             MotionSession(robot, presence=True, idle="breathing")
         ) as session:
             session.resume()
+            t0 = time.monotonic()
             future = session.submit(_TestPrimary(0.35, 0.02), None).done
-            await asyncio.sleep(0.15)
+            await asyncio.sleep(0.15)  # inside the primary's entry blend
             session.set_idle("hold")
-            await asyncio.wrap_future(future)  # still completes at its own duration
-            during_zs = _head_zs(robot)
+            await asyncio.sleep(0.05)
+            recorded = session.idle
+            await asyncio.wrap_future(future)
+            elapsed = time.monotonic() - t0
             await asyncio.sleep(BLEND_S + 0.15)
-            after_zs = _head_zs(robot)[-10:]
-        return during_zs, after_zs
+        return recorded, elapsed, _head_zs(robot)
 
-    during_zs, after_zs = asyncio.run(run())
-    assert max(during_zs) >= 0.015  # the emotion played fully
-    assert all(abs(z) < 1e-4 for z in after_zs)  # settled at hold, not breathing
-
-
-def test_pause_fails_in_flight_primaries() -> None:
-    async def run() -> tuple[concurrent.futures.Future[None], int, int]:
-        robot = FakeReachyMini()
-        async with _running(
-            MotionSession(robot, presence=True, idle="breathing")
-        ) as session:
-            session.resume()
-            future = session.submit(_TestPrimary(2.0, 0.02), None).done
-            await asyncio.sleep(0.2)
-            session.pause()
-            await asyncio.sleep(0.15)
-            before = len(robot.targets)
-            await asyncio.sleep(0.15)
-            after = len(robot.targets)
-        return future, before, after
-
-    future, before, after = asyncio.run(run())
-    exc = future.exception(timeout=1)
-    assert isinstance(exc, BridgeError)
-    assert after == before
+    recorded, elapsed, zs = asyncio.run(run())
+    assert recorded == "hold"
+    assert elapsed >= BLEND_S + 0.35 - 0.02  # the entry blend, then the trajectory
+    # the trajectory played whole: held at its z for (nearly) every tick of it
+    plateau = sum(1 for z in zs if z == pytest.approx(0.02, abs=1e-9))
+    assert plateau >= 0.7 * 0.35 * CONTROL_HZ
+    # then the hand-back from the end pose: no jump, down to the hold, not breathing
+    last_plateau = max(
+        i for i, z in enumerate(zs) if z == pytest.approx(0.02, abs=1e-9)
+    )
+    after = zs[last_plateau:]
+    assert max(abs(b - a) for a, b in itertools.pairwise(after)) < 0.002
+    assert all(abs(z) < 1e-4 for z in after[-10:])
 
 
 def test_close_eases_to_neutral_when_commanding() -> None:
@@ -637,14 +647,26 @@ def test_close_is_immediate_when_quiet() -> None:
     assert count == 0
 
 
-def test_a_failing_tick_fails_the_primary_and_keeps_the_loop_alive() -> None:
+@pytest.mark.parametrize(
+    "fail_after", [-1.0, 0.1], ids=["at-its-entry-blend", "mid-trajectory"]
+)
+def test_a_failing_primary_fails_its_future_and_keeps_the_loop_alive(
+    fail_after: float,
+) -> None:
+    """A primary failing — at its entry blend, which evaluates the move's start pose
+    before it plays (specs/motion/motion.md "Lifecycle"), or on a tick of its trajectory —
+    fails its future at once and the loop re-selects on its next tick: the idle move
+    goes on and the next primary plays."""
+
     async def run() -> tuple[BaseException | None, int, int]:
         robot = FakeReachyMini()
         async with _running(
             MotionSession(robot, presence=True, idle="breathing")
         ) as session:
             session.resume()
-            future = session.submit(_TestPrimary(1.0, 0.02, fail_after=0.1), None).done
+            future = session.submit(
+                _TestPrimary(1.0, 0.02, fail_after=fail_after), None
+            ).done
             exc: BaseException | None = None
             try:
                 await asyncio.wait_for(asyncio.wrap_future(future), timeout=2)
@@ -653,6 +675,8 @@ def test_a_failing_tick_fails_the_primary_and_keeps_the_loop_alive() -> None:
             before = len(robot.targets)
             await asyncio.sleep(0.2)
             after = len(robot.targets)
+            played = session.submit(_TestPrimary(0.15, 0.01), None).done
+            await asyncio.wait_for(asyncio.wrap_future(played), timeout=2)
         return exc, before, after
 
     exc, before, after = asyncio.run(run())
@@ -793,37 +817,6 @@ def test_custom_idle_move_plays_in_custom_mode() -> None:
     assert np.allclose(robot.last_target[0], NEUTRAL_HEAD, atol=1e-4)
 
 
-def test_custom_mode_without_a_move_holds_neutral() -> None:
-    async def run() -> list[float]:
-        robot = FakeReachyMini()
-        async with _running(
-            MotionSession(robot, presence=True, idle="custom")
-        ) as session:
-            session.resume()
-            await asyncio.sleep(BLEND_S + 0.2)
-            return _head_zs(robot)
-
-    zs = asyncio.run(run())
-    assert zs
-    assert all(z == pytest.approx(0.0, abs=1e-6) for z in zs)
-
-
-def test_set_idle_move_in_custom_mode_takes_effect_at_once() -> None:
-    async def run() -> list[float]:
-        robot = FakeReachyMini()
-        async with _running(
-            MotionSession(robot, presence=True, idle="custom")
-        ) as session:
-            session.resume()
-            await asyncio.sleep(0.2)
-            session.set_idle_move(_Lift)
-            await asyncio.sleep(BLEND_S + 0.3)
-            return _head_zs(robot)
-
-    zs = asyncio.run(run())
-    assert zs[-1] == pytest.approx(LIFT_MM / 1000.0, abs=1e-6)
-
-
 def test_idle_move_is_stored_in_another_mode_and_plays_once_custom() -> None:
     async def run() -> tuple[list[float], list[float]]:
         robot = FakeReachyMini()
@@ -935,17 +928,17 @@ def _raising_factory() -> IdleMove:
     raise RuntimeError("no move today")
 
 
-@pytest.mark.parametrize(
-    "bad",
-    [
-        "breathing",  # not callable
-        HoldMove,  # builds a Move that is not an IdleMove
-        _raising_factory,
-        _NanOffsets,
-        _WrongReturn,
-    ],
-)
-def test_a_bad_idle_move_factory_is_rejected_and_changes_nothing(bad: object) -> None:
+BAD_IDLE_MOVE_FACTORIES: list[object] = [
+    "breathing",  # not callable
+    HoldMove,  # builds a Move that is not an IdleMove
+    _raising_factory,
+    _NanOffsets,
+    _WrongReturn,
+]
+
+
+@pytest.mark.parametrize("bad", BAD_IDLE_MOVE_FACTORIES)
+def test_a_bad_idle_move_factory_is_rejected(bad: object) -> None:
     with pytest.raises(ValueError, match="idle move"):
         MotionSession(
             FakeReachyMini(),
@@ -953,15 +946,24 @@ def test_a_bad_idle_move_factory_is_rejected_and_changes_nothing(bad: object) ->
             idle="custom",
             idle_move=bad,  # type: ignore[arg-type]
         )
+    session = MotionSession(
+        FakeReachyMini(), presence=True, idle="custom", idle_move=_Lift
+    )
+    with pytest.raises(ValueError, match="idle move"):
+        session.set_idle_move(bad)  # type: ignore[arg-type]
+    assert session.idle_move is _Lift
 
+
+def test_a_rejected_idle_move_factory_changes_nothing() -> None:
     async def run() -> tuple[object, list[float]]:
         robot = FakeReachyMini()
         async with _running(
             MotionSession(robot, presence=True, idle="custom", idle_move=_Lift)
         ) as session:
             session.resume()
-            with pytest.raises(ValueError, match="idle move"):
-                session.set_idle_move(bad)  # type: ignore[arg-type]
+            for bad in BAD_IDLE_MOVE_FACTORIES:
+                with pytest.raises(ValueError, match="idle move"):
+                    session.set_idle_move(bad)  # type: ignore[arg-type]
             await asyncio.sleep(BLEND_S + 0.3)
             return session.idle_move, _head_zs(robot)
 
@@ -1241,20 +1243,6 @@ def test_a_primary_plays_as_recorded_under_an_aim_then_the_head_returns_to_it() 
     assert max(abs(b - a) for a, b in itertools.pairwise(after)) < MAX_GAZE_STEP_DEG
 
 
-def test_with_presence_off_an_aim_moves_nothing() -> None:
-    async def run() -> int:
-        robot = FakeReachyMini()
-        async with _running(
-            MotionSession(robot, presence=False, idle="hold")
-        ) as session:
-            session.resume()
-            session.set_gaze(_yaw_pose(AIM_YAW_DEG))
-            await asyncio.sleep(0.4)
-            return len(robot.targets)
-
-    assert asyncio.run(run()) == 0
-
-
 def test_the_history_records_the_head_pose_the_robot_reports(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1316,34 +1304,12 @@ def test_start_twice_raises_and_stop_is_idempotent() -> None:
 # --- the loop stops the sound it started (specs/motion/motion.md "Emotions through the loop")
 
 
-def test_the_loop_stops_only_the_sound_it_started_and_acknowledges_the_drop() -> None:
-    async def run() -> tuple[int, bool, int, bool]:
-        robot = FakeReachyMini()
-        stops: list[float] = []
-        session = MotionSession(
-            robot,
-            presence=True,
-            idle="breathing",
-            stop_sound=lambda token: stops.append(time.monotonic()),
-        )
-        async with _running(session):
-            session.resume()
-            first = session.submit(_TestPrimary(0.6, 0.02), Path("one.ogg"))
-            second = session.submit(_TestPrimary(0.6, 0.02), Path("two.ogg"))
-            while not any(name == "media.play_sound" for name, _ in robot.commands):
-                await asyncio.sleep(0.01)
-            second.done.cancel()  # queued: its sound never started
-            queued_acked = await asyncio.to_thread(second.dropped.wait, 0.5)
-            stops_after_queued = len(stops)
-            first.done.cancel()  # playing, its sound started: stopped by the loop
-            playing_acked = await asyncio.to_thread(first.dropped.wait, 0.5)
-            return stops_after_queued, queued_acked, len(stops), playing_acked
+def test_the_loop_stops_only_the_sound_it_started_with_its_token() -> None:
+    """A queued primary dropped never started its sound and has nothing stopped; the
+    playing one's sound is stopped with the very token its start returned, so the
+    player can tell it was replaced. Both drops are acknowledged."""
 
-    assert asyncio.run(run()) == (0, True, 1, True)
-
-
-def test_the_loop_stops_the_sound_with_the_token_its_start_returned() -> None:
-    async def run() -> tuple[list[Path], list[object], list[object]]:
+    async def run() -> tuple[list[Path], list[object], list[object], bool, bool]:
         robot = FakeReachyMini()
         started: list[Path] = []
         tokens: list[object] = []
@@ -1357,22 +1323,27 @@ def test_the_loop_stops_the_sound_with_the_token_its_start_returned() -> None:
         session = MotionSession(
             robot,
             presence=True,
-            idle="hold",
+            idle="breathing",
             start_sound=start,
             stop_sound=stopped.append,
         )
         async with _running(session):
             session.resume()
-            primary = session.submit(_TestPrimary(0.6, 0.02), Path("one.ogg"))
+            first = session.submit(_TestPrimary(0.6, 0.02), Path("one.ogg"))
+            second = session.submit(_TestPrimary(0.6, 0.02), Path("two.ogg"))
             while not started:
                 await asyncio.sleep(0.01)
-            primary.done.cancel()
-            await asyncio.to_thread(primary.dropped.wait, 0.5)
-        return started, tokens, stopped
+            second.done.cancel()  # queued: its sound never started
+            queued_acked = await asyncio.to_thread(second.dropped.wait, 0.5)
+            assert stopped == []
+            first.done.cancel()  # playing, its sound started: stopped by the loop
+            playing_acked = await asyncio.to_thread(first.dropped.wait, 0.5)
+        return started, tokens, stopped, queued_acked, playing_acked
 
-    started, tokens, stopped = asyncio.run(run())
+    started, tokens, stopped, queued_acked, playing_acked = asyncio.run(run())
     assert started == [Path("one.ogg")]
-    assert stopped == tokens  # the very token, so the player can tell it was replaced
+    assert stopped == tokens
+    assert queued_acked and playing_acked
 
 
 def test_a_failing_primary_has_its_sound_stopped_before_the_failure_is_raised() -> None:
@@ -1430,6 +1401,9 @@ def test_motor_pause_stops_owned_sound_and_acknowledges_all_primaries() -> None:
                     await asyncio.wrap_future(primary.done)
                 assert primary.dropped.is_set()
                 assert stopped == [token]
+            sent = len(robot.targets)
+            await asyncio.sleep(0.15)
+            assert len(robot.targets) == sent  # paused: nothing commanded
             session.resume()
             await asyncio.wrap_future(
                 session.submit(_TestPrimary(0.05, 0.02), None).done
@@ -1438,36 +1412,7 @@ def test_motor_pause_stops_owned_sound_and_acknowledges_all_primaries() -> None:
     asyncio.run(run())
 
 
-# --- a primary failing at its entry (specs/motion/motion.md "Lifecycle") ------------------
-
-
-def test_a_primary_failing_at_its_entry_blend_fails_its_future() -> None:
-    """The entry blend evaluates the move's start pose before the primary plays: that
-    failure fails the primary's future at once and the loop re-selects on its next tick
-    — the idle move goes on and the next primary plays."""
-
-    async def run() -> tuple[BaseException | None, int, int]:
-        robot = FakeReachyMini()
-        async with _running(
-            MotionSession(robot, presence=True, idle="breathing")
-        ) as session:
-            session.resume()
-            future = session.submit(_TestPrimary(1.0, 0.02, fail_after=-1.0), None).done
-            exc: BaseException | None = None
-            try:
-                await asyncio.wait_for(asyncio.wrap_future(future), timeout=1)
-            except Exception as e:  # noqa: BLE001 - captured for the assertion below
-                exc = e
-            before = len(robot.targets)
-            await asyncio.sleep(0.2)
-            after = len(robot.targets)
-            played = session.submit(_TestPrimary(0.15, 0.01), None).done
-            await asyncio.wait_for(asyncio.wrap_future(played), timeout=2)
-        return exc, before, after
-
-    exc, before, after = asyncio.run(run())
-    assert isinstance(exc, RuntimeError)
-    assert after > before
+# --- a lost connection at a primary's entry (specs/motion/motion.md "Lifecycle") ----------
 
 
 def test_a_lost_connection_at_a_primary_entry_fails_it_with_the_queue(

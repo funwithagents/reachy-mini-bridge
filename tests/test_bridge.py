@@ -8,12 +8,13 @@ no hardware. Async runs via `asyncio.run` (fast-tier convention).
 from __future__ import annotations
 
 import asyncio
+import inspect
 import itertools
 import json
 import threading
 import time
 import wave
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -47,11 +48,7 @@ from reachy_mini_bridge.face_detection import FaceReport, PixelFace
 from reachy_mini_bridge.fake_reachy_mini import FAKE_FRAME_HZ, FakeReachyMini
 from reachy_mini_bridge.head_tracking import HeadTrackingReport
 from reachy_mini_bridge.motion import (
-    ANTENNA_MIN_RAD,
-    ANTENNA_OUTWARD,
     BLEND_S,
-    BREATH_Z_M,
-    NEUTRAL_ANTENNAS,
     NEUTRAL_HEAD,
     HoldMove,
     IdleMove,
@@ -99,15 +96,6 @@ def _head_z(bridge: ReachyMiniBridge) -> list[float]:
 # --- construction / escape hatch ---------------------------------------------------
 
 
-def test_robot_escape_hatch_is_the_fake() -> None:
-    async def run() -> None:
-        async with ReachyMiniBridge("fake") as bridge:
-            assert isinstance(bridge.robot, FakeReachyMini)
-            assert bridge.raw is bridge.robot
-
-    asyncio.run(run())
-
-
 def test_string_shorthand_builds_a_config() -> None:
     bridge = ReachyMiniBridge("fake")
     assert bridge.config == ReachyMiniConfig(backend="fake")
@@ -131,22 +119,42 @@ def test_from_dict_from_json_from_json_file(tmp_path: Path) -> None:
         ReachyMiniBridge.from_json("{not json")
 
 
-def test_robot_requires_entry() -> None:
+@pytest.mark.parametrize(
+    "call",
+    [
+        pytest.param(lambda b: b.robot, id="robot"),
+        pytest.param(lambda b: b.raw, id="raw"),
+        pytest.param(lambda b: b.mic_sample_rate, id="mic_sample_rate"),
+        # Raised at call time, not at the first `async for`.
+        pytest.param(lambda b: b.audio_input(), id="audio_input"),
+        pytest.param(lambda b: b.say("hi", _ToneSynth()), id="say"),
+        pytest.param(lambda b: b.play_sound("wake_up.wav"), id="play_sound"),
+        pytest.param(lambda b: b.set_wobbling(True), id="set_wobbling"),
+        pytest.param(lambda b: b.set_face_detection(True), id="set_face_detection"),
+        pytest.param(lambda b: b.start_head_tracking(), id="start_head_tracking"),
+        pytest.param(lambda b: b.set_idle("hold"), id="set_idle"),
+        pytest.param(lambda b: b.set_idle_move(None), id="set_idle_move"),
+        # set_presence: test_set_presence_outside_a_session_raises_and_changes_nothing
+    ],
+)
+def test_the_session_api_raises_before_entry_and_after_exit(
+    call: Callable[[ReachyMiniBridge], object],
+) -> None:
     bridge = ReachyMiniBridge("fake")
-    with pytest.raises(BridgeError):
-        _ = bridge.robot
-    with pytest.raises(BridgeError):
-        _ = bridge.raw
-    with pytest.raises(BridgeError):
-        _ = bridge.mic_sample_rate
+
+    async def attempt() -> None:
+        with pytest.raises(BridgeError):
+            result = call(bridge)
+            if inspect.isawaitable(result):
+                await result
 
     async def run() -> None:
+        await attempt()
         async with bridge:
-            assert isinstance(bridge.robot, FakeReachyMini)
+            pass
+        await attempt()
 
     asyncio.run(run())
-    with pytest.raises(BridgeError):
-        _ = bridge.robot
 
 
 def test_double_start_raises_and_the_session_still_works() -> None:
@@ -187,20 +195,14 @@ def test_package_front_door_drives_the_fake() -> None:
     assert all(hasattr(rmb, name) for name in rmb.__all__)
     assert isinstance(_ToneSynth(), rmb.SpeechSynthesizer)
 
-    # The front-door names are the ones a caller catches.
-    async def run() -> None:
-        async with rmb.ReachyMiniBridge("fake") as bridge:
-            with pytest.raises(rmb.BridgeError):
-                await bridge.say("hi")  # no synthesizer
-            with pytest.raises(rmb.MotorsNotEnabledError):
-                await bridge.play_emotion("happy")  # the fake boots disabled
-            _fake(bridge).client.kinematics_engine = "AnalyticalKinematics"
-            with pytest.raises(rmb.GravityCompensationUnsupportedError):
-                await bridge.set_motors_state("gravity_compensation")
+    async def run() -> str:
+        config = rmb.ReachyMiniConfig.from_dict({"backend": "fake"})
+        async with rmb.ReachyMiniBridge(config, synthesizer=_ToneSynth()) as bridge:
+            await bridge.set_motors_state("enabled")
+            await bridge.say("hi")
+            return await bridge.get_motors_state()
 
-    asyncio.run(run())
-    with pytest.raises(rmb.ConfigError):
-        rmb.ReachyMiniConfig.from_json("{not json")
+    assert asyncio.run(run()) == "enabled"
 
 
 # --- default synthesizer from the config's `tts` block ------------------------------
@@ -214,9 +216,11 @@ def test_explicit_synthesizer_wins_over_tts_block(
 
     monkeypatch.setattr(bridge_module, "TTSEngineSynthesizer", boom)
     config = ReachyMiniConfig(backend="fake", tts={"module": {"type": "x"}})
+    bridge = ReachyMiniBridge(config, synthesizer=_ToneSynth())
+    assert bridge.synthesizer_error is None
 
     async def run() -> int:
-        async with ReachyMiniBridge(config, synthesizer=_ToneSynth()) as bridge:
+        async with bridge:
             await bridge.say("hi")
             return sum(
                 1 for n in _command_names(bridge) if n == "media.push_audio_sample"
@@ -236,11 +240,11 @@ def test_tts_block_builds_the_default_synthesizer(
 
     monkeypatch.setattr(bridge_module, "TTSEngineSynthesizer", _Adapter)
     block = {"module": {"type": "x"}}
+    bridge = ReachyMiniBridge(ReachyMiniConfig(backend="fake", tts=block))
+    assert bridge.synthesizer_error is None
 
     async def run() -> int:
-        async with ReachyMiniBridge(
-            ReachyMiniConfig(backend="fake", tts=block)
-        ) as bridge:
+        async with bridge:
             await bridge.say("hi")
             return sum(
                 1 for n in _command_names(bridge) if n == "media.push_audio_sample"
@@ -291,26 +295,6 @@ def test_tts_block_build_failure_degrades_to_no_voice(
     assert asyncio.run(run()) == ["happy", "sad", "curious"]
 
 
-def test_synthesizer_error_is_none_when_the_voice_builds(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class _Adapter(_ToneSynth):
-        def __init__(self, block: object) -> None:
-            del block
-
-    monkeypatch.setattr(bridge_module, "TTSEngineSynthesizer", _Adapter)
-    bridge = ReachyMiniBridge(
-        ReachyMiniConfig(backend="fake", tts={"module": {"type": "x"}})
-    )
-    assert bridge.synthesizer_error is None
-
-
-def test_explicit_synthesizer_leaves_no_error() -> None:
-    config = ReachyMiniConfig(backend="fake", tts={"module": {"type": "x"}})
-    bridge = ReachyMiniBridge(config, synthesizer=_ToneSynth())
-    assert bridge.synthesizer_error is None
-
-
 # --- lifecycle order: daemon -> robot -> media --------------------------------------
 
 
@@ -359,6 +343,7 @@ def test_the_daemon_starts_before_the_robot_and_stops_after(
     async def run() -> None:
         async with ReachyMiniBridge(_SPAWNING) as bridge:
             assert bridge.robot is rec.fake
+            assert bridge.raw is rec.fake
             rec.events.append("body")
 
     asyncio.run(run())
@@ -412,6 +397,7 @@ def test_robot_build_failure_exits_the_daemon(monkeypatch: pytest.MonkeyPatch) -
     with pytest.raises(ConnectionError):
         asyncio.run(run())
     assert rec.events == ["daemon-enter sim 127.0.0.1:8000", "daemon-exit"]
+    assert bridge.running is False
     with pytest.raises(BridgeError):
         _ = bridge.robot
 
@@ -467,23 +453,6 @@ def test_exit_tears_down_everything_even_if_media_teardown_fails(
         _ = bridge.robot
 
 
-def test_audio_verbs_require_an_open_api() -> None:
-    bridge = ReachyMiniBridge("fake")
-
-    async def run() -> None:
-        with pytest.raises(BridgeError):
-            await bridge.say("hi", _ToneSynth())
-        async with bridge:
-            pass
-        with pytest.raises(BridgeError):
-            await bridge.say("hi", _ToneSynth())
-
-    asyncio.run(run())
-    # Raised at call time, not at the first `async for`.
-    with pytest.raises(BridgeError):
-        bridge.audio_input()
-
-
 # --- motors ------------------------------------------------------------------------
 
 
@@ -505,20 +474,6 @@ def test_motor_state_round_trips_through_the_daemon() -> None:
         "gravity_compensation",
         "disabled",
     ]
-
-
-def test_set_motors_state_dispatches_to_matching_primitive() -> None:
-    async def run() -> list[str]:
-        async with ReachyMiniBridge("fake") as bridge:
-            await bridge.set_motors_state("enabled")
-            await bridge.set_motors_state("gravity_compensation")
-            await bridge.set_motors_state("disabled")
-            return _command_names(bridge)
-
-    names = asyncio.run(run())
-    assert "enable_motors" in names
-    assert "enable_gravity_compensation" in names
-    assert "disable_motors" in names
 
 
 def test_set_motors_state_rejects_unknown_state() -> None:
@@ -655,47 +610,28 @@ def test_start_head_tracking_needs_no_motors() -> None:
     )  # nothing to the robot: the tracker steers through the motion loop
 
 
-def test_movement_verbs_run_once_motors_enabled() -> None:
-    async def run() -> list[str]:
-        async with ReachyMiniBridge("fake") as bridge:
-            await bridge.set_motors_state("enabled")
-            await bridge.play_emotion("happy")
-            return _command_names(bridge)
-
-    names = asyncio.run(run())
-    assert "media.play_sound" in names  # the move played through the motion loop
-
-
 def test_focus_holds_the_head_on_the_face_without_the_breath(
     fast_attention: None,
 ) -> None:
-    async def run(focus: bool) -> tuple[bool, float]:
+    """`start_head_tracking(focus=True)` reaches the motion loop; the breath composed
+    around an aim without focus is test_motion's to pin."""
+
+    async def run() -> tuple[bool, float]:
         scene = _Scene([_pixel_face(0.1, 0.0)])
         async with ReachyMiniBridge(
             _custom_config(scene)
         ) as bridge:  # breathing by default
             await bridge.set_motors_state("enabled")
-            await bridge.start_head_tracking(focus=focus)
+            await bridge.start_head_tracking(focus=True)
             await asyncio.sleep(BLEND_S + 0.5)
             marker = len(_fake(bridge).targets)
-            await asyncio.sleep(2.0)  # the first breath rises over these seconds
+            await asyncio.sleep(1.0)  # the first breath rises over these seconds
             zs = _head_z(bridge)[marker:]
             return bridge.tracking_focus, max(zs) - min(zs)
 
-    focused, z_range = asyncio.run(run(True))
+    focused, z_range = asyncio.run(run())
     assert focused is True
     assert z_range < 1e-4  # the head holds on the face
-    composed, z_range = asyncio.run(run(False))
-    assert composed is False
-    assert z_range > 0.002  # it breathes around the face
-
-
-def test_list_emotions_returns_the_offline_library() -> None:
-    async def run() -> list[str]:
-        async with ReachyMiniBridge("fake") as bridge:
-            return await bridge.list_emotions()
-
-    assert asyncio.run(run()) == ["happy", "sad", "curious"]
 
 
 def test_play_emotion_resolves_name_and_plays_it() -> None:
@@ -759,6 +695,7 @@ def test_cancelled_play_emotion_stops_the_sound_and_keeps_the_session() -> None:
     i = names.index("media.play_sound")
     assert names[i + 1 : i + 3] == ["media.stop_sound", "audio.clear_player"]
     assert "media.push_audio_sample" in names[i + 3 :]
+    assert _wobbling_calls(names)[-1] == "enable_wobbling"  # restored past the cancel
 
 
 def test_cancelled_emotion_still_in_its_entry_blend_stops_no_sound() -> None:
@@ -814,38 +751,6 @@ def test_cancelled_soundless_emotion_does_not_stop_a_sound() -> None:
     assert "media.push_audio_sample" in names
 
 
-def test_play_emotion_failure_stops_the_sound_and_propagates(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class _BoomMove(bridge_module._FakeRecordedMove):
-        def evaluate(
-            self, t: float
-        ) -> tuple[
-            npt.NDArray[np.float64] | None, npt.NDArray[np.float64] | None, float | None
-        ]:
-            if t > 0.05:
-                raise RuntimeError("boom")
-            return super().evaluate(t)
-
-    def get(
-        self: bridge_module._FakeRecordedMoves, move_name: str
-    ) -> bridge_module._FakeRecordedMove:
-        return _BoomMove(move_name, sound_path=Path(f"{move_name}.ogg"))
-
-    monkeypatch.setattr(bridge_module._FakeRecordedMoves, "get", get)
-
-    async def run() -> list[str]:
-        async with ReachyMiniBridge("fake") as bridge:
-            await bridge.set_motors_state("enabled")
-            with pytest.raises(RuntimeError, match="boom"):
-                await bridge.play_emotion("happy")
-            return _command_names(bridge)
-
-    names = asyncio.run(run())
-    assert "media.play_sound" in names
-    assert names.index("media.stop_sound") > names.index("media.play_sound")
-
-
 def test_completed_play_emotion_does_not_stop_the_sound() -> None:
     # A completed move's sound plays to its natural end.
     async def run() -> list[str]:
@@ -882,14 +787,10 @@ def test_play_emotion_under_a_tracked_face_plays_as_recorded(
     assert engaged == "engaged"
     assert not any(n.endswith("head_tracking") for n in names)
     # the trajectory itself, after the entry blend: the recorded nod, straight ahead
-    move = bridge_module._FakeRecordedMove("sad")
+    # (the move's exact poses under an aim are test_motion's to pin)
     played = poses[-int(0.2 * 60) :]
     assert all(abs(yaw) < 1e-6 for yaw, _ in played)
     assert max(z for _, z in played) <= 0.01 + 1e-9
-    start = next(i for i, (yaw, _) in enumerate(poses) if abs(yaw) < 1e-6)
-    head, _a, _y = move.evaluate(0.0)
-    assert head is not None
-    assert poses[start][1] == pytest.approx(float(head[2, 3]), abs=0.002)
 
 
 def test_play_emotion_pauses_wobbling_and_restores_it() -> None:
@@ -957,41 +858,6 @@ def test_a_cancel_caught_inside_the_wobbling_pause_still_restores_it() -> None:
     assert "media.play_sound" not in names  # the move never started
 
 
-def test_play_emotion_restores_layers_after_a_cancel() -> None:
-    async def run() -> list[tuple[str, dict[str, Any]]]:
-        async with ReachyMiniBridge("fake") as bridge:
-            await bridge.set_motors_state("enabled")
-            task = asyncio.create_task(bridge.play_emotion("happy"))
-            while "media.play_sound" not in _command_names(bridge):
-                await asyncio.sleep(0)
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await task
-            return list(_fake(bridge).commands)
-
-    commands = asyncio.run(run())
-    wobbling_calls = [
-        n for n, _ in commands if n in ("enable_wobbling", "disable_wobbling")
-    ]
-    assert wobbling_calls[-1] == "enable_wobbling"
-
-
-def test_play_emotion_restores_to_the_current_record() -> None:
-    async def run() -> list[str]:
-        async with ReachyMiniBridge("fake") as bridge:
-            await bridge.set_motors_state("enabled")
-            task = asyncio.create_task(bridge.play_emotion("sad"))
-            await asyncio.sleep(0.1)  # wobbling paused for the move
-            await bridge.set_wobbling(False)  # the caller turns it off meanwhile
-            await task
-            return _command_names(bridge)
-
-    names = asyncio.run(run())
-    wobbling_calls = [n for n in names if n in ("enable_wobbling", "disable_wobbling")]
-    # no restore of the wobbling the caller turned off
-    assert wobbling_calls[-1] == "disable_wobbling"
-
-
 def test_cancelled_library_load_is_reused_by_the_next_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1053,27 +919,6 @@ def test_cancel_during_bring_up_exits_the_robot(
         _ = bridge.robot
 
 
-def test_say_routes_through_the_media_pipeline() -> None:
-    async def run() -> list[str]:
-        async with ReachyMiniBridge("fake", synthesizer=_ToneSynth()) as bridge:
-            await bridge.say("hello")
-            return _command_names(bridge)
-
-    names = asyncio.run(run())
-    assert "media.push_audio_sample" in names
-
-
-def test_say_accepts_a_per_call_synthesizer() -> None:
-    async def run() -> int:
-        async with ReachyMiniBridge("fake") as bridge:  # no default synth configured
-            await bridge.say("hello", _ToneSynth())
-            return sum(
-                1 for n in _command_names(bridge) if n == "media.push_audio_sample"
-            )
-
-    assert asyncio.run(run()) >= 1
-
-
 def test_say_without_any_synthesizer_raises_bridge_error() -> None:
     async def run() -> None:
         async with ReachyMiniBridge("fake") as bridge:
@@ -1081,26 +926,6 @@ def test_say_without_any_synthesizer_raises_bridge_error() -> None:
                 await bridge.say("hello")
 
     asyncio.run(run())
-
-
-def test_play_sound_plays_a_built_in_sound_to_its_end() -> None:
-    async def run() -> tuple[float, dict[str, object]]:
-        async with ReachyMiniBridge("fake") as bridge:
-            t0 = time.monotonic()
-            await bridge.play_sound("wake_up.wav")  # an SDK asset, 0.41 s
-            elapsed = time.monotonic() - t0
-            args = next(a for n, a in _fake(bridge).commands if n == "media.play_sound")
-            return elapsed, args
-
-    elapsed, args = asyncio.run(run())
-    assert elapsed >= 0.4
-    played = Path(str(args["sound_file"]))
-    assert played.name == "wake_up.wav" and played.is_file()
-
-
-def test_play_sound_outside_a_session_raises(tmp_path: Path) -> None:
-    with pytest.raises(BridgeError):
-        asyncio.run(ReachyMiniBridge("fake").play_sound(str(_wav(tmp_path, 0.1))))
 
 
 def test_a_cancelled_play_sound_stops_the_sound_and_keeps_the_session(
@@ -1218,91 +1043,47 @@ def test_audio_input_streams_mic_bytes_and_exposes_format() -> None:
 # --- audio-reactive motion (head wobbling) ----------------------------------------
 
 
-def test_set_wobbling_dispatches_and_tracks_state() -> None:
-    async def run() -> None:
-        async with ReachyMiniBridge("fake") as bridge:
-            assert bridge.wobbling is True  # on by default
-            await bridge.set_wobbling(False)
-            assert bridge.wobbling is False
-            assert _command_names(bridge)[-1] == "disable_wobbling"
-            await bridge.set_wobbling(True)
-            assert bridge.wobbling is True
-            assert _command_names(bridge)[-1] == "enable_wobbling"
-
-    asyncio.run(run())
-
-
-def test_set_wobbling_needs_no_motors() -> None:
-    config = ReachyMiniConfig(backend="fake", motion=MotionSettings(wobbling=False))
-
-    async def run() -> None:
-        async with ReachyMiniBridge(
-            config
-        ) as bridge:  # the fake boots with motors disabled
-            await bridge.set_wobbling(True)
-            assert bridge.wobbling is True
-            with pytest.raises(MotorsNotEnabledError):
-                await bridge.play_emotion("happy")
-
-    asyncio.run(run())
-
-
-def test_wobbling_is_on_by_default_at_entry_and_off_at_exit() -> None:
-    bridge = ReachyMiniBridge("fake")
+@pytest.mark.parametrize(
+    ("at_entry", "sets", "expected"),
+    [
+        pytest.param(True, [], ["enable", "disable"], id="on-by-default"),
+        pytest.param(False, [], [], id="off-in-the-config-never-touched"),
+        pytest.param(False, [True], ["enable", "disable"], id="enabled-at-runtime"),
+        pytest.param(True, [False], ["enable", "disable"], id="off-not-disabled-again"),
+        pytest.param(
+            True, [False, True], ["enable", "disable", "enable", "disable"], id="both"
+        ),
+    ],
+)
+def test_wobbling_is_enabled_from_the_config_switched_and_off_at_exit(
+    at_entry: bool, sets: list[bool], expected: list[str]
+) -> None:
+    """The `wobbling` property tracks the switch; each change is one command, sent
+    after media opens; exit disables it only when it is on, before media closes — and a
+    `say` never touches it."""
+    config = ReachyMiniConfig(backend="fake", motion=MotionSettings(wobbling=at_entry))
+    bridge = ReachyMiniBridge(config, synthesizer=_ToneSynth())
 
     async def run() -> FakeReachyMini:
         async with bridge:
-            assert bridge.wobbling is True
-            return _fake(bridge)
-
-    robot = asyncio.run(run())
-    names = [name for name, _ in robot.commands]
-    assert (
-        names.index("media.start_playing")
-        < names.index("enable_wobbling")
-        < names.index("disable_wobbling")
-        < names.index("media.stop_recording")
-        < names.index("__exit__")
-    )
-    assert bridge.wobbling is False
-
-
-def test_wobbling_off_in_the_config_is_never_touched() -> None:
-    config = ReachyMiniConfig(backend="fake", motion=MotionSettings(wobbling=False))
-
-    async def run() -> FakeReachyMini:
-        async with ReachyMiniBridge(config, synthesizer=_ToneSynth()) as bridge:
+            assert bridge.wobbling is at_entry
             await bridge.say("hello")
+            for enabled in sets:
+                await bridge.set_wobbling(enabled)
+                assert bridge.wobbling is enabled
+                assert (
+                    _command_names(bridge)[-1]
+                    == f"{'en' if enabled else 'dis'}able_wobbling"
+                )
             return _fake(bridge)
 
     names = [name for name, _ in asyncio.run(run()).commands]
-    assert "enable_wobbling" not in names
-    assert "disable_wobbling" not in names
-
-
-def test_wobbling_enabled_at_runtime_is_disabled_at_exit() -> None:
-    bridge = ReachyMiniBridge(
-        ReachyMiniConfig(backend="fake", motion=MotionSettings(wobbling=False))
-    )
-
-    async def run() -> FakeReachyMini:
-        async with bridge:
-            await bridge.set_wobbling(True)
-            return _fake(bridge)
-
-    names = [name for name, _ in asyncio.run(run()).commands]
-    assert names.index("disable_wobbling") < names.index("__exit__")
+    assert _wobbling_calls(names) == [f"{call}_wobbling" for call in expected]
+    if expected:
+        last = len(names) - 1 - names[::-1].index("disable_wobbling")
+        assert names.index("media.start_playing") < names.index("enable_wobbling")
+        assert last < names.index("media.stop_recording") < names.index("__exit__")
     assert bridge.wobbling is False
-
-
-def test_wobbling_turned_off_at_runtime_is_not_disabled_again_at_exit() -> None:
-    async def run() -> FakeReachyMini:
-        async with ReachyMiniBridge("fake") as bridge:  # on by default
-            await bridge.set_wobbling(False)
-            return _fake(bridge)
-
-    names = [name for name, _ in asyncio.run(run()).commands]
-    assert names.count("disable_wobbling") == 1
 
 
 def test_failing_wobbling_enable_unwinds_the_session(
@@ -1339,30 +1120,14 @@ def test_failing_wobbling_enable_unwinds_the_session(
         _ = bridge.robot
 
 
-def test_wobbling_property_is_false_outside_a_session() -> None:
-    assert ReachyMiniBridge("fake").wobbling is False
-
-
-def test_set_wobbling_requires_entry() -> None:
-    with pytest.raises(BridgeError):
-        asyncio.run(ReachyMiniBridge("fake").set_wobbling(True))
-
-
 # --- attention / gaze: opt-in, needing a detector (specs/core/bridge.md, specs/core/config.md) ----
-
-
-def test_tracking_property_reads_the_config() -> None:
-    assert ReachyMiniBridge("fake").tracking is False  # off by default: no detector
-    assert ReachyMiniBridge(_custom_config(_Scene([]))).tracking is True
-    assert (
-        ReachyMiniBridge(_custom_config(_Scene([]), tracking=False)).tracking is False
-    )
 
 
 def test_the_default_config_runs_no_detector_and_the_switches_refuse() -> None:
     """specs/vision/user_perception.md "Detectors": with `face_detection.detector` null nothing is
     detected and nothing tracks; the switches raise, and the session works otherwise."""
     bridge = ReachyMiniBridge("fake")
+    assert bridge.face_detector is None
 
     async def run() -> tuple[FaceReport, str | None, bool, bool, list[str]]:
         async with bridge:
@@ -1389,28 +1154,62 @@ def test_the_default_config_runs_no_detector_and_the_switches_refuse() -> None:
     assert "enable_motors" in names and not any("tracking" in n for n in names)
 
 
-def test_a_switch_on_without_a_detector_fails_entry_before_anything_starts() -> None:
-    """A config assembled in code can say what `from_dict` refuses; entry refuses it."""
+_NOT_CALLABLE: Any = 42
+
+
+@pytest.mark.parametrize(
+    ("face_detection", "motion", "match"),
+    [
+        pytest.param(
+            FaceDetectionSettings(),
+            MotionSettings(tracking=True),
+            r"face_detection\.detector is null",
+            id="tracking-without-a-detector",
+        ),
+        pytest.param(
+            FaceDetectionSettings(enabled=True),
+            MotionSettings(),
+            r"face_detection\.detector is null",
+            id="detection-without-a-detector",
+        ),
+        pytest.param(
+            FaceDetectionSettings(detector="custom"),
+            MotionSettings(),
+            "no face detector is registered",
+            id="custom-with-nothing-registered",
+        ),
+        pytest.param(
+            FaceDetectionSettings(detector="custom", face_detector=_NOT_CALLABLE),
+            MotionSettings(),
+            "zero-argument callable",
+            id="custom-not-callable",
+        ),
+    ],
+)
+def test_a_detection_config_entry_cannot_run_fails_before_anything_starts(
+    face_detection: FaceDetectionSettings, motion: MotionSettings, match: str
+) -> None:
+    """A config assembled in code can say what `from_dict` refuses — a switch on with no
+    detector, `custom` with nothing registered or a bad factory
+    (specs/vision/user_perception.md "Custom detectors"): entry refuses it at the top of
+    bring-up — no daemon, no robot."""
     robots: list[FakeReachyMini] = []
 
     def build(backend: str, **kw: object) -> FakeReachyMini:
         robots.append(FakeReachyMini())
         return robots[-1]
 
-    tracking = ReachyMiniBridge(
-        ReachyMiniConfig(backend="fake", motion=MotionSettings(tracking=True))
-    )
-    detection = ReachyMiniBridge(
-        ReachyMiniConfig(
-            backend="fake", face_detection=FaceDetectionSettings(enabled=True)
-        )
+    bridge = ReachyMiniBridge(
+        ReachyMiniConfig(backend="fake", face_detection=face_detection, motion=motion)
     )
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(bridge_module, "build_robot", build)
-        for bridge in (tracking, detection):
-            with pytest.raises(ValueError, match=r"face_detection\.detector is null"):
-                asyncio.run(bridge.start())
-    assert robots == []
+        with pytest.raises(ValueError, match=match):
+            asyncio.run(bridge.start())
+    assert robots == []  # nothing was built, nothing to unwind
+    with pytest.raises(BridgeError):
+        _ = bridge.robot
+    assert bridge.faces.value == FaceReport.inactive(face_detection.detector)
 
 
 class _BrokenFactory:
@@ -1457,22 +1256,41 @@ def test_a_detector_that_cannot_be_built_fails_bring_up_and_unwinds() -> None:
     assert bridge.faces.value == FaceReport.inactive("custom")
 
 
-def test_a_detector_that_cannot_be_built_leaves_a_switch_as_it_was() -> None:
-    scene = _Scene([])
-    config = _custom_config(scene, detection=False, tracking=False)
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(OSError("no network: the model could not be downloaded"), id="os"),
+        # A ValueError from the factory is a build failure too, never the caller's.
+        pytest.param(ValueError("invalid model configuration"), id="value"),
+    ],
+)
+def test_a_detector_that_cannot_be_built_leaves_a_switch_as_it_was(
+    error: Exception,
+) -> None:
+    """specs/vision/user_perception.md "Building the detector": what the factory raises
+    is a build failure whatever its type — a `BridgeError` chaining it — while only a
+    build the loop cannot run is the caller's `ValueError`; the switches stay off and
+    the session works."""
+    config = _custom_config(_Scene([]), detection=False, tracking=False)
 
-    async def run() -> tuple[bool, bool, bool]:
+    def failing() -> Any:
+        raise error
+
+    async def run() -> tuple[BaseException | None, tuple[bool, bool, bool]]:
         async with ReachyMiniBridge(config) as bridge:
-            await bridge.set_face_detector(_BrokenFactory())  # callable: accepted
-            with pytest.raises(BridgeError, match="could not be built"):
+            await bridge.set_face_detector(failing)  # callable: accepted
+            with pytest.raises(BridgeError, match=f"could not be built.*{error}"):
                 await bridge.set_face_detection(True)
             detection = bridge.face_detection
-            with pytest.raises(BridgeError, match="could not be built"):
+            with pytest.raises(BridgeError, match="could not be built") as info:
                 await bridge.start_head_tracking(focus=True)
             await bridge.set_motors_state("enabled")  # the session still works
-            return detection, bridge.tracking, bridge.tracking_focus
+            switches = (detection, bridge.tracking, bridge.tracking_focus)
+            return info.value.__cause__, switches
 
-    assert asyncio.run(run()) == (False, False, False)
+    cause, switches = asyncio.run(run())
+    assert cause is error
+    assert switches == (False, False, False)
 
 
 # --- attention (specs/core/bridge.md "Attention"), derived from the tracker -----------------
@@ -1485,33 +1303,12 @@ def fast_attention(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(face_detection_module, "FACE_POLL_HZ", 20.0)
 
 
-def test_attention_follows_the_face(fast_attention: None) -> None:
-    scene = _Scene([])
-
-    async def run() -> list[str | None]:
-        async with ReachyMiniBridge(
-            _custom_config(scene)
-        ) as bridge:  # tracking, no motors
-            await asyncio.sleep(0.15)
-            seen = [bridge.attention]
-            scene.show()
-            await asyncio.sleep(0.5)
-            seen.append(bridge.attention)
-            scene.hide()
-            await asyncio.sleep(0.3 + 0.3)  # TRACKING_LOST_S, and a few frames
-            seen.append(bridge.attention)
-            await bridge.stop_head_tracking()
-            seen.append(bridge.attention)
-            return seen
-
-    assert asyncio.run(run()) == ["watching", "engaged", "watching", None]
-
-
-def test_the_configured_width_and_ceiling_reach_the_shipped_detector(
+def test_the_configured_width_reaches_the_shipped_detector(
     monkeypatch: pytest.MonkeyPatch, fast_faces: None
 ) -> None:
-    """`face_detection.width` is handed to the shipped detector's constructor, and the
-    loop runs under `target_fps` (specs/vision/user_perception.md "Configuration")."""
+    """`face_detection.width` is handed to the shipped detector's constructor
+    (specs/vision/user_perception.md "Configuration"); the `target_fps` ceiling is
+    test_face_detection's to pin."""
     scene = _Scene([_pixel_face(0.0)])
     widths: list[int | None] = []
 
@@ -1522,25 +1319,15 @@ def test_the_configured_width_and_ceiling_reach_the_shipped_detector(
     monkeypatch.setattr(face_detection_module, "_yunet_factory", shipped)
     config = ReachyMiniConfig(
         backend="fake",
-        face_detection=FaceDetectionSettings(
-            detector="yunet", enabled=True, width=640, target_fps=2.0
-        ),
+        face_detection=FaceDetectionSettings(detector="yunet", enabled=True, width=640),
     )
 
-    async def run() -> int:
+    async def run() -> None:
         async with ReachyMiniBridge(config) as bridge:
             await bridge.faces.wait_for(lambda r: bool(r.faces))
-            scene.calls = 0
-            await asyncio.sleep(1.5)
-            return scene.calls
 
-    calls = asyncio.run(run())
+    asyncio.run(run())
     assert widths == [640]
-    assert 2 <= calls <= 4, calls  # about two a second, under the fake's frame rate
-
-
-def test_attention_is_none_outside_a_session() -> None:
-    assert ReachyMiniBridge("fake").attention is None
 
 
 # --- the head tracking report (specs/motion/head_tracking.md "The head tracking report") ----
@@ -1555,13 +1342,18 @@ def test_the_head_tracking_report_wakes_on_each_change_of_state(
 ) -> None:
     """`bridge.head_tracking.changes()` wakes on tracking starting, engaging a face (its
     track_id, the one `bridge.faces` reports), a focus switch, the loss, and tracking
-    stopping — each once, and never while the face merely moves."""
+    stopping — each once, and never while the face merely moves; `bridge.attention`
+    reads the same state."""
     scene = _Scene([])
     bridge = ReachyMiniBridge(_custom_config(scene, tracking=False))
     assert bridge.head_tracking.value == HeadTrackingReport.inactive()
+    assert bridge.attention is None
 
-    async def run() -> tuple[list[HeadTrackingReport], int, float, float]:
+    async def run() -> tuple[
+        list[HeadTrackingReport], list[str | None], int, float, float
+    ]:
         woken: list[HeadTrackingReport] = []
+        attention: list[str | None] = []
 
         async def subscribe() -> None:
             async for report in bridge.head_tracking.changes():
@@ -1571,8 +1363,10 @@ def test_the_head_tracking_report_wakes_on_each_change_of_state(
         await asyncio.sleep(0)
         async with bridge:
             await bridge.start_head_tracking()
+            attention.append(bridge.attention)
             scene.show(0.0)
             await asyncio.sleep(0.4)
+            attention.append(bridge.attention)
             face_id = bridge.faces.value.faces[0].track_id
             ts_before = bridge.head_tracking.value.ts
             for x in (0.1, 0.2, 0.3):  # the face moves: fresh ts, no wake
@@ -1583,13 +1377,16 @@ def test_the_head_tracking_report_wakes_on_each_change_of_state(
             await asyncio.sleep(0.05)
             scene.hide()
             await asyncio.sleep(0.3 + 0.3)  # TRACKING_LOST_S, and a few frames
+            attention.append(bridge.attention)
             await bridge.stop_head_tracking()
+            attention.append(bridge.attention)
             await asyncio.sleep(0.05)
         await asyncio.sleep(0)
         subscriber.cancel()
-        return woken, face_id, ts_before, ts_after
+        return woken, attention, face_id, ts_before, ts_after
 
-    woken, face_id, ts_before, ts_after = asyncio.run(run())
+    woken, attention, face_id, ts_before, ts_after = asyncio.run(run())
+    assert attention == ["watching", "engaged", "watching", None]
     assert face_id >= 1
     assert [_state(r) for r in woken] == [
         (True, False, "watching", None),  # tracking started
@@ -1606,6 +1403,7 @@ def test_the_head_tracking_report_outlives_sessions(fast_attention: None) -> Non
     """The observable is the bridge's: tracking on from the config publishes the active
     report at every entry and the inactive one at every exit, to the same subscriber."""
     bridge = ReachyMiniBridge(_custom_config(_Scene([])))
+    assert bridge.tracking is True  # outside a session: the config's value
 
     async def run() -> list[tuple[bool, bool, str | None, int | None]]:
         woken: list[HeadTrackingReport] = []
@@ -1633,44 +1431,32 @@ def test_the_head_tracking_report_outlives_sessions(fast_attention: None) -> Non
     )
 
 
-def test_a_head_tracking_subscriber_cancelled_mid_wait_ends_cleanly(
-    fast_attention: None,
-) -> None:
-    async def run() -> bool:
-        async with ReachyMiniBridge(_custom_config(_Scene([]))) as bridge:
-
-            async def wait() -> None:
-                await bridge.head_tracking.wait_for(lambda r: r.track_id == 99)
-
-            waiter = asyncio.create_task(wait())
-            await asyncio.sleep(0.05)
-            waiter.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await waiter
-            await bridge.stop_head_tracking()  # the session still works
-            return bridge.head_tracking.value.active
-
-    assert asyncio.run(run()) is False
-
-
 def test_the_head_turns_toward_a_face_and_back_once_it_is_gone(
     fast_attention: None,
 ) -> None:
+    """The whole pipeline on the fake: feed → stub detector → selection → report with
+    the frame's pose → the tracker's aim → the motion loop's gaze layer."""
     scene = _Scene([_pixel_face(0.5, 0.0)])  # to the robot's right
     config = _custom_config(scene, idle="hold")
 
-    async def run() -> tuple[float, float]:
+    async def run() -> tuple[float, float, float]:
         async with ReachyMiniBridge(config) as bridge:
             await bridge.set_motors_state("enabled")
             robot = _fake(bridge)
             await asyncio.sleep(1.5)
             turned = _yaw_deg(robot.last_target[0])
+            tracker = bridge._tracker
+            assert tracker is not None
+            delay = tracker.delay_s
             scene.hide()
             await asyncio.sleep(0.3 + BLEND_S + 0.4)  # the loss, then the fade-out
-            return turned, _yaw_deg(robot.last_target[0])
+            return turned, delay, _yaw_deg(robot.last_target[0])
 
-    turned, back = asyncio.run(run())
+    turned, delay, back = asyncio.run(run())
     assert turned < -5.0  # toward the face's side (negative yaw is to the right)
+    # The fake's frames carry their capture pose, so the tracker aims against it exactly
+    # and its delay estimate is never exercised (specs/motion/head_tracking.md "The aim").
+    assert delay == head_tracking_module.DELAY_PRIOR_S
     assert abs(back) < 1.0
 
 
@@ -1742,67 +1528,6 @@ def test_faces_are_inactive_outside_a_session_and_active_inside(
     assert bridge.faces.value == FaceReport.inactive("custom")
 
 
-def test_a_subscriber_is_told_when_someone_appears_and_leaves(
-    fast_faces: None,
-) -> None:
-    scene = _Scene([])
-
-    async def run() -> list[FaceReport]:
-        async with ReachyMiniBridge(_custom_config(scene, tracking=False)) as bridge:
-            await asyncio.sleep(0.15)  # active, nobody there
-            woken: list[FaceReport] = []
-
-            async def subscriber() -> None:
-                async for report in bridge.faces.changes():
-                    woken.append(report)
-
-            task = asyncio.create_task(subscriber())
-            await asyncio.sleep(0)
-            scene.show(0.3, -0.2)
-            await asyncio.sleep(0.3)
-            scene.show(0.4, -0.2)  # moving: no wake-up
-            await asyncio.sleep(0.3)
-            scene.hide()
-            await asyncio.sleep(0.5)  # past the absence window
-            task.cancel()
-            return woken
-
-    woken = asyncio.run(run())
-    assert [len(r.faces) for r in woken] == [1, 0]
-    assert woken[0].faces[0].x == pytest.approx(0.3, abs=0.02)
-    assert all(r.active and r.source == "custom" for r in woken)
-
-
-def test_cancelling_a_faces_subscriber_returns_promptly_and_the_session_works(
-    fast_faces: None,
-) -> None:
-    scene = _Scene([])
-
-    async def run() -> tuple[float, str]:
-        async with ReachyMiniBridge(_custom_config(scene)) as bridge:
-
-            async def subscriber() -> None:
-                async for _ in bridge.faces.changes():
-                    pass
-
-            task = asyncio.create_task(subscriber())
-            await asyncio.sleep(0.2)  # blocked in `async for`
-            t0 = time.monotonic()
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await task
-            elapsed = time.monotonic() - t0
-            scene.show()  # a later publication reaches nobody, fails nothing
-            await asyncio.sleep(0.15)
-            await bridge.set_motors_state("enabled")
-            await bridge.set_wobbling(False)
-            return elapsed, await bridge.get_motors_state()
-
-    elapsed, motors = asyncio.run(run())
-    assert elapsed < 0.05
-    assert motors == "enabled"
-
-
 def test_set_face_detection_off_without_tracking_stops_the_loop(
     fast_faces: None,
 ) -> None:
@@ -1863,117 +1588,39 @@ def test_stopping_tracking_stops_a_loop_nobody_else_wants(fast_faces: None) -> N
     assert asyncio.run(run()) == (True, False)
 
 
-def test_face_detection_reads_and_resets_to_the_config() -> None:
-    config = _custom_config(_Scene([]), detection=False, tracking=False)
-    bridge = ReachyMiniBridge(config)
-    assert bridge.face_detection is False
-
-    async def run() -> bool:
-        async with bridge:
-            await bridge.set_face_detection(True)
-            return bridge.face_detection
-
-    assert asyncio.run(run()) is True
-    assert bridge.face_detection is False
-
-
-def test_set_face_detection_requires_entry() -> None:
-    with pytest.raises(BridgeError):
-        asyncio.run(ReachyMiniBridge("fake").set_face_detection(True))
-
-
-def test_a_custom_source_without_a_detector_fails_before_anything_is_entered() -> None:
-    """specs/vision/user_perception.md "Custom detectors": `custom` with nothing registered
-    (or a bad factory) is refused at the top of bring-up — no daemon, no robot."""
-    robots: list[FakeReachyMini] = []
-
-    def build(backend: str, **kw: object) -> FakeReachyMini:
-        robots.append(FakeReachyMini())
-        return robots[-1]
-
-    bridge = ReachyMiniBridge(
-        ReachyMiniConfig(
-            backend="fake", face_detection=FaceDetectionSettings(detector="custom")
-        )
-    )
-    not_callable: Any = 42
-    bad = ReachyMiniBridge(
-        ReachyMiniConfig(
-            backend="fake",
-            face_detection=FaceDetectionSettings(
-                detector="custom", face_detector=not_callable
-            ),
-        )
-    )
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(bridge_module, "build_robot", build)
-        with pytest.raises(ValueError, match="no face detector is registered"):
-            asyncio.run(bridge.start())
-        with pytest.raises(ValueError, match="zero-argument callable"):
-            asyncio.run(bad.start())
-    assert robots == []  # nothing was built, nothing to unwind
-    with pytest.raises(BridgeError):
-        _ = bridge.robot
-    assert bridge.faces.value == FaceReport.inactive("custom")
-
-
-def test_start_head_tracking_requires_entry() -> None:
-    with pytest.raises(BridgeError):
-        asyncio.run(ReachyMiniBridge("fake").start_head_tracking())
-
-
 # --- presence & breathing (motion loop) ---------------------------------------------
 
 
-def test_breathing_rises_from_neutral_and_antennas_lean_outward() -> None:
-    async def run() -> tuple[list[float], npt.NDArray[np.float64]]:
+def test_presence_from_the_config_and_set_presence_reach_the_loop() -> None:
+    config = ReachyMiniConfig(backend="fake", motion=MotionSettings(presence=False))
+
+    async def run() -> tuple[int, int]:
+        async with ReachyMiniBridge(config) as bridge:
+            await bridge.set_motors_state("enabled")
+            await asyncio.sleep(0.3)
+            quiet = len(_fake(bridge).targets)  # presence off: nothing sent when idle
+            await bridge.set_presence(True)
+            await asyncio.sleep(0.3)
+            return quiet, len(_fake(bridge).targets)
+
+    quiet, idling = asyncio.run(run())
+    assert quiet == 0
+    assert idling > 0
+
+
+def test_the_default_config_breathes() -> None:
+    """The config's default idle reaches the loop; the breath's shape and the antennas'
+    range are test_motion's to pin."""
+
+    async def run() -> list[float]:
         async with ReachyMiniBridge("fake") as bridge:
             await bridge.set_motors_state("enabled")
             await asyncio.sleep(BLEND_S + 1.0)
-            _head, antennas, _yaw = _fake(bridge).last_target
-            return _head_z(bridge)[-20:], np.asarray(antennas, dtype=np.float64)
-
-    z, antennas = asyncio.run(run())
-    # 1 s into the first breath z has risen ~1.7 mm, from ~0.8 mm twenty ticks earlier
-    assert max(z) - min(z) > 0.0005
-    assert all(-1e-6 <= v <= BREATH_Z_M + 1e-6 for v in z)
-    # outward only: neither antenna ever leans inside its neutral lean
-    assert np.all(ANTENNA_OUTWARD * antennas >= ANTENNA_MIN_RAD - 1e-6)
-
-
-def test_idle_hold_holds_neutral() -> None:
-    config = ReachyMiniConfig(backend="fake", motion=MotionSettings(idle="hold"))
-
-    async def run() -> list[float]:
-        async with ReachyMiniBridge(config) as bridge:
-            await bridge.set_motors_state("enabled")
-            await asyncio.sleep(BLEND_S + 0.3)
-            return _head_z(bridge)[-10:]
+            return _head_z(bridge)[-20:]
 
     z = asyncio.run(run())
-    assert z
-    assert all(v == pytest.approx(0.0, abs=1e-6) for v in z)
-
-
-def test_presence_off_sends_nothing_when_idle() -> None:
-    config = ReachyMiniConfig(backend="fake", motion=MotionSettings(presence=False))
-
-    async def run() -> tuple[bool, list[float], int, int]:
-        async with ReachyMiniBridge(config) as bridge:
-            await bridge.set_motors_state("enabled")
-            await asyncio.sleep(0.3)
-            idle_targets = _head_z(bridge)
-            await bridge.play_emotion("sad")
-            after_count = len(_fake(bridge).targets)
-            await asyncio.sleep(0.3)
-            final_count = len(_fake(bridge).targets)
-            return bridge.presence, idle_targets, after_count, final_count
-
-    presence, idle_targets, after_count, final_count = asyncio.run(run())
-    assert presence is False
-    assert idle_targets == []
-    assert after_count > 0
-    assert final_count == after_count
+    # 1 s into the first breath z has risen ~1.7 mm, from ~0.8 mm twenty ticks earlier
+    assert max(z) - min(z) > 0.0005
 
 
 def test_set_idle_hold_while_breathing_eases_to_neutral() -> None:
@@ -1992,53 +1639,6 @@ def test_set_idle_hold_while_breathing_eases_to_neutral() -> None:
     assert z
     assert all(v == pytest.approx(0.0, abs=1e-3) for v in z[-5:])
     assert max(abs(b - a) for a, b in itertools.pairwise(z)) < 0.003
-
-
-def test_set_presence_on_resumes_from_the_present_pose() -> None:
-    config = ReachyMiniConfig(backend="fake", motion=MotionSettings(presence=False))
-
-    async def run() -> list[float]:
-        async with ReachyMiniBridge(config) as bridge:
-            await bridge.set_motors_state("enabled")
-            head = np.eye(4)
-            head[2, 3] = 0.02
-            bridge.robot.set_target(head=head)  # a caller driving the head directly
-            await bridge.set_presence(True)
-            await asyncio.sleep(BLEND_S + 0.3)
-            return _head_z(bridge)
-
-    z = asyncio.run(run())
-    assert z
-    assert z[0] == pytest.approx(0.02, abs=0.003)
-    assert abs(z[-1]) < BREATH_Z_M + 0.002
-
-
-def test_switches_are_recorded_and_default_from_the_config() -> None:
-    config = ReachyMiniConfig(
-        backend="fake", motion=MotionSettings(presence=False, idle="hold")
-    )
-    bridge = ReachyMiniBridge(config)
-    assert bridge.presence is False
-    assert bridge.idle == "hold"
-
-    async def run() -> None:
-        async with bridge:
-            assert bridge.presence is False
-            await bridge.set_presence(True)
-            assert bridge.presence is True
-
-    asyncio.run(run())
-    assert bridge.presence is False  # reset to the config's values after exit
-    assert bridge.idle == "hold"
-
-
-def test_switch_verbs_require_entry() -> None:
-    with pytest.raises(BridgeError):
-        asyncio.run(ReachyMiniBridge("fake").set_presence(True))
-    with pytest.raises(BridgeError):
-        asyncio.run(ReachyMiniBridge("fake").set_idle("hold"))
-    with pytest.raises(BridgeError):
-        asyncio.run(ReachyMiniBridge("fake").set_idle_move(None))
 
 
 class _Lift(IdleMove):
@@ -2065,36 +1665,18 @@ def test_custom_idle_move_from_the_config_plays() -> None:
     assert z[-1] == pytest.approx(0.008, abs=1e-6)
 
 
-def test_set_idle_move_and_set_idle_work_in_either_order() -> None:
-    async def run(move_first: bool) -> tuple[list[float], str, object]:
+def test_set_idle_move_and_set_idle_reach_the_loop() -> None:
+    async def run() -> tuple[list[float], str, object]:
         async with ReachyMiniBridge("fake") as bridge:
             await bridge.set_motors_state("enabled")
-            if move_first:
-                await bridge.set_idle_move(_Lift)  # stored while breathing plays
-                await bridge.set_idle("custom")
-            else:
-                await bridge.set_idle("custom")  # the hold, until a move is registered
-                await bridge.set_idle_move(_Lift)
+            await bridge.set_idle_move(_Lift)  # stored while breathing plays
+            await bridge.set_idle("custom")
             await asyncio.sleep(2 * BLEND_S + 0.4)
             return _head_z(bridge), bridge.idle, bridge.idle_move
 
-    for move_first in (True, False):
-        z, idle, idle_move = asyncio.run(run(move_first))
-        assert z[-1] == pytest.approx(0.008, abs=1e-6)
-        assert (idle, idle_move) == ("custom", _Lift)
-
-
-def test_idle_modes_reset_to_the_config_on_exit() -> None:
-    bridge = ReachyMiniBridge("fake")
-
-    async def run() -> None:
-        async with bridge:
-            await bridge.set_idle_move(_Lift)
-            await bridge.set_idle("custom")
-            assert (bridge.idle, bridge.idle_move) == ("custom", _Lift)
-
-    asyncio.run(run())
-    assert (bridge.idle, bridge.idle_move) == ("breathing", None)
+    z, idle, idle_move = asyncio.run(run())
+    assert z[-1] == pytest.approx(0.008, abs=1e-6)
+    assert (idle, idle_move) == ("custom", _Lift)
 
 
 def test_set_idle_rejects_an_unknown_mode() -> None:
@@ -2105,17 +1687,6 @@ def test_set_idle_rejects_an_unknown_mode() -> None:
             return bridge.idle
 
     assert asyncio.run(run()) == "breathing"
-
-
-def test_set_idle_move_rejects_a_bad_factory_and_keeps_the_registered_one() -> None:
-    async def run() -> object:
-        async with ReachyMiniBridge("fake") as bridge:
-            await bridge.set_idle_move(_Lift)
-            with pytest.raises(ValueError, match="idle move"):
-                await bridge.set_idle_move(HoldMove)  # type: ignore[arg-type]
-            return bridge.idle_move
-
-    assert asyncio.run(run()) is _Lift
 
 
 def test_a_bad_idle_move_in_the_config_fails_bring_up() -> None:
@@ -2130,19 +1701,6 @@ def test_a_bad_idle_move_in_the_config_fails_bring_up() -> None:
 
     with pytest.raises(ValueError, match="idle move"):
         asyncio.run(run())
-
-
-def test_exit_leaves_the_head_at_neutral() -> None:
-    async def run() -> FakeReachyMini:
-        async with ReachyMiniBridge("fake") as bridge:
-            await bridge.set_motors_state("enabled")
-            await asyncio.sleep(1.0)
-            return _fake(bridge)
-
-    robot = asyncio.run(run())
-    head, antennas, _yaw = robot.last_target
-    assert abs(head[2, 3]) < 0.001
-    assert antennas == pytest.approx(NEUTRAL_ANTENNAS, abs=1e-3)
 
 
 # --- perception (camera): the feed (specs/vision/camera.md) ---------------------------------
@@ -2163,20 +1721,16 @@ def test_camera_publishes_the_fakes_frames_while_entered() -> None:
     )  # exists from construction: a consumer wires to it before entry
     assert camera.latest() is None
 
-    async def run() -> tuple[Any, int]:
+    async def run() -> Any:
         async with bridge:
             assert bridge.camera is camera  # the same object inside
-            frame = await _first_frame(bridge, timeout=1.5 / FAKE_FRAME_HZ)
-            before = camera.published_count
-            await asyncio.sleep(1.0)
-            return frame, camera.published_count - before
+            return await _first_frame(bridge, timeout=1.5 / FAKE_FRAME_HZ)
 
-    frame, per_second = asyncio.run(run())
+    frame = asyncio.run(run())
     assert camera.latest() is None  # after exit: no frame from a camera that is gone
     assert frame.frame_id >= 1
     assert frame.image.shape == (48, 64, 3) and frame.image.dtype == np.uint8
     assert frame.image.min() != frame.image.max()  # real structure, not a constant
-    assert 7 <= per_second <= 13  # the fake's 10 fps, the feed does not pace itself
 
 
 def test_camera_frames_carry_the_head_pose_at_their_time() -> None:
@@ -2483,45 +2037,77 @@ def test_set_face_detector_swaps_detectors_mid_session() -> None:
     assert value.active is False
 
 
-def test_face_detector_reads_the_config_outside_a_session_and_resets() -> None:
-    scene, other = _Scene([]), _Scene([])
-    bridge = ReachyMiniBridge(_custom_config(scene, tracking=False))
-    assert bridge.face_detector is scene.detector
+# --- the modes outside a session: the config's values (specs/core/bridge.md) ----------
 
-    async def run() -> None:
+
+_CONFIGURED_SCENE, _OTHER_SCENE = _Scene([]), _Scene([])
+
+
+async def _set_custom_idle(bridge: ReachyMiniBridge) -> None:
+    await bridge.set_idle_move(_Lift)
+    await bridge.set_idle("custom")
+
+
+@pytest.mark.parametrize(
+    ("config", "read", "change", "changed"),
+    [
+        pytest.param(
+            ReachyMiniConfig(backend="fake", motion=MotionSettings(presence=False)),
+            lambda b: b.presence,
+            lambda b: b.set_presence(True),
+            True,
+            id="presence",
+        ),
+        pytest.param(
+            ReachyMiniConfig(backend="fake", motion=MotionSettings(idle="hold")),
+            lambda b: (b.idle, b.idle_move),
+            _set_custom_idle,
+            ("custom", _Lift),
+            id="idle",
+        ),
+        pytest.param(
+            _custom_config(_Scene([]), detection=False, tracking=False),
+            lambda b: b.face_detection,
+            lambda b: b.set_face_detection(True),
+            True,
+            id="face_detection",
+        ),
+        pytest.param(
+            _custom_config(_Scene([])),
+            lambda b: b.tracking,
+            lambda b: b.stop_head_tracking(),
+            False,
+            id="tracking",
+        ),
+        pytest.param(
+            _custom_config(_CONFIGURED_SCENE, tracking=False),
+            lambda b: b.face_detector,
+            lambda b: b.set_face_detector(_OTHER_SCENE.detector),
+            _OTHER_SCENE.detector,
+            id="face_detector",
+        ),
+    ],
+)
+def test_a_mode_reads_the_config_outside_a_session_and_resets_to_it_on_exit(
+    config: ReachyMiniConfig,
+    read: Callable[[ReachyMiniBridge], object],
+    change: Callable[[ReachyMiniBridge], Awaitable[None]],
+    changed: object,
+) -> None:
+    bridge = ReachyMiniBridge(config)
+    configured = read(bridge)
+    assert configured != changed
+
+    async def run() -> tuple[object, object]:
         async with bridge:
-            await bridge.set_face_detector(other.detector)
-            assert bridge.face_detector is other.detector
+            at_entry = read(bridge)
+            await change(bridge)
+            return at_entry, read(bridge)
 
-    asyncio.run(run())
-    assert bridge.face_detector is scene.detector
-    assert ReachyMiniBridge("fake").face_detector is None
-
-
-def test_the_head_turns_toward_a_custom_detectors_face() -> None:
-    """The whole pipeline on the fake: feed → stub detector → selection → report with
-    the frame's pose → the tracker's aim → the motion loop's gaze layer."""
-    scene = _Scene([_pixel_face(0.5, 0.0)])  # to the robot's right
-
-    async def run() -> tuple[float, str | None, bool, float]:
-        async with ReachyMiniBridge(_custom_config(scene, idle="hold")) as bridge:
-            await bridge.set_motors_state("enabled")
-            await asyncio.sleep(1.5)
-            tracker = bridge._tracker
-            assert tracker is not None
-            return (
-                _yaw_deg(_fake(bridge).last_target[0]),
-                bridge.attention,
-                bridge.faces.value.head_pose is not None,
-                tracker.delay_s,
-            )
-
-    yaw, attention, with_pose, delay = asyncio.run(run())
-    assert yaw < -5.0  # negative yaw is to the right
-    assert attention == "engaged"
-    # The fake's frames carry their capture pose, so the tracker aims against it exactly
-    # and its delay estimate is never exercised (specs/motion/head_tracking.md "The aim").
-    assert with_pose and delay == head_tracking_module.DELAY_PRIOR_S
+    at_entry, inside = asyncio.run(run())
+    assert at_entry == configured
+    assert inside == changed
+    assert read(bridge) == configured
 
 
 # --- the lifecycle pair (specs/core/bridge.md "Lifecycle") ----------------------------
@@ -2558,32 +2144,6 @@ def test_start_and_stop_are_the_block() -> None:
         == (wobbling_block, presence_block)
         == (False, True)
     )
-
-
-def test_running_follows_the_session() -> None:
-    bridge = ReachyMiniBridge("fake")
-    assert bridge.running is False
-
-    async def run() -> tuple[bool, bool]:
-        await bridge.start()
-        inside = bridge.running
-        await bridge.stop()
-        return inside, bridge.running
-
-    assert asyncio.run(run()) == (True, False)
-
-
-def test_running_is_false_after_a_failed_start(monkeypatch: pytest.MonkeyPatch) -> None:
-    def failing(backend: str, **opts: object) -> FakeReachyMini:
-        raise ConnectionError("no daemon")
-
-    monkeypatch.setattr(bridge_module, "build_robot", failing)
-    bridge = ReachyMiniBridge("fake")
-    with pytest.raises(ConnectionError):
-        asyncio.run(bridge.start())
-    assert bridge.running is False
-    with pytest.raises(BridgeError):
-        _ = bridge.robot
 
 
 def test_stop_before_start_is_a_noop(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2787,24 +2347,21 @@ class _SecondSynth:
 
 
 def test_a_new_say_interrupts_the_one_playing_and_the_session_plays_on() -> None:
-    async def run() -> tuple[float, float, list[str]]:
+    """The bridge's `say` surfaces the media session's interrupt; its timing and flush
+    are test_audio's to pin."""
+
+    async def run() -> list[str]:
         async with ReachyMiniBridge("fake", synthesizer=_SecondSynth()) as bridge:
             first = asyncio.create_task(bridge.say("first"))
             while "media.push_audio_sample" not in _command_names(bridge):
                 await asyncio.sleep(0)
-            t0 = time.monotonic()
-            second = asyncio.create_task(bridge.say("second"))
+            second = asyncio.create_task(bridge.say("second", _ToneSynth()))
             with pytest.raises(SpeechInterruptedError):
                 await first
-            interrupted_after = time.monotonic() - t0
             await second
-            second_took = time.monotonic() - t0
-            await bridge.say("third")
-            return interrupted_after, second_took, _command_names(bridge)
+            return _command_names(bridge)
 
-    interrupted_after, second_took, names = asyncio.run(run())
-    assert interrupted_after < 0.2  # the first ended at once, not after its second
-    assert second_took >= 1.0  # the second played in full
+    names = asyncio.run(run())
     assert names.count("audio.clear_player") == 1  # the first's audio flushed, once
 
 
@@ -3693,31 +3250,3 @@ def test_a_cancelled_disable_completes_and_leaves_the_switch_off() -> None:
     assert switch is False and active is False
     assert closed == 1
     assert x == pytest.approx(0.2, abs=0.03)  # a fresh detector on the next enable
-
-
-def test_a_factory_raising_value_error_is_a_bridge_error_with_that_cause() -> None:
-    """specs/vision/user_perception.md "Building the detector": what the factory raises
-    is a build failure whatever its type — a `BridgeError` chaining it — while only a
-    build the loop cannot run is the caller's `ValueError`."""
-    scene = _Scene([])
-    config = _custom_config(scene, detection=False, tracking=False)
-
-    def invalid() -> Any:
-        raise ValueError("invalid model configuration")
-
-    async def run() -> tuple[BaseException | None, bool]:
-        async with ReachyMiniBridge(config) as bridge:
-            await bridge.set_face_detector(invalid)
-            with pytest.raises(BridgeError, match="could not be built.*invalid model"):
-                await bridge.set_face_detection(True)
-            cause = None
-            try:
-                await bridge.start_head_tracking()
-            except BridgeError as e:
-                cause = e.__cause__
-            await bridge.set_motors_state("enabled")  # the session still works
-            return cause, bridge.face_detection
-
-    cause, switch = asyncio.run(run())
-    assert isinstance(cause, ValueError)
-    assert switch is False

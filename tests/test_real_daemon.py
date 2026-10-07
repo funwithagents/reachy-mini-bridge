@@ -44,8 +44,13 @@ def test_is_robot_camera_matches_upstreams_camera_names() -> None:
     assert tuple(detection.DEFAULT_CAM_NAMES) == real_daemon.ROBOT_CAMERA_NAMES
 
 
-def test_select_camera_keeps_a_build_that_opened_the_robot_camera() -> None:
-    builds = _Builds(["Reachy Mini Camera"])
+@pytest.mark.parametrize(
+    "opened",
+    ["Reachy Mini Camera", None],
+    ids=["the robot camera", "a device that reports no name"],
+)
+def test_select_camera_keeps_a_first_build_it_cannot_fault(opened: str | None) -> None:
+    builds = _Builds([opened])
     assert real_daemon.select_camera(builds.opened, builds.restart, first=1, count=2)
     assert builds.restarts == []
 
@@ -80,12 +85,6 @@ def test_select_camera_gives_up_after_the_attempts_and_leaves_the_last_build(
     assert builds.restarts == [1, 0]  # three builds: the first plus two rebuilds
     assert caplog.records[-1].levelno == logging.ERROR
     assert "without video" in caplog.records[-1].getMessage()
-
-
-def test_select_camera_accepts_a_device_that_reports_no_name() -> None:
-    builds = _Builds([None])
-    assert real_daemon.select_camera(builds.opened, builds.restart, first=0, count=1)
-    assert builds.restarts == []
 
 
 # --- the media-server wiring ------------------------------------------------------------
@@ -192,31 +191,20 @@ def _run(argv: list[str], monkeypatch: pytest.MonkeyPatch) -> tuple[list[str], i
     return seen[0], len(installed)
 
 
+@pytest.mark.parametrize(
+    ("args", "forwarded"),
+    [
+        (
+            ["--no-preload-datasets", "--kinematics-engine", "Placo"],
+            ["--no-preload-datasets", "--kinematics-engine", "Placo"],
+        ),
+        ([], ["--preload-datasets"]),
+    ],
+    ids=["flags forwarded", "defaults"],
+)
 def test_run_real_daemon_rewrites_argv_and_installs_the_camera_check(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, args: list[str], forwarded: list[str]
 ) -> None:
-    argv, installed = _run(
-        [
-            "--no-preload-datasets",
-            "--kinematics-engine",
-            "Placo",
-            "--log-level",
-            "DEBUG",
-        ],
-        monkeypatch,
-    )
-    assert argv == [
-        "reachy-mini-daemon",
-        "--no-preload-datasets",
-        "--kinematics-engine",
-        "Placo",
-        "--log-level",
-        "DEBUG",
-    ]
-    assert installed == 1
-
-
-def test_run_real_daemon_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
-    argv, installed = _run([], monkeypatch)
-    assert argv == ["reachy-mini-daemon", "--preload-datasets"]
+    argv, installed = _run(args, monkeypatch)
+    assert argv == ["reachy-mini-daemon", *forwarded]
     assert installed == 1

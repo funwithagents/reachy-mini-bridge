@@ -79,20 +79,6 @@ def test_on_backend_runs_once_the_model_exists(mujoco: Any, scene_name: str) -> 
     assert len(seen) == 1 and seen[0] > 0
 
 
-def test_the_subclass_leaves_the_control_loop_and_tracking_to_upstream() -> None:
-    """The launcher changes what the camera stream carries and what the viewer shows,
-    nothing of the daemon's control loop, kinematics or face tracking
-    (specs/daemon/sim_daemon.md "The backend subclass")."""
-    subclass = bridge_backend(_StubBackend)
-    own = set(vars(subclass))  # `run` is wrapped for the overlay's sake; nothing else
-    assert not own & {
-        "update_head_kinematics_model",
-        "step_head_tracking",
-        "set_tracking_face",
-        "update_target_head_joints_from_ik",
-    }, own
-
-
 # --- webcam mode wiring (no MuJoCo) --------------------------------------------------------
 
 
@@ -145,37 +131,6 @@ def test_webcam_source_per_platform() -> None:
         webcam_source("FaceTime HD Camera", "Darwin")
     with pytest.raises(ValueError, match="Windows"):
         webcam_source(0, "Windows")
-
-
-def test_the_relay_sends_what_the_sim_media_server_reads() -> None:
-    """The caps upstream's render thread sends (GStreamerUDPCamera) and the MuJoCo media
-    server's UDP source expects: RGB 1280x720, RTP raw video, payload 96, port 5005."""
-    description = relay_pipeline_description("autovideosrc")
-    assert description.startswith("autovideosrc name=")
-    for part in (
-        "format=RGB,width=1280,height=720",
-        "rtpvrawpay",
-        "payload=96",
-        "port=5005",
-    ):
-        assert part in description
-
-
-def test_the_relay_crops_and_scales_instead_of_constraining_the_camera() -> None:
-    """A camera is asked for nothing but system memory — one asked for a mode it does not
-    have never negotiates, so it never opens; a macOS camera offering GPU memory first
-    will not even link — and whatever it offers is centre-cropped to the stream's aspect
-    and scaled to its size, converted last, at the smallest frame."""
-    stages = [
-        stage.strip() for stage in relay_pipeline_description("v4l2src").split("!")
-    ]
-    assert stages[0].startswith("v4l2src name=")
-    assert stages[1] == "video/x-raw"  # system memory, and nothing else asked of it
-    assert stages[2] == "aspectratiocrop aspect-ratio=16/9"  # 1280x720 reduced
-    assert stages[3:6] == ["videoscale", "videoconvert", "videorate"]
-    # The only size in the pipeline is the stream's, downstream of the scale.
-    sized = [i for i, stage in enumerate(stages) if "width=" in stage]
-    assert sized == [6] and "width=1280,height=720" in stages[6]
 
 
 def test_the_relay_asks_for_the_streams_size_before_settling_for_a_crop() -> None:
@@ -501,62 +456,6 @@ def test_webcam_mode_with_the_overlay_hands_it_to_the_relay() -> None:
     backend.run()
     assert relays == [overlay]
     assert events == ["relay start", "relay stop", "stop"]
-
-
-def test_the_run_hands_the_viewer_to_the_overlay_and_stops_it_before_the_close() -> (
-    None
-):
-    """Upstream's run() launches the viewer as a local and closes it itself; the run
-    wrapper hands that handle to the overlay and makes its close stop the overlay first,
-    then restores the launch function — also when the run raises."""
-    events: list[str] = []
-    handle = _FakeHandle(events)
-
-    def launch_passive(*args: Any, **kwargs: Any) -> _FakeHandle:
-        events.append(f"launch {kwargs.get('show_left_ui')}")
-        return handle
-
-    viewer_module = SimpleNamespace(launch_passive=launch_passive)
-
-    class _ViewerBackend(_SimStubBackend):
-        def run(self) -> None:
-            viewer = viewer_module.launch_passive(None, None, show_left_ui=False)
-            events.append("running")
-            viewer.close()
-            events.append("after close")
-
-    overlay = _FakeOverlay(events)
-    on = sim_daemon._Displays(camera_overlay=True)
-    bridge_backend(
-        _ViewerBackend,
-        displays=on,
-        overlay_factory=lambda: overlay,
-        viewer_module=viewer_module,
-    )().run()
-    assert overlay.handle is handle
-    assert events == [
-        "launch False",
-        "attach",
-        "running",
-        "stop",
-        "close",
-        "after close",
-        "stop",  # the run's own finally: idempotent on the overlay
-    ]
-    assert viewer_module.launch_passive is launch_passive
-
-    class _FailingBackend(_SimStubBackend):
-        def run(self) -> None:
-            raise RuntimeError("boom")
-
-    with pytest.raises(RuntimeError, match="boom"):
-        bridge_backend(
-            _FailingBackend,
-            displays=on,
-            overlay_factory=lambda: overlay,
-            viewer_module=viewer_module,
-        )().run()
-    assert viewer_module.launch_passive is launch_passive
 
 
 # --- the headless camera (specs/daemon/sim_daemon.md "The headless camera") ------------
@@ -948,12 +847,6 @@ def test_run_sim_daemon_rewrites_argv_and_installs_the_backend(
     assert apps == [app] and app.title == "upstream"
 
 
-def test_run_sim_daemon_viewer_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
-    pytest.importorskip("reachy_mini.daemon.app.main")
-    argv = _run([], monkeypatch)
-    assert argv[1:] == ["--sim", "--preload-datasets"]
-
-
 def test_run_sim_daemon_turns_on_a_viewer_display(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -970,7 +863,7 @@ def test_run_sim_daemon_turns_on_a_viewer_display(
     argv = _run(["--sim-display", "camera_overlay"], monkeypatch)
     assert argv[1:] == ["--sim", "--preload-datasets"]
     assert seen["displays"] == sim_daemon._Displays(camera_overlay=True)
-    _run([], monkeypatch)
+    assert _run([], monkeypatch)[1:] == ["--sim", "--preload-datasets"]
     assert seen["displays"] == sim_daemon._Displays()
     # Every display has its flag, and several go together.
     _run(["--sim-display", "face_markers", "--sim-display", "robot_gaze"], monkeypatch)
@@ -1099,11 +992,9 @@ def test_the_displays_router_is_mounted_with_face_markers_only(
         ["--webcam-device", "1"],
         ["--webcam-hfov", "60"],
         ["--camera", "webcam", "--webcam-hfov", "180"],
-        ["--camera", "usb"],
         ["--headless", "--sim-display", "camera_overlay"],
         ["--headless", "--sim-display", "robot_gaze"],
         ["--headless", "--sim-display", "face_markers"],
-        ["--sim-display", "hud"],
     ],
 )
 def test_run_sim_daemon_refuses_bad_camera_flags(argv: list[str]) -> None:

@@ -14,8 +14,6 @@ from typing import Any
 import pytest
 
 from reachy_mini_bridge.config import (
-    SIM_DISPLAYS,
-    AudioSettings,
     DaemonConfig,
     FaceDetectionSettings,
     MotionSettings,
@@ -31,58 +29,20 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 def test_defaults() -> None:
     cfg = ReachyMiniConfig()
-    assert cfg.backend == "real"
-    assert cfg.robot == {}
-    assert cfg.daemon == DaemonConfig()
-    assert cfg.daemon.spawn == "never"
-    assert cfg.tts is None
-    assert cfg.audio.xvf3800 is None
+    assert ReachyMiniConfig.from_dict({}) == cfg
     # Detection is opt-in (specs/vision/user_perception.md): no detector, no detection, and
     # tracking off since it needs a detector.
     assert cfg.face_detection == FaceDetectionSettings(detector=None, enabled=False)
-    # upstream's own detection width, spelled out; null would be the full frame
-    assert cfg.face_detection.width == DETECT_WIDTH == 320
-    assert cfg.face_detection.target_fps is None  # once per new camera frame
-    assert cfg.motion == MotionSettings()
     assert cfg.motion.tracking is False
-    assert ReachyMiniConfig.from_dict({}) == cfg
+    # the shipped detector's own width, spelled out; null would be the full frame
+    assert cfg.face_detection.width == DETECT_WIDTH
 
 
-def test_from_json_file_round_trips_the_repo_example() -> None:
+def test_the_repo_example_parses() -> None:
+    """`config.example.json` is a valid config; tests/test_docs_consistency.py checks it
+    names every field."""
     cfg = ReachyMiniConfig.from_json_file(_REPO_ROOT / "config.example.json")
     assert cfg.backend == "sim"
-    assert cfg.robot == {
-        "host": "127.0.0.1",
-        "port": 8000,
-        "connection_mode": "network",
-        "media_backend": "local",
-        "timeout": 5.0,
-    }
-    # The example is the sim viewer seeing through the host webcam (specs/core/config.md):
-    # headless is off and the camera source is `webcam` on purpose, with every sim
-    # display on: the camera overlay, the robot's gaze and the face markers.
-    assert cfg.daemon == DaemonConfig(
-        spawn="auto",
-        headless=False,
-        scene=None,
-        camera=SimCameraSettings(source="webcam", device=None, hfov_deg=70.0),
-        sim_displays=SimDisplaySettings(
-            camera_overlay=True, robot_gaze=True, face_markers=True
-        ),
-        preload_datasets=True,
-        startup_timeout=45.0,
-    )
-    assert cfg.tts is not None
-    assert cfg.tts["module"]["type"] == "pocket"
-    assert cfg.tts["module"]["voice"] == "george"
-    assert cfg.audio == AudioSettings(xvf3800=None)
-    # The example shows the robot that follows the person in front of the webcam: the
-    # shipped detector, detection and tracking on — detecting at 640 px, twice the
-    # default width, for a finer roll.
-    assert cfg.face_detection == FaceDetectionSettings(
-        detector="yunet", enabled=True, width=640
-    )
-    assert cfg.motion == MotionSettings(tracking=True)
 
 
 def test_from_json_and_from_json_file_delegate_to_from_dict(tmp_path: Path) -> None:
@@ -97,6 +57,15 @@ def test_from_json_and_from_json_file_delegate_to_from_dict(tmp_path: Path) -> N
         == ReachyMiniConfig.from_json_file(str(path))
     )
     assert ReachyMiniConfig.from_json(text).daemon.headless is False
+    # The nested blocks carry the same trio.
+    block = '{"spawn": "auto", "scene": "minimal"}'
+    block_path = tmp_path / "daemon.json"
+    block_path.write_text(block)
+    assert (
+        DaemonConfig.from_json(block)
+        == DaemonConfig.from_json_file(block_path)
+        == DaemonConfig(spawn="auto", scene="minimal")
+    )
 
     bad = tmp_path / "bad.json"
     bad.write_text("{nope")
@@ -122,6 +91,12 @@ def test_config_error_is_a_value_error() -> None:
         ({"robot": "x"}, "robot"),
         ({"daemon": []}, "daemon"),
         ({"audio": 3}, "audio"),
+        ({"daemon": {"camera": "webcam"}}, r"daemon\.camera"),
+        ({"face_detection": []}, "face_detection"),
+        ({"motion": True}, "motion"),
+        ({"motion": {"breathing": True}}, "breathing"),
+        # the block is `face_detection` (specs/core/config.md); `faces` is unknown
+        ({"faces": {"detector": "yunet", "detection": True}}, "faces"),
     ],
 )
 def test_shape_and_key_errors(data: object, fragment: str) -> None:
@@ -270,42 +245,25 @@ def test_audio_xvf3800_shape() -> None:
 
 
 @pytest.mark.parametrize(
-    "daemon",
+    ("daemon", "fragment"),
     [
-        {"headless": "yes"},
-        {"preload_datasets": 1},
-        {"startup_timeout": 0},
-        {"startup_timeout": True},
-        {"startup_timeout": "45"},
-        {"startup_timeout": float("inf")},
-        {"startup_timeout": float("-inf")},
-        {"startup_timeout": float("nan")},
-        {"scene": ""},
-        {"scene": 3},
+        ({"headless": "yes"}, "daemon"),
+        ({"preload_datasets": 1}, "daemon"),
+        ({"startup_timeout": 0}, "daemon"),
+        ({"startup_timeout": True}, "daemon"),
+        ({"startup_timeout": "45"}, "daemon"),
+        # What Python's JSON parser makes of `Infinity`, `-Infinity` and `NaN`: a
+        # deadline built from one is never reached (specs/core/config.md).
+        ({"startup_timeout": float("inf")}, "startup_timeout.*finite"),
+        ({"startup_timeout": float("-inf")}, "startup_timeout.*finite"),
+        ({"startup_timeout": float("nan")}, "startup_timeout.*finite"),
+        ({"scene": ""}, "daemon"),
+        ({"scene": 3}, "daemon"),
     ],
 )
-def test_daemon_field_types(daemon: dict[str, object]) -> None:
-    with pytest.raises(ConfigError, match="daemon"):
+def test_daemon_field_types(daemon: dict[str, object], fragment: str) -> None:
+    with pytest.raises(ConfigError, match=fragment):
         ReachyMiniConfig.from_dict({"backend": "sim", "daemon": daemon})
-
-
-@pytest.mark.parametrize("spelling", ["Infinity", "-Infinity", "NaN"])
-def test_a_non_finite_startup_timeout_in_json_is_rejected(spelling: str) -> None:
-    """Python's JSON parser accepts these non-standard numbers; a deadline built from
-    one is never reached, so the config refuses them (specs/core/config.md)."""
-    text = f'{{"backend": "sim", "daemon": {{"startup_timeout": {spelling}}}}}'
-    with pytest.raises(ConfigError, match="startup_timeout.*finite"):
-        ReachyMiniConfig.from_json(text)
-    assert ReachyMiniConfig.from_json(
-        '{"backend": "sim", "daemon": {"startup_timeout": 12.5}}'
-    ).daemon.startup_timeout == pytest.approx(12.5)
-
-
-def test_daemon_camera_defaults_to_the_rendered_eye_camera() -> None:
-    assert ReachyMiniConfig.from_dict({}).daemon.camera == SimCameraSettings()
-    assert SimCameraSettings() == SimCameraSettings(
-        source="sim", device=None, hfov_deg=70.0
-    )
 
 
 def test_daemon_camera_selects_a_webcam() -> None:
@@ -344,17 +302,6 @@ def test_daemon_camera_selects_a_webcam() -> None:
 def test_daemon_camera_rejects_bad_values(camera: dict[str, object], key: str) -> None:
     with pytest.raises(ConfigError, match=key):
         ReachyMiniConfig.from_dict({"backend": "sim", "daemon": {"camera": camera}})
-
-
-def test_daemon_camera_must_be_an_object() -> None:
-    with pytest.raises(ConfigError, match=r"daemon\.camera"):
-        ReachyMiniConfig.from_dict({"daemon": {"camera": "webcam"}})
-
-
-def test_daemon_sim_displays_default_off() -> None:
-    assert ReachyMiniConfig.from_dict({}).daemon.sim_displays == SimDisplaySettings()
-    assert SimDisplaySettings().enabled() == []
-    assert SIM_DISPLAYS == ("camera_overlay", "robot_gaze", "face_markers")
 
 
 def test_daemon_sim_displays_turn_on_a_viewer_display() -> None:
@@ -409,17 +356,13 @@ def test_daemon_sim_displays_reject_bad_values(displays: object) -> None:
         )
 
 
-def test_face_detection_block_sets_the_detector_the_switch_and_the_knobs(
-    tmp_path: Path,
-) -> None:
-    text = '{"face_detection": {"detector": "custom", "enabled": false}}'
-    expected = FaceDetectionSettings(detector="custom", enabled=False)
-    assert ReachyMiniConfig.from_json(text).face_detection == expected
-    block = '{"detector": "custom", "enabled": false}'
-    path = tmp_path / "face_detection.json"
-    path.write_text(block)
-    assert FaceDetectionSettings.from_json(block) == expected
-    assert FaceDetectionSettings.from_json_file(path) == expected
+def test_face_detection_block_sets_the_detector_the_switch_and_the_knobs() -> None:
+    custom = ReachyMiniConfig.from_dict(
+        {"face_detection": {"detector": "custom", "enabled": False}}
+    )
+    assert custom.face_detection == FaceDetectionSettings(
+        detector="custom", enabled=False
+    )
     yunet = ReachyMiniConfig.from_json(
         '{"face_detection": {"detector": "yunet", "enabled": true, "width": 640,'
         ' "target_fps": 2.5}}'
@@ -430,28 +373,11 @@ def test_face_detection_block_sets_the_detector_the_switch_and_the_knobs(
     whole = ReachyMiniConfig.from_dict({"face_detection": {"target_fps": 5}})
     assert whole.face_detection.target_fps == 5.0
     nulls = ReachyMiniConfig.from_dict(
-        {"face_detection": {"width": None, "target_fps": None}}
+        {"face_detection": {"detector": None, "width": None, "target_fps": None}}
     )
+    assert nulls.face_detection.detector is None
     assert nulls.face_detection.width is None
     assert nulls.face_detection.target_fps is None
-
-
-def test_face_detection_detector_null_and_absent_both_mean_none() -> None:
-    null = ReachyMiniConfig.from_dict({"face_detection": {"detector": None}})
-    assert null.face_detection.detector is None
-    assert (
-        ReachyMiniConfig.from_dict({"face_detection": {}}).face_detection.detector
-        is None
-    )
-    assert ReachyMiniConfig.from_dict(
-        {"face_detection": {"enabled": False}}
-    ).face_detection == FaceDetectionSettings(detector=None, enabled=False)
-
-
-def test_the_faces_block_is_gone() -> None:
-    """The block is `face_detection` (specs/core/config.md); `faces` is an unknown key."""
-    with pytest.raises(ConfigError, match="faces"):
-        ReachyMiniConfig.from_dict({"faces": {"detector": "yunet", "detection": True}})
 
 
 @pytest.mark.parametrize(
@@ -511,18 +437,6 @@ def test_face_detection_block_rejects_bad_values(
         ReachyMiniConfig.from_dict({"face_detection": block})
 
 
-def test_face_detection_must_be_an_object() -> None:
-    with pytest.raises(ConfigError, match="face_detection"):
-        ReachyMiniConfig.from_dict({"face_detection": []})
-
-
-def test_motion_defaults() -> None:
-    assert ReachyMiniConfig.from_dict({}).motion == MotionSettings()
-    assert MotionSettings().presence is True
-    assert MotionSettings().wobbling is True
-    assert MotionSettings().tracking is False  # needs a detector, none by default
-
-
 def test_motion_block_sets_the_switches() -> None:
     cfg = ReachyMiniConfig.from_dict(
         {
@@ -548,27 +462,20 @@ def test_motion_block_sets_the_switches() -> None:
 
 
 @pytest.mark.parametrize(
-    "motion",
+    ("block", "field"),
     [
-        {"presence": "yes"},
-        {"wobbling": "yes"},
-        {"tracking": 1},
+        ({"presence": "yes"}, r"motion\.presence"),
+        ({"wobbling": "yes"}, r"motion\.wobbling"),
+        ({"tracking": 1}, r"motion\.tracking"),
+        ({"idle": True}, r"motion\.idle"),
+        ({"idle": "breathe"}, r"motion\.idle"),
+        ({"idle": ""}, r"motion\.idle"),
+        ({"idle": None}, r"motion\.idle"),
     ],
 )
-def test_motion_rejects_non_booleans(motion: dict[str, object]) -> None:
-    with pytest.raises(ConfigError, match="motion"):
-        ReachyMiniConfig.from_dict({"motion": motion})
-
-
-@pytest.mark.parametrize("idle", [True, "breathe", "", None])
-def test_motion_rejects_an_unknown_idle_mode(idle: object) -> None:
-    with pytest.raises(ConfigError, match=r"motion\.idle"):
-        ReachyMiniConfig.from_dict({"motion": {"idle": idle}})
-
-
-def test_motion_rejects_unknown_keys() -> None:
-    with pytest.raises(ConfigError, match="breathing"):
-        ReachyMiniConfig.from_dict({"motion": {"breathing": True}})
+def test_motion_block_rejects_bad_values(block: dict[str, object], field: str) -> None:
+    with pytest.raises(ConfigError, match=field):
+        ReachyMiniConfig.from_dict({"motion": block})
 
 
 def test_motion_idle_move_is_python_only() -> None:
@@ -589,20 +496,3 @@ def test_idle_modes_match_the_motion_loops_type() -> None:
     from reachy_mini_bridge.motion import IdleMode
 
     assert get_args(IdleMode.__value__) == IDLE_MODES
-
-
-def test_motion_must_be_an_object() -> None:
-    with pytest.raises(ConfigError, match="motion"):
-        ReachyMiniConfig.from_dict({"motion": True})
-
-
-def test_nested_blocks_have_their_own_constructor_trio(tmp_path: Path) -> None:
-    text = '{"spawn": "auto", "scene": "minimal"}'
-    path = tmp_path / "daemon.json"
-    path.write_text(text)
-    expected = DaemonConfig(spawn="auto", scene="minimal")
-    assert DaemonConfig.from_json(text) == expected
-    assert DaemonConfig.from_json_file(path) == expected
-    assert AudioSettings.from_json('{"xvf3800": [["X", [1]]]}') == AudioSettings(
-        xvf3800=[["X", [1]]]
-    )

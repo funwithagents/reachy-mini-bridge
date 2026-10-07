@@ -163,6 +163,31 @@ def test_wait_for_returns_the_first_matching_publication() -> None:
     assert asyncio.run(run()) == 3
 
 
+def test_cancelling_a_wait_for_ends_it_promptly_and_the_others_still_wait() -> None:
+    async def run() -> tuple[float, int, int]:
+        obs = Observable(0)
+        cancelled = asyncio.ensure_future(obs.wait_for(lambda v: v >= 2))
+        other = asyncio.ensure_future(obs.wait_for(lambda v: v >= 2))
+        await asyncio.sleep(0)
+        t0 = time.monotonic()
+        cancelled.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await cancelled
+        elapsed = time.monotonic() - t0
+        obs.set(1)  # a publication after the cancel fails nobody
+        await asyncio.sleep(0)
+        obs.set(2)
+        served = await asyncio.wait_for(other, 0.5)
+        later = asyncio.ensure_future(obs.wait_for(lambda v: v >= 3))
+        await asyncio.sleep(0)
+        obs.set(3)
+        return elapsed, served, await asyncio.wait_for(later, 0.5)
+
+    elapsed, served, later = asyncio.run(run())
+    assert elapsed < 0.05
+    assert (served, later) == (2, 3)
+
+
 def test_set_and_update_from_a_plain_thread_raise() -> None:
     obs = Observable(0)
     errors: list[BaseException] = []

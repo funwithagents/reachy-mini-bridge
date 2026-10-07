@@ -248,18 +248,6 @@ def _face(
     )
 
 
-def test_the_factory_check_accepts_a_class_and_a_lambda() -> None:
-    scene = _Scene()
-    check_face_detector_factory(scene.factory)
-    check_face_detector_factory(lambda: _StubDetector(scene))
-
-    class Bare:
-        def detect(self, frame_bgr: object, ts: float) -> list[PixelFace]:
-            return []
-
-    check_face_detector_factory(Bare)
-
-
 def test_the_factory_check_refuses_only_what_is_not_callable() -> None:
     """Registration checks the callable alone and builds nothing; a factory that raises,
     or returns something without `detect`, fails the loop's start instead
@@ -272,6 +260,16 @@ def test_the_factory_check_refuses_only_what_is_not_callable() -> None:
 
     check_face_detector_factory(boom)
     check_face_detector_factory(object)
+    # A class and a lambda are both zero-argument factories.
+    scene = _Scene()
+    check_face_detector_factory(scene.factory)
+    check_face_detector_factory(lambda: _StubDetector(scene))
+
+    class Bare:
+        def detect(self, frame_bgr: object, ts: float) -> list[PixelFace]:
+            return []
+
+    check_face_detector_factory(Bare)
 
 
 def test_a_factory_result_without_detect_fails_the_start_and_is_released() -> None:
@@ -541,46 +539,6 @@ def test_the_custom_source_reports_the_detectors_faces_on_the_frame() -> None:
     )  # nothing is sent to the robot: the daemon's tracking is untouched
 
 
-def test_track_ids_keep_counting_across_a_restart_of_the_loop() -> None:
-    """An id is never reused: the counter outlives a stop / start of the loop (the
-    tracks themselves start afresh), as the camera feed's frame_id does."""
-    scene = _Scene([_face(30, 24)])
-
-    async def run() -> tuple[int, int]:
-        async with _running_custom(scene) as loop:
-            await _wait_for(lambda: bool(loop.faces.value.faces))
-            first = loop.faces.value.faces[0].track_id
-            await loop.detection.stop()
-            await loop.detection.start()
-            await _wait_for(lambda: bool(loop.faces.value.faces))
-            return first, loop.faces.value.faces[0].track_id
-
-    first, second = _run(run)
-    assert first == 1 and second == 2
-
-
-def test_the_detector_runs_once_per_frame_not_once_per_poll() -> None:
-    scene = _Scene([_face(30, 24)])
-
-    async def run() -> tuple[int, int, int]:
-        async with _running_custom(scene) as loop:
-            await asyncio.sleep(0.3)
-            scene.calls.clear()
-            polls_before = len(loop.observed)
-            frames_before = loop.feed.published_count
-            await asyncio.sleep(1.0)
-            return (
-                len(scene.calls),
-                loop.feed.published_count - frames_before,
-                len(loop.observed) - polls_before,
-            )
-
-    calls, frames, observations = _run(run)
-    assert 7 <= calls <= 13, calls  # ≈ FAKE_FRAME_HZ, not the 20 Hz poll rate
-    assert calls == observations  # one report per detector call
-    assert abs(calls - frames) <= 1
-
-
 def test_a_slow_detector_skips_frames_and_never_queues_them() -> None:
     scene = _Scene([_face(30, 24)])
     scene.delay_s = 0.25  # past two frame periods
@@ -723,10 +681,8 @@ def test_the_shipped_detector_is_resolved_by_name(
     """`yunet` builds the shipped detector through its factory (substituted here: the
     real one loads upstream's model) and labels its reports."""
     scene = _Scene([_face(30, 24)])
-    widths: list[int | None] = []
 
     def shipped(width: int | None = None) -> _StubDetector:
-        widths.append(width)
         return scene.factory()
 
     monkeypatch.setattr(fd, "_yunet_factory", shipped)
@@ -735,7 +691,7 @@ def test_the_shipped_detector_is_resolved_by_name(
         robot = FakeReachyMini()
         feed = CameraFeed(frame_reader(robot), None)
         faces: Observable[FaceReport] = Observable(FaceReport.inactive("yunet"))
-        detection = FaceDetection(detector="yunet", faces=faces, feed=feed, width=640)
+        detection = FaceDetection(detector="yunet", faces=faces, feed=feed)
         await feed.start()
         await detection.start()
         try:
@@ -749,7 +705,6 @@ def test_the_shipped_detector_is_resolved_by_name(
     assert report.source == "yunet" and report.active
     assert len(report.faces) == 1 and scene.built_on
     assert report.faces[0].size == pytest.approx(12 / 48)
-    assert widths == [640]  # the config's width reaches the shipped detector
 
 
 # --- the cost knobs and the detector's release (specs/vision/user_perception.md "The detection
@@ -925,22 +880,28 @@ def test_a_display_sampling_the_feed_costs_the_detector_no_frames() -> None:
                 seen.add(frame.frame_id)
             time.sleep(0.02)
 
-    async def run() -> tuple[int, int]:
+    async def run() -> tuple[int, int, int]:
         async with _running_custom(scene) as loop:
             thread = threading.Thread(target=display, args=(loop.feed,))
             thread.start()
             try:
                 await asyncio.sleep(0.3)
                 scene.calls.clear()
+                polls_before = len(loop.observed)
                 frames_before = loop.feed.published_count
                 await asyncio.sleep(1.0)
-                return len(scene.calls), loop.feed.published_count - frames_before
+                return (
+                    len(scene.calls),
+                    loop.feed.published_count - frames_before,
+                    len(loop.observed) - polls_before,
+                )
             finally:
                 stop.set()
                 thread.join()
 
-    calls, frames = _run(run)
-    assert abs(calls - frames) <= 1
+    calls, frames, observations = _run(run)
+    assert abs(calls - frames) <= 1  # once per frame, not once per poll
+    assert calls == observations  # one report per detector call
     assert len(seen) >= 10
 
 

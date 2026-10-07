@@ -71,7 +71,7 @@ A vision library built on latest-value sampling consumes any object with a `late
 hands = HandStage(bridge.camera, target_fps=30)   # vision-modules; no adapter, no second reader
 ```
 
-The compatibility is **structural, not a dependency**: the bridge's core imports no vision library ([project.md](../project.md)), and the library's protocols are satisfied by shape. A test in `tests/` pins the shape with the three-member protocol written out locally — `frame_id`, `ts`, `image` as read-only properties, and `latest()` — so a rename on the bridge's side is caught here, and the library's side pins the same shape from its end. The frame-ownership rule above (read-only, copy before drawing) is the library's too.
+The compatibility is **structural, not a dependency**: the bridge's core imports no vision library ([project.md](../project.md)), and the library's protocols are satisfied by shape. The feed's tests in `tests/` read the frame's three members — `frame_id`, `ts`, `image` — and the feed's `latest()` by these names, so a rename on the bridge's side is caught here, and the library's side pins the same shape from its end. The frame-ownership rule above (read-only, copy before drawing) is the library's too.
 
 Detectors follow the same principle: a detector written against the bridge's `FaceDetector` protocol ([user_perception.md](user_perception.md) "Custom detectors") runs in the bridge's detection loop or in a vision graph over the same feed; the bridge's shipped detector wraps the model upstream already depends on, and further families would arrive behind per-feature extras ([user_perception.md](user_perception.md) open question 7) — lazily, never in the core.
 

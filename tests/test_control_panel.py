@@ -23,7 +23,6 @@ import pytest
 from examples.control_panel.controller import (
     FACE_MARKER_RGB,
     ControlPanelController,
-    PanelState,
     draw_faces,
 )
 from reachy_mini_bridge import (
@@ -118,14 +117,14 @@ def test_start_enters_the_session_and_stop_exits_it() -> None:
         controller.get_motors_state()
 
     with controller:
-        assert controller.running
+        assert controller.running and controller.bridge.running
         fake = _fake(controller)
         names = _commands(controller)
         assert "media.start_recording" in names
         assert "media.start_playing" in names
         assert controller.emotions == ["happy", "sad", "curious"]
 
-    assert not controller.running
+    assert not controller.running and not controller.bridge.running
     after = [name for name, _ in fake.commands]
     assert after.index("media.stop_recording") > after.index("media.start_recording")
     assert "media.stop_playing" in after
@@ -210,16 +209,13 @@ def test_snapshot_reflects_the_modes_and_the_camera_is_rgb() -> None:
     scene = _Scene()
     with ControlPanelController(_faces_config(scene, tracking=False)) as controller:
         state = controller.snapshot()
-        assert isinstance(state, PanelState)
         assert state.backend == "fake"
-        assert state.motors in ("enabled", "disabled", "gravity_compensation")
         assert (state.presence, state.idle, state.wobbling) == (True, "breathing", True)
         assert state.tracking is False
         assert state.attention is None
         assert state.voice == "none"
         assert state.mic_sample_rate == 16000
         assert state.busy == []
-        assert state.emotions == ["happy", "sad", "curious"]
 
         controller.set_presence(False)
         controller.set_idle("hold")
@@ -438,14 +434,6 @@ def test_draw_faces_outlines_each_face_where_it_is() -> None:
     assert green[8, 191:200].all()
     # nothing far from either face
     assert not green[90, 20:60].any()
-
-
-def test_stop_stops_the_bridge() -> None:
-    controller = ControlPanelController("fake")
-    controller.start(timeout=5)
-    assert controller.bridge.running
-    controller.stop()
-    assert not controller.bridge.running
 
 
 def test_snapshot_marks_the_tracked_face_by_track_id() -> None:

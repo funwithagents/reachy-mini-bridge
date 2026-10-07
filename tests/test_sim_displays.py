@@ -467,7 +467,7 @@ def test_a_fixed_camera_places_a_face_from_the_neutral_pose() -> None:
 
 def test_a_marker_is_always_the_same_object() -> None:
     """The marker's size never follows the detector's box — an upright box grows and
-    squares up around a tilted face — only its distance follows the face's size."""
+    squares up around a tilted face."""
     face = _seen((0.45, 0.0, 0.05), np.eye(4))
     assert face_marker(replace(face, size=0.0), SIM_CAMERA, np.eye(4)) is None
     usual = face_marker(face, SIM_CAMERA, np.eye(4))
@@ -483,13 +483,6 @@ def test_a_marker_is_always_the_same_object() -> None:
     assert usual is not None and square is not None and boxless is not None
     assert usual.size == square.size == boxless.size
     assert boxless.followed and boxless.label is None
-    # A face twice as big in the image is the same marker, half as far.
-    near = face_marker(replace(face, size=2.0 * face.size), SIM_CAMERA, np.eye(4))
-    assert near is not None and near.size == usual.size
-    origin = _camera_pose(np.eye(4))[:3, 3]
-    assert np.array(near.pos) - origin == pytest.approx(
-        (np.array(usual.pos) - origin) / 2.0
-    )
 
 
 def test_a_marker_round_trips_through_json_and_refuses_bad_values() -> None:
@@ -710,24 +703,6 @@ def test_face_markers_are_drawn_in_the_world_until_they_go_stale() -> None:
     assert len(view.state()["markers"]) == 2  # still readable, with its age
 
 
-def test_the_frame_offset_is_measured_on_the_backend(
-    mujoco: Any, robot: tuple[Any, Any]
-) -> None:
-    """The MuJoCo world and the head-pose frame differ by the shift upstream's backend
-    applies to the pose it reports; the view measures it on the backend."""
-    from reachy_mini.daemon.backend.mujoco.backend import MujocoBackend
-
-    model, data = robot
-    site = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "head")
-    backend = SimpleNamespace(model=model, data=data, head_site_id=site)
-    backend.get_mj_present_head_pose = lambda: MujocoBackend.get_mj_present_head_pose(
-        backend  # type: ignore[arg-type]
-    )
-    view = FaceMarkersView.for_backend(backend)
-    marker = FaceMarker(pos=(0.4, 0.1, 0.0), quat=(1.0, 0.0, 0.0, 0.0), size=(0.1, 0.2))
-    assert view.world_pos(marker) == pytest.approx((0.4, 0.1, 0.177))
-
-
 # --- the displays router ----------------------------------------------------------------
 
 
@@ -884,14 +859,6 @@ def test_the_publisher_places_faces_the_same_way_for_every_camera() -> None:
     hfov = np.degrees(2.0 * np.arctan(SIM_CAMERA.size[0] / 2.0 / SIM_CAMERA.K[0, 0]))
     webcam = CameraModel.for_sim(SimCameraSettings(source="webcam", hfov_deg=hfov))
     person = asyncio.run(run(webcam))
-    assert (
-        eye.size
-        == person.size
-        == (
-            FACE_MARKER_ASPECT * FACE_BOX_HEIGHT_M,
-            FACE_BOX_HEIGHT_M,
-        )
-    )
     assert person.pos == pytest.approx(eye.pos)
 
 

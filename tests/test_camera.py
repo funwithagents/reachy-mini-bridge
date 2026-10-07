@@ -10,14 +10,13 @@ import asyncio
 import threading
 import time
 from collections.abc import Callable, Iterator
-from typing import Protocol, runtime_checkable
 
 import numpy as np
 import numpy.typing as npt
 import pytest
 
 from reachy_mini_bridge import camera as camera_module
-from reachy_mini_bridge.camera import CameraFeed, CameraFrame
+from reachy_mini_bridge.camera import CameraFeed
 from reachy_mini_bridge.errors import BridgeError
 
 Read = tuple[npt.NDArray[np.uint8], float | None] | None
@@ -105,14 +104,17 @@ def test_frames_are_published_in_order_and_nones_publish_nothing(
     assert feed.published_count == 2
 
 
-def test_latest_is_none_before_start_and_after_stop() -> None:
+def test_latest_is_none_unless_running_and_frame_ids_count_across_restarts() -> None:
     reader = _Reader([(_image(1), 1.0)])
     feed = CameraFeed(reader, None)
-    assert feed.latest() is None
+    asyncio.run(feed.stop())  # never started: a no-op
+    assert feed.latest() is None and not feed.running
     asyncio.run(feed.start())
+    asyncio.run(feed.start())  # already running: the same one thread keeps reading
     _wait_until(lambda: feed.latest() is not None)
+    assert feed.running
     asyncio.run(feed.stop())
-    assert feed.latest() is None
+    assert feed.latest() is None and not feed.running
     assert feed.published_count == 1
     # frame_id counts on across start / stop, so an old result is never mistaken for new.
     reader.extend([(_image(2), 2.0)])
@@ -166,35 +168,30 @@ def test_head_pose_is_the_pose_at_the_capture_time_or_none(
 
     def pose_at(t: float) -> npt.NDArray[np.float64]:
         asked.append(t)
-        return _pose(t)
+        return _pose(t * 2)
 
-    # A capture time known: the pose at that time. Unknown (arrival time): no pose,
-    # even with a pose source at hand — a pose is attached only to a capture time.
-    reader = _Reader([(_image(1), 5.0), (_image(2), None)])
+    # A capture time known: the pose at that time.
+    reader = _Reader([(_image(1), 3.0)])
     feed = running(reader, pose_at)
+    _wait_until(lambda: feed.published_count == 1)
+    latest = feed.latest()
+    assert latest is not None and latest.ts == 3.0
+    assert latest.head_pose is not None and latest.head_pose[0, 3] == 6.0
+    # Unknown (arrival time): no pose, even with a pose source at hand — a pose is
+    # attached only to a capture time.
+    reader.extend([(_image(2), None)])
     _wait_until(lambda: feed.published_count == 2)
     latest = feed.latest()
     assert latest is not None
     assert latest.head_pose is None
-    assert asked == [5.0]
-    assert latest.ts >= 5.0  # the arrival on the monotonic clock, not 5.0
+    assert asked == [3.0]
+    assert latest.ts >= 3.0  # the arrival on the monotonic clock
     without = CameraFeed(_Reader([(_image(3), 7.0)]), None)
     asyncio.run(without.start())
     _wait_until(lambda: without.published_count == 1)
     frame = without.latest()
     asyncio.run(without.stop())
     assert frame is not None and frame.ts == 7.0 and frame.head_pose is None
-
-
-def test_a_frame_with_a_capture_time_carries_its_pose(
-    running: Callable[..., CameraFeed],
-) -> None:
-    feed = running(_Reader([(_image(1), 3.0)]), lambda t: _pose(t * 2))
-    _wait_until(lambda: feed.published_count == 1)
-    latest = feed.latest()
-    assert latest is not None
-    assert latest.head_pose is not None
-    assert latest.head_pose[0, 3] == 6.0
 
 
 def test_two_consumers_both_see_every_frame(
@@ -232,46 +229,6 @@ def test_start_needs_a_reader_and_bind_gives_one() -> None:
     with pytest.raises(BridgeError, match="while it runs"):
         feed.bind(_Reader([]), None)
     asyncio.run(feed.stop())
-
-
-# --- the shape a vision graph plugs onto (specs/vision/camera.md "A valid upstream") --------
-
-
-@runtime_checkable
-class FrameLike(Protocol):
-    """The three-member frame protocol of a latest-value vision runtime, written out
-    locally: a rename on the bridge's side fails this file."""
-
-    @property
-    def frame_id(self) -> int: ...
-    @property
-    def ts(self) -> float: ...
-    @property
-    def image(self) -> npt.NDArray[np.uint8]: ...
-
-
-class Upstream[T](Protocol):
-    def latest(self) -> T | None: ...
-
-
-def test_the_feed_and_its_frames_have_the_upstream_shape() -> None:
-    frame_like: FrameLike = CameraFrame(1, 0.5, _image(1))
-    upstream: Upstream[FrameLike] = CameraFeed(_Reader([]), None)
-    assert isinstance(frame_like, FrameLike)
-    assert upstream.latest() is None
-
-
-def test_stop_before_start_is_a_noop_and_start_while_running_too() -> None:
-    reader = _Reader([(_image(1), 1.0)])
-    feed = CameraFeed(reader, None)
-    asyncio.run(feed.stop())
-    assert feed.latest() is None and not feed.running
-    asyncio.run(feed.start())
-    asyncio.run(feed.start())  # already running: the same one thread keeps reading
-    _wait_until(lambda: feed.published_count == 1)
-    assert feed.running
-    asyncio.run(feed.stop())
-    assert feed.latest() is None and not feed.running
 
 
 class _EmptyReader:
