@@ -8,9 +8,11 @@ matching the fast tier's no-plugin convention (see tests/test_robot.py).
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import threading
 import time
+import urllib.error
 import wave
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -330,6 +332,115 @@ def test_media_session_applies_audio_config_when_given() -> None:
     ]
     assert len(applied) == 1
     assert applied[0]["config"] is profile
+
+
+def test_a_profile_that_does_not_apply_is_warned_and_the_session_opens(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Upstream's answer on a sim (no XVF3800) or after a failed write/readback.
+    robot = FakeReachyMini()
+    monkeypatch.setattr(robot.media.audio, "apply_audio_config", lambda *a, **k: False)
+
+    async def run() -> int:
+        async with _open(MediaSession(robot, audio_config=[["PP_AGCONOFF", [0]]])):
+            return robot.media.get_input_channels()
+
+    with caplog.at_level(logging.WARNING, logger="reachy_mini_bridge.audio"):
+        assert asyncio.run(run()) == 2
+    assert "audio.xvf3800 profile not applied" in caplog.text
+    assert "no XVF3800" in caplog.text
+
+
+def _webrtc_audio(monkeypatch: pytest.MonkeyPatch) -> Any:
+    from reachy_mini.media.webrtc_client_gstreamer import GstWebRTCClient
+
+    monkeypatch.setattr(GstWebRTCClient, "__del__", lambda self: None)
+    audio = GstWebRTCClient.__new__(GstWebRTCClient)
+    audio.daemon_url = "http://192.168.1.42:8000"
+    return audio
+
+
+def _http_error(code: int, detail: str) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(
+        "http://192.168.1.42:8000/api/audio/config/apply",
+        code,
+        "error",
+        cast("Any", {}),
+        io.BytesIO(detail.encode()),
+    )
+
+
+def test_on_the_webrtc_backend_the_profile_is_posted_to_the_daemon(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    posted: list[tuple[str, object]] = []
+
+    def post_json(url: str, body: object) -> dict[str, Any]:
+        posted.append((url, body))
+        return {"applied": True}
+
+    monkeypatch.setattr(audio_module, "_post_json", post_json)
+    robot = _robot_with_audio(_webrtc_audio(monkeypatch))
+    profile = [["PP_AGCONOFF", [0]], ["PP_MIN_NS", [0.15]]]
+
+    assert audio_module._apply_audio_profile(robot, profile) is None
+    assert posted == [
+        (
+            "http://192.168.1.42:8000/api/audio/config/apply",
+            {
+                "config": [
+                    {"name": "PP_AGCONOFF", "values": [0]},
+                    {"name": "PP_MIN_NS", "values": [0.15]},
+                ],
+                "verify": True,
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("answer", "reason"),
+    [
+        ({"applied": False}, "did not read back on the robot"),
+        (_http_error(503, "ReSpeaker audio board not available"), "found no XVF3800"),
+    ],
+    ids=["not-verified", "no-board"],
+)
+def test_on_the_webrtc_backend_a_profile_the_daemon_did_not_apply_is_a_reason(
+    monkeypatch: pytest.MonkeyPatch, answer: object, reason: str
+) -> None:
+    def post_json(url: str, body: object) -> object:
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(audio_module, "_post_json", post_json)
+    robot = _robot_with_audio(_webrtc_audio(monkeypatch))
+
+    problem = audio_module._apply_audio_profile(robot, [["PP_AGCONOFF", [0]]])
+    assert problem is not None
+    assert reason in problem
+
+
+@pytest.mark.parametrize(
+    ("error", "message"),
+    [
+        (_http_error(500, "apply_audio_config failed: bad name"), "bad name"),
+        (urllib.error.URLError("connection refused"), "cannot reach"),
+    ],
+    ids=["daemon-raised", "unreachable"],
+)
+def test_on_the_webrtc_backend_a_daemon_failure_fails_the_open(
+    monkeypatch: pytest.MonkeyPatch, error: Exception, message: str
+) -> None:
+    def post_json(url: str, body: object) -> object:
+        raise error
+
+    monkeypatch.setattr(audio_module, "_post_json", post_json)
+    robot = _robot_with_audio(_webrtc_audio(monkeypatch))
+
+    with pytest.raises(BridgeError, match=message):
+        audio_module._apply_audio_profile(robot, [["PP_AGCONOFF", [0]]])
 
 
 def _raise(message: str) -> Callable[..., None]:

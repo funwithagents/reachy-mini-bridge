@@ -158,7 +158,7 @@ Omit the block and `say` raises unless you pass your own `SpeechSynthesizer`. A 
 
 | Field | Default | What it does |
 |---|---|---|
-| `xvf3800` | `null` | The XVF3800 audio-processor profile applied when the media session starts, as a list of `[name, [values…]]` pairs. `null` keeps the firmware defaults. Upstream reports a profile it could not write by a return value the bridge does not surface today — on the sim, which has no XVF3800, a profile is accepted and does nothing |
+| `xvf3800` | `null` | The XVF3800 audio-processor profile applied when the media session starts, as a list of `[name, [values…]]` pairs. `null` keeps the firmware defaults. Written from the client on a USB robot, posted to the robot's daemon on a wireless one. A profile that does not apply — always so on a sim, which has no XVF3800 — logs one warning naming the cause and the session opens; the daemon failing the write, or being unreachable, fails the start with `BridgeError` |
 
 ## `face_detection` — who is in front of the robot
 

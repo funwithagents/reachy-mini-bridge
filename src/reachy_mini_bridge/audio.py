@@ -26,9 +26,11 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import json
 import logging
 import threading
 import time
+import urllib.error
 import urllib.request
 import wave
 from contextlib import AsyncExitStack, suppress
@@ -185,11 +187,15 @@ class MediaSession:
             await cancel_safe_step(media.start_playing, lambda _: media.stop_playing())
             stack.push_async_callback(asyncio.to_thread, media.stop_playing)
             if self._audio_config is not None:
-                # media.audio's type/optionality diverges between the real MediaManager
-                # and the fake; the audio-control surface is exercised loosely (the
-                # union still checks every other media call above/below).
-                audio: Any = media.audio
-                await asyncio.to_thread(audio.apply_audio_config, self._audio_config)
+                problem = await asyncio.to_thread(
+                    _apply_audio_profile, self._robot, self._audio_config
+                )
+                if problem is not None:
+                    _logger.warning(
+                        "audio.xvf3800 profile not applied: %s; the session opens "
+                        "with what the chip holds",
+                        problem,
+                    )
         except BaseException:
             await stack.aclose()
             raise
@@ -547,6 +553,73 @@ def _post(url: str) -> None:
     request = urllib.request.Request(url, method="POST")
     with urllib.request.urlopen(request, timeout=_DAEMON_HTTP_TIMEOUT_S):
         pass
+
+
+def _apply_audio_profile(robot: AnyReachyMini, profile: object) -> str | None:
+    """Backend dispatch behind the profile step of :meth:`MediaSession.start`.
+
+    Returns why the profile did not apply, ``None`` once it did; raises on a failure
+    of the open (specs/audio/audio.md "XVF3800 config applied on session start").
+    """
+    # media.audio's type/optionality diverges between the real MediaManager and the
+    # fake; the audio-control surface is exercised loosely.
+    audio: Any = robot.media.audio
+    if not isinstance(robot, FakeReachyMini) and audio is not None:
+        # Lazy import: only a real/sim robot reaches this branch.
+        from reachy_mini.media.webrtc_client_gstreamer import GstWebRTCClient
+
+        if isinstance(audio, GstWebRTCClient):
+            return _apply_audio_profile_on_daemon(audio.daemon_url, profile)
+    if audio is None:
+        return "the robot has no audio backend"
+    if not audio.apply_audio_config(profile):
+        return (
+            "upstream found no XVF3800 on this host (always so on a sim), or a "
+            "parameter was not written or did not read back"
+        )
+    return None
+
+
+def _apply_audio_profile_on_daemon(daemon_url: str, profile: object) -> str | None:
+    """Post the profile to the robot's daemon, the one owner of a wireless robot's
+    XVF3800 (upstream's ``POST /api/audio/config/apply``)."""
+    if not daemon_url:
+        return "the webrtc client knows no daemon address"
+    pairs = cast("list[tuple[str, list[float]]]", profile)
+    body = {
+        "config": [{"name": name, "values": list(values)} for name, values in pairs],
+        "verify": True,
+    }
+    url = f"{daemon_url}/api/audio/config/apply"
+    try:
+        answer = _post_json(url, body)
+    except urllib.error.HTTPError as e:
+        if e.code == 503:
+            return "the robot's daemon found no XVF3800"
+        raise BridgeError(
+            f"the robot's daemon failed to apply the audio profile "
+            f"(HTTP {e.code}): {e.read().decode(errors='replace')}"
+        ) from e
+    except OSError as e:
+        raise BridgeError(
+            f"cannot reach the robot's daemon to apply the audio profile ({url}): {e}"
+        ) from e
+    if not answer.get("applied"):
+        return "a parameter was not written or did not read back on the robot"
+    return None
+
+
+def _post_json(url: str, body: object) -> dict[str, Any]:
+    """POST a JSON body to the daemon's HTTP API and decode its JSON answer (patched
+    by tests)."""
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=_DAEMON_HTTP_TIMEOUT_S) as response:
+        return json.load(response)
 
 
 async def cancel_safe_step[T](enter: Callable[[], T], undo: Callable[[T], object]) -> T:

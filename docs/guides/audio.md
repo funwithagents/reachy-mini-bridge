@@ -58,7 +58,7 @@ The first-party [asr-engine](https://github.com/funwithagents/asr-engine) is one
 
 ## The microphone array's profile
 
-`audio.xvf3800` in the config is a list of `[name, [values…]]` pairs the bridge writes to the robot's XVF3800 audio processor when the session starts; `null` keeps the firmware defaults, which is the tested baseline. On a sim, which has no array, a profile is accepted and does nothing; on a USB Lite a profile upstream could not write is reported by a return value the bridge does not surface today — check the robot's behaviour rather than the log.
+`audio.xvf3800` in the config is a list of `[name, [values…]]` pairs the bridge writes to the robot's XVF3800 audio processor when the session starts; `null` keeps the firmware defaults, which is the tested baseline. On a USB Lite the bridge writes the profile from your machine and reads it back; on a wireless robot, whose array is out of your machine's reach, it hands the profile to the robot's daemon, which writes it. A profile that does not apply — on a sim, which has no array, it never does — logs a warning (`audio.xvf3800 profile not applied: …`) and the session opens with what the chip holds; the daemon failing the write, or being unreachable, fails the start with `BridgeError`.
 
 ## Sound on a host without a sound card
 
