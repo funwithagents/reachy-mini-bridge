@@ -119,6 +119,7 @@ The `live_bridge` fixture brings up the daemon itself — **don't start one by h
   - Example: `202607201830_world-registry-refactor.md`
 - Give each plan a `**Status:**` line just under its title (`Todo`/`In progress`/`Done`) and add a row for it to [plans/_index.md](plans/_index.md). Keep both current as work progresses (see "Keeping statuses current" above).
 - Start from [plans/_plan-template.md](plans/_plan-template.md).
+- The folder is pruned regularly to keep only the latest plans: older `Done` plans are deleted with their index rows, and stay readable in the git history. So link a plan only from another plan, never from a spec, doc or code comment — a spec states the design on its own terms, and the link would break at the next pruning.
 
 ## Verification
 
