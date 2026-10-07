@@ -85,7 +85,8 @@ The upstream `reachy_mini` SDK gives full, low-level access to the robot, and th
 
 | Feature | What you get |
 |---|---|
-| **One async API in human units** | Named emotions, `"enabled"` motors, degrees and seconds; the same code runs on the robot, the MuJoCo simulator and an offline fake. A move with motors off raises `MotorsNotEnabledError` instead of doing nothing. |
+| **One async API in human units** | A small set of `async` methods that speak the way a person or an agent does — *enable the motors, play "happy", say this, follow my face* — in named emotions, degrees and seconds rather than pose matrices and radians; the same code runs on the robot, the MuJoCo simulator and an offline fake. |
+| **Motors, emotions, sounds, wobbling** | The robot's own capabilities, as bridge calls: `set_motors_state` / `get_motors_state` for torque (`enabled`, `disabled`, `gravity_compensation`, checked before a move is sent), `list_emotions` / `play_emotion` for the recorded emotions library, `play_sound` for the robot's sound player, `set_wobbling` for the audio-reactive head sway — and `bridge.robot`, the native `ReachyMini`, for everything else the SDK offers. |
 | **One JSON configuration** | Backend, connection, daemon, voice, detector and idle behaviour in one file; changing `backend` moves it between the robot, the simulator and the fake. |
 | **Everything is cancellable** | Cancel the task awaiting `say`, `play_sound`, `play_emotion` or the microphone stream and the effect stops at once — speech flushed, the file stopped, the move no longer commanded — with the robot ready for the next call. |
 | **Audio input** | `async for chunk in bridge.audio_input()` yields the echo-cancelled microphone as int16 mono PCM at 16 kHz, ready for any speech recognizer, while the robot talks. |
