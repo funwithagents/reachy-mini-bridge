@@ -13,7 +13,7 @@ tests:
 
 ## Purpose
 
-`ReachyMiniConfig` is the one declarative object that describes everything needed to bring up a `ReachyMiniBridge` ([bridge.md](bridge.md)): which backend, how to reach — or spawn — its daemon, the default speech synthesizer, and the audio profile. It is buildable from a dict, a JSON string, or a JSON file, so a host application keeps its robot settings in its own configuration next to everything else and constructs a talking robot in one call. The same file switches from the real robot to the simulator to the offline fake by changing one string.
+`ReachyMiniConfig` is the one declarative object that describes everything needed to bring up a `ReachyMiniBridge` ([bridge.md](bridge.md)): which backend, how to reach — or spawn — its daemon, the default speech synthesizer, and the audio profile. It is buildable from a dict, a JSON string, or a JSON file, so a host application keeps its robot settings in its own configuration next to everything else and constructs a talking robot in one call. The same file switches between the real robot and the simulator by changing one string, and runs on the offline fake once `daemon.spawn` is `never` or the block is absent (the fake has no daemon).
 
 The shape and the constructor trio mirror [`tts-engine`'s configuration](https://github.com/funwithagents/tts-engine/blob/main/specs/configuration.md) (`TTSEngineConfig`), so the two first-party libraries read the same way — and the bridge's `tts` block *is* a tts-engine `engine` block, carried through verbatim.
 

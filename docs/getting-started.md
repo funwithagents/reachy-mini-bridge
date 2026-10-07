@@ -11,7 +11,7 @@ uv add "reachy-mini-bridge @ git+https://github.com/funwithagents/reachy-mini-br
 uv add "reachy-mini-bridge[sim] @ git+https://github.com/funwithagents/reachy-mini-bridge"     # the same, plus the simulator
 ```
 
-The API changes between commits without a deprecation period while the bridge is at 0.1: pin a commit (`@<sha>`). The extras — `sim`, the `tts-*` voices, `test` — are listed in the [README](../README.md#install); importing the package imports `reachy_mini`, which needs its native libraries installed (GStreamer: with the wheels on macOS and Windows, from the system on Linux — [guides/linux.md](guides/linux.md)) but no running daemon.
+The API changes between commits without a deprecation period while the bridge is at 0.1: pin a commit (`@<sha>`). Pinning the bridge does not pin what it depends on — `tts-engine` is declared from its `main` branch and `reachy-mini` as a version range — so lock your project's own resolved graph (`uv lock`, the lock file committed) and move it deliberately (`uv lock --upgrade-package reachy-mini-bridge`, or `--upgrade-package tts-engine`); the bridge's own lock file covers its development environment, not yours. The extras — `sim`, the `tts-*` voices, `test` — are listed in the [README](../README.md#install); importing the package imports `reachy_mini`, which needs its native libraries installed (GStreamer: with the wheels on macOS and Windows, from the system on Linux — [guides/linux.md](guides/linux.md)) but no running daemon.
 
 ## Your first application
 

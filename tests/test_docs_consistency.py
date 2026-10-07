@@ -1,7 +1,8 @@
 """The documentation's structural guards: one home per fact, and every pointer to it valid.
 
-Every local Markdown link in the documentation resolves; every spec's and plan's
-``**Status:**`` line matches its index row; the example config and the configuration
+Every local Markdown link in the documentation resolves — its heading fragment to a
+heading of the page it names — and every ``tests/...py::test_...`` reference names a test
+that exists; every spec's and plan's ``**Status:**`` line matches its index row; the example config and the configuration
 reference name every bridge-owned config field, and nothing else; every profile under
 ``examples/configs/`` is a valid ``ReachyMiniConfig``. Implementation plans are history
 and are not link-checked; the spec and plan templates carry deliberate placeholders.
@@ -73,6 +74,65 @@ def test_every_local_markdown_link_resolves() -> None:
             if target and not (path.parent / target).exists():
                 broken.append(f"{rel}: {target}")
     assert not broken, "local links to missing files:\n" + "\n".join(broken)
+
+
+def _heading_slugs(page: Path) -> set[str]:
+    """The fragments the page's headings answer to, as GitHub derives them: lowercase,
+    punctuation dropped, spaces to hyphens, a repeated heading numbered from ``-1``."""
+    slugs: set[str] = set()
+    seen: dict[str, int] = {}
+    in_code = False
+    for line in page.read_text(encoding="utf-8").splitlines():
+        if line.startswith("```"):
+            in_code = not in_code
+        if in_code or not re.match(r"#{1,6} ", line):
+            continue
+        text = line.lstrip("#").strip().replace("`", "")
+        slug = re.sub(r"[^\w\- ]", "", text.lower()).replace(" ", "-")
+        count = seen.get(slug, 0)
+        seen[slug] = count + 1
+        slugs.add(slug if count == 0 else f"{slug}-{count}")
+    return slugs
+
+
+def test_every_heading_fragment_names_a_heading_of_its_page() -> None:
+    broken: list[str] = []
+    for path in _documentation_markdown():
+        rel = path.relative_to(ROOT)
+        if rel.parts[0] == "plans" or path.name in _TEMPLATES:
+            continue
+        for match in _LINK.finditer(path.read_text(encoding="utf-8")):
+            target = match.group(1)
+            if (
+                target.startswith(("http://", "https://", "mailto:"))
+                or "#" not in target
+            ):
+                continue
+            page, fragment = target.split("#", 1)
+            page_path = path if not page else path.parent / page
+            if not page_path.is_file() or page_path.suffix != ".md":
+                continue  # a missing file is the link test's finding
+            if fragment not in _heading_slugs(page_path):
+                broken.append(f"{rel}: {target}")
+    assert not broken, "heading fragments with no heading:\n" + "\n".join(broken)
+
+
+_TEST_REFERENCE = re.compile(r"(tests(?:-e2e)?/[\w/.-]+\.py)::(test_\w+)")
+
+
+def test_every_test_reference_names_a_test_that_exists() -> None:
+    broken: list[str] = []
+    for path in _documentation_markdown():
+        rel = path.relative_to(ROOT)
+        if rel.parts[0] == "plans":
+            continue
+        for match in _TEST_REFERENCE.finditer(path.read_text(encoding="utf-8")):
+            module, name = ROOT / match.group(1), match.group(2)
+            if not module.is_file() or f"def {name}(" not in module.read_text(
+                encoding="utf-8"
+            ):
+                broken.append(f"{rel}: {match.group(0)}")
+    assert not broken, "references to tests that do not exist:\n" + "\n".join(broken)
 
 
 # --- statuses ---------------------------------------------------------------------------

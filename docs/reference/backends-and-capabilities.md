@@ -10,7 +10,7 @@ What each way of running the bridge needs, what it gives you, and how far it has
 | `sim` | Upstream's MuJoCo simulation, run through the bridge's own launcher | The `sim` extra (`reachy-mini-bridge[sim]`); a daemon you run, or one the bridge spawns for you |
 | `fake` | A first-party in-process stand-in that records every command and returns synthetic audio and frames | Nothing — offline and deterministic; it powers the bridge's unit tests and yours |
 
-The same code runs on all three; one config field, `backend`, moves between them ([configuration.md](configuration.md)). The `fake` keeps real timing on the verbs that span time (`say`, `play_sound`, `play_emotion`), so turn-taking logic tested against it behaves as on a robot.
+The same code runs on all three; one config field, `backend`, moves between the robot and the simulator, and the `fake` — which has no daemon — takes the same file once `daemon.spawn` is `never` or the block is absent ([configuration.md](configuration.md#backend)). The `fake` keeps real timing on the verbs that span time (`say`, `play_sound`, `play_emotion`), so turn-taking logic tested against it behaves as on a robot.
 
 ## The matrix
 

@@ -12,7 +12,7 @@ tests:
 
 # Motion loop, presence & breathing (`motion.py`)
 
-**Status:** Stable
+**Status:** Implemented
 
 ## Purpose
 

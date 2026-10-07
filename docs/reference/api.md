@@ -2,6 +2,8 @@
 
 The public surface of the bridge: what you import, the verbs and the values, the errors, and the contracts that hold across them — lifecycle, cancellation, concurrency, units, and the three extension points. This page is the consumer's home for those contracts; the normative design, with its rationale, is in the specs it links.
 
+On this page: [Imports](#imports) · [Construction](#construction) · [Lifecycle](#lifecycle) · [Verbs](#verbs) · [Properties and reports](#properties-and-reports) · [Errors](#errors) · [Cancellation and concurrency](#cancellation-and-concurrency) · [Units](#units) · [Extension contracts](#extension-contracts) · [The escape hatch](#the-escape-hatch).
+
 All verbs are `async`. What they take is human — named emotions, `"enabled"` motors, seconds, degrees and millimetres for a motion offset; what the reports carry states its own unit on each field ("Units" below). The underlying `reachy_mini.ReachyMini` stays reachable as `bridge.robot` for anything the bridge does not cover ("The escape hatch" below).
 
 ## Imports
@@ -31,7 +33,7 @@ ReachyMiniBridge.from_json(text, *, synthesizer=None)
 ReachyMiniBridge.from_json_file(path, *, synthesizer=None)
 ```
 
-A string is the backend-name shorthand for a config with everything else at its default. An explicit `synthesizer` wins over the config's `tts` block, which is then not consumed. Construction connects to nothing: it validates, builds the observables (`faces`, `head_tracking`) and the camera feed object, so a consumer can subscribe before the session starts. `bridge.config` is the config it was built from; `bridge.synthesizer_error` the cause when the `tts` block failed to build a voice (`None` otherwise) — the bridge comes up without a voice, and `say` raises `BridgeError` chained to that cause; a host that wants hard failure checks it after construction.
+A string is the backend-name shorthand for a config with everything else at its default. An explicit `synthesizer` wins over the config's `tts` block, which is then not consumed. Construction opens no connection to the robot and starts no thread. The config is validated as the `from_*` constructors build it — a `ConfigError` is raised there, before the bridge exists; a `ReachyMiniConfig` assembled in code is not validated ([configuration.md](configuration.md#validation)). Construction then builds the observables (`faces`, `head_tracking`) and the camera feed object, so a consumer can subscribe before the session starts, and the voice: a `tts` block has its tts-engine provider built here — a local model such as `pocket` loads its weights at this point, before any session — and a provider that fails to build leaves the bridge without a voice rather than failing construction. `bridge.config` is the config it was built from; `bridge.synthesizer_error` the cause when the `tts` block failed to build a voice (`None` otherwise) — `say` then raises `BridgeError` chained to that cause; a host that wants hard failure checks it after construction. Everything else — the daemon, the connection, the media session, the detector's model — comes up in `start()`, below.
 
 ## Lifecycle
 

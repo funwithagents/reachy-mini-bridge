@@ -80,6 +80,18 @@ Opt into the shipped pytest plugin from your **root** `conftest.py`:
 pytest_plugins = ["reachy_mini_bridge.testing.fixtures"]
 ```
 
+**Run the live tier serially.** Every live test file shares the one daemon at `REACHY_MINI_HOST:REACHY_MINI_PORT`, and pytest-xdist workers would race to spawn it, borrow one another's and stop it under each other. The plugin forces no worker count (that would reach your whole run), so if your project runs xdist by default, pass `-n 0` for the live tier — `pytest tests-e2e -n 0 -rs` — or force it from that tier's own `conftest.py`, as the bridge's does:
+
+```python
+# tests-e2e/conftest.py
+import pytest
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_cmdline_main(config: pytest.Config) -> None:
+    config.option.numprocesses = 0  # loads only when this directory is collected
+```
+
 That gives you the `live_bridge` fixture: one bridge session per test file, over one daemon
 per `pytest` run (spawned by the first file that needs it, stopped at the end — or borrowed, if
 one is already running at the address). Gate each test on the capabilities it

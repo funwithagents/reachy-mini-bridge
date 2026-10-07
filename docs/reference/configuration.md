@@ -173,7 +173,7 @@ Omit the block and `say` raises unless you pass your own `SpeechSynthesizer`. A 
 
 ## Validation
 
-Every constructor path validates identically; a failure is a `ConfigError` (a `ValueError`) naming the field. The rules in full are in [specs/core/config.md](../../specs/core/config.md) "Validation rules"; the ones a consumer meets:
+Every `from_*` constructor path validates identically, as it parses — before the bridge is constructed; a failure is a `ConfigError` (a `ValueError`) naming the field. The rules in full are in [specs/core/config.md](../../specs/core/config.md) "Validation rules"; the ones a consumer meets:
 
 - `backend` is `real`, `sim` or `fake`; `daemon.spawn` is `never`, `auto` or `always`, and anything but `never` needs `sim` or `real`.
 - `face_detection.enabled: true` or `motion.tracking: true` with no `face_detection.detector` is an error naming both fields.
@@ -181,3 +181,4 @@ Every constructor path validates identically; a failure is a `ConfigError` (a `V
 - `robot.host`, when the bridge manages the daemon, must be `127.0.0.1` or `localhost`; `robot.use_sim` and `robot.spawn_daemon` are refused.
 - Numbers are finite: `daemon.startup_timeout` positive, `face_detection.width` a positive integer, `face_detection.target_fps` positive, `daemon.camera.hfov_deg` strictly between 1 and 179.
 - A `ReachyMiniConfig` assembled in code is not validated by the config layer; the bridge raises `ValueError` for the detector contradiction at session entry.
+- The `tts` block is tts-engine's to validate, and it does so when the bridge is **constructed** — the provider is built then, a local model's weights loaded with it — reporting a failure through `bridge.synthesizer_error` rather than raising ([api.md](api.md#construction)). Everything else that can fail at run time — the daemon, the connection, the detector's build — fails in `start()`.

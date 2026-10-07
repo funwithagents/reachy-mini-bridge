@@ -40,7 +40,7 @@ It runs under `mjpython` for the viewer on macOS, under the plain interpreter fo
 
 ### Camera sources
 
-`--camera` selects what the daemon's camera stream carries. Both feed the same place — the RTP raw-video stream on UDP port 5005 that upstream's media server reads for a MuJoCo sim — so the media server, the tracker, and every client (`get_camera_frame()`) are unchanged whichever source runs.
+`--camera` selects what the daemon's camera stream carries. Both feed the same place — the RTP raw-video stream on UDP port 5005 that upstream's media server reads for a MuJoCo sim — so the media server, the tracker, and every client — the bridge's camera feed over upstream's `get_frame()` ([camera.md](../vision/camera.md)) — are unchanged whichever source runs.
 
 | `--camera` | Frames | Needs |
 |---|---|---|

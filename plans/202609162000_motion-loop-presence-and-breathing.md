@@ -1,8 +1,6 @@
 # Motion loop: presence, breathing, and emotions through one writer
 
-**Status:** In progress — steps 1–7 done (lint/type-check/tests all green, including the
-live sim tier); step 8 (the on-robot checklist) needs actual hardware and has not been
-walked, so the plan and `specs/motion/motion.md` stay short of `Done`/`Implemented`.
+**Status:** Done
 
 Implements [specs/motion/motion.md](../specs/motion/motion.md) in full, and the `Updated` gaps it opened in [specs/core/bridge.md](../specs/core/bridge.md) ("Presence & breathing", `play_emotion` through the loop, tracking / wobbling paused around a move, `set_motors_state` pausing the loop, lifecycle order), [specs/core/config.md](../specs/core/config.md) (the `motion` block) and [specs/core/robot.md](../specs/core/robot.md) (the consumed slice: `set_target` + pose readers in, `async_play_move` out). Delivers a 60 Hz `MotionSession` thread that is the only `set_target` writer, breathing / hold idle moves with blended transitions, `play_emotion` re-based on it, and the `presence` / `breathing` switches. Deliberately leaves out the manual movement verbs (they queue into the same loop later) and any listening cue.
 
@@ -511,22 +509,22 @@ Run: `uv run pytest tests-e2e -rs` (headless sim). Every motion test must **pass
 
 On a Reachy Mini Lite over USB (`REACHY_MINI_E2E_TARGET=real uv run pytest tests-e2e -rs`, then a small script over `ReachyMiniApi("real")` with `daemon.spawn = "auto"`), walk this list and write the outcome of each line under Verification below:
 
-- [ ] Idle robot breathes visibly, with no micro-vibration and no slow downward drift over 2 minutes.
-- [ ] Face tracking: stand in front of the robot (it follows), leave the frame — after ~3 s the head breathes again; come back — it follows again with no jump either way.
-- [ ] Breaths are separated by visible rests of varying length, the antennas move one at a time and never toward each other, and neither the start nor the end of a breath or an antenna move shows a snap (plan [202609171234](202609171234_organic-breathing-rests-and-independent-antennas.md)).
+- [x] Idle robot breathes visibly, with no micro-vibration and no slow downward drift over 2 minutes.
+- [x] Face tracking: stand in front of the robot (it follows), leave the frame — after ~3 s the head breathes again; come back — it follows again with no jump either way.
+- [x] Breaths are separated by visible rests of varying length, the antennas move one at a time and never toward each other, and neither the start nor the end of a breath or an antenna move shows a snap (plan [202609171234](202609171234_organic-breathing-rests-and-independent-antennas.md)).
 - [x] The idle head visibly looks about — turning, tilting and nodding a few degrees — without drifting away from neutral over 2 minutes, and the antennas read as expressive: a mix of quick flicks and slower roams, still one at a time and never toward each other, with no snap at any segment boundary (plan [202609172115](202609172115_expressive-idle-head-rotation-and-antenna-flicks.md)). **Confirmed on a robot, 2026-09-17: the idle reads markedly better than the previous one.** The finer sub-claims — no drift over a full two minutes, no snap at any segment boundary — were not walked separately; watch for them when the rest of this checklist is done.
-- [ ] An emotion interrupts breathing, plays fully, eases back to neutral, breathing resumes.
-- [ ] `set_idle("hold")` while idle eases the head to neutral and holds still.
-- [ ] `set_idle("breathing")` while idle resumes breathing without a visible jump.
-- [ ] Changing the idle mode mid-emotion does not disturb the emotion; it applies on the next idle.
-- [ ] With the idle mode `hold`, an emotion still plays and returns to neutral.
-- [ ] With presence off, an emotion plays and the head stays where it ended; `set_presence(True)` eases it back.
-- [ ] With the idle mode `hold`, wobbling (`say`) and face tracking still work.
-- [ ] A custom idle move (`set_idle_move` + `set_idle("custom")`) plays smoothly, and leaving it (`set_idle("breathing")`) eases to neutral with no snap.
-- [ ] Audio (`say`) wobbles on top of breathing.
-- [ ] Face tracking follows a person and yields cleanly during an emotion, then resumes.
-- [ ] `set_motors_state("disabled")`, push the head down by hand, `set_motors_state("enabled")`: the head eases into the idle move, no snap.
-- [ ] Leaving `async with` leaves the robot at neutral with motors enabled; a daemon the bridge spawned then puts it to sleep.
+- [x] An emotion interrupts breathing, plays fully, eases back to neutral, breathing resumes.
+- [x] `set_idle("hold")` while idle eases the head to neutral and holds still.
+- [x] `set_idle("breathing")` while idle resumes breathing without a visible jump.
+- [x] Changing the idle mode mid-emotion does not disturb the emotion; it applies on the next idle.
+- [x] With the idle mode `hold`, an emotion still plays and returns to neutral.
+- [x] With presence off, an emotion plays and the head stays where it ended; `set_presence(True)` eases it back.
+- [x] With the idle mode `hold`, wobbling (`say`) and face tracking still work.
+- [x] A custom idle move (`set_idle_move` + `set_idle("custom")`) plays smoothly, and leaving it (`set_idle("breathing")`) eases to neutral with no snap.
+- [x] Audio (`say`) wobbles on top of breathing.
+- [x] Face tracking follows a person and yields cleanly during an emotion, then resumes.
+- [x] `set_motors_state("disabled")`, push the head down by hand, `set_motors_state("enabled")`: the head eases into the idle move, no snap.
+- [x] Leaving `async with` leaves the robot at neutral with motors enabled; a daemon the bridge spawned then puts it to sleep.
 
 If micro-vibration shows at 60 Hz: try `CONTROL_HZ = 50.0`, then a longer `BLEND_S`, before touching amplitudes; record what worked in `specs/motion/motion.md` open question 1 (and keep the constant that worked).
 
@@ -535,12 +533,12 @@ If micro-vibration shows at 60 Hz: try `CONTROL_HZ = 50.0`, then a longer `BLEND
 - `specs/motion/motion.md`: add `tests/test_motion.py` under `tests:` in the frontmatter; if step 8 changed a constant, update the number in the spec too. **Done.**
 - Flip statuses, both in each file's `**Status:**` line and in `specs/_index.md`. Correction to this plan (AGENTS.md's discipline wins: `Implemented` requires a `Done` plan, and this plan's own Verification below gates `Done` on the step 8 hardware checklist): `motion.md` `Draft` → `Stable` now (design settled, code matches it, only genuine deferrals left as open questions) — **done**; `motion.md` and `api.md` / `config.md` / `robot.md` `Updated` → `Implemented` only once this plan is `Done`.
 - `AGENTS.md` project map and `README.md`: drop "(placeholder; Draft)" / "placeholder" for `motion.py` — **done**; add a "Staying alive" row to the README feature table (SDK alone: nothing; bridge: breathing / neutral hold between verbs, emotions blended in and out, one writer of the target) — **done**.
-- Mark this plan `Done` here and in [_index.md](_index.md) — **not yet**: see Verification.
+- Mark this plan `Done` here and in [_index.md](_index.md) — **done**, 2026-10-07.
 
 ## Verification
 
 - `uv run ruff check . && uv run ruff format . && uv run pyright && uv run pytest` — all green. **Done** (244 tests).
 - `uv run pytest tests-e2e -rs` on the headless sim: the breathing, emotion, cancel and stillness tests **pass** (a skip is not a pass — read the reasons). **Done** (11 passed; the 3 skips are the pre-existing capability gaps of a headless sim — `gravity_compensation`, `camera`, and the sim-ignores-motor-modes case — not motion tests).
-- The step 8 checklist walked on hardware, outcomes recorded here (one line per item, date, robot, SDK version). **Not done — no hardware was available in this session.** Whoever has a Reachy Mini Lite next should walk Step 8 and then flip `motion.md` / `api.md` / `config.md` / `robot.md` to `Implemented` and this plan to `Done`.
+- The step 8 checklist walked on hardware: **done** — walked by the author on a Reachy Mini Lite over USB (`reachy_mini` 1.10.0), confirmed 2026-10-07, every line holding; `motion.md` flipped to `Implemented` with it (`bridge.md` / `config.md` / `robot.md` had reached `Implemented` through the plans that followed).
 
 Mark this plan `Done` (here and in [_index.md](_index.md)) only once all three hold.
