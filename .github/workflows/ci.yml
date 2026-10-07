@@ -1,8 +1,12 @@
 # Continuous integration — specs/testing/ci.md.
 #
 # Both test tiers on GitHub's hosted Linux runners, on every pull request and push to
-# main, three jobs side by side: `check` (lint, format, types), `fast-tier`, and `e2e-sim`
-# (the live tier against the headless sim the harness spawns). None waits on another: a
+# main, four jobs side by side: `check` (lint, format, types), `fast-tier`, and `e2e-sim`
+# (the live tier against the headless sim the harness spawns) once per kinematics engine
+# the bridge supports at full accuracy — analytical and placo — since a sim solves every
+# target through one engine and the matrix is where the bridge's poses meet Placo's
+# limits on every push; the NN engine's own error fails the tracking tests, so it stays
+# a local run (specs/testing/testing.md "One engine per run"). None waits on another: a
 # run takes as long as its slowest job. Every dependency group installs — on Linux torch comes from
 # PyTorch's CPU index, a few seconds — so the real pocket-TTS test runs here too. No
 # secret is needed: tests whose needs the runner cannot meet skip, and the spec's
@@ -84,9 +88,16 @@ jobs:
         run: uv run pytest
 
   e2e-sim:
-    name: live tier, headless sim
+    name: live tier, headless sim (${{ matrix.kinematics }})
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    strategy:
+      # One entry per kinematics engine, each on its own runner (two media-on daemons
+      # cannot share a host); one engine's failure leaves the other running. NN is
+      # left out: its own error fails the tracking tests (specs/testing/testing.md).
+      fail-fast: false
+      matrix:
+        kinematics: [analytical, placo]
     steps:
       - uses: actions/checkout@v7
       - name: System packages
@@ -126,6 +137,9 @@ jobs:
         # instead of skipping the files that need them (specs/testing/ci.md).
         env:
           REACHY_MINI_E2E_REQUIRED_CAPS: motion,audio,camera,faces
+          # The engine the harness's sim solves through; the tier's engine check fails
+          # the entry if the daemon reports another (specs/testing/testing.md).
+          REACHY_MINI_E2E_KINEMATICS: ${{ matrix.kinematics }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           GRADIUM_API_KEY: ${{ secrets.GRADIUM_API_KEY }}
         # Warnings and errors logged while the tier runs — the spawned daemon's own lines

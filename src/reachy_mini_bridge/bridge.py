@@ -37,7 +37,7 @@ from . import robot as _robot
 from .audio import MediaSession, SoundToken, TTSEngineSynthesizer, cancel_safe_step
 from .camera import CameraFeed, frame_reader
 from .concurrency import owned
-from .config import IDLE_MODES, ReachyMiniConfig
+from .config import IDLE_MODES, UPSTREAM_KINEMATICS_ENGINES, ReachyMiniConfig
 from .errors import (
     BridgeError,
     GravityCompensationUnsupportedError,
@@ -81,8 +81,9 @@ _NO_DETECTOR_MESSAGE = (
 # Motor torque states, as the caller-facing single verb takes/returns them.
 _MOTOR_STATES = ("enabled", "disabled", "gravity_compensation")
 
-# The only kinematics engine on which the robot daemon accepts gravity compensation.
-_GRAVITY_COMPENSATION_ENGINE = "Placo"
+# The only kinematics engine on which the robot daemon accepts gravity compensation, by
+# upstream's name (specs/core/config.md "Kinematics engines").
+_GRAVITY_COMPENSATION_ENGINE = UPSTREAM_KINEMATICS_ENGINES["placo"]
 
 
 class _WobblingSession:
@@ -721,7 +722,8 @@ class ReachyMiniBridge:
 
         Decoupled from the connection: the state, once set, holds until changed. Raises
         ``ValueError`` for an unknown state. ``gravity_compensation`` needs a robot daemon
-        on the Placo kinematics engine; on any other engine it raises
+        on the Placo kinematics engine (``daemon.kinematics_engine: "placo"`` for one the
+        bridge spawns, specs/core/config.md "Kinematics engines"); on any other engine it raises
         :class:`GravityCompensationUnsupportedError` without sending anything, because
         such a daemon would reject the mode by dropping the connection. A simulation
         ignores motor modes, so there the mode is sent unchecked.
@@ -767,8 +769,9 @@ class ReachyMiniBridge:
         if engine != _GRAVITY_COMPENSATION_ENGINE:
             raise GravityCompensationUnsupportedError(
                 f"gravity compensation needs the daemon's {_GRAVITY_COMPENSATION_ENGINE} "
-                f"kinematics engine, but it runs {engine!r}; install "
-                "reachy-mini[placo_kinematics] and start the daemon with "
+                f"kinematics engine, but it runs {engine!r}; for a daemon the bridge "
+                "spawns set 'daemon.kinematics_engine' to 'placo' (the placo extra, "
+                "reachy-mini-bridge[placo]), for one started by hand pass "
                 "--kinematics-engine Placo. Nothing was sent: the daemon would reject the "
                 "mode by dropping this connection"
             )

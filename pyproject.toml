@@ -60,6 +60,23 @@ tts-pocket = ["tts-engine[pocket]"]
 # needs pytest to define its fixtures/skip gates. A downstream project running the e2e
 # tier installs `reachy-mini-bridge[test]` (plus `[sim]` for the sim daemon launcher).
 test = ["pytest>=9.1.1"]
+# The Placo kinematics engine (specs/core/config.md "Kinematics engines"): upstream's
+# full-URDF QP solver, the one engine with gravity compensation. Selected by
+# `daemon.kinematics_engine: "placo"`; installing it changes nothing by itself, and a
+# spawn asking for placo without it is a DaemonError naming this extra. Wheels for macOS
+# and Linux (x86_64, arm64), none for Windows. Two cmeel libraries are constrained here
+# because the wheels link them by version and their packages declare no upper bound:
+# placo 0.9.14 and the pin 3.4.0 it pins both link urdfdom 4 (`liburdfdom_*.4.0`), while
+# pin declares only `cmeel-urdfdom >= 4`; urdfdom 4 links tinyxml2 10 (`libtinyxml2.10`),
+# while cmeel-urdfdom declares a bare `cmeel-tinyxml2`. The 6.0.0 / 11.0.0 of May 2026
+# resolve, and `import placo` fails on a missing library. The bounds belong in those
+# packages' metadata; until they land there, the extra carries them (a report for
+# upstream is drafted — specs/project.md).
+placo = [
+    "reachy-mini[placo_kinematics]",
+    "cmeel-urdfdom>=4,<5",
+    "cmeel-tinyxml2>=10,<11",
+]
 
 [build-system]
 requires = ["uv_build>=0.11.29,<0.12.0"]
@@ -76,6 +93,10 @@ dev = [
     # Pull the test extra into the dev env so the shipped harness type-checks and the
     # bridge dogfoods it in tests-e2e/; stays optional for consumers.
     "reachy-mini-bridge[test]",
+    # Pull the placo extra in so the live tier's Placo run (REACHY_MINI_E2E_KINEMATICS=placo,
+    # one of CI's three sims) works; harmless to every other run, since the engine is the
+    # config's choice and not the install's (specs/project.md).
+    "reachy-mini-bridge[placo]",
     "pytest-xdist>=3.8.0",
 ]
 # The TTS providers (specs/project.md "Dependency groups"): pocket so the real-TTS live

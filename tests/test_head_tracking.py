@@ -175,7 +175,7 @@ def _jumping_face_while_turning() -> float:
     """The delay estimate after 2 s of a face jumping from side to side while the head
     turns 30 deg over the window — a scene no delay explains."""
     now = time.monotonic()
-    times = now - 3.0 + np.arange(0.0, 3.001, 0.02)
+    times = now - 3.0 + np.arange(0.0, 3.001, 0.02, dtype=np.float64)
     poses = np.stack([_turned(yaw) for yaw in np.linspace(0.0, 30.0, len(times))])
     tracker = HeadTracker(
         CameraModel.for_sim(SimCameraSettings()),

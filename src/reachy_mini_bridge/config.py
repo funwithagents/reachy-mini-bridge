@@ -44,6 +44,17 @@ BACKENDS = ("real", "sim", "fake")
 # The backends with a daemon the bridge can spawn: MuJoCo, or a USB-attached robot.
 DAEMON_BACKENDS = ("sim", "real")
 SPAWN_MODES = ("never", "auto", "always")
+# The kinematics engine a spawned daemon solves every head target through, in the
+# bridge's words (specs/core/config.md "Kinematics engines"), and upstream's name for
+# each — what `--kinematics-engine` takes and `GET /api/kinematics/info` reports. The
+# launch command passes the upstream name; the gravity-compensation guard compares
+# against UPSTREAM_KINEMATICS_ENGINES["placo"] (specs/core/bridge.md "Motors").
+KINEMATICS_ENGINES = ("analytical", "placo", "nn")
+UPSTREAM_KINEMATICS_ENGINES = {
+    "analytical": "AnalyticalKinematics",
+    "placo": "Placo",
+    "nn": "NN",
+}
 # What the sim daemon's camera stream carries (specs/daemon/sim_daemon.md "Camera sources").
 CAMERA_SOURCES = ("sim", "webcam")
 DEFAULT_WEBCAM_HFOV_DEG = 70.0
@@ -209,12 +220,18 @@ class DaemonConfig:
     """How the bridge brings up the daemon the robot client talks to (specs/daemon/daemon.md).
 
     ``headless``, ``scene``, ``camera`` and ``sim_displays`` are MuJoCo knobs: they play
-    no part for a ``real`` daemon.
+    no part for a ``real`` daemon. ``kinematics_engine`` applies to both: upstream's
+    MuJoCo backend solves its targets through the same engine as the hardware one
+    (specs/core/config.md "Kinematics engines"); the default is upstream's, and
+    ``placo`` needs the ``placo`` extra, checked when the daemon is launched
+    (specs/daemon/daemon.md). Like every field here, it applies only to a daemon the
+    bridge spawns — a borrowed one runs whatever it was started with.
     """
 
     spawn: str = "never"
     headless: bool = True
     scene: str | None = None
+    kinematics_engine: str = "analytical"
     camera: SimCameraSettings = field(default_factory=SimCameraSettings)
     sim_displays: SimDisplaySettings = field(default_factory=SimDisplaySettings)
     preload_datasets: bool = True
@@ -230,6 +247,7 @@ class DaemonConfig:
                 "spawn",
                 "headless",
                 "scene",
+                "kinematics_engine",
                 "camera",
                 "sim_displays",
                 "preload_datasets",
@@ -247,6 +265,12 @@ class DaemonConfig:
         scene = block.get("scene")
         if scene is not None and (not isinstance(scene, str) or not scene):
             raise ConfigError("'daemon.scene' must be a non-empty string or null")
+        engine = block.get("kinematics_engine", "analytical")
+        if engine not in KINEMATICS_ENGINES:
+            raise ConfigError(
+                f"'daemon.kinematics_engine' must be one of {KINEMATICS_ENGINES}, "
+                f"got {engine!r}"
+            )
         camera = SimCameraSettings.from_dict(block.get("camera", {}))
         displays = SimDisplaySettings.from_dict(block.get("sim_displays", {}))
         if headless and displays.enabled():
@@ -268,6 +292,7 @@ class DaemonConfig:
             spawn=spawn,
             headless=headless,
             scene=scene,
+            kinematics_engine=engine,
             camera=camera,
             sim_displays=displays,
             preload_datasets=preload,

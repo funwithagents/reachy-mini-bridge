@@ -27,7 +27,7 @@ The launcher corrects it inside the daemon process, so the bridge — the bridge
 python -m reachy_mini_bridge.real_daemon [--[no-]preload-datasets] [upstream flags…]
 ```
 
-`run_real_daemon(argv=None)` installs the camera check (below), rewrites `sys.argv` to `--[no-]preload-datasets` plus any unrecognised flags forwarded verbatim — `--kinematics-engine Placo`, which [daemon.md](daemon.md)'s launch command adds when `placo` is importable, travels this way — and calls upstream's `main()`. Everything else — serial-port detection, the wake-up on start and the sleep on stop, the FastAPI app, the media server, readiness, shutdown — is upstream's. No `--sim`: the launcher is the hardware recipe.
+`run_real_daemon(argv=None)` installs the camera check (below), rewrites `sys.argv` to `--[no-]preload-datasets` plus any unrecognised flags forwarded verbatim — `--kinematics-engine <engine>`, which [daemon.md](daemon.md)'s launch command adds from the config's `daemon.kinematics_engine`, travels this way — and calls upstream's `main()`. Everything else — serial-port detection, the wake-up on start and the sleep on stop, the FastAPI app, the media server, readiness, shutdown — is upstream's. No `--sim`: the launcher is the hardware recipe.
 
 It runs in the bridge's own interpreter (`<this interpreter> -m reachy_mini_bridge.real_daemon`, [daemon.md](daemon.md) "The launch command"), so unlike the sim recipes it needs no launcher on `PATH`: `reachy_mini` is a base dependency. A daemon started by hand with upstream's `reachy-mini-daemon` has none of this; for manual work, start `python -m reachy_mini_bridge.real_daemon` (or let a `ReachyMiniBridge` config with `daemon.spawn` do it) and the bridge borrows it like any other.
 

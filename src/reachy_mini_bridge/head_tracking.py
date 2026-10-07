@@ -419,7 +419,7 @@ class HeadTracker:
         if len(self._detections) < _DELAY_MIN_DETECTIONS:
             return
         times, poses = self.history()
-        t_obs = np.array([d.t for d in self._detections])
+        t_obs = np.array([d.t for d in self._detections], dtype=np.float64)
         rays = np.stack([d.ray for d in self._detections])
         delays = np.arange(0.0, DELAY_MAX_S + DELAY_STEP_S / 2, DELAY_STEP_S)
         queries = t_obs[:, np.newaxis] - delays[np.newaxis, :]

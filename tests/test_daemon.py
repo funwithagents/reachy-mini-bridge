@@ -26,6 +26,7 @@ import pytest
 
 from reachy_mini_bridge import daemon
 from reachy_mini_bridge.config import (
+    UPSTREAM_KINEMATICS_ENGINES,
     DaemonConfig,
     SimCameraSettings,
     SimDisplaySettings,
@@ -36,6 +37,8 @@ _AUTO = DaemonConfig(spawn="auto")
 _REAL_LAUNCHER = [sys.executable, "-m", "reachy_mini_bridge.real_daemon"]
 # Every recipe ends with the address the daemon binds to (specs/daemon/daemon.md).
 _ADDRESS = ["--fastapi-host", "127.0.0.1", "--fastapi-port", "8000"]
+# The engine flag every recipe carries, at the default engine (specs/daemon/daemon.md).
+_ENGINE = ["--kinematics-engine", "AnalyticalKinematics"]
 
 
 class _FakeProc:
@@ -111,12 +114,14 @@ def test_launch_command_headless_and_viewer(monkeypatch: pytest.MonkeyPatch) -> 
         *launcher,
         "--headless",
         "--preload-datasets",
+        *_ENGINE,
         *_ADDRESS,
     ]
     assert daemon.launch_command(DaemonConfig(preload_datasets=False)) == [
         *launcher,
         "--headless",
         "--no-preload-datasets",
+        *_ENGINE,
         *_ADDRESS,
     ]
     assert daemon.launch_command(DaemonConfig(scene="minimal")) == [
@@ -125,6 +130,7 @@ def test_launch_command_headless_and_viewer(monkeypatch: pytest.MonkeyPatch) -> 
         "minimal",
         "--headless",
         "--preload-datasets",
+        *_ENGINE,
         *_ADDRESS,
     ]
     viewer = DaemonConfig(headless=False, scene="minimal")
@@ -135,6 +141,7 @@ def test_launch_command_headless_and_viewer(monkeypatch: pytest.MonkeyPatch) -> 
         "--scene",
         "minimal",
         "--preload-datasets",
+        *_ENGINE,
         *_ADDRESS,
     ]
     assert daemon.launch_command(viewer, system="linux") == [
@@ -142,6 +149,7 @@ def test_launch_command_headless_and_viewer(monkeypatch: pytest.MonkeyPatch) -> 
         "--scene",
         "minimal",
         "--preload-datasets",
+        *_ENGINE,
         *_ADDRESS,
     ]
     # Omitted, the platform is this one's.
@@ -164,6 +172,7 @@ def test_launch_command_passes_the_webcam_camera_source(
         "-m",
         "reachy_mini_bridge.sim_daemon",
         "--preload-datasets",
+        *_ENGINE,
         "--camera",
         "webcam",
         "--webcam-hfov",
@@ -171,8 +180,9 @@ def test_launch_command_passes_the_webcam_camera_source(
         *_ADDRESS,
     ]
     chosen = SimCameraSettings(source="webcam", device=1, hfov_deg=62.5)
-    assert daemon.launch_command(DaemonConfig(camera=chosen))[-11:-4] == [
+    assert daemon.launch_command(DaemonConfig(camera=chosen))[-13:-4] == [
         "--preload-datasets",
+        *_ENGINE,
         "--camera",
         "webcam",
         "--webcam-device",
@@ -181,8 +191,9 @@ def test_launch_command_passes_the_webcam_camera_source(
         "62.5",
     ]
     scene = str(tmp_path / "scene.xml")
-    assert daemon.launch_command(DaemonConfig(scene=scene, camera=webcam))[-9:-4] == [
+    assert daemon.launch_command(DaemonConfig(scene=scene, camera=webcam))[-11:-4] == [
         "--preload-datasets",
+        *_ENGINE,
         "--camera",
         "webcam",
         "--webcam-hfov",
@@ -207,6 +218,7 @@ def test_launch_command_turns_on_the_viewer_displays(
         "-m",
         "reachy_mini_bridge.sim_daemon",
         "--preload-datasets",
+        *_ENGINE,
         "--sim-display",
         "camera_overlay",
         *_ADDRESS,
@@ -225,7 +237,7 @@ def test_launch_command_turns_on_the_viewer_displays(
     scene = str(tmp_path / "scene.xml")
     assert daemon.launch_command(
         DaemonConfig(headless=False, scene=scene, sim_displays=overlay)
-    )[-7:-4] == ["--preload-datasets", "--sim-display", "camera_overlay"]
+    )[-9:-4] == ["--preload-datasets", *_ENGINE, "--sim-display", "camera_overlay"]
     assert "--sim-display" not in daemon.launch_command(DaemonConfig(headless=False))
     # Every display that is on, in SIM_DISPLAYS order.
     views = SimDisplaySettings(face_markers=True, robot_gaze=True)
@@ -251,6 +263,7 @@ def test_launch_command_runs_a_scene_file_through_the_bridge_launcher(
         str(scene),
         "--headless",
         "--preload-datasets",
+        *_ENGINE,
         *_ADDRESS,
     ]
     assert daemon.launch_command(
@@ -263,6 +276,7 @@ def test_launch_command_runs_a_scene_file_through_the_bridge_launcher(
         "--scene-path",
         str(scene),
         "--no-preload-datasets",
+        *_ENGINE,
         *_ADDRESS,
     ]
 
@@ -289,7 +303,7 @@ def test_launch_command_requires_the_launcher(
 
 
 @pytest.mark.parametrize(
-    ("config", "placo", "flags"),
+    ("config", "flags"),
     [
         # the sim-only knobs (headless, scene — a scene file too — camera) play no part
         (
@@ -298,33 +312,79 @@ def test_launch_command_requires_the_launcher(
                 scene="scene.xml",
                 camera=SimCameraSettings(source="webcam"),
             ),
-            False,
-            ["--preload-datasets"],
+            ["--preload-datasets", *_ENGINE],
         ),
-        (DaemonConfig(preload_datasets=False), False, ["--no-preload-datasets"]),
+        (DaemonConfig(preload_datasets=False), ["--no-preload-datasets", *_ENGINE]),
         (
-            DaemonConfig(),
-            True,
-            ["--kinematics-engine", "Placo", "--preload-datasets"],
+            DaemonConfig(kinematics_engine="placo"),
+            ["--preload-datasets", "--kinematics-engine", "Placo"],
         ),
     ],
 )
 def test_launch_command_real_robot(
     monkeypatch: pytest.MonkeyPatch,
     config: DaemonConfig,
-    placo: bool,
     flags: list[str],
 ) -> None:
-    """The bridge's real daemon launcher in this interpreter, no --sim, Placo when it is
-    installed. `reachy_mini` is a base dependency, so nothing on PATH is required (the
+    """The bridge's real daemon launcher in this interpreter, no --sim, the engine the
+    config names. `reachy_mini` is a base dependency, so nothing on PATH is required (the
     sim recipes still need the extra)."""
     monkeypatch.setattr(daemon.shutil, "which", lambda name: None)
-    monkeypatch.setattr(daemon, "_placo_available", lambda: placo)
+    monkeypatch.setattr(daemon, "_placo_available", lambda: True)
     assert daemon.launch_command(config, backend="real") == [
         *_REAL_LAUNCHER,
         *flags,
         *_ADDRESS,
     ]
+
+
+@pytest.mark.parametrize("engine", ["analytical", "placo", "nn"])
+def test_launch_command_passes_the_configured_engine_on_every_recipe(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, engine: str
+) -> None:
+    """`daemon.kinematics_engine` becomes `--kinematics-engine <upstream name>` right after
+    the preload flag on every recipe — headless, viewer, scene file and real alike,
+    since the MuJoCo backend solves through the same engine as the hardware one — and
+    never follows from what is installed (specs/daemon/daemon.md "The launch command")."""
+    monkeypatch.setattr(daemon.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(daemon, "_placo_available", lambda: True)
+    expected = [
+        "--preload-datasets",
+        "--kinematics-engine",
+        UPSTREAM_KINEMATICS_ENGINES[engine],
+    ]
+    scene = str(tmp_path / "scene.xml")
+    recipes = [
+        daemon.launch_command(DaemonConfig(kinematics_engine=engine)),
+        daemon.launch_command(
+            DaemonConfig(headless=False, kinematics_engine=engine), system="linux"
+        ),
+        daemon.launch_command(DaemonConfig(scene=scene, kinematics_engine=engine)),
+        daemon.launch_command(DaemonConfig(kinematics_engine=engine), backend="real"),
+    ]
+    for cmd in recipes:
+        assert cmd[-7:-4] == expected, cmd
+    # The install decides nothing: placo importable or not, the default stays analytical.
+    monkeypatch.setattr(daemon, "_placo_available", lambda: False)
+    assert daemon.launch_command(DaemonConfig(), backend="real")[-7:-4] == [
+        "--preload-datasets",
+        *_ENGINE,
+    ]
+
+
+@pytest.mark.parametrize("backend", ["sim", "real"])
+def test_launch_command_placo_needs_the_placo_package(
+    monkeypatch: pytest.MonkeyPatch, backend: str
+) -> None:
+    """`placo` with no `placo` package importable is a `DaemonError` naming the extra,
+    before anything is spawned (specs/daemon/daemon.md) — the same shape as the missing
+    sim extra; the two other engines need nothing beyond base reachy-mini."""
+    monkeypatch.setattr(daemon.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(daemon, "_placo_available", lambda: False)
+    with pytest.raises(DaemonError, match=r"reachy-mini-bridge\[placo\]"):
+        daemon.launch_command(DaemonConfig(kinematics_engine="placo"), backend=backend)
+    for engine in ("analytical", "nn"):
+        daemon.launch_command(DaemonConfig(kinematics_engine=engine), backend=backend)
 
 
 def test_launch_command_binds_the_daemon_to_the_address_it_is_given(
@@ -351,7 +411,7 @@ def test_launch_command_binds_the_daemon_to_the_address_it_is_given(
     )
     assert daemon.launch_command(
         DaemonConfig(), backend="real", host="0.0.0.0", port=8010
-    ) == [*_REAL_LAUNCHER, "--preload-datasets", *address]
+    ) == [*_REAL_LAUNCHER, "--preload-datasets", *_ENGINE, *address]
 
 
 def test_launch_command_rejects_an_unknown_backend() -> None:
@@ -540,7 +600,7 @@ def test_auto_spawns_the_real_recipe_for_a_real_backend(harness: _Harness) -> No
     with daemon.managed_daemon(_AUTO, backend="real") as handle:
         assert handle.owned is True
     (cmd, env), *_ = harness.spawned
-    assert cmd == [*_REAL_LAUNCHER, "--preload-datasets", *_ADDRESS]
+    assert cmd == [*_REAL_LAUNCHER, "--preload-datasets", *_ENGINE, *_ADDRESS]
     assert not any(k in env for k in daemon._GST_BUNDLE_ENV)
     assert harness.proc.calls == ["terminate", "wait"]
 

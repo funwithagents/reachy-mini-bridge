@@ -2,7 +2,9 @@
 `fixtures.py`.
 
 Resolves the *target* from the environment (`REACHY_MINI_E2E_TARGET` = `sim` default |
-`real`) and the daemon address (`REACHY_MINI_HOST` / `REACHY_MINI_PORT`), then hands the
+`real`), the daemon address (`REACHY_MINI_HOST` / `REACHY_MINI_PORT`) and the kinematics
+engine the spawned daemon runs (`REACHY_MINI_E2E_KINEMATICS` = `analytical` default |
+`placo` | `nn`, specs/testing/testing.md "One engine per run"), then hands the
 daemon work to the library's [daemon.py](../daemon.py) (specs/daemon/daemon.md): reuse a daemon
 already ready at the address (never torn down), else spawn one and own its teardown — a
 MuJoCo daemon for `sim`, the hardware daemon for `real` on a loopback address (a USB robot
@@ -17,8 +19,8 @@ elsewhere — or `REACHY_MINI_E2E_MEDIA_BACKEND`.
 
 Kept out of `fixtures.py` so the plugin module reads as the fixture surface. The names
 used by `fixtures.py` (`target`, `backend`, `address`, `robot_options`,
-`required_capabilities`, `sim_displays`, `managed_daemon`) are un-underscored; the rest
-stays module-private.
+`required_capabilities`, `sim_displays`, `managed_daemon`) and by the bridge's own engine
+check (`kinematics_engine`) are un-underscored; the rest stays module-private.
 """
 
 from __future__ import annotations
@@ -33,7 +35,12 @@ from typing import NoReturn
 import pytest
 
 from reachy_mini_bridge import daemon
-from reachy_mini_bridge.config import LOOPBACK_HOSTS, DaemonConfig, SimDisplaySettings
+from reachy_mini_bridge.config import (
+    KINEMATICS_ENGINES,
+    LOOPBACK_HOSTS,
+    DaemonConfig,
+    SimDisplaySettings,
+)
 from reachy_mini_bridge.errors import DaemonError
 from reachy_mini_bridge.testing.sim_scene import write_test_scene
 
@@ -89,6 +96,22 @@ def robot_options(host: str, port: int) -> dict[str, object]:
         "port": port,
         "media_backend": media_backend(host),
     }
+
+
+def kinematics_engine() -> str:
+    """The `daemon.kinematics_engine` of the daemon the harness spawns, sim or real, from
+    `REACHY_MINI_E2E_KINEMATICS` (case-insensitive; unset or empty: `analytical`,
+    upstream's default). A word outside `KINEMATICS_ENGINES` *fails* — never skips —
+    naming the three: a typo must not run the suite on the wrong engine. A borrowed
+    daemon runs its own engine; `tests-e2e/test_motion.py` checks it is this one."""
+    raw = os.environ.get("REACHY_MINI_E2E_KINEMATICS", "").strip().lower()
+    engine = raw or "analytical"
+    if engine not in KINEMATICS_ENGINES:
+        pytest.fail(
+            f"REACHY_MINI_E2E_KINEMATICS={raw!r} is not a kinematics engine; use one of "
+            f"{', '.join(KINEMATICS_ENGINES)}"
+        )
+    return engine
 
 
 def required_capabilities() -> frozenset[str]:
@@ -164,7 +187,7 @@ def managed_daemon(target_: str) -> Iterator[tuple[str, int]]:
     if target_ == "real":
         if host not in LOOPBACK_HOSTS:
             _unavailable(f"no reachable real Reachy Mini daemon at {host}:{port}")
-        config = DaemonConfig(spawn="auto")
+        config = DaemonConfig(spawn="auto", kinematics_engine=kinematics_engine())
         backend_ = "real"
         with _spawned(config, host, port, backend_) as handle:
             yield handle
@@ -178,6 +201,7 @@ def managed_daemon(target_: str) -> Iterator[tuple[str, int]]:
             spawn="auto",
             headless=not _sim_viewer(),
             scene=scene,
+            kinematics_engine=kinematics_engine(),
             sim_displays=sim_displays(),
         )
         with _spawned(config, host, port, "sim") as handle:

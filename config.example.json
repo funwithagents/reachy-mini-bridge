@@ -11,6 +11,7 @@
     "spawn": "auto",
     "headless": false,
     "scene": null,
+    "kinematics_engine": "analytical",
     "camera": {
       "source": "webcam",
       "device": null,

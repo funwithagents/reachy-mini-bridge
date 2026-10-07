@@ -29,6 +29,7 @@ from reachy_mini_bridge import robot as robot_module
 from reachy_mini_bridge.bridge import ReachyMiniBridge
 from reachy_mini_bridge.camera import CameraFeed
 from reachy_mini_bridge.config import (
+    KINEMATICS_ENGINES,
     DaemonConfig,
     FaceDetectionSettings,
     MotionSettings,
@@ -190,6 +191,25 @@ def test_backend_is_real_only_for_the_real_target(monkeypatch: pytest.MonkeyPatc
     assert _daemon.backend() == "sim"  # unknown/absent target ⇒ sim
 
 
+def test_kinematics_engine_reads_env_with_the_analytical_default(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`REACHY_MINI_E2E_KINEMATICS` is the spawned daemon's `daemon.kinematics_engine`:
+    unset or empty means upstream's analytical engine, each bridge word is taken whatever
+    its case, and anything else *fails* the run — a typo must not run the suite on the
+    wrong engine (specs/testing/testing_support.md "Configuration via the environment")."""
+    monkeypatch.delenv("REACHY_MINI_E2E_KINEMATICS", raising=False)
+    assert _daemon.kinematics_engine() == "analytical"
+    monkeypatch.setenv("REACHY_MINI_E2E_KINEMATICS", "  ")
+    assert _daemon.kinematics_engine() == "analytical"
+    for engine in KINEMATICS_ENGINES:
+        monkeypatch.setenv("REACHY_MINI_E2E_KINEMATICS", f" {engine.upper()} ")
+        assert _daemon.kinematics_engine() == engine
+    monkeypatch.setenv("REACHY_MINI_E2E_KINEMATICS", "AnalyticalKinematics")
+    with pytest.raises(pytest.fail.Exception, match="analytical, placo, nn"):
+        _daemon.kinematics_engine()
+
+
 def test_address_reads_env_with_defaults(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("REACHY_MINI_HOST", raising=False)
     monkeypatch.delenv("REACHY_MINI_PORT", raising=False)
@@ -231,10 +251,13 @@ def _patch_lifecycle(
 def test_real_target_spawns_a_real_daemon_on_loopback(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("REACHY_MINI_HOST", raising=False)
     monkeypatch.delenv("REACHY_MINI_PORT", raising=False)
+    monkeypatch.setenv("REACHY_MINI_E2E_KINEMATICS", "placo")
     spawns = _RecordedSpawns()
     _patch_lifecycle(monkeypatch, ready=False, spawns=spawns)
     assert next(_daemon.managed_daemon("real")) == ("127.0.0.1", 8000)
     assert spawns.calls == [("real", "127.0.0.1", 8000)]
+    # The run's engine reaches the hardware daemon too: the gravity-compensation run.
+    assert spawns.configs[0].kinematics_engine == "placo"
 
 
 def test_real_target_borrows_a_ready_daemon(monkeypatch: pytest.MonkeyPatch):
@@ -359,6 +382,7 @@ def test_a_spawned_sim_runs_the_test_scene_for_the_daemon_lifetime(
         monkeypatch.setenv("REACHY_MINI_E2E_SIM_VIEWER", "1")
     else:
         monkeypatch.delenv("REACHY_MINI_E2E_SIM_VIEWER", raising=False)
+    monkeypatch.setenv("REACHY_MINI_E2E_KINEMATICS", "nn" if viewer else "analytical")
     spawns = _RecordedSpawns()
     _patch_lifecycle(monkeypatch, ready=False, spawns=spawns)
 
@@ -367,6 +391,7 @@ def test_a_spawned_sim_runs_the_test_scene_for_the_daemon_lifetime(
     (config,) = spawns.configs
     assert spawns.calls == [("sim", "127.0.0.1", 8000)]
     assert config.spawn == "auto" and config.headless is not viewer
+    assert config.kinematics_engine == ("nn" if viewer else "analytical")
     # The viewer sim draws the faces the bridge sends it; headless has no viewer.
     assert config.sim_displays.enabled() == (["face_markers"] if viewer else [])
     assert config.scene is not None and config.scene.endswith("scene.xml")
