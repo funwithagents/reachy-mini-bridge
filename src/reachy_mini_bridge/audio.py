@@ -12,8 +12,9 @@ daemon-owned pipeline with the XVF3800 voice processor in the middle:
   session owns that player, so every start — the verb's, an emotion's — is recorded
   and a stop ends only the file it started.
 - ``audio_input`` exposes the echo-cancelled mic as a clean int16 LE stream for the
-  caller's own ASR (mono by default; raw multichannel on request). The bridge embeds
-  no ASR.
+  caller's own ASR (mono by default; raw multichannel on request) — one subscriber of
+  many over the session's mic feed (:mod:`.microphone`), the one reader of the
+  capture. The bridge embeds no ASR.
 
 Formats follow "match the consumer": the synthesizer emits float32 mono ``[-1, 1]``
 (consumer is the speaker, which takes float32); the mic yields int16 LE (consumer is
@@ -47,6 +48,7 @@ from .fake_reachy_mini import FakeReachyMini
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
 
+    from .microphone import MicFeed
     from .robot import AnyReachyMini
 
 __all__ = [
@@ -70,10 +72,6 @@ _CONVERTER = "sinc_best"
 # buffer (50 ms on the GStreamer backend) plus device latency. See specs/audio/audio.md
 # "`say` completes when the utterance has been heard".
 _PLAYBACK_TAIL_S = 0.1
-
-# How long the mic tap waits before re-reading when the daemon has no sample ready
-# (one 10 ms capture chunk). See specs/audio/audio.md "Mic in".
-_MIC_POLL_INTERVAL_S = 0.01
 
 # Timeout for the one daemon HTTP call the media layer makes (`stop_sound` on webrtc).
 _DAEMON_HTTP_TIMEOUT_S = 2.0
@@ -144,10 +142,12 @@ class SpeechSynthesizer(Protocol):
 
 
 class MediaSession:
-    """The single, connection-scoped media pipeline shared by ``say`` and the mic tap.
+    """The single, connection-scoped media pipeline shared by ``say`` and the mic feed.
 
     Opened once (``start_recording`` + ``start_playing``, optional XVF3800 config) and
     torn down once. Owning both directions is what makes echo cancellation work.
+    The mic feed (``mic``, the bridge's ``bridge.mic``; a feed of its own when none is
+    given) is bound and started right after the recording and stopped right before it.
     Teardown stops exactly what started, even when opening or closing fails partway;
     ``say`` and ``audio_input`` raise :class:`BridgeError` outside an open session.
     Reads all rates/channels from the SDK getters so the same code is correct on the
@@ -155,9 +155,19 @@ class MediaSession:
     """
 
     def __init__(
-        self, robot: AnyReachyMini, *, audio_config: object | None = None
+        self,
+        robot: AnyReachyMini,
+        *,
+        audio_config: object | None = None,
+        mic: MicFeed | None = None,
     ) -> None:
+        # A local import: microphone.py imports this module at its top.
+        from .microphone import MicFeed
+
         self._robot = robot
+        # The one reader of the capture (specs/audio/microphone.md); every audio_input()
+        # is a subscriber over it.
+        self._mic = mic if mic is not None else MicFeed()
         # The XVF3800 tuning profile applied on start. Left None by default (firmware
         # defaults) until the concrete profile settles — specs/audio/audio.md open question 2.
         self._audio_config = audio_config
@@ -184,6 +194,15 @@ class MediaSession:
                 media.start_recording, lambda _: media.stop_recording()
             )
             stack.push_async_callback(asyncio.to_thread, media.stop_recording)
+            # The mic feed reads only while recording: started right after it, its stop
+            # unwinds right before it (specs/audio/microphone.md "Bound per session").
+            self._mic.bind(
+                media.get_audio_sample,
+                media.get_input_channels(),
+                media.get_input_audio_samplerate(),
+            )
+            await self._mic.start()
+            stack.push_async_callback(self._mic.stop)
             await cancel_safe_step(media.start_playing, lambda _: media.stop_playing())
             stack.push_async_callback(asyncio.to_thread, media.stop_playing)
             if self._audio_config is not None:
@@ -230,30 +249,27 @@ class MediaSession:
         """Channel count of the raw capture — read from the daemon (stereo backend: 2)."""
         return self._robot.media.get_input_channels()
 
-    def audio_input(self, *, mono: bool = True) -> AsyncIterator[bytes]:
+    @property
+    def mic(self) -> MicFeed:
+        """The session's mic feed — the one reader of the capture."""
+        return self._mic
+
+    def audio_input(
+        self, *, mono: bool = True, preroll_s: float = 0.0
+    ) -> AsyncIterator[bytes]:
         """Yield echo-cancelled mic PCM as ``bytes`` (int16 LE).
 
         ``mono=True`` (default) downmixes to one channel — the ASR drop-in. ``mono=False``
-        yields the raw interleaved capture at :attr:`mic_channels` channels. A tap over
-        the already-running capture: iterate to consume, ``break`` to stop. Raises
-        :class:`BridgeError` right here when the session is not open; the stream ends
-        on its own when the session closes.
+        yields the raw interleaved capture at :attr:`mic_channels` channels. Each call is
+        a subscriber of its own over the mic feed (specs/audio/microphone.md
+        "Subscribers"): every chunk, in order, at the caller's pace, however many
+        subscribers run; ``preroll_s`` starts it up to the ring's 2 s in the past.
+        Iterate to consume, ``break`` to stop. Raises :class:`BridgeError` right here
+        when the session is not open, ``ValueError`` on a negative ``preroll_s``; the
+        stream ends on its own when the session closes.
         """
         self._require_open("audio_input")
-        return self._tap(mono)
-
-    async def _tap(self, mono: bool) -> AsyncIterator[bytes]:
-        media = self._robot.media
-        channels = media.get_input_channels()
-        while self._exit_stack is not None:
-            sample = await asyncio.to_thread(media.get_audio_sample)
-            if sample is None:
-                # Nothing buffered yet: wait a chunk rather than spin on the daemon.
-                await asyncio.sleep(_MIC_POLL_INTERVAL_S)
-                continue
-            arr = np.asarray(sample, dtype=np.float32)
-            frame = downmix_to_mono(arr, channels) if mono else arr
-            yield float32_to_int16(frame).tobytes()
+        return self._mic.subscribe(mono=mono, preroll_s=preroll_s)
 
     # --- speaker out ---
 

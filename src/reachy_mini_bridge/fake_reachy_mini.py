@@ -155,10 +155,12 @@ class _FakeMedia:
         self._recording = False
         self._playing = False
         self._last_frame_at: float | None = None
+        self._last_chunk_at: float | None = None
 
     # --- input (mic) ---
     def start_recording(self) -> None:
         self._recording = True
+        self._last_chunk_at = None
         self._commands.append(("media.start_recording", {}))
 
     def stop_recording(self) -> None:
@@ -166,7 +168,21 @@ class _FakeMedia:
         self._commands.append(("media.stop_recording", {}))
 
     def get_audio_sample(self) -> npt.NDArray[np.float32]:
-        """Return one synthetic capture chunk: float32, ``(frames, channels)``."""
+        """Return one synthetic capture chunk: float32, ``(frames, channels)``.
+
+        Paced like the robot's capture (specs/audio/microphone.md "`fake` backend
+        support"): the first call returns at once, each later call blocks until one
+        chunk's duration (10 ms) has elapsed since the previous chunk — on the mic
+        feed's thread, its only reader — so the feed publishes 100 chunks a second.
+        """
+        period = _CHUNK_FRAMES / _SAMPLE_RATE
+        now = time.monotonic()
+        if self._last_chunk_at is not None:
+            due = self._last_chunk_at + period
+            if due > now:
+                time.sleep(due - now)
+                now = due
+        self._last_chunk_at = now
         return np.zeros((_CHUNK_FRAMES, _CHANNELS), dtype=np.float32)
 
     def get_input_audio_samplerate(self) -> int:

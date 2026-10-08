@@ -27,6 +27,7 @@ from .errors import (
 )
 from .face_detection import Face, FaceDetector, FaceReport, PixelFace
 from .head_tracking import HeadTrackingReport
+from .microphone import MicChunk
 from .motion import IdleMove, IdleOffsets
 from .observable import Observable
 
@@ -41,6 +42,7 @@ __all__ = [
     "HeadTrackingReport",
     "IdleMove",
     "IdleOffsets",
+    "MicChunk",
     "MotorsNotEnabledError",
     "Observable",
     "PixelFace",

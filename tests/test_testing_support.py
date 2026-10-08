@@ -37,6 +37,7 @@ from reachy_mini_bridge.config import (
 )
 from reachy_mini_bridge.errors import DaemonError, SimSceneError
 from reachy_mini_bridge.face_detection import PixelFace
+from reachy_mini_bridge.microphone import MicFeed
 from reachy_mini_bridge.testing import (
     BridgeLoop,
     LiveBridge,
@@ -603,13 +604,14 @@ class _SharedPipelineMedia:
     """Upstream's shared record+play pipeline as it behaves on macOS.
 
     Opened on the robot's card; once stopped, the next start reopens on the host default.
-    Samples are tagged with the device they were captured from.
+    Records which thread pulled each sample, so a test sees who read the capture.
     """
 
     def __init__(self, *, yields_samples: bool = True) -> None:
         self.device = "robot"
         self.running = True  # the bridge's MediaSession already started it
         self.yields_samples = yields_samples
+        self.readers: set[str] = set()
 
     def start_recording(self) -> None:
         if not self.running:
@@ -619,24 +621,36 @@ class _SharedPipelineMedia:
     def stop_recording(self) -> None:
         self.running = False
 
-    def get_audio_sample(self) -> object:
+    def get_audio_sample(self) -> npt.NDArray[np.float32] | None:
+        self.readers.add(threading.current_thread().name)
+        time.sleep(0.01)
         if not (self.running and self.yields_samples):
             return None
-        return SimpleNamespace(size=320, device=self.device)
+        return np.zeros((160, 2), dtype=np.float32)
 
 
-def test_audio_probe_reads_the_open_session_without_restarting_it():
+def _probe_over_a_feed(media: _SharedPipelineMedia) -> bool:
+    """The probe as the harness runs it: over the bridge's mic feed, already reading."""
+    feed = MicFeed(media.get_audio_sample, channels=2, sample_rate=16000)
+    asyncio.run(feed.start())
+    try:
+        return fixtures._probe_audio(feed)
+    finally:
+        asyncio.run(feed.stop())
+
+
+def test_audio_probe_reads_the_feed_without_restarting_the_session():
     media = _SharedPipelineMedia()
-    assert fixtures._probe_audio(media) is True
-    assert media.running
-    sample = media.get_audio_sample()
-    assert getattr(sample, "device", None) == "robot"  # still the robot's mic
+    assert _probe_over_a_feed(media) is True
+    assert media.running and media.device == "robot"  # still the robot's mic
+    # Only the feed's thread pulled samples: the probe never read beside it.
+    assert media.readers == {"reachy-mini-mic"}
 
 
 def test_audio_probe_absent_when_no_sample_arrives(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(fixtures, "_AUDIO_PROBE_TIMEOUT", 0.2)
     media = _SharedPipelineMedia(yields_samples=False)
-    assert fixtures._probe_audio(media) is False
+    assert _probe_over_a_feed(media) is False
     assert media.running and media.device == "robot"
 
 
@@ -650,7 +664,10 @@ def test_capabilities_are_probed_once_per_daemon_and_reused(
     probed: list[tuple[str, int]] = []
 
     def probe(
-        robot: object, address: tuple[str, int] | None = None, camera: object = None
+        robot: object,
+        address: tuple[str, int] | None = None,
+        camera: object = None,
+        mic: object = None,
     ) -> frozenset[str]:
         assert address is not None
         probed.append(address)

@@ -16,6 +16,7 @@ From `reachy_mini_bridge`:
 | `ReachyMiniConfig` | The declarative config ([configuration.md](configuration.md)) |
 | `SpeechSynthesizer`, `TTSEngineSynthesizer` | The voice protocol, and the shipped tts-engine adapter |
 | `CameraFrame` | A camera frame: `frame_id`, `ts`, `image`, `head_pose` |
+| `MicChunk` | A mic capture chunk: `seq`, `ts`, `samples` |
 | `Face`, `FaceReport`, `PixelFace`, `FaceDetector` | The perception values, and the two types a custom detector works with |
 | `HeadTrackingReport` | The head tracker's state |
 | `Observable` | The type of `bridge.faces` and `bridge.head_tracking` |
@@ -54,9 +55,9 @@ await bridge.stop()
 - **Overlapping lifecycle calls are not supported.** `start()` on a running bridge raises `BridgeError`; `stop()` on a stopped one is a no-op. Calling `stop()` while `start()` is still running, or two `start()`s at once, is outside the contract — cancel the `start()` task instead, which unwinds what it started.
 - **A failed or cancelled start leaks nothing**: the steps already up are undone in reverse and the error (or the cancel) propagates. A repeated cancel during that cleanup is absorbed; the cleanup completes.
 - **A cancelled `stop()` completes too**: the teardown is owned once begun — the head eased to neutral and the motion thread joined before the connection closes — and the cancel propagates after it.
-- **`bridge.running`** says whether the session is up. `bridge.robot`, `say`, `play_sound`, `audio_input` and the mode verbs need a running session and raise `BridgeError` otherwise; `faces`, `head_tracking`, `camera` and the mode properties read at any time (their inactive values outside a session).
+- **`bridge.running`** says whether the session is up. `bridge.robot`, `say`, `play_sound`, `audio_input` and the mode verbs need a running session and raise `BridgeError` otherwise; `faces`, `head_tracking`, `camera`, `mic` and the mode properties read at any time (their inactive values outside a session).
 - **A daemon the bridge started is stopped on exit** — a robot's goes to sleep; a borrowed daemon (`daemon.spawn: "auto"` finding one, or `"never"`) is left running.
-- **Applications own their tasks.** A task you start around the bridge — an ASR consumer over `audio_input()`, a subscriber on `faces.changes()` — is yours to cancel and await; leaving the `async with` block does not cancel it. The mic tap ends on its own when the session closes, so a task draining it finishes cleanly when awaited. A `changes()` iterator does not: the observables belong to the bridge object and outlive its sessions ([specs/core/observable.md](../../specs/core/observable.md) "Semantics") — a subscriber is told of the close through a published value (`faces` and `head_tracking` turn inactive) and then waits for the next session's first publication. Cancel and await such a task yourself, or `break` on the inactive report, before awaiting it at shutdown:
+- **Applications own their tasks.** A task you start around the bridge — an ASR consumer over `audio_input()`, a subscriber on `faces.changes()` — is yours to cancel and await; leaving the `async with` block does not cancel it. Every `audio_input()` stream ends on its own when the session closes, so a task draining one finishes cleanly when awaited. A `changes()` iterator does not: the observables belong to the bridge object and outlive its sessions ([specs/core/observable.md](../../specs/core/observable.md) "Semantics") — a subscriber is told of the close through a published value (`faces` and `head_tracking` turn inactive) and then waits for the next session's first publication. Cancel and await such a task yourself, or `break` on the inactive report, before awaiting it at shutdown:
 
 ```python
 async def watch_faces(bridge: ReachyMiniBridge) -> None:
@@ -81,7 +82,7 @@ async with ReachyMiniBridge.from_json_file("robot.json") as bridge:
 | Motors | `get_motors_state()` → `"enabled"` \| `"disabled"` \| `"gravity_compensation"`; `set_motors_state(state)` | — |
 | Expression | `list_emotions()` → the names of the upstream recorded-moves library; `play_emotion(name)` — plays the move with its sound, returns when the trajectory ends | yes |
 | Speech out | `say(text, synth=None)` — returns when the robot has finished speaking; `play_sound(file)` — a sound file, returns when it has been heard | no |
-| Mic in | `audio_input(mono=True)` — an async iterator of int16 LE PCM `bytes`; `mic_sample_rate`, `mic_channels` | no |
+| Mic in | `audio_input(mono=True, preroll_s=0.0)` — an async iterator of int16 LE PCM `bytes`, one per subscriber; `mic_sample_rate`, `mic_channels` | no |
 | Gaze | `start_head_tracking(focus=False)`, `stop_head_tracking()` — the head follows the face the tracker chooses | no (a mode: the head moves once motors are `enabled` and `presence` is on) |
 | Perception | `set_face_detection(enabled)` — run the detector so `faces` reports; `set_face_detector(factory)` — register the factory the `"custom"` detector is built from (the detector *name* is config-only) | no |
 | Staying alive | `set_presence(enabled)`, `set_idle("breathing" \| "hold" \| "custom")`, `set_idle_move(factory)`, `set_wobbling(enabled)` | no (modes) |
@@ -92,7 +93,7 @@ async with ReachyMiniBridge.from_json_file("robot.json") as bridge:
 
 **Speech out.** `say` streams the synthesizer's audio to the robot speaker, resampled to the speaker's rate and fanned out to its channels. It returns when the utterance has been heard; completion is the sink's wall-clock estimate of the queued audio's end plus a 100 ms margin, not a measurement at the speaker. **The newest `say` wins**: one called while another is in flight interrupts it — the speaker is flushed, the interrupted call raises `SpeechInterruptedError` in its own task, the new utterance plays from silence. `play_sound(file)` plays a file on the robot's own file player, which holds one file at a time: **the newest sound file wins**, an emotion's sidecar sound included — a `play_sound` during an emotion silences the emotion (which plays on), an emotion's sound starting during a `play_sound` makes that call raise `SoundInterruptedError`. Speech and a sound file coexist: they are mixed at the speaker.
 
-**Mic in.** `audio_input()` is a tap over the already-running capture: iterate to consume, `break` to stop; it ends on its own when the session closes. Routing both directions through the bridge is what keeps the robot's echo cancellation working while it speaks and listens at once. The bridge does no speech recognition.
+**Mic in.** Every `audio_input()` call is a subscriber of its own over the session's mic feed, the one reader of the capture: any number run at once — a recognizer, a wake-word detector, a level meter — each receiving every chunk in order at its own pace. Iterate to consume, `break` to stop; it ends on its own when the session closes. The feed keeps the last 2 s: `preroll_s` starts a subscriber up to that far in the past (a recognizer started by a wake word hears the sentence that woke it), and a subscriber that falls further behind loses the chunks it missed, logged as a warning, without slowing anyone else. Routing both directions through the bridge is what keeps the robot's echo cancellation working while it speaks and listens at once. The bridge does no speech recognition.
 
 **Gaze.** The tracker chooses whom to follow — the biggest face of a minimum size, kept while it is seen; a face that vanishes is waited for a second, the head holding toward where it was, before the head turns to the biggest other face; after two seconds with nobody the head eases back into the idle move. `focus=False` composes the aim into the idle move (the head looks at the person and breathes); `focus=True` holds the head exactly on the face, the antennas keeping their motion. Tracking implies detection, and needs a `face_detection.detector` in the config: `start_head_tracking()` with none raises `ValueError`. The head moves on the aim only with motors `"enabled"` **and** `presence` on — `set_presence(False)` has the loop command nothing, the gaze included, while the tracking mode holds.
 
@@ -101,6 +102,7 @@ async with ReachyMiniBridge.from_json_file("robot.json") as bridge:
 | Property | Type | What it reads |
 |---|---|---|
 | `camera` | `CameraFeed` | The one reader of the robot's camera. `camera.latest()` is the newest `CameraFrame`, or `None` before the first frame; `camera.running`, `camera.published_count` |
+| `mic` | `MicFeed` | The one reader of the robot's microphone. `mic.latest()` is the newest `MicChunk`, or `None` outside a session; `mic.running`, `mic.published_count` |
 | `faces` | `Observable[FaceReport]` | The faces in front of the robot as the detection loop last saw them |
 | `head_tracking` | `Observable[HeadTrackingReport]` | Whom the head follows, and whether it does |
 | `tracking`, `tracking_focus`, `attention` | `bool`, `bool`, `str \| None` | The tracking mode's record; its focus flag; `"engaged"` while a face is followed, `"watching"` while tracking is on and nobody is, `None` when tracking is off |
@@ -119,6 +121,12 @@ class CameraFrame:
     ts: float                      # the frame's time on the monotonic clock (capture when known, else arrival)
     image: NDArray[np.uint8]       # H×W×3 BGR, shared and read-only: copy before drawing on it
     head_pose: NDArray | None      # the 4×4 head pose at capture, when the backend stamps its frames
+
+@dataclass(frozen=True)
+class MicChunk:
+    seq: int                       # 0, 1, 2, … per feed
+    ts: float                      # the chunk's arrival on the monotonic clock
+    samples: NDArray[np.float32]   # (frames, mic_channels) float32 capture, shared and read-only
 
 @dataclass(frozen=True)
 class Face:
@@ -241,5 +249,6 @@ Three seams take your code, each with a complete program that runs on the fake: 
 
 - **Two writers of the head fight.** The motion loop is the one writer of the robot's target pose at 60 Hz. Upstream's `set_target`, `goto_target`, `look_at_*`, `play_move`, `wake_up` and `goto_sleep` write it too, and a daemon-side move blocks every target for its duration. To drive the head yourself, turn presence off (`set_presence(False)`): the loop then commands nothing between verbs, and the head is yours until the next `play_emotion`.
 - **The camera has one reader.** Upstream hands each frame out once: `robot.media.get_frame()` beside `bridge.camera` steals frames from the detector and every other consumer, silently. Read frames from `bridge.camera.latest()`.
+- **The microphone has one reader** too. `robot.media.get_audio_sample()` hands each 10 ms chunk out once: calling it beside `bridge.mic` splits the capture, and every `audio_input()` stream loses the chunks you took. Stream with `audio_input()`, sample with `bridge.mic.latest()`.
 - **Do not restart the media pipeline.** `robot.media.stop_recording()` / `start_recording()` mid-session reopens the audio on the system's default devices on macOS, so speech and the mic silently leave the robot ([../internals/upstream-sdk-notes.md](../internals/upstream-sdk-notes.md)). The bridge opens the pipeline once per session.
 - **Upstream's own face tracking** (`robot.start_head_tracking`) is never armed by the bridge; arming it yourself makes the daemon discard the client's head target.

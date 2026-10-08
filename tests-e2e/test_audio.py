@@ -72,18 +72,19 @@ def test_real_audio_format_matches_the_fake_assumptions(
     assert bridge.mic_channels == media.get_input_channels()
     assert media.get_output_audio_samplerate() == 16000
 
-    # get_audio_sample() returns None until a frame is ready, so poll briefly (the mic
-    # tap tolerates this by skipping None; here we want the raw array to inspect dtype).
-    sample = None
+    # The raw capture, read on the bridge's mic feed — the one reader of upstream's
+    # one-shot get_audio_sample(), which a second reader here would split
+    # (specs/audio/microphone.md). Poll briefly for the session's first chunk.
+    chunk = None
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline:
-        sample = media.get_audio_sample()
-        if sample is not None and getattr(sample, "size", 0) > 0:
+        chunk = bridge.mic.latest()
+        if chunk is not None and chunk.samples.size > 0:
             break
         time.sleep(0.05)
-    assert sample is not None, "no mic sample within timeout"
+    assert chunk is not None, "no mic chunk within timeout"
 
-    arr = np.asarray(sample)
+    arr = np.asarray(chunk.samples)
     assert arr.dtype == np.float32  # the fake's assumed capture dtype, confirmed live
     # The capture's channel layout is self-consistent with the getter (interleaved).
     if arr.ndim == 1:
@@ -112,6 +113,41 @@ def test_mic_tap_yields_int16_mono_frames(
     for chunk in chunks:
         assert len(chunk) > 0
         assert len(chunk) % 2 == 0  # whole int16 samples (mono)
+
+
+def test_two_mic_subscribers_each_receive_the_whole_capture(
+    live_bridge: LiveBridge,
+) -> None:
+    """Two concurrent `audio_input()` streams each get every chunk the feed publishes —
+    neither takes chunks from the other (specs/audio/microphone.md "Subscribers")."""
+    requires_caps(live_bridge, "audio")
+    bridge, _caps = live_bridge
+
+    async def both(window_s: float) -> tuple[int, int, int]:
+        counts = [0, 0]
+
+        async def drain(i: int, stream: AsyncIterator[bytes]) -> None:
+            async for _ in stream:
+                counts[i] += 1
+
+        start = bridge.mic.published_count
+        tasks = [
+            asyncio.create_task(drain(0, bridge.audio_input())),
+            asyncio.create_task(drain(1, bridge.audio_input(mono=False))),
+        ]
+        await asyncio.sleep(window_s)
+        published = bridge.mic.published_count - start
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        return published, counts[0], counts[1]
+
+    published, a, b = live_bridge.run(both(1.0))
+    assert published > 0, "the mic feed published nothing in 1 s"
+    # Each subscriber saw (nearly) all of it; two readers of get_audio_sample() would
+    # get about half each. A chunk or two in flight at the window's edges is slack.
+    assert a >= 0.9 * published - 2
+    assert b >= 0.9 * published - 2
 
 
 def test_say_completes_after_the_utterance_has_played(

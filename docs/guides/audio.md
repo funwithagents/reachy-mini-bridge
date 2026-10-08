@@ -47,11 +47,19 @@ async with ReachyMiniBridge("fake") as bridge:
     print(bridge.mic_sample_rate, bridge.mic_channels)  # 16000, 2 on the robot and the sim
     async for chunk in bridge.audio_input():  # int16 LE mono PCM bytes
         feed_my_asr(chunk)  # schematic: your recognizer's push call
-        break  # stop iterating to stop the tap
+        break  # stop iterating to stop the stream
 ```
 
 - `audio_input(mono=True)` yields **int16 little-endian PCM `bytes`**, mono by default (`mono=False` keeps the channels interleaved), at `mic_sample_rate` — 16 kHz, the format streaming recognizers take as linear16. The bridge converts the capture's float32 stereo; it never resamples.
-- It is a **tap** over the already-running capture: iterate to consume, `break` to stop, and it ends on its own when the session closes, so a consumer task you await at shutdown finishes cleanly. Call it while the session runs; the check runs at the call, not at the first `async for`.
+- Each call is **a subscriber of its own** over the running capture: iterate to consume, `break` to stop, and it ends on its own when the session closes, so a consumer task you await at shutdown finishes cleanly. Call it while the session runs; the check runs at the call, not at the first `async for`.
+- **Several consumers at once** each call `audio_input()` and each get every chunk, in order, at their own pace — a recognizer and a wake-word detector on mono, a direction estimator on `mono=False`. A consumer that stalls for more than the 2 s the bridge buffers loses the chunks it missed (a warning is logged) and slows no one else.
+- **Pre-roll for a wake word**: `audio_input(preroll_s=0.5)` starts the stream half a second before the call, from the same buffer, so a recognizer you start when the wake word fires hears the words that woke it:
+
+  ```python
+  async def on_wake_word() -> None:
+      async for chunk in bridge.audio_input(preroll_s=0.5):
+          feed_my_asr(chunk)
+  ```
 - Run the consumer as **a task of your own**, concurrently with `say`: the robot listens while it talks, the echo cancellation removing its own voice from what you hear. You own that task — cancel and await it before the session ends.
 
 The first-party [asr-engine](https://github.com/funwithagents/asr-engine) is one natural recognizer to attach; it is not a dependency of the bridge.

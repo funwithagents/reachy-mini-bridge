@@ -68,7 +68,7 @@ def test_say_is_audible(live_bridge):
 | Capability | probe | sim headless | sim headfull | real robot |
 |---|---|---|---|---|
 | `motion` | backend reports a status | ✅ | ✅ | ✅ |
-| `audio` | a mic sample arrives on the open media session (never restarted, see [testing_support.md](testing_support.md)) | ✅ software AEC, host device | ✅ | ✅ hardware AEC |
+| `audio` | the bridge's mic feed publishes a chunk on the open media session — read on the feed, the one reader of upstream's one-shot `get_audio_sample()` ([microphone.md](../audio/microphone.md)); the session never restarted, see [testing_support.md](testing_support.md) | ✅ software AEC, host device | ✅ | ✅ hardware AEC |
 | `camera` | the bridge's camera feed publishes a frame — read on the feed, the one reader of upstream's one-shot `get_frame()` ([camera.md](../vision/camera.md)), never on `get_frame()` beside it | ✅ Linux (offscreen EGL render) · ❌ macOS (no display-less GL) | ✅ | ✅ |
 | `motor_states` | not a simulation (`simulation_enabled` / `mockup_sim_enabled` both false in the daemon status) — read, never switched: a probe that turned torque off would drop a head no test has lowered | ❌ (the sim ignores every motor-state change and keeps reporting `enabled`) | ❌ | ✅ USB and wireless: `enabled` / `disabled` read back as set |
 | `gravity_compensation` | not a simulation, and `GET /api/kinematics/info` reports `engine == "Placo"` | ❌ (a Placo sim too: it accepts the mode and does nothing) | ❌ | ✅ when the daemon runs Placo — spawned by the run with `REACHY_MINI_E2E_KINEMATICS=placo` (the `placo` extra), or started by hand with `--kinematics-engine Placo`; ❌ on a stock wireless robot, whose daemon runs the analytical engine |

@@ -182,6 +182,7 @@ def test_package_front_door_drives_the_fake() -> None:
         "HeadTrackingReport",
         "IdleMove",
         "IdleOffsets",
+        "MicChunk",
         "MotorsNotEnabledError",
         "Observable",
         "SoundInterruptedError",

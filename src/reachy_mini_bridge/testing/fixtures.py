@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import time
 from collections.abc import Iterator
-from typing import Any
 
 import pytest
 
@@ -39,6 +38,7 @@ from reachy_mini_bridge.config import (
     ReachyMiniConfig,
 )
 from reachy_mini_bridge.errors import SimSceneError
+from reachy_mini_bridge.microphone import MicFeed
 from reachy_mini_bridge.robot import AnyReachyMini
 from reachy_mini_bridge.sim_displays import fetch_face_markers
 from reachy_mini_bridge.testing import _daemon
@@ -46,6 +46,9 @@ from reachy_mini_bridge.testing.sim_scene import SimSceneClient
 from reachy_mini_bridge.testing.support import BridgeLoop, LiveBridge, requires_caps
 
 _AUDIO_PROBE_TIMEOUT = 5.0
+# The audio probe reads the bridge's mic feed, the one reader of upstream's one-shot
+# `get_audio_sample()` (specs/audio/microphone.md), for the same reason the camera probe
+# reads the camera feed: a second reader beside it would split the capture.
 # The camera probe reads the bridge's camera feed — the one reader of upstream's one-shot
 # `get_frame()` (specs/vision/camera.md) — never `get_frame()` itself: the feed's thread
 # loops that call from the moment the bridge starts, and two readers of it starve each
@@ -60,19 +63,20 @@ _CAMERA_PROBE_TIMEOUT = 5.0
 # --- capability probing (against the live daemon, at setup) ---
 
 
-def _probe_audio(media: Any) -> bool:
-    """True if the open media session yields a real mic sample within the timeout.
+def _probe_audio(mic: MicFeed) -> bool:
+    """True if the bridge's mic feed publishes a non-empty chunk within the timeout.
 
     Runs after the bridge's ``MediaSession`` has started recording and playback, and never
     starts or stops the pipeline itself: upstream records and plays through one shared
     pipeline whose device binding does not survive a restart on macOS — a stop/start
     reopens both on the system default speaker and mic (docs/internals/upstream-sdk-notes.md).
+    Read on the feed, the one reader of ``get_audio_sample()`` — never beside it.
     """
     try:
         deadline = time.monotonic() + _AUDIO_PROBE_TIMEOUT
         while time.monotonic() < deadline:
-            sample = media.get_audio_sample()
-            if sample is not None and getattr(sample, "size", 1) > 0:
+            chunk = mic.latest()
+            if chunk is not None and chunk.samples.size > 0:
                 return True
             time.sleep(0.1)
         return False
@@ -154,6 +158,7 @@ def _probe_capabilities(
     robot: AnyReachyMini,
     address: tuple[str, int] | None = None,
     camera: CameraFeed | None = None,
+    mic: MicFeed | None = None,
 ) -> frozenset[str]:
     """Probe what the live daemon can actually do — never inferred from backend type.
 
@@ -171,9 +176,7 @@ def _probe_capabilities(
     except Exception:  # noqa: BLE001, S110  (no status ⇒ no motion cap)
         pass
 
-    # Typed loosely: the probes call it defensively (any failure ⇒ capability absent).
-    media: Any = robot.media
-    if _probe_audio(media):
+    if mic is not None and _probe_audio(mic):
         caps.add("audio")
     if camera is not None and _probe_camera(camera):
         caps.add("camera")
@@ -205,7 +208,10 @@ def check_required_capabilities(caps: frozenset[str]) -> None:
 
 
 def probed_capabilities(
-    robot: AnyReachyMini, address: tuple[str, int], camera: CameraFeed | None = None
+    robot: AnyReachyMini,
+    address: tuple[str, int],
+    camera: CameraFeed | None = None,
+    mic: MicFeed | None = None,
 ) -> frozenset[str]:
     """The capabilities of the daemon at ``address``, probed once per ``pytest`` run — on
     the first bridge session over it — and reused by every later session on it: they are
@@ -213,7 +219,7 @@ def probed_capabilities(
     displays), not a session's, and probing them again on every module would only add
     the probes' waits to every file's setup (specs/testing/testing.md "The harness")."""
     if address not in _PROBED:
-        _PROBED[address] = _probe_capabilities(robot, address, camera)
+        _PROBED[address] = _probe_capabilities(robot, address, camera, mic)
     return _PROBED[address]
 
 
@@ -288,7 +294,9 @@ def live_bridge(
     with BridgeLoop() as loop:
         loop.run(bridge.start())
         try:
-            caps = probed_capabilities(bridge.robot, (host, port), bridge.camera)
+            caps = probed_capabilities(
+                bridge.robot, (host, port), bridge.camera, bridge.mic
+            )
             check_required_capabilities(caps)
             yield LiveBridge(bridge, caps, loop)
         finally:

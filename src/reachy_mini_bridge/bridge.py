@@ -46,6 +46,7 @@ from .errors import (
 from .face_detection import FaceDetection, FaceReport, check_face_detector_factory
 from .fake_reachy_mini import FakeReachyMini
 from .head_tracking import CameraModel, HeadTracker, HeadTrackingReport
+from .microphone import MicFeed
 from .motion import NEUTRAL_ANTENNAS, NEUTRAL_BODY_YAW, NEUTRAL_HEAD, MotionSession
 from .observable import Observable
 from .robot import build_robot
@@ -351,6 +352,9 @@ class ReachyMiniBridge:
         # The camera feed (specs/vision/camera.md): the object exists from construction so a
         # consumer wires to it before entry; bound to the robot and started at entry.
         self._camera = CameraFeed()
+        # The mic feed (specs/audio/microphone.md): likewise from construction; the media
+        # session binds and starts it at entry, right after the recording.
+        self._mic = MicFeed()
 
     # --- config-based constructors (mirroring ReachyMiniConfig's trio) ---
 
@@ -476,7 +480,7 @@ class ReachyMiniBridge:
                 asyncio.to_thread, lambda: robot.__exit__(None, None, None)
             )
             self._robot = robot
-            media = MediaSession(robot, audio_config=cfg.audio.xvf3800)
+            media = MediaSession(robot, audio_config=cfg.audio.xvf3800, mic=self._mic)
             await media.start()
             stack.push_async_callback(media.stop)
             self._media = media
@@ -1236,13 +1240,30 @@ class ReachyMiniBridge:
 
     # --- audio in (microphone) ---
 
-    def audio_input(self, *, mono: bool = True) -> AsyncIterator[bytes]:
+    @property
+    def mic(self) -> MicFeed:
+        """The mic feed (specs/audio/microphone.md): the one reader of the robot's
+        microphone. ``mic.latest()`` is the newest
+        :class:`~reachy_mini_bridge.microphone.MicChunk` — ``seq``, ``ts``, the raw
+        float32 ``samples`` (shared and read-only) — or ``None`` outside a session;
+        ``mic.published_count`` the chunks published so far. For a consumer that samples
+        the mic (a level meter, a probe); a stream is :meth:`audio_input`. The feed
+        exists from construction.
+        """
+        return self._mic
+
+    def audio_input(
+        self, *, mono: bool = True, preroll_s: float = 0.0
+    ) -> AsyncIterator[bytes]:
         """Async iterator of echo-cancelled mic PCM (int16 LE) for the caller's own ASR.
 
         ``mono=True`` (default) is the ASR drop-in; ``mono=False`` yields the raw
-        interleaved capture at :attr:`mic_channels` channels. See specs/audio/audio.md.
+        interleaved capture at :attr:`mic_channels` channels. Every call is a subscriber
+        of its own over :attr:`mic`: any number run at once, each receiving every chunk
+        in order; ``preroll_s`` starts one up to 2 s in the past (a recognizer started by
+        a wake word). See specs/audio/microphone.md.
         """
-        return self._require_media().audio_input(mono=mono)
+        return self._require_media().audio_input(mono=mono, preroll_s=preroll_s)
 
     @property
     def mic_sample_rate(self) -> int:
