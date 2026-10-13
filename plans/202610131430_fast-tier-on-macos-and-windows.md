@@ -7,7 +7,7 @@ Implements `specs/testing/ci.md` ("The runner", "The workflow"), `specs/daemon/d
 ## Scope
 
 - `.github/workflows/ci.yml` — `fast-tier` as a matrix over `ubuntu-24.04`, `ubuntu-24.04-arm`, `macos-15`, `windows-2025`, `fail-fast: false`, the apt step on Linux only, `TEMP` on the checkout's drive, the macOS entry with `-m "not realtime"`; the header comment
-- `pyproject.toml`, `tests/` — the `realtime` marker (`specs/testing/testing.md`), on the seventeen tests that bound a rate or a per-tick step and failed on the macOS runner, whose sleeps run three to five times long
+- `pyproject.toml`, `tests/` — the `realtime` marker (`specs/testing/testing.md`), on the eighteen tests that bound a rate, a per-tick step or a tick's latency and failed on the macOS runner, whose sleeps run three to five times long
 - `pyproject.toml`, `uv.lock` — the `dev` group's `reachy-mini-bridge[placo]` under `sys_platform != 'win32'`; relocked
 - `src/reachy_mini_bridge/daemon.py` — `_spawn` with `CREATE_NEW_PROCESS_GROUP` on Windows; `_stop` asking to exit through `_ask_to_exit` (`SIGTERM`, or `CTRL_BREAK_EVENT` on Windows with `terminate()` as the fallback); `send_signal` on the `_Process` protocol
 - `tests/test_daemon.py` — the stand-in process records the platform's exit request; a real child spawned through the seam and stopped by `_stop` runs its shutdown handler on every platform

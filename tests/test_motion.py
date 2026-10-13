@@ -1250,6 +1250,7 @@ def test_a_primary_plays_as_recorded_under_an_aim_then_the_head_returns_to_it() 
     assert max(abs(b - a) for a, b in itertools.pairwise(after)) < MAX_GAZE_STEP_DEG
 
 
+@pytest.mark.realtime
 def test_the_history_records_the_head_pose_the_robot_reports(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
