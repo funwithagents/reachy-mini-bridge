@@ -293,12 +293,11 @@ def test_the_head_follows_the_biggest_of_two_faces(
 ) -> None:
     bridge, _caps = live_bridge
 
-    async def scenario() -> tuple[Track, int, int | None]:
+    async def scenario() -> tuple[Track, list[tuple[int | None, float]], int | None]:
         await _prepare(bridge)
         face_scene.spawn((FAR_X, -LATERAL_M, FACE_Z))
         face_scene.spawn((NEAR_X, LATERAL_M, FACE_Z))
         await _both_in_view(bridge)
-        near = max(bridge.faces.value.faces, key=lambda f: f.size)
         await bridge.start_head_tracking()
         track = await track_onto(
             bridge,
@@ -306,11 +305,28 @@ def test_the_head_follows_the_biggest_of_two_faces(
             LATERAL_M,
             expected_yaw_deg=_yaw_to(NEAR_X, LATERAL_M),
         )
-        return track, near.track_id, bridge.head_tracking.value.track_id
+        # The followed face as the detector reports it now: on the runner the detector
+        # flickers on the oblique portraits, and a dropped track comes back under a new
+        # id, so the face is identified by its size here, never by an id read earlier.
+        followed = bridge.head_tracking.value.track_id
+        deadline = time.perf_counter() + 2.0
+        while time.perf_counter() < deadline and followed not in {
+            f.track_id for f in bridge.faces.value.faces
+        }:
+            await asyncio.sleep(0.05)
+            followed = bridge.head_tracking.value.track_id
+        faces = [(f.track_id, f.size) for f in bridge.faces.value.faces]
+        return track, faces, followed
 
-    track, near_id, followed = live_bridge.run(scenario())
-    assert_tracked(track)
-    assert followed == near_id
+    track, faces, followed = live_bridge.run(scenario())
+    assert_tracked(track)  # the head settled on the nearer face's bearing
+    print(f"\n[e2e] followed {followed}, faces (id, size) {faces}")
+    assert followed is not None
+    sizes = dict(faces)
+    assert followed in sizes, f"the followed face {followed} is not in {faces}"
+    assert sizes[followed] == max(sizes.values()), (
+        f"followed {followed}, not the biggest of {faces}"
+    )
 
 
 def test_a_nearer_face_arriving_does_not_take_the_head(

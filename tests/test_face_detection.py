@@ -184,6 +184,7 @@ def test_stop_publishes_the_inactive_report(fast_frames: None) -> None:
     assert woken[-1] == FaceReport.inactive("custom")
 
 
+@pytest.mark.realtime
 def test_on_observation_sees_every_observation(fast_frames: None) -> None:
     scene = _Scene()
 
