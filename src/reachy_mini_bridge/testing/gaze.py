@@ -101,11 +101,11 @@ async def wait_for(
     predicate: Callable[[], bool], timeout: float, interval: float = 0.1
 ) -> bool:
     """Poll a blocking predicate off the loop until it holds or ``timeout`` elapses."""
-    deadline = time.monotonic() + timeout
+    deadline = time.perf_counter() + timeout
     while True:
         if await asyncio.to_thread(predicate):
             return True
-        if time.monotonic() >= deadline:
+        if time.perf_counter() >= deadline:
             return False
         await asyncio.sleep(interval)
 
@@ -209,17 +209,17 @@ async def track_onto(
         _yaw_for_lateral(lateral) if expected_yaw_deg is None else expected_yaw_deg
     )
     track = Track(where, start_yaw, expected, None)
-    started = time.monotonic()
+    started = time.perf_counter()
     deadline = started + settle_timeout
     while True:
         pose = await asyncio.to_thread(robot.get_current_head_pose)
         track.samples.append(yaw_pitch_deg(pose))
-        track.times.append(time.monotonic())
+        track.times.append(time.perf_counter())
         recent = [y for y, _ in track.samples[-20:]]
         still = len(recent) == 20 and max(recent) - min(recent) < 1.0
-        if still and time.monotonic() - started >= min_seconds:
+        if still and time.perf_counter() - started >= min_seconds:
             break
-        if time.monotonic() >= deadline:
+        if time.perf_counter() >= deadline:
             break
         await asyncio.sleep(0.05)
     track.face = followed_face(bridge)
@@ -230,7 +230,7 @@ async def track_onto(
     track.frame_note = (
         "no frame"
         if frame is None
-        else f"frame age {time.monotonic() - frame.ts:.3f} s, "
+        else f"frame age {time.perf_counter() - frame.ts:.3f} s, "
         f"pose stamped: {frame.head_pose is not None}, "
         f"report pose: {bridge.faces.value.head_pose is not None}"
     )
@@ -289,8 +289,8 @@ async def sample_idle(robot: Any, seconds: float) -> tuple[float, float]:
     neutral rather than holding one heading (specs/motion/motion.md "The moves")."""
     zs: list[float] = []
     angles: list[float] = []
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
+    deadline = time.perf_counter() + seconds
+    while time.perf_counter() < deadline:
         pose = await asyncio.to_thread(robot.get_current_head_pose)
         zs.append(float(pose[2, 3]))
         angles.append(angle_from_neutral_deg(pose))

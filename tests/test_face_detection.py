@@ -98,6 +98,7 @@ def test_the_loop_publishes_active_then_a_face_appearing_once(
     async def run() -> tuple[list[FaceReport], FaceReport]:
         async with _running_custom(scene) as loop:
             await _wait_for(lambda: loop.faces.value.active)
+            await _heard(loop)
             scene.show(0.2, 0.1)
             await asyncio.sleep(0.2)
             return list(loop.woken), loop.faces.value
@@ -109,6 +110,7 @@ def test_the_loop_publishes_active_then_a_face_appearing_once(
     assert value.source == "custom"
 
 
+@pytest.mark.realtime
 def test_a_gap_shorter_than_the_absence_window_wakes_nobody(fast_frames: None) -> None:
     scene = _Scene()
 
@@ -116,6 +118,7 @@ def test_a_gap_shorter_than_the_absence_window_wakes_nobody(fast_frames: None) -
         async with _running_custom(scene) as loop:
             scene.show()
             await _wait_for(lambda: bool(loop.faces.value.faces))
+            await _heard(loop)
             loop.woken.clear()
             scene.hide()
             await asyncio.sleep(0.08)  # < 0.15 s, > two frames at 40 fps
@@ -138,6 +141,7 @@ def test_a_face_gone_past_the_window_wakes_once_with_an_empty_report(
         async with _running_custom(scene) as loop:
             scene.show()
             await _wait_for(lambda: bool(loop.faces.value.faces))
+            await _heard(loop)
             loop.woken.clear()
             scene.hide()
             await asyncio.sleep(0.5)
@@ -154,6 +158,7 @@ def test_a_moving_face_updates_the_value_without_waking(fast_frames: None) -> No
         async with _running_custom(scene) as loop:
             scene.show(0.0, 0.0)
             await _wait_for(lambda: bool(loop.faces.value.faces))
+            await _heard(loop)
             loop.woken.clear()
             scene.show(0.5, 0.0)
             await _wait_for(lambda: loop.faces.value.faces[0].x > 0.4)
@@ -501,10 +506,25 @@ async def _running_custom(
         subscriber.cancel()
 
 
+async def _heard(loop: _Loop) -> None:
+    """Until the subscriber has been woken on the value now published: a `set` reaches
+    the value at once and the subscriber a loop step later, so a test that clears the
+    wakes as soon as the value reads right would clear before the wake it means to drop."""
+
+    def heard() -> bool:
+        now = loop.faces.value
+        return bool(loop.woken) and (loop.woken[-1].active, loop.woken[-1].faces) == (
+            now.active,
+            now.faces,
+        )
+
+    await _wait_for(heard)
+
+
 async def _wait_for(predicate: Callable[[], bool], timeout: float = 2.0) -> None:
-    deadline = time.monotonic() + timeout
+    deadline = time.perf_counter() + timeout
     while not predicate():
-        if time.monotonic() > deadline:
+        if time.perf_counter() > deadline:
             raise AssertionError("condition not met in time")
         await asyncio.sleep(0.01)
 
@@ -566,6 +586,7 @@ def test_a_detector_raising_on_every_frame_reads_inactive_then_recovers(
     async def run() -> tuple[FaceReport, int, bool, list[bool]]:
         async with _running_custom(scene) as loop:
             await _wait_for(lambda: bool(loop.faces.value.faces))
+            await _heard(loop)
             loop.woken.clear()
             scene.raises = True
             await asyncio.sleep(0.6)
@@ -573,6 +594,7 @@ def test_a_detector_raising_on_every_frame_reads_inactive_then_recovers(
             silent = loop.silent
             scene.raises = False
             await _wait_for(lambda: loop.faces.value.active)
+            await _heard(loop)
             return down, silent, loop.faces.value.active, [r.active for r in loop.woken]
 
     down, silent, up, woken = _run(run)
@@ -865,6 +887,7 @@ def test_the_detectors_cost_is_logged_once_per_run(
     assert rate > 0
 
 
+@pytest.mark.realtime
 def test_a_display_sampling_the_feed_costs_the_detector_no_frames() -> None:
     """The single-reader property end to end: a second consumer polling the feed at
     50 Hz (the control panel's display) while the detector runs; the detector still

@@ -427,6 +427,7 @@ def test_paused_session_sends_nothing() -> None:
     assert robot.targets == []
 
 
+@pytest.mark.realtime
 def test_resume_blends_from_the_present_pose_into_breathing() -> None:
     async def run() -> list[float]:
         robot = FakeReachyMini()
@@ -499,10 +500,10 @@ def test_primary_plays_after_a_blend_then_idle_resumes() -> None:
             MotionSession(robot, presence=True, idle="breathing")
         ) as session:
             session.resume()
-            t0 = time.monotonic()
+            t0 = time.perf_counter()
             future = session.submit(_TestPrimary(0.3, 0.03), None).done
             await asyncio.wrap_future(future)
-            elapsed = time.monotonic() - t0
+            elapsed = time.perf_counter() - t0
             mid_zs = _head_zs(robot)
             await asyncio.sleep(BLEND_S + 0.15)
             final_zs = _head_zs(robot)
@@ -521,11 +522,11 @@ def test_sound_starts_with_the_trajectory_not_the_blend() -> None:
             MotionSession(robot, presence=True, idle="breathing")
         ) as session:
             session.resume()
-            t0 = time.monotonic()
+            t0 = time.perf_counter()
             future = session.submit(_TestPrimary(0.2, 0.02), Path("x.ogg")).done
             while not any(name == "media.play_sound" for name, _ in robot.commands):
                 await asyncio.sleep(0.01)
-            sound_elapsed = time.monotonic() - t0
+            sound_elapsed = time.perf_counter() - t0
             await asyncio.wrap_future(future)
         return sound_elapsed
 
@@ -556,6 +557,7 @@ def test_primaries_are_fifo_and_exclusive() -> None:
     assert two_index >= commands_at_f1_done
 
 
+@pytest.mark.realtime
 def test_cancelled_future_drops_the_primary_within_a_tick() -> None:
     async def run() -> tuple[list[float], int, int]:
         robot = FakeReachyMini()
@@ -578,6 +580,7 @@ def test_cancelled_future_drops_the_primary_within_a_tick() -> None:
     assert after > before
 
 
+@pytest.mark.realtime
 def test_toggle_during_a_primary_is_deferred() -> None:
     """specs/motion/motion.md "Presence and the idle mode": a mode changed while a primary plays is
     recorded at once and takes effect when the queue drains — the primary plays its
@@ -590,14 +593,14 @@ def test_toggle_during_a_primary_is_deferred() -> None:
             MotionSession(robot, presence=True, idle="breathing")
         ) as session:
             session.resume()
-            t0 = time.monotonic()
+            t0 = time.perf_counter()
             future = session.submit(_TestPrimary(0.35, 0.02), None).done
             await asyncio.sleep(0.15)  # inside the primary's entry blend
             session.set_idle("hold")
             await asyncio.sleep(0.05)
             recorded = session.idle
             await asyncio.wrap_future(future)
-            elapsed = time.monotonic() - t0
+            elapsed = time.perf_counter() - t0
             await asyncio.sleep(BLEND_S + 0.15)
         return recorded, elapsed, _head_zs(robot)
 
@@ -637,10 +640,10 @@ def test_close_eases_to_neutral_when_commanding() -> None:
 def test_close_is_immediate_when_quiet() -> None:
     async def run() -> tuple[float, int]:
         robot = FakeReachyMini()
-        t0 = time.monotonic()
+        t0 = time.perf_counter()
         async with _running(MotionSession(robot, presence=False, idle="breathing")):
             pass
-        return time.monotonic() - t0, len(robot.targets)
+        return time.perf_counter() - t0, len(robot.targets)
 
     elapsed, count = asyncio.run(run())
     assert elapsed < 0.2
@@ -729,8 +732,8 @@ def test_lost_connection_logs_once_and_pauses_for_good(
             later = session.submit(_TestPrimary(0.2, 0.01), None).done
             await asyncio.sleep(0.2)
             count_later = len(robot.targets)
-            t0 = time.monotonic()
-        return in_flight, later, count_after_loss, count_later, time.monotonic() - t0
+            t0 = time.perf_counter()
+        return in_flight, later, count_after_loss, count_later, time.perf_counter() - t0
 
     in_flight, later, count_after_loss, count_later, exit_s = asyncio.run(run())
     exc = in_flight.exception(timeout=1)
@@ -796,6 +799,7 @@ class _BreaksAfter(IdleMove):
         return IdleOffsets()
 
 
+@pytest.mark.realtime
 def test_custom_idle_move_plays_in_custom_mode() -> None:
     async def run() -> tuple[list[float], FakeReachyMini]:
         robot = FakeReachyMini()
@@ -836,6 +840,7 @@ def test_idle_move_is_stored_in_another_mode_and_plays_once_custom() -> None:
     assert zs[-1] == pytest.approx(LIFT_MM / 1000.0, abs=1e-6)
 
 
+@pytest.mark.realtime
 def test_leaving_a_custom_idle_move_fades_it_out_to_neutral() -> None:
     async def run() -> list[float]:
         robot = FakeReachyMini()
@@ -1012,6 +1017,7 @@ def _yaws(robot: FakeReachyMini, since: int = 0) -> list[float]:
     return [_yaw_pitch_deg(h)[0] for h, _, _ in robot.targets[since:] if h is not None]
 
 
+@pytest.mark.realtime
 def test_an_aim_eases_the_head_onto_it_and_withdrawing_it_eases_it_back() -> None:
     async def run() -> tuple[list[float], list[float], list[float]]:
         robot = FakeReachyMini()
@@ -1213,6 +1219,7 @@ def test_a_gaze_offsets_raising_while_playing_falls_back_to_the_hold(
     assert yaws[-1] == pytest.approx(AIM_YAW_DEG, abs=1.0)  # the hold, aimed
 
 
+@pytest.mark.realtime
 def test_a_primary_plays_as_recorded_under_an_aim_then_the_head_returns_to_it() -> None:
     async def run() -> tuple[list[tuple[float, float]], list[float]]:
         robot = FakeReachyMini()
@@ -1243,17 +1250,18 @@ def test_a_primary_plays_as_recorded_under_an_aim_then_the_head_returns_to_it() 
     assert max(abs(b - a) for a, b in itertools.pairwise(after)) < MAX_GAZE_STEP_DEG
 
 
+@pytest.mark.realtime
 def test_the_history_records_the_head_pose_the_robot_reports(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The actual head, not the commanded one — recorded whether or not the loop
     commands: here a paused loop, while another writer turns the head at 20 deg/s."""
     robot = FakeReachyMini()
-    t0 = time.monotonic()
+    t0 = time.perf_counter()
     monkeypatch.setattr(
         robot,
         "get_current_head_pose",
-        lambda: _yaw_pose(20.0 * (time.monotonic() - t0)),
+        lambda: _yaw_pose(20.0 * (time.perf_counter() - t0)),
     )
 
     async def run() -> tuple[float, float, float, float]:
@@ -1261,7 +1269,7 @@ def test_the_history_records_the_head_pose_the_robot_reports(
             MotionSession(robot, presence=True, idle="hold")
         ) as session:
             await asyncio.sleep(1.5)
-            now = time.monotonic()
+            now = time.perf_counter()
             return (
                 now - t0,
                 _yaw_pitch_deg(session.head_pose_at(now - 0.5))[0],
@@ -1282,7 +1290,9 @@ def test_head_pose_at_reads_the_robot_before_anything_is_recorded() -> None:
     elsewhere = _yaw_pose(12.0)
     robot.set_target(head=elsewhere)
     session = MotionSession(robot, presence=True, idle="hold")  # not started
-    np.testing.assert_allclose(session.head_pose_at(time.monotonic() - 0.3), elsewhere)
+    np.testing.assert_allclose(
+        session.head_pose_at(time.perf_counter() - 0.3), elsewhere
+    )
 
 
 def test_start_twice_raises_and_stop_is_idempotent() -> None:

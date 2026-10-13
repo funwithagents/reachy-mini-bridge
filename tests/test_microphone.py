@@ -91,6 +91,7 @@ def test_two_subscribers_each_receive_every_chunk_in_order() -> None:
     assert a == list(range(a[0], a[0] + 30))  # consecutive: no chunk split or skipped
 
 
+@pytest.mark.realtime
 def test_mono_and_raw_subscribers_side_by_side_over_the_same_chunks() -> None:
     feed = _feed(_Indexed(right_scale=0.5))
 
@@ -113,6 +114,7 @@ def test_mono_and_raw_subscribers_side_by_side_over_the_same_chunks() -> None:
         )
 
 
+@pytest.mark.realtime
 def test_a_lapped_subscriber_reports_one_gap_and_costs_no_one_else(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -157,6 +159,7 @@ def test_preroll_starts_a_subscriber_in_the_past() -> None:
     assert published - 8 <= first < published
 
 
+@pytest.mark.realtime
 def test_preroll_beyond_the_ring_starts_at_the_oldest_chunk(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -305,6 +308,7 @@ def test_an_empty_reader_is_paced_not_spun() -> None:
     assert calls < 50
 
 
+@pytest.mark.realtime
 def test_the_fake_capture_is_paced_at_a_hundred_chunks_a_second() -> None:
     async def run() -> int:
         async with ReachyMiniBridge("fake") as bridge:

@@ -1,8 +1,12 @@
 # Continuous integration — specs/testing/ci.md.
 #
-# Both test tiers on GitHub's hosted Linux runners, on every pull request and push to
-# main, four jobs side by side: `check` (lint, format, types), `fast-tier`, and `e2e-sim`
-# (the live tier against the headless sim the harness spawns) once per kinematics engine
+# Both test tiers on GitHub's hosted runners, on every pull request and push to main,
+# seven jobs side by side: `check` (lint, format, types) on Linux; `fast-tier` once per
+# platform the bridge installs on — Linux x86_64 and arm64, macOS, Windows — since the
+# fast tier needs no daemon and no camera and is where a platform's own code paths (the daemon's process
+# group and stop, the dependency markers, paths and clocks) meet a machine of that
+# platform; and `e2e-sim` (the live tier against the headless sim the harness spawns,
+# on Linux, the one platform with a display-less GL backend) once per kinematics engine
 # the bridge supports at full accuracy — analytical and placo — since a sim solves every
 # target through one engine and the matrix is where the bridge's poses meet Placo's
 # limits on every push; the NN engine's own error fails the tracking tests, so it stays
@@ -69,12 +73,27 @@ jobs:
         run: uv run pyright
 
   fast-tier:
-    name: fast tier
-    runs-on: ubuntu-24.04
+    name: fast tier (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    strategy:
+      # One entry per platform the bridge installs on, the images pinned like the Linux ones;
+      # one platform's failure leaves the others running. macOS and Windows take GStreamer
+      # from reachy_mini's wheels, so they skip the apt step; Windows syncs without the placo
+      # extra, which has no Windows wheel (pyproject.toml's dev group). The macOS runner, a
+      # virtual M1 whose 10 ms sleep takes 34, deselects the `realtime` tests — the bounds on
+      # rates and per-tick steps its timers cannot keep (specs/testing/ci.md).
+      fail-fast: false
+      matrix:
+        include:
+          - {label: ubuntu-24.04, os: ubuntu-24.04}
+          - {label: ubuntu-24.04-arm, os: ubuntu-24.04-arm}
+          - {label: macos-15, os: macos-15, addopts: '-m "not realtime"'}
+          - {label: windows-2025, os: windows-2025}
     steps:
       - uses: actions/checkout@v7
       - name: System packages
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends -o Acquire::http::Timeout=30 -o Acquire::Retries=3 $APT_BASE
@@ -85,6 +104,12 @@ jobs:
       - name: Sync (every group, against the lock)
         run: uv sync --locked
       - name: Fast tier
+        # The temp folder on the checkout's drive: on Windows a test scene must sit on the
+        # drive upstream is installed on (specs/testing/sim_scene.md).
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+          PYTEST_ADDOPTS: ${{ matrix.addopts }}
         run: uv run pytest
 
   e2e-sim:

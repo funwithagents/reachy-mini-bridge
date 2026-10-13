@@ -56,8 +56,8 @@ if TYPE_CHECKING:
 
 
 def _wait(predicate: Callable[[], bool], timeout: float = 5.0) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+    deadline = time.perf_counter() + timeout
+    while time.perf_counter() < deadline:
         if predicate():
             return True
         time.sleep(0.02)
@@ -793,9 +793,9 @@ def _two_people(ts: float) -> FaceReport:
 
 
 async def _until(predicate: Callable[[], bool], timeout: float = 2.0) -> None:
-    deadline = time.monotonic() + timeout
+    deadline = time.perf_counter() + timeout
     while not predicate():
-        assert time.monotonic() < deadline, "timed out"
+        assert time.perf_counter() < deadline, "timed out"
         await asyncio.sleep(0.005)
 
 
@@ -936,9 +936,9 @@ def test_the_publisher_stops_mid_request() -> None:
         await publisher.start()
         try:
             await _until(entered.is_set)
-            started = time.monotonic()
+            started = time.perf_counter()
             await publisher.stop()
-            took = time.monotonic() - started
+            took = time.perf_counter() - started
             assert not publisher.running
         finally:
             release.set()  # the loop's shutdown waits for the worker thread
@@ -973,10 +973,10 @@ def test_a_held_request_does_not_hold_the_loop() -> None:
         await publisher.start()
         try:
             await _until(entered.is_set)
-            started = time.monotonic()
+            started = time.perf_counter()
             for _ in range(10):
                 await asyncio.sleep(0.01)
-            took = time.monotonic() - started
+            took = time.perf_counter() - started
             still_sending = publisher.running and not release.is_set()
         finally:
             release.set()

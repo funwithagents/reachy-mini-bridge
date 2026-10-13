@@ -95,8 +95,9 @@ dev = [
     "reachy-mini-bridge[test]",
     # Pull the placo extra in so the live tier's Placo run (REACHY_MINI_E2E_KINEMATICS=placo,
     # one of CI's three sims) works; harmless to every other run, since the engine is the
-    # config's choice and not the install's (specs/project.md).
-    "reachy-mini-bridge[placo]",
+    # config's choice and not the install's (specs/project.md). Not on Windows: placo and its
+    # Pinocchio stack publish no Windows wheel, so a Windows dev sync goes without the engine.
+    "reachy-mini-bridge[placo] ; sys_platform != 'win32'",
     "pytest-xdist>=3.8.0",
     # Rotations in the fast tier's pose assertions. reachy-mini 1.11 no longer requires it;
     # the tests import it themselves, so they declare it.
@@ -170,6 +171,13 @@ testpaths = ["tests"]
 # sleeps, not computes. `-n 0` on the command line runs it serially.
 # tests-e2e/conftest.py forces the live tier serial (one shared daemon).
 addopts = ["-n", "logical", "--maxprocesses", "8"]
+# A `realtime` test bounds a rate, a step or a latency the host's timers must keep —
+# the motion loop's per-tick step, the fake capture's 100 chunks a second. A host whose
+# sleeps run long fails it by the host, not the bridge; CI's macOS runner, a virtual M1
+# whose 10 ms sleep takes 34, deselects them (specs/testing/testing.md).
+markers = [
+    "realtime: bounds a rate, step or latency the host's timers must keep (specs/testing/testing.md)",
+]
 # Lets tests/ import the example app (`examples.control_panel...`, specs/examples/control_panel.md).
 pythonpath = ["."]
 

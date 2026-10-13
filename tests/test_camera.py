@@ -62,9 +62,9 @@ class _Reader:
 
 
 def _wait_until(predicate: Callable[[], bool], timeout: float = 2.0) -> None:
-    deadline = time.monotonic() + timeout
+    deadline = time.perf_counter() + timeout
     while not predicate():
-        if time.monotonic() > deadline:
+        if time.perf_counter() > deadline:
             raise AssertionError("condition not met in time")
         time.sleep(0.005)
 
@@ -140,6 +140,7 @@ def test_a_raising_reader_keeps_the_last_frame_and_recovers(
     assert latest is not None and latest.image[0, 0, 0] == 2
 
 
+@pytest.mark.realtime
 def test_a_reader_failing_for_long_warns_once(
     monkeypatch: pytest.MonkeyPatch,
     running: Callable[..., CameraFeed],
@@ -147,7 +148,9 @@ def test_a_reader_failing_for_long_warns_once(
 ) -> None:
     monkeypatch.setattr(camera_module, "CAMERA_RETRY_S", 0.005)
     monkeypatch.setattr(camera_module, "CAMERA_DOWN_S", 0.05)
-    reader = _Reader([OSError(f"down {i}") for i in range(200)])
+    # Not many more failures than the 40 awaited: a retry waits a whole timer tick where
+    # the platform's is coarse (15.6 ms on Windows), and the frame comes after them all.
+    reader = _Reader([OSError(f"down {i}") for i in range(60)])
     with caplog.at_level("INFO", logger="reachy_mini_bridge.camera"):
         feed = running(reader, None)
         _wait_until(lambda: reader.reads >= 40)
@@ -185,7 +188,7 @@ def test_head_pose_is_the_pose_at_the_capture_time_or_none(
     assert latest is not None
     assert latest.head_pose is None
     assert asked == [3.0]
-    assert latest.ts >= 3.0  # the arrival on the monotonic clock
+    assert latest.ts >= 3.0  # the arrival on the bridge's clock
     without = CameraFeed(_Reader([(_image(3), 7.0)]), None)
     asyncio.run(without.start())
     _wait_until(lambda: without.published_count == 1)
@@ -204,8 +207,8 @@ def test_two_consumers_both_see_every_frame(
     seen: dict[str, set[int]] = {"a": set(), "b": set()}
 
     def consume(name: str) -> None:
-        deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline and len(seen[name]) < 20:
+        deadline = time.perf_counter() + 2.0
+        while time.perf_counter() < deadline and len(seen[name]) < 20:
             frame = feed.latest()
             if frame is not None:
                 seen[name].add(frame.frame_id)
@@ -258,6 +261,7 @@ def test_an_empty_read_that_returns_at_once_is_paced() -> None:
     assert feed.latest() is None
 
 
+@pytest.mark.realtime
 def test_an_empty_read_that_waited_itself_is_not_slowed() -> None:
     """A reader that blocks longer than the pace before answering None runs at its own
     rate: the pace adds nothing on top of the read's wait."""
@@ -278,6 +282,6 @@ def test_stop_returns_promptly_during_the_empty_pace(
     feed = CameraFeed(reader, None)
     asyncio.run(feed.start())
     _wait_until(lambda: reader.reads >= 1)
-    started = time.monotonic()
+    started = time.perf_counter()
     asyncio.run(feed.stop())
-    assert time.monotonic() - started < 0.3
+    assert time.perf_counter() - started < 0.3

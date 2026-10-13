@@ -176,7 +176,7 @@ class _FakeMedia:
         feed's thread, its only reader — so the feed publishes 100 chunks a second.
         """
         period = _CHUNK_FRAMES / _SAMPLE_RATE
-        now = time.monotonic()
+        now = time.perf_counter()
         if self._last_chunk_at is not None:
             due = self._last_chunk_at + period
             if due > now:
@@ -237,7 +237,7 @@ class _FakeMedia:
         command — a perception getter, like ``get_audio_sample``.
         """
         period = 1.0 / FAKE_FRAME_HZ
-        now = time.monotonic()
+        now = time.perf_counter()
         if self._last_frame_at is not None:
             due = self._last_frame_at + period
             if due > now:

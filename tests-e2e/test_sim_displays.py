@@ -74,8 +74,8 @@ async def _mean_marker(
 ) -> npt.NDArray[np.float64]:
     """The one marker's world position, averaged over `seconds`."""
     samples: list[tuple[float, float, float]] = []
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
+    deadline = time.perf_counter() + seconds
+    while time.perf_counter() < deadline:
         positions = await asyncio.to_thread(_marker_positions, bridge)
         if len(positions) == 1:
             samples.append(positions[0])

@@ -133,12 +133,12 @@ def _opened_device_name(
     source = _avfvideosrc(pipeline)
     if source is None:
         return None
-    deadline = time.monotonic() + timeout_s
+    deadline = time.perf_counter() + timeout_s
     while True:
         name = source.get_property("device-name")
         if name:
             return str(name)
-        if time.monotonic() >= deadline:
+        if time.perf_counter() >= deadline:
             return None
         time.sleep(_POLL_S)
 

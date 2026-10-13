@@ -110,8 +110,8 @@ def test_custom_detector_converges_on_the_face(
         )
         report = bridge.faces.value
         seen = {report.ts}
-        deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline:
+        deadline = time.perf_counter() + 2.0
+        while time.perf_counter() < deadline:
             seen.add(bridge.faces.value.ts)
             await asyncio.sleep(0.01)
         return ahead, aside, report, (len(seen) - 1) / 2.0, bridge.attention

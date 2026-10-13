@@ -285,7 +285,7 @@ class HeadTracker:
         the previous aim while the followed face is missing, switch after
         ``TRACKING_SWITCH_S``, withdraw after ``TRACKING_LOST_S`` with nobody to switch
         to. A face is missing from the last observation that showed it."""
-        now = time.monotonic()
+        now = time.perf_counter()
         face: Face | None = None
         if self._following is not None:
             face = next(
@@ -319,7 +319,7 @@ class HeadTracker:
         if self._following is None:
             return
         if now is None:
-            now = time.monotonic()
+            now = time.perf_counter()
         if self._missing_for(now) >= TRACKING_LOST_S:
             self._lose()
 

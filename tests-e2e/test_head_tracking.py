@@ -266,9 +266,9 @@ class _Changes:
 async def _both_in_view(bridge: ReachyMiniBridge, count: int = 2) -> None:
     """Poll the report's value: a face returning within the absence window is a silent
     `update` (the published count never dropped), which `wait_for` would not see."""
-    deadline = time.monotonic() + 5.0
+    deadline = time.perf_counter() + 5.0
     while not (bridge.faces.value.active and len(bridge.faces.value.faces) == count):
-        assert time.monotonic() < deadline, (
+        assert time.perf_counter() < deadline, (
             f"not {count} faces in view after 5 s: {bridge.faces.value.faces}"
         )
         await asyncio.sleep(0.05)
@@ -276,11 +276,11 @@ async def _both_in_view(bridge: ReachyMiniBridge, count: int = 2) -> None:
 
 async def _until(predicate: Callable[[], bool], timeout: float) -> float:
     """Seconds until `predicate` held (an AssertionError past `timeout`)."""
-    started = time.monotonic()
+    started = time.perf_counter()
     while not predicate():
-        assert time.monotonic() - started < timeout, "condition not met in time"
+        assert time.perf_counter() - started < timeout, "condition not met in time"
         await asyncio.sleep(0.05)
-    return time.monotonic() - started
+    return time.perf_counter() - started
 
 
 async def _prepare(bridge: ReachyMiniBridge) -> None:
@@ -382,8 +382,8 @@ def test_a_face_hidden_briefly_is_waited_for_and_followed_again(
         changes = _Changes(bridge)
         face_scene.despawn(followed_name)
         yaws: list[float] = []
-        deadline = time.monotonic() + TRACKING_SWITCH_S / 2
-        while time.monotonic() < deadline:
+        deadline = time.perf_counter() + TRACKING_SWITCH_S / 2
+        while time.perf_counter() < deadline:
             pose = await asyncio.to_thread(robot.get_current_head_pose)
             yaws.append(yaw_pitch_deg(pose)[0])
             await asyncio.sleep(0.05)

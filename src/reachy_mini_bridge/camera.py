@@ -54,7 +54,7 @@ CAMERA_DOWN_S = 5.0
 CAMERA_EMPTY_S = 0.02
 
 # What the feed reads: the next frame as ``(image, capture_time)`` — ``capture_time`` the
-# frame's time on ``time.monotonic()``'s clock when the backend knows it, ``None`` when
+# frame's time on ``time.perf_counter()``'s clock when the backend knows it, ``None`` when
 # only the arrival is known — or ``None`` for no frame yet (specs/vision/camera.md "The frame's
 # time and the head pose": a head pose is attached only to a capture time).
 type FrameReader = Callable[[], tuple[npt.NDArray[np.uint8], float | None] | None]
@@ -90,7 +90,7 @@ def frame_reader(robot: AnyReachyMini) -> FrameReader:
 
         def read_fake() -> tuple[npt.NDArray[np.uint8], float | None] | None:
             image = get_frame()
-            return None if image is None else (image, time.monotonic())
+            return None if image is None else (image, time.perf_counter())
 
         return read_fake
 
@@ -178,11 +178,11 @@ class CameraFeed:
         failing_since: float | None = None
         down = False
         while not self._stop.is_set():
-            read_at = time.monotonic()
+            read_at = time.perf_counter()
             try:
                 got = read_frame()
             except Exception as e:  # noqa: BLE001 - a failed read is retried, never fatal
-                now = time.monotonic()
+                now = time.perf_counter()
                 if failing_since is None:
                     failing_since = now
                     _logger.debug("camera feed: read failed: %s", e)
@@ -202,12 +202,12 @@ class CameraFeed:
                 _logger.info("camera feed: frames are back")
             if got is None:
                 # No frame yet: one more pass, paced unless the read itself waited.
-                waited = time.monotonic() - read_at
+                waited = time.perf_counter() - read_at
                 if waited < CAMERA_EMPTY_S:
                     self._stop.wait(CAMERA_EMPTY_S - waited)
                 continue
             image, capture_ts = got
-            ts = time.monotonic() if capture_ts is None else capture_ts
+            ts = time.perf_counter() if capture_ts is None else capture_ts
             head_pose: npt.NDArray[np.float64] | None = None
             if capture_ts is not None and self._pose_at is not None:
                 try:

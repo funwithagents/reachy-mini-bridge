@@ -789,7 +789,7 @@ class MotionSession:
                 stages=[_IdleFadeOut(move, t_offset=elapsed)],
                 primary=None,
                 stage=0,
-                stage_start=time.monotonic(),
+                stage_start=time.perf_counter(),
             )
             return
         self._playing = None  # re-blend into the new idle move next tick
@@ -803,7 +803,7 @@ class MotionSession:
         move = playing.stages[1]
         if not isinstance(move, IdleMove):
             return None
-        return move, time.monotonic() - playing.stage_start
+        return move, time.perf_counter() - playing.stage_start
 
     def pause(self) -> None:
         self._commands.put(self._on_pause)
@@ -851,7 +851,7 @@ class MotionSession:
             history = list(self._history)
         if not history:
             present = np.array(self._robot.get_current_head_pose(), dtype=np.float64)
-            return np.array([time.monotonic()]), present[np.newaxis]
+            return np.array([time.perf_counter()]), present[np.newaxis]
         times = np.array([t for t, _ in history])
         return times, np.stack([pose for _, pose in history])
 
@@ -896,7 +896,7 @@ class MotionSession:
                 stages=[exit_stage],
                 primary=None,
                 stage=0,
-                stage_start=time.monotonic(),
+                stage_start=time.perf_counter(),
                 exit_blend=True,
             )
         else:
@@ -937,7 +937,7 @@ class MotionSession:
 
     def _run(self) -> None:
         period = 1.0 / CONTROL_HZ
-        next_tick = time.monotonic()
+        next_tick = time.perf_counter()
         while not self._stop:
             self._drain_commands()
             if self._stop:
@@ -945,7 +945,7 @@ class MotionSession:
             self._record_head_pose()
             if not self._paused:
                 try:
-                    self._tick(time.monotonic())
+                    self._tick(time.perf_counter())
                 except _LOST_CONNECTION_ERRORS as e:
                     self._on_lost_connection(e)
                 except _CustomIdleError as e:
@@ -954,11 +954,11 @@ class MotionSession:
                     _logger.warning("motion tick failed: %s", e)
                     self._fail_current(e)
             next_tick += period
-            delay = next_tick - time.monotonic()
+            delay = next_tick - time.perf_counter()
             if delay > 0:
                 time.sleep(delay)
             else:
-                next_tick = time.monotonic()  # fell behind: don't burst to catch up
+                next_tick = time.perf_counter()  # fell behind: don't burst to catch up
 
     def _record_head_pose(self) -> None:
         """Record the head pose the robot reports, commanding or not: the actual head,
@@ -968,7 +968,7 @@ class MotionSession:
         except Exception as e:  # noqa: BLE001 - a missing pose is one gap, not a fault
             _logger.debug("motion loop: no head pose to record: %s", e)
             return
-        now = time.monotonic()
+        now = time.perf_counter()
         with self._history_lock:
             self._history.append((now, pose))
             while self._history and self._history[0][0] < now - GAZE_HISTORY_S:

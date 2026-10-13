@@ -696,7 +696,7 @@ class _PlaybackTracker:
     """
 
     def __init__(
-        self, sample_rate: int, *, now: Callable[[], float] = time.monotonic
+        self, sample_rate: int, *, now: Callable[[], float] = time.perf_counter
     ) -> None:
         self._sample_rate = sample_rate
         self._now = now
