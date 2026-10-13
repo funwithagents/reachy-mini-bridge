@@ -1867,7 +1867,11 @@ def test_the_sim_session_sends_its_faces_to_the_viewer(
         config = _sim_with_face_markers(scene, displays_daemon.port)
         async with ReachyMiniBridge(config) as bridge:
             sets = displays_daemon.marker_sets
-            await _wait_until(lambda: any(m and m[0]["followed"] for m in sets()))
+            # The head converging onto the face: seconds of tracking, longer on a loaded
+            # runner — a deadline on a condition, not a bound on its rate.
+            await _wait_until(
+                lambda: any(m and m[0]["followed"] for m in sets()), timeout=10.0
+            )
             assert bridge.head_tracking.value.track_id is not None
             scene.hide()
             await _wait_until(lambda: sets()[-1] == [])
