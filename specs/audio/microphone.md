@@ -14,7 +14,7 @@ tests:
 
 # Mic feed — the one reader of the robot's microphone (`microphone.py`)
 
-**Status:** Updated
+**Status:** Implemented
 
 ## Purpose
 

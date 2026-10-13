@@ -11,7 +11,7 @@ tests:
 
 # Camera feed — the one reader of the robot's camera (`camera.py`)
 
-**Status:** Updated
+**Status:** Implemented
 
 ## Purpose
 

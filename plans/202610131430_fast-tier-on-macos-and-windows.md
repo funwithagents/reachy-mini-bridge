@@ -1,6 +1,6 @@
 # Fast tier on macOS, Windows and Linux arm64
 
-**Status:** In progress
+**Status:** Done
 
 Implements `specs/testing/ci.md` ("The runner", "The workflow"), `specs/daemon/daemon.md` ("The child runs in its own session", "Teardown stops what the bridge started") and `specs/project.md` ("Platforms", "Dependency groups"). It makes the fast tier a CI matrix over every platform the bridge installs on (Linux x86_64 and arm64, macOS on Apple silicon, Windows), gives the spawned daemon a Windows process group and a graceful stop there, and keeps the `placo` extra out of a Windows dev sync. It leaves out a Windows live tier, a Windows webcam device recipe and any on-robot validation on Windows.
 

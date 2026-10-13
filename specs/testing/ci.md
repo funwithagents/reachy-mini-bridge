@@ -7,7 +7,7 @@ tests:
 
 # Continuous integration
 
-**Status:** Updated
+**Status:** Implemented
 
 ## Purpose
 

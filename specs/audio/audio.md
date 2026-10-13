@@ -9,7 +9,7 @@ tests:
 
 # Audio & media session (`audio.py`)
 
-**Status:** Updated
+**Status:** Implemented
 
 ## Purpose
 
