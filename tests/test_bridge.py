@@ -830,6 +830,7 @@ def test_wobbling_is_paused_once_across_queued_emotions() -> None:
     assert calls == ["enable_wobbling", "disable_wobbling", "enable_wobbling"]
 
 
+@pytest.mark.realtime
 def test_a_cancel_caught_inside_the_wobbling_pause_still_restores_it() -> None:
     """The disable call runs in its thread past the cancel; the release waits for it,
     so the restore comes after and wobbling is not left off."""
@@ -839,22 +840,26 @@ def test_a_cancel_caught_inside_the_wobbling_pause_still_restores_it() -> None:
             await bridge.set_motors_state("enabled")
             robot = _fake(bridge)
             original = robot.disable_wobbling
+            disabling = threading.Event()
 
             def slow_disable() -> None:
+                disabling.set()
                 time.sleep(0.2)
                 original()
 
             robot.disable_wobbling = slow_disable  # type: ignore[method-assign]
             task = asyncio.create_task(bridge.play_emotion("happy"))
-            await asyncio.sleep(0.05)  # inside the disable call
+            while not disabling.is_set():  # inside the disable call
+                await asyncio.sleep(0.005)
             t0 = time.perf_counter()
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
             assert time.perf_counter() - t0 < 0.1  # the cancel returned promptly
-            await asyncio.sleep(
-                0.3
-            )  # the disable thread finishes, the release restores
+            # the disable thread finishes, the release restores
+            await _wait_until(
+                lambda: _command_names(bridge).count("enable_wobbling") == 2
+            )
             return _command_names(bridge)
 
     names = asyncio.run(run())

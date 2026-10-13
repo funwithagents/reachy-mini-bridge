@@ -1029,8 +1029,10 @@ def test_a_cancel_during_the_start_stops_the_file_once_it_has_started(
     path = _wav(tmp_path, 2.0)
     robot = FakeReachyMini()
     original = robot.media.play_sound
+    starting = threading.Event()
 
     def slow_start(sound_file: str) -> None:
+        starting.set()
         time.sleep(0.2)
         original(sound_file)
 
@@ -1039,7 +1041,8 @@ def test_a_cancel_during_the_start_stops_the_file_once_it_has_started(
     async def run() -> None:
         async with _open_session(robot) as session:
             task = asyncio.create_task(session.play_sound(str(path)))
-            await asyncio.sleep(0.05)  # inside the start
+            while not starting.is_set():  # inside the start, whatever the host's timers
+                await asyncio.sleep(0.005)
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
