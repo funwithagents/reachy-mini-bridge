@@ -691,6 +691,7 @@ async def _cancel_emotion_mid_flight(name: str) -> tuple[float, list[str]]:
         return elapsed, _command_names(bridge)
 
 
+@pytest.mark.realtime
 def test_cancelled_play_emotion_stops_the_sound_and_keeps_the_session() -> None:
     elapsed, names = asyncio.run(_cancel_emotion_mid_flight("happy"))
 
@@ -765,6 +766,7 @@ def test_completed_play_emotion_does_not_stop_the_sound() -> None:
     assert "media.stop_sound" not in asyncio.run(run())
 
 
+@pytest.mark.realtime
 def test_play_emotion_under_a_tracked_face_plays_as_recorded(
     fast_attention: None,
 ) -> None:

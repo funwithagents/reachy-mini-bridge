@@ -110,6 +110,7 @@ def test_the_loop_publishes_active_then_a_face_appearing_once(
     assert value.source == "custom"
 
 
+@pytest.mark.realtime
 def test_a_gap_shorter_than_the_absence_window_wakes_nobody(fast_frames: None) -> None:
     scene = _Scene()
 
@@ -886,6 +887,7 @@ def test_the_detectors_cost_is_logged_once_per_run(
     assert rate > 0
 
 
+@pytest.mark.realtime
 def test_a_display_sampling_the_feed_costs_the_detector_no_frames() -> None:
     """The single-reader property end to end: a second consumer polling the feed at
     50 Hz (the control panel's display) while the detector runs; the detector still

@@ -17,11 +17,11 @@ The same code runs on all three; one config field, `backend`, moves between the 
 A **capability** is something the running target actually provides, probed at session start by the test harness and inferred from nothing. The columns:
 
 - `motion` — the daemon reports a status and takes targets. `audio` — a microphone sample arrives on the open media session, and the speaker plays. `camera` — a frame arrives on `bridge.camera`. `faces` — a face can be put in front of the camera without a person: the bridge's test scene (every sim the harness spawns) holds portraits a test shows and moves. `gravity_compensation` — the hardware daemon runs the Placo kinematics engine (`daemon.kinematics_engine: "placo"` with the `placo` extra for a daemon the bridge starts — [configuration.md](configuration.md#kinematics-engines)). `face_markers` — the viewer draws the faces the bridge sends it.
-- **Validated** says whether the setup is exercised by the bridge's own tests: *CI* on every push (the fast tier on Linux, macOS and Windows, the live tier on Linux — [specs/testing/ci.md](../../specs/testing/ci.md)); *local* in the author's runs on macOS; *untested* means the code path exists and follows upstream's documented behaviour, and nothing more.
+- **Validated** says whether the setup is exercised by the bridge's own tests: *CI* on every push (the fast tier on Linux x86_64 and arm64, macOS and Windows, the live tier on Linux x86_64 — [specs/testing/ci.md](../../specs/testing/ci.md)); *local* in the author's runs on macOS; *untested* means the code path exists and follows upstream's documented behaviour, and nothing more.
 
 | Setup | Config | `motion` | `audio` | `camera` | `faces` | `gravity_compensation` | Validated |
 |---|---|---|---|---|---|---|---|
-| Fake, offline | `"backend": "fake"` | ✅ recorded | ✅ synthetic | ✅ synthetic | ✅ a stub detector in tests | ❌ | CI (the fast tier, on Linux, macOS and Windows) |
+| Fake, offline | `"backend": "fake"` | ✅ recorded | ✅ synthetic | ✅ synthetic | ✅ a stub detector in tests | ❌ | CI (the fast tier, on Linux x86_64 and arm64, macOS and Windows) |
 | Sim, headless, **Linux** | `"backend": "sim"`, `"daemon": {"spawn": "auto"}` | ✅ | ✅ host device or a PulseAudio null sink; no software AEC on Ubuntu 24.04 | ✅ rendered offscreen through Mesa's EGL | ✅ | ❌ | CI (the live tier) |
 | Sim, headless, **macOS** | same | ✅ | ✅ host device, software AEC | ❌ no GL context without a window | ✅ loads, nothing looks at it | ❌ | local |
 | Sim, viewer | `"headless": false` | ✅ | ✅ | ✅ (needs an unlocked GUI session; `mjpython` on macOS) | ✅ | ❌ | local (macOS); `face_markers` too |
@@ -46,7 +46,7 @@ The extras in full, with what each adds, are in the [README](../../README.md#ins
 
 ## Platforms
 
-Developed on macOS; CI runs the fast tier on Linux, macOS and Windows and the live tier on Linux, the sim's camera included. On Windows nothing beyond the fast tier is exercised yet — no sim, no robot; a headless sim has no camera there (as on macOS), the `webcam` source opens the default camera only, and the `placo` extra has no wheel, so neither Placo nor gravity compensation is available. On Linux, GStreamer is the system's and a daemon on the machine — the sim, or a Lite over USB — also needs the Rust GStreamer webrtc plugin, which no distribution packages: [../guides/linux.md](../guides/linux.md) has the packages, the plugin's two routes, and what works without a sound card. A client that only talks to a wireless robot's own daemon needs the GStreamer packages alone.
+Developed on macOS (Apple silicon — upstream's `onnxruntime` and `torch` publish no wheel for an Intel Mac); CI runs the fast tier on Linux x86_64 and arm64, macOS and Windows and the live tier on Linux x86_64, the sim's camera included. On Windows nothing beyond the fast tier is exercised yet — no sim, no robot; a headless sim has no camera there (as on macOS), the `webcam` source opens the default camera only, and the `placo` extra has no wheel, so neither Placo nor gravity compensation is available. On Linux, GStreamer is the system's and a daemon on the machine — the sim, or a Lite over USB — also needs the Rust GStreamer webrtc plugin, which no distribution packages: [../guides/linux.md](../guides/linux.md) has the packages, the plugin's two routes, and what works without a sound card. A client that only talks to a wireless robot's own daemon needs the GStreamer packages alone.
 
 ## One local media daemon at a time
 

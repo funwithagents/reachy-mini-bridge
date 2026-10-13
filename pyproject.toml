@@ -171,6 +171,13 @@ testpaths = ["tests"]
 # sleeps, not computes. `-n 0` on the command line runs it serially.
 # tests-e2e/conftest.py forces the live tier serial (one shared daemon).
 addopts = ["-n", "logical", "--maxprocesses", "8"]
+# A `realtime` test bounds a rate, a step or a latency the host's timers must keep —
+# the motion loop's per-tick step, the fake capture's 100 chunks a second. A host whose
+# sleeps run long fails it by the host, not the bridge; CI's macOS runner, a virtual M1
+# whose 10 ms sleep takes 34, deselects them (specs/testing/testing.md).
+markers = [
+    "realtime: bounds a rate, step or latency the host's timers must keep (specs/testing/testing.md)",
+]
 # Lets tests/ import the example app (`examples.control_panel...`, specs/examples/control_panel.md).
 pythonpath = ["."]
 

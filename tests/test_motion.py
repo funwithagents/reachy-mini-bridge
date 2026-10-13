@@ -427,6 +427,7 @@ def test_paused_session_sends_nothing() -> None:
     assert robot.targets == []
 
 
+@pytest.mark.realtime
 def test_resume_blends_from_the_present_pose_into_breathing() -> None:
     async def run() -> list[float]:
         robot = FakeReachyMini()
@@ -556,6 +557,7 @@ def test_primaries_are_fifo_and_exclusive() -> None:
     assert two_index >= commands_at_f1_done
 
 
+@pytest.mark.realtime
 def test_cancelled_future_drops_the_primary_within_a_tick() -> None:
     async def run() -> tuple[list[float], int, int]:
         robot = FakeReachyMini()
@@ -578,6 +580,7 @@ def test_cancelled_future_drops_the_primary_within_a_tick() -> None:
     assert after > before
 
 
+@pytest.mark.realtime
 def test_toggle_during_a_primary_is_deferred() -> None:
     """specs/motion/motion.md "Presence and the idle mode": a mode changed while a primary plays is
     recorded at once and takes effect when the queue drains — the primary plays its
@@ -796,6 +799,7 @@ class _BreaksAfter(IdleMove):
         return IdleOffsets()
 
 
+@pytest.mark.realtime
 def test_custom_idle_move_plays_in_custom_mode() -> None:
     async def run() -> tuple[list[float], FakeReachyMini]:
         robot = FakeReachyMini()
@@ -836,6 +840,7 @@ def test_idle_move_is_stored_in_another_mode_and_plays_once_custom() -> None:
     assert zs[-1] == pytest.approx(LIFT_MM / 1000.0, abs=1e-6)
 
 
+@pytest.mark.realtime
 def test_leaving_a_custom_idle_move_fades_it_out_to_neutral() -> None:
     async def run() -> list[float]:
         robot = FakeReachyMini()
@@ -1012,6 +1017,7 @@ def _yaws(robot: FakeReachyMini, since: int = 0) -> list[float]:
     return [_yaw_pitch_deg(h)[0] for h, _, _ in robot.targets[since:] if h is not None]
 
 
+@pytest.mark.realtime
 def test_an_aim_eases_the_head_onto_it_and_withdrawing_it_eases_it_back() -> None:
     async def run() -> tuple[list[float], list[float], list[float]]:
         robot = FakeReachyMini()
@@ -1213,6 +1219,7 @@ def test_a_gaze_offsets_raising_while_playing_falls_back_to_the_hold(
     assert yaws[-1] == pytest.approx(AIM_YAW_DEG, abs=1.0)  # the hold, aimed
 
 
+@pytest.mark.realtime
 def test_a_primary_plays_as_recorded_under_an_aim_then_the_head_returns_to_it() -> None:
     async def run() -> tuple[list[tuple[float, float]], list[float]]:
         robot = FakeReachyMini()

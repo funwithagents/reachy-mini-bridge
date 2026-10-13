@@ -1,9 +1,9 @@
 # Continuous integration — specs/testing/ci.md.
 #
 # Both test tiers on GitHub's hosted runners, on every pull request and push to main,
-# six jobs side by side: `check` (lint, format, types) on Linux; `fast-tier` once per
-# platform the bridge runs on — Linux, macOS, Windows — since the fast tier needs no
-# daemon and no camera and is where a platform's own code paths (the daemon's process
+# seven jobs side by side: `check` (lint, format, types) on Linux; `fast-tier` once per
+# platform the bridge installs on — Linux x86_64 and arm64, macOS, Windows — since the
+# fast tier needs no daemon and no camera and is where a platform's own code paths (the daemon's process
 # group and stop, the dependency markers, paths and clocks) meet a machine of that
 # platform; and `e2e-sim` (the live tier against the headless sim the harness spawns,
 # on Linux, the one platform with a display-less GL backend) once per kinematics engine
@@ -77,12 +77,18 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
+      # One entry per platform the bridge installs on, the images pinned like the Linux ones;
+      # one platform's failure leaves the others running. macOS and Windows take GStreamer
+      # from reachy_mini's wheels, so they skip the apt step; Windows syncs without the placo
+      # extra, which has no Windows wheel (pyproject.toml's dev group). The macOS runner, a
+      # virtual M1 whose 10 ms sleep takes 34, deselects the `realtime` tests — the bounds on
+      # rates and per-tick steps its timers cannot keep (specs/testing/ci.md).
       fail-fast: false
       matrix:
         include:
           - {label: ubuntu-24.04, os: ubuntu-24.04}
           - {label: ubuntu-24.04-arm, os: ubuntu-24.04-arm}
-          - {label: macos-15, os: macos-15}
+          - {label: macos-15, os: macos-15, addopts: '-m "not realtime"'}
           - {label: windows-2025, os: windows-2025}
     steps:
       - uses: actions/checkout@v7
@@ -97,42 +103,13 @@ jobs:
           cache-dependency-glob: uv.lock
       - name: Sync (every group, against the lock)
         run: uv sync --locked
-      - name: Runner timers (diagnostic)
-        if: runner.os == 'macOS'
-        continue-on-error: true
-        run: |
-          sysctl -n hw.ncpu machdep.cpu.brand_string
-          uv run python -c "
-          import time, statistics as st
-          for want in (0.001, 0.005, 0.01, 0.0167):
-              got = []
-              for _ in range(200):
-                  t = time.perf_counter(); time.sleep(want); got.append(time.perf_counter() - t)
-              got.sort()
-              print(f'sleep {want*1e3:5.1f} ms: median {st.median(got)*1e3:6.2f} p95 {got[189]*1e3:6.2f} max {got[-1]*1e3:6.2f}')
-          "
-          uv run pytest -n 0 $(cat <<'LIST'
-          tests/test_motion.py::test_toggle_during_a_primary_is_deferred
-          tests/test_motion.py::test_resume_blends_from_the_present_pose_into_breathing
-          tests/test_motion.py::test_leaving_a_custom_idle_move_fades_it_out_to_neutral
-          tests/test_motion.py::test_custom_idle_move_plays_in_custom_mode
-          tests/test_motion.py::test_an_aim_eases_the_head_onto_it_and_withdrawing_it_eases_it_back
-          tests/test_motion.py::test_a_primary_plays_as_recorded_under_an_aim_then_the_head_returns_to_it
-          tests/test_motion.py::test_cancelled_future_drops_the_primary_within_a_tick
-          tests/test_microphone.py::test_a_lapped_subscriber_reports_one_gap_and_costs_no_one_else
-          tests/test_microphone.py::test_preroll_beyond_the_ring_starts_at_the_oldest_chunk
-          tests/test_microphone.py::test_mono_and_raw_subscribers_side_by_side_over_the_same_chunks
-          tests/test_microphone.py::test_the_fake_capture_is_paced_at_a_hundred_chunks_a_second
-          tests/test_camera.py::test_an_empty_read_that_waited_itself_is_not_slowed
-          tests/test_camera.py::test_a_reader_failing_for_long_warns_once
-          tests/test_bridge.py::test_play_emotion_under_a_tracked_face_plays_as_recorded
-          tests/test_bridge.py::test_cancelled_play_emotion_stops_the_sound_and_keeps_the_session
-          LIST
-          ) -q
       - name: Fast tier
+        # The temp folder on the checkout's drive: on Windows a test scene must sit on the
+        # drive upstream is installed on (specs/testing/sim_scene.md).
         env:
           TEMP: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
+          PYTEST_ADDOPTS: ${{ matrix.addopts }}
         run: uv run pytest
 
   e2e-sim:

@@ -140,6 +140,7 @@ def test_a_raising_reader_keeps_the_last_frame_and_recovers(
     assert latest is not None and latest.image[0, 0, 0] == 2
 
 
+@pytest.mark.realtime
 def test_a_reader_failing_for_long_warns_once(
     monkeypatch: pytest.MonkeyPatch,
     running: Callable[..., CameraFeed],
@@ -260,6 +261,7 @@ def test_an_empty_read_that_returns_at_once_is_paced() -> None:
     assert feed.latest() is None
 
 
+@pytest.mark.realtime
 def test_an_empty_read_that_waited_itself_is_not_slowed() -> None:
     """A reader that blocks longer than the pace before answering None runs at its own
     rate: the pace adds nothing on top of the read's wait."""
