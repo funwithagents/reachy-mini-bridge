@@ -228,7 +228,7 @@ What runs together, and who wins:
 | A face's box (`Face.bbox`, `PixelFace.bbox`) | pixels of the full camera frame |
 | A face's head angles (`roll`, `pitch`, `yaw`; `PixelFace.orientation`) | **radians**, as seen from the camera |
 | A head pose (`CameraFrame.head_pose`, `FaceReport.head_pose`) | a 4×4 matrix in metres, world frame (x forward, y left, z up) |
-| Times (`ts`) | seconds on the bridge's monotonic clock (`time.monotonic()`) |
+| Times (`ts`) | seconds on the bridge's monotonic clock, `time.perf_counter()` — the same clock as `time.monotonic()` on macOS and Linux, and finer than it on Windows before Python 3.13 |
 | Camera image | `uint8` BGR, H×W×3 |
 | Mic chunks (`audio_input`) | `bytes` of int16 little-endian PCM, mono by default, at `mic_sample_rate` (16 kHz) |
 | Synthesizer output (`SpeechSynthesizer.stream`) | `float32` mono numpy in [-1, 1], shape `(n,)`, at `synth.sample_rate` |

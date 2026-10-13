@@ -258,15 +258,23 @@ def upstream_scene_name(scene_path: str | Path) -> str:
 
     Upstream resolves ``--scene NAME`` to ``<its mjcf dir>/scenes/NAME.xml``; a path
     relative to that directory, minus the ``.xml`` suffix, therefore names any file on
-    this machine. Raises ``FileNotFoundError`` for a missing file, ``ValueError`` for a
-    file that does not end in ``.xml``.
+    this machine — on Windows, any file on the drive upstream is installed on. Raises
+    ``FileNotFoundError`` for a missing file, ``ValueError`` for a file that does not end
+    in ``.xml`` or sits on another drive.
     """
     path = Path(scene_path).resolve()
     if path.suffix != ".xml":
         raise ValueError(f"a sim scene must be an .xml MJCF file, got {path}")
     if not path.is_file():
         raise FileNotFoundError(f"sim scene not found: {path}")
-    relative = os.path.relpath(path, _mjcf_root() / "scenes")
+    scenes = _mjcf_root() / "scenes"
+    if path.drive.lower() != scenes.drive.lower():
+        raise ValueError(
+            f"a sim scene must be on the drive reachy_mini is installed on "
+            f"({scenes.drive}), got {path} — upstream names a scene relative to its own "
+            f"directory; for the test scene, point TEMP at a folder on {scenes.drive}"
+        )
+    relative = os.path.relpath(path, scenes)
     return relative[: -len(".xml")]
 
 
@@ -385,7 +393,7 @@ class SceneDirector:
     few floats it copies.
     """
 
-    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(self, clock: Callable[[], float] = time.perf_counter) -> None:
         self._clock = clock
         self._lock = threading.Lock()
         self._bodies: dict[str, _Body] = {}
@@ -830,12 +838,12 @@ class SimSceneClient:
 
     def wait_still(self, name: str, timeout: float = 10.0) -> BodyState:
         """Poll until ``name``'s timed move has landed (``SimSceneError`` on timeout)."""
-        deadline = time.monotonic() + timeout
+        deadline = time.perf_counter() + timeout
         while True:
             state = self.bodies()[name]
             if not state.moving:
                 return state
-            if time.monotonic() >= deadline:
+            if time.perf_counter() >= deadline:
                 raise SimSceneError(
                     f"sim scene body {name!r} still moving after {timeout}s"
                 )

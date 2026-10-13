@@ -65,7 +65,7 @@ class MicChunk:
     """One published capture chunk (specs/audio/microphone.md "The chunk")."""
 
     seq: int  # 0, 1, 2, … per feed — the subscribers' cursor counts these
-    ts: float  # time.monotonic() when the reader received the chunk
+    ts: float  # time.perf_counter() when the reader received the chunk
     # (frames, channels) interleaved float32, the array upstream returned — shared by
     # reference with every subscriber, so read-only by convention.
     samples: npt.NDArray[np.float32] = field(compare=False)
@@ -179,7 +179,7 @@ class MicFeed:
                 raise BridgeError("the mic feed is not running")
             cursor = self._head
             if preroll_s > 0:
-                cutoff = time.monotonic() - preroll_s
+                cutoff = time.perf_counter() - preroll_s
                 oldest = max(self._head - self._capacity, self._session_start)
                 while cursor > oldest:
                     previous = self._ring[(cursor - 1) % self._capacity]
@@ -243,11 +243,11 @@ class MicFeed:
         failing_since: float | None = None
         down = False
         while not self._stop.is_set():
-            read_at = time.monotonic()
+            read_at = time.perf_counter()
             try:
                 sample = read_sample()
             except Exception as e:  # noqa: BLE001 - a failed read is retried, never fatal
-                now = time.monotonic()
+                now = time.perf_counter()
                 if failing_since is None:
                     failing_since = now
                     _logger.debug("mic feed: read failed: %s", e)
@@ -267,7 +267,7 @@ class MicFeed:
                 _logger.info("mic feed: chunks are back")
             if sample is None:
                 # Nothing queued: one more pass, paced unless the read itself waited.
-                waited = time.monotonic() - read_at
+                waited = time.perf_counter() - read_at
                 if waited < MIC_EMPTY_S:
                     self._stop.wait(MIC_EMPTY_S - waited)
                 continue
@@ -275,7 +275,7 @@ class MicFeed:
 
     def _publish(self, samples: npt.NDArray[np.float32]) -> None:
         with self._lock:
-            chunk = MicChunk(self._head, time.monotonic(), samples)
+            chunk = MicChunk(self._head, time.perf_counter(), samples)
             self._ring[self._head % self._capacity] = chunk
             self._head += 1
             waiters = tuple(self._waiters)

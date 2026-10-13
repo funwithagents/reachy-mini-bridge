@@ -665,9 +665,9 @@ def test_play_emotion_on_the_fake_takes_the_moves_duration() -> None:
     async def run() -> float:
         async with ReachyMiniBridge("fake") as bridge:
             await bridge.set_motors_state("enabled")
-            t0 = time.monotonic()
+            t0 = time.perf_counter()
             await bridge.play_emotion("curious")
-            return time.monotonic() - t0
+            return time.perf_counter() - t0
 
     # The entry blend (BLEND_S) precedes the move's own trajectory.
     assert asyncio.run(run()) >= BLEND_S + 0.25
@@ -682,11 +682,11 @@ async def _cancel_emotion_mid_flight(name: str) -> tuple[float, list[str]]:
         else:
             while "media.play_sound" not in _command_names(bridge):
                 await asyncio.sleep(0)
-        t0 = time.monotonic()
+        t0 = time.perf_counter()
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-        elapsed = time.monotonic() - t0
+        elapsed = time.perf_counter() - t0
         await bridge.say("still here")  # the session is usable right after
         return elapsed, _command_names(bridge)
 
@@ -845,11 +845,11 @@ def test_a_cancel_caught_inside_the_wobbling_pause_still_restores_it() -> None:
             robot.disable_wobbling = slow_disable  # type: ignore[method-assign]
             task = asyncio.create_task(bridge.play_emotion("happy"))
             await asyncio.sleep(0.05)  # inside the disable call
-            t0 = time.monotonic()
+            t0 = time.perf_counter()
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
-            assert time.monotonic() - t0 < 0.1  # the cancel returned promptly
+            assert time.perf_counter() - t0 < 0.1  # the cancel returned promptly
             await asyncio.sleep(
                 0.3
             )  # the disable thread finishes, the release restores
@@ -941,11 +941,11 @@ def test_a_cancelled_play_sound_stops_the_sound_and_keeps_the_session(
             task = asyncio.create_task(bridge.play_sound(str(path)))
             while "media.play_sound" not in _command_names(bridge):
                 await asyncio.sleep(0.01)
-            t0 = time.monotonic()
+            t0 = time.perf_counter()
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
-            elapsed = time.monotonic() - t0
+            elapsed = time.perf_counter() - t0
             await bridge.say("still here")
             return elapsed, _command_names(bridge)
 
@@ -1710,9 +1710,9 @@ def test_a_bad_idle_move_in_the_config_fails_bring_up() -> None:
 
 
 async def _first_frame(bridge: ReachyMiniBridge, timeout: float = 0.5) -> Any:
-    deadline = time.monotonic() + timeout
+    deadline = time.perf_counter() + timeout
     while bridge.camera.latest() is None:
-        assert time.monotonic() < deadline, "no frame within the wait"
+        assert time.perf_counter() < deadline, "no frame within the wait"
         await asyncio.sleep(0.005)
     return bridge.camera.latest()
 
@@ -1846,9 +1846,9 @@ def displays_daemon(monkeypatch: pytest.MonkeyPatch) -> Any:
 
 
 async def _wait_until(predicate: Callable[[], bool], timeout: float = 3.0) -> None:
-    deadline = time.monotonic() + timeout
+    deadline = time.perf_counter() + timeout
     while not predicate():
-        assert time.monotonic() < deadline, "timed out"
+        assert time.perf_counter() < deadline, "timed out"
         await asyncio.sleep(0.01)
 
 
@@ -1914,9 +1914,9 @@ def test_stopping_the_session_mid_request_leaves_it_usable(
         displays_daemon.hold.clear()
         await bridge.start()
         await _wait_until(displays_daemon.entered.is_set)
-        started = time.monotonic()
+        started = time.perf_counter()
         await bridge.stop()
-        took = time.monotonic() - started
+        took = time.perf_counter() - started
         displays_daemon.hold.set()
         before = len(displays_daemon.requests)
         async with bridge:
@@ -1985,12 +1985,12 @@ def _custom_config(
 async def _wait_for_face_x(
     bridge: ReachyMiniBridge, x: float, timeout: float = 1.0
 ) -> None:
-    deadline = time.monotonic() + timeout
+    deadline = time.perf_counter() + timeout
     while True:
         faces = bridge.faces.value.faces
         if faces and abs(faces[0].x - x) < 0.02:
             return
-        assert time.monotonic() < deadline, f"no face at x={x}: {bridge.faces.value}"
+        assert time.perf_counter() < deadline, f"no face at x={x}: {bridge.faces.value}"
         await asyncio.sleep(0.01)
 
 
@@ -3123,10 +3123,10 @@ def test_an_emotion_failing_at_its_entry_raises_and_restores_wobbling(
     async def run() -> tuple[float, list[str]]:
         async with ReachyMiniBridge("fake") as bridge:
             await bridge.set_motors_state("enabled")
-            t0 = time.monotonic()
+            t0 = time.perf_counter()
             with pytest.raises(RuntimeError, match="bad pose"):
                 await asyncio.wait_for(bridge.play_emotion("sad"), 1.0)
-            elapsed = time.monotonic() - t0
+            elapsed = time.perf_counter() - t0
             names = _command_names(bridge)
             await bridge.play_emotion("happy")  # the session plays on
             return elapsed, names

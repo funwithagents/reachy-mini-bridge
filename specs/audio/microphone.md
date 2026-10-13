@@ -14,7 +14,7 @@ tests:
 
 # Mic feed — the one reader of the robot's microphone (`microphone.py`)
 
-**Status:** Implemented
+**Status:** Updated
 
 ## Purpose
 
@@ -30,7 +30,7 @@ Upstream hands capture out one chunk at a time: the client's audio pipeline ends
 @dataclass(frozen=True)
 class MicChunk:
     seq: int                              # 0, 1, 2, … per feed — the subscribers' cursor counts these
-    ts: float                             # time.monotonic() when the reader received the chunk
+    ts: float                             # time.perf_counter() when the reader received the chunk
     samples: npt.NDArray[np.float32]      # (frames, mic_channels), interleaved float32 — the array upstream returned
 ```
 

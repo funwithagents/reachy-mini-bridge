@@ -101,9 +101,9 @@ def _wav(directory: Path, seconds: float, name: str) -> Path:
 
 
 def _wait_until(predicate: Callable[[], bool], timeout: float = 3.0) -> None:
-    deadline = time.monotonic() + timeout
+    deadline = time.perf_counter() + timeout
     while not predicate():
-        assert time.monotonic() < deadline, "condition not met in time"
+        assert time.perf_counter() < deadline, "condition not met in time"
         time.sleep(0.01)
 
 
@@ -142,10 +142,10 @@ def test_start_timeout_cancels_the_bring_up(monkeypatch: pytest.MonkeyPatch) -> 
 
     monkeypatch.setattr(bridge_module.MediaSession, "start", slow_start)
     controller = ControlPanelController("fake")
-    t0 = time.monotonic()
+    t0 = time.perf_counter()
     with pytest.raises(TimeoutError):
         controller.start(timeout=0.2)
-    assert time.monotonic() - t0 < 2.0
+    assert time.perf_counter() - t0 < 2.0
     assert not controller.running
     # The bring-up unwound: the robot connection it had opened is closed again.
     with pytest.raises(BridgeError):
@@ -278,10 +278,10 @@ def test_say_stopped_mid_flight_flushes_the_speaker_and_the_session_stays_usable
         _wait_until(lambda: "media.push_audio_sample" in _commands(controller))
         assert controller.busy == ["say"]
 
-        t0 = time.monotonic()
+        t0 = time.perf_counter()
         assert controller.stop_saying() == 1
         assert started.result(timeout=2.0) is False
-        assert time.monotonic() - t0 < 0.5
+        assert time.perf_counter() - t0 < 0.5
         assert "audio.clear_player" in _commands(controller)
         assert controller.busy == []
 

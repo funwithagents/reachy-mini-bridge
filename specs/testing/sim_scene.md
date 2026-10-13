@@ -16,7 +16,7 @@ tests:
 
 # Sim scene — faces in the MuJoCo sim (`sim_scene.py`)
 
-**Status:** Implemented
+**Status:** Updated
 
 ## Purpose
 
@@ -55,7 +55,7 @@ MuJoCo compiles a scene when the daemon loads it: bodies cannot be added to a ru
 
 ### Loading a file upstream only loads by name
 
-Upstream's `MujocoBackend` builds the scene path as `<its mjcf dir>/scenes/<name>.xml` from `--scene <name>`. `upstream_scene_name(path)` returns the path **relative to that `scenes/` directory, minus `.xml`** — a name upstream resolves to any file on the machine, so the scene itself needs no change to upstream's loading code. It requires an existing `.xml` file (`FileNotFoundError` / `ValueError` otherwise). The scene file's own `<include>` and `meshdir` are absolute precisely because the file lives outside upstream's tree.
+Upstream's `MujocoBackend` builds the scene path as `<its mjcf dir>/scenes/<name>.xml` from `--scene <name>`. `upstream_scene_name(path)` returns the path **relative to that `scenes/` directory, minus `.xml`** — a name upstream resolves to any file on the machine, so the scene itself needs no change to upstream's loading code. It requires an existing `.xml` file (`FileNotFoundError` / `ValueError` otherwise). On Windows a relative path cannot cross drives, so the file must sit on the drive upstream is installed on; another drive is a `ValueError` naming that drive. The harness writes its test scene under the system temp folder, so a Windows machine whose `%TEMP%` and environment are on different drives points `TEMP` at a folder on the environment's drive (CI points it at the runner's temp folder, on the checkout's drive). The scene file's own `<include>` and `meshdir` are absolute precisely because the file lives outside upstream's tree.
 
 ### The director: bodies driven from inside the physics loop
 

@@ -555,16 +555,16 @@ class FaceDetection:
     ) -> tuple[Sequence[PixelFace], float]:
         """``detect`` under the lock ``close`` takes, timed."""
         with self._detector_lock:
-            started = time.monotonic()
+            started = time.perf_counter()
             faces = detector.detect(image, ts)
-            return faces, time.monotonic() - started
+            return faces, time.perf_counter() - started
 
     def _account(self, call_s: float) -> None:
         """The cost log (specs/vision/user_perception.md "The detection loop"): one ``INFO``
         line, ``FACE_COST_LOG_S`` after the run's first observation."""
         if self._cost_logged:
             return
-        now = time.monotonic()
+        now = time.perf_counter()
         if self._cost_since is None:
             self._cost_since = now
         self._cost_calls += 1
@@ -612,7 +612,7 @@ class FaceDetection:
         # Marked before the detector runs: a frame it raises on — or one skipped under
         # the rate ceiling — is not retried.
         self._last_frame_id = frame.frame_id
-        now = time.monotonic()
+        now = time.perf_counter()
         target_fps = self._target_fps
         if (
             target_fps is not None
@@ -642,7 +642,7 @@ class FaceDetection:
                 _logger.debug("face detection: poll failed: %s", e)
                 report = None
             if report is None:
-                now = time.monotonic()
+                now = time.perf_counter()
                 if failing_since is None:
                     failing_since = now
                 down_after = FACE_SOURCE_DOWN_S
@@ -688,7 +688,7 @@ class FaceDetection:
             self._faces.set(report)
             return report, None
         if len(report.faces) < len(published.faces):
-            now = time.monotonic()
+            now = time.perf_counter()
             if lower_since is None:
                 lower_since = now
             if now - lower_since >= FACE_ABSENT_S:

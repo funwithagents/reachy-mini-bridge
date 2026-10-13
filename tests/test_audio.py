@@ -241,9 +241,9 @@ def test_say_returns_only_after_the_utterance_has_played() -> None:
 
     async def run() -> float:
         async with _open(MediaSession(robot)) as session:
-            start = time.monotonic()
+            start = time.perf_counter()
             await session.say("hi", _ToneSynth(16000, chunks=4, block=800))  # 0.2 s
-            return time.monotonic() - start
+            return time.perf_counter() - start
 
     assert asyncio.run(run()) >= 0.2
     assert "audio.clear_player" not in _command_names(robot)
@@ -254,9 +254,9 @@ def test_say_with_no_audio_returns_at_once() -> None:
 
     async def run() -> float:
         async with _open(MediaSession(robot)) as session:
-            start = time.monotonic()
+            start = time.perf_counter()
             await session.say("hi", _SilentSynth())
-            return time.monotonic() - start
+            return time.perf_counter() - start
 
     assert asyncio.run(run()) < 0.05
     names = _command_names(robot)
@@ -838,13 +838,13 @@ def test_a_new_say_interrupts_one_waiting_to_be_heard() -> None:
             first = asyncio.create_task(session.say("first", long))
             while len(_pushed_frames(robot)) < 4:  # queued; now waiting to be heard
                 await asyncio.sleep(0)
-            t0 = time.monotonic()
+            t0 = time.perf_counter()
             second = asyncio.create_task(
                 session.say("second", _ToneSynth(16000, chunks=2, block=800))
             )
             with pytest.raises(SpeechInterruptedError):
                 await first
-            elapsed = time.monotonic() - t0
+            elapsed = time.perf_counter() - t0
             await second
             await session.say("third", _SilentSynth())  # the session plays on
             return elapsed, _command_names(robot)
@@ -988,9 +988,9 @@ def test_play_sound_completes_when_the_file_has_been_heard(tmp_path: Path) -> No
 
     async def run() -> float:
         async with _open_session(robot) as session:
-            t0 = time.monotonic()
+            t0 = time.perf_counter()
             await session.play_sound(str(path))
-            return time.monotonic() - t0
+            return time.perf_counter() - t0
 
     elapsed = asyncio.run(run())
     assert 0.3 <= elapsed < 0.6
@@ -1008,11 +1008,11 @@ def test_a_cancelled_play_sound_stops_its_file_and_the_session_plays_on(
         async with _open_session(robot) as session:
             task = asyncio.create_task(session.play_sound(str(long)))
             await asyncio.sleep(0.3)
-            t0 = time.monotonic()
+            t0 = time.perf_counter()
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
-            elapsed = time.monotonic() - t0
+            elapsed = time.perf_counter() - t0
             at_cancel = _command_names(robot)  # the stop precedes the CancelledError
             await session.play_sound(str(short))  # the session still works
             return elapsed, at_cancel
@@ -1058,10 +1058,10 @@ def test_a_later_sound_file_interrupts_the_play_sound_in_flight(tmp_path: Path) 
             task = asyncio.create_task(session.play_sound(str(first)))
             await asyncio.sleep(0.1)
             later = asyncio.create_task(session.play_sound(str(second)))
-            t0 = time.monotonic()
+            t0 = time.perf_counter()
             with pytest.raises(SoundInterruptedError):
                 await task
-            elapsed = time.monotonic() - t0
+            elapsed = time.perf_counter() - t0
             await later  # the newest plays to its end
             return elapsed
 
@@ -1080,7 +1080,10 @@ def test_a_sound_file_and_a_say_play_together_and_a_stop_spares_the_say(
         async with _open_session(robot) as session:
             sound = asyncio.create_task(session.play_sound(str(path)))
             say = asyncio.create_task(session.say("hello", synth))
-            while "media.push_audio_sample" not in _command_names(robot):
+            # Both playing before the stop: the file started, the speech streaming.
+            while not {"media.play_sound", "media.push_audio_sample"} <= set(
+                _command_names(robot)
+            ):
                 await asyncio.sleep(0.01)
             sound.cancel()
             with pytest.raises(asyncio.CancelledError):

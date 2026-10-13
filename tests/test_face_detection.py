@@ -502,9 +502,9 @@ async def _running_custom(
 
 
 async def _wait_for(predicate: Callable[[], bool], timeout: float = 2.0) -> None:
-    deadline = time.monotonic() + timeout
+    deadline = time.perf_counter() + timeout
     while not predicate():
-        if time.monotonic() > deadline:
+        if time.perf_counter() > deadline:
             raise AssertionError("condition not met in time")
         await asyncio.sleep(0.01)
 

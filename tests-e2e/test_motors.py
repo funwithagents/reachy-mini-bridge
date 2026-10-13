@@ -35,9 +35,9 @@ async def _motors_state_after_set(bridge: ReachyMiniBridge, state: str) -> str:
     to a second; a target that ignores the state (the sim) reads back its old one.
     """
     await bridge.set_motors_state(state)
-    deadline = time.monotonic() + 1.0
+    deadline = time.perf_counter() + 1.0
     while (mode := await bridge.get_motors_state()) != state:
-        if time.monotonic() > deadline:
+        if time.perf_counter() > deadline:
             break
         await asyncio.sleep(0.1)
     return mode

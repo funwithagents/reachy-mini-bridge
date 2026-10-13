@@ -657,7 +657,7 @@ def test_real_startup_errors_name_the_real_daemon(harness: _Harness) -> None:
             DaemonError, match="spawned real daemon did not become ready"
         ) as excinfo,
     ):
-        mp.setattr(daemon.time, "monotonic", lambda: next(clock))
+        mp.setattr(daemon.time, "perf_counter", lambda: next(clock))
         with daemon.managed_daemon(
             DaemonConfig(spawn="auto", headless=False, startup_timeout=1.0),
             backend="real",
@@ -759,7 +759,7 @@ def test_spawn_timeout_stops_the_child(harness: _Harness) -> None:
         pytest.MonkeyPatch.context() as mp,
         pytest.raises(DaemonError, match="did not become ready"),
     ):
-        mp.setattr(daemon.time, "monotonic", lambda: next(clock))
+        mp.setattr(daemon.time, "perf_counter", lambda: next(clock))
         with daemon.managed_daemon(DaemonConfig(spawn="auto", startup_timeout=1.0)):
             pass
     assert harness.proc.calls == [_EXIT_REQUEST, "wait"]
@@ -771,7 +771,7 @@ def test_viewer_timeout_mentions_the_gui_session(harness: _Harness) -> None:
         pytest.MonkeyPatch.context() as mp,
         pytest.raises(DaemonError, match="GUI session"),
     ):
-        mp.setattr(daemon.time, "monotonic", lambda: next(clock))
+        mp.setattr(daemon.time, "perf_counter", lambda: next(clock))
         with daemon.managed_daemon(
             DaemonConfig(spawn="auto", headless=False, startup_timeout=1.0)
         ):
@@ -785,7 +785,7 @@ def test_booting_daemon_timeout_names_the_port(harness: _Harness) -> None:
         pytest.MonkeyPatch.context() as mp,
         pytest.raises(DaemonError, match="port 8000"),
     ):
-        mp.setattr(daemon.time, "monotonic", lambda: next(clock))
+        mp.setattr(daemon.time, "perf_counter", lambda: next(clock))
         with daemon.managed_daemon(DaemonConfig(spawn="auto", startup_timeout=1.0)):
             pass
     assert harness.spawned == []

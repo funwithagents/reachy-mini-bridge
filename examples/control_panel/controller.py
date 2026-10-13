@@ -282,7 +282,7 @@ class ControlPanelController:
         last_ts: float | None = None
         while True:
             report = bridge.faces.value
-            now = time.monotonic()
+            now = time.perf_counter()
             if not report.active:
                 arrivals.clear()
                 last_ts = None

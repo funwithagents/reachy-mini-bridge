@@ -396,7 +396,7 @@ class WebcamRelay:
         overlay: _Overlay | None = None,
         frame_timeout: float = _FRAME_TIMEOUT_S,
         retry: float = _RETRY_S,
-        clock: Callable[[], float] = time.monotonic,
+        clock: Callable[[], float] = time.perf_counter,
         open_pipeline: _PipelineOpener | None = None,
         system: str | None = None,
     ) -> None:

@@ -177,8 +177,8 @@ class _FakePipeline:
 
 
 def _wait(predicate: Callable[[], bool], timeout: float = 5.0) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+    deadline = time.perf_counter() + timeout
+    while time.perf_counter() < deadline:
         if predicate():
             return True
         time.sleep(0.02)

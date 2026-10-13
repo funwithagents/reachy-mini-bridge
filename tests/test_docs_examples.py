@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def _first_python_block(path: Path, heading: str) -> str:
     """The first fenced ``python`` block under the Markdown ``heading`` of ``path``."""
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     start = text.index(f"\n{heading}\n")
     match = re.search(r"```python\n(.*?)```", text[start:], re.DOTALL)
     assert match is not None, f"no python block under {heading!r} in {path}"

@@ -10,7 +10,7 @@ Where things live. This is a coarse, module-level map — for the full file inve
 
 | Path | What's there |
 |---|---|
-| `.github/workflows/` | The CI workflow — the static gate and both test tiers, three jobs side by side on GitHub's hosted Linux runners on every pull request and push to `main`; spec: [specs/testing/ci.md](specs/testing/ci.md) |
+| `.github/workflows/` | The CI workflow — the static gate and both test tiers on GitHub's hosted runners on every pull request and push to `main`: the fast tier on Linux, macOS and Windows, the static gate and the live tier on Linux; spec: [specs/testing/ci.md](specs/testing/ci.md) |
 | `README.md` | The landing page — what the bridge is, its support status, install, the fake quick start, the control panel, and the links into `docs/`; its runnable quick start is executed by `tests/test_docs_examples.py` |
 | `CONTRIBUTING.md` | How the project is run today — solo development, feedback through issues, no external pull requests yet |
 | `config.example.json` | Every `ReachyMiniConfig` field with placeholder values — kept in sync with [specs/core/config.md](specs/core/config.md) |

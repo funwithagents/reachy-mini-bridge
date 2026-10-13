@@ -76,8 +76,8 @@ def test_real_audio_format_matches_the_fake_assumptions(
     # one-shot get_audio_sample(), which a second reader here would split
     # (specs/audio/microphone.md). Poll briefly for the session's first chunk.
     chunk = None
-    deadline = time.monotonic() + 5.0
-    while time.monotonic() < deadline:
+    deadline = time.perf_counter() + 5.0
+    while time.perf_counter() < deadline:
         chunk = bridge.mic.latest()
         if chunk is not None and chunk.samples.size > 0:
             break
@@ -161,9 +161,9 @@ def test_say_completes_after_the_utterance_has_played(
     requires_caps(live_bridge, "audio")
     bridge, _caps = live_bridge
 
-    start = time.monotonic()
+    start = time.perf_counter()
     live_bridge.run(bridge.say("ignored", _ToneSynth(seconds=1.0)))
-    assert time.monotonic() - start >= 1.0
+    assert time.perf_counter() - start >= 1.0
 
 
 def test_a_new_say_interrupts_the_one_playing(live_bridge: LiveBridge) -> None:
@@ -175,13 +175,13 @@ def test_a_new_say_interrupts_the_one_playing(live_bridge: LiveBridge) -> None:
     async def scenario() -> tuple[float, float]:
         first = asyncio.create_task(bridge.say("ignored", _ToneSynth(seconds=2.0)))
         await asyncio.sleep(0.3)
-        t0 = time.monotonic()
+        t0 = time.perf_counter()
         second = asyncio.create_task(bridge.say("ignored", _ToneSynth(seconds=0.5)))
         with pytest.raises(SpeechInterruptedError):
             await first
-        interrupted_after = time.monotonic() - t0
+        interrupted_after = time.perf_counter() - t0
         await second
-        return interrupted_after, time.monotonic() - t0
+        return interrupted_after, time.perf_counter() - t0
 
     interrupted_after, total = live_bridge.run(scenario())
     assert interrupted_after < 0.3
@@ -198,16 +198,16 @@ def test_play_sound_spans_the_file_and_a_cancel_stops_it(
     bridge, _caps = live_bridge
 
     async def scenario() -> tuple[float, float]:
-        t0 = time.monotonic()
+        t0 = time.perf_counter()
         await bridge.play_sound("go_sleep.wav")
-        heard_after = time.monotonic() - t0
+        heard_after = time.perf_counter() - t0
         task = asyncio.create_task(bridge.play_sound("confused1.wav"))  # 5.7 s
         await asyncio.sleep(1.0)
-        t0 = time.monotonic()
+        t0 = time.perf_counter()
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-        cancelled_after = time.monotonic() - t0
+        cancelled_after = time.perf_counter() - t0
         await bridge.say("ignored", _ToneSynth(seconds=0.3))  # the session plays on
         return heard_after, cancelled_after
 
@@ -238,8 +238,8 @@ async def _still_head_pose(bridge: ReachyMiniBridge) -> npt.NDArray[np.float64]:
     """The head pose once the head has stopped moving (a previous sway may be decaying)."""
     robot: Any = bridge.robot
     pose = await asyncio.to_thread(robot.get_current_head_pose)
-    deadline = time.monotonic() + 5.0
-    while time.monotonic() < deadline:
+    deadline = time.perf_counter() + 5.0
+    while time.perf_counter() < deadline:
         await asyncio.sleep(0.2)
         previous, pose = pose, await asyncio.to_thread(robot.get_current_head_pose)
         if _head_deviation_deg(previous, pose) < 0.05:
@@ -293,15 +293,15 @@ def test_wobbling_is_on_by_default_and_sways_the_head(
             peak = await _peak_deviation_during_loud_say(bridge, start)
             # The rest: half a second of samples within `STILL_DEG` of the window's
             # first, reached within 3 s of the audio's end.
-            t0 = time.monotonic()
+            t0 = time.perf_counter()
             window = [await asyncio.to_thread(robot.get_current_head_pose)]
-            while len(window) < 10 and time.monotonic() - t0 < 3.0:
+            while len(window) < 10 and time.perf_counter() - t0 < 3.0:
                 await asyncio.sleep(0.05)
                 pose = await asyncio.to_thread(robot.get_current_head_pose)
                 if _head_deviation_deg(window[0], pose) >= STILL_DEG:
                     window = []
                 window.append(pose)
-            rest_s = time.monotonic() - t0 if len(window) >= 10 else float("inf")
+            rest_s = time.perf_counter() - t0 if len(window) >= 10 else float("inf")
             return peak, rest_s, angle_from_neutral_deg(window[-1])
         finally:
             await bridge.set_idle("breathing")
@@ -375,18 +375,18 @@ def test_cancelled_say_stops_the_sound_and_the_next_say_works(
                 bridge.say("ignored", _ToneSynth(seconds=3.0, amplitude=0.25))
             )
             await asyncio.sleep(1.0)
-            t0 = time.monotonic()
+            t0 = time.perf_counter()
             say.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await say
-            latency = time.monotonic() - t0
+            latency = time.perf_counter() - t0
             # Sample the head after the cancel: the first second is the motors' own
             # settling, the window after it must be still.
             settling: list[float] = []
             quiet: list[npt.NDArray[np.float64]] = []
-            while time.monotonic() - t0 < 2.5:
+            while time.perf_counter() - t0 < 2.5:
                 pose = await asyncio.to_thread(robot.get_current_head_pose)
-                if time.monotonic() - t0 < 1.0:
+                if time.perf_counter() - t0 < 1.0:
                     settling.append(_head_deviation_deg(start, pose))
                 else:
                     quiet.append(pose)

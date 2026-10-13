@@ -46,8 +46,8 @@ def test_camera_frame_delivers_a_frame(
     """
     requires_caps(live_bridge, "camera")
     bridge, _caps = live_bridge
-    deadline = time.monotonic() + 2.0  # the first frame follows the session's entry
-    while bridge.camera.latest() is None and time.monotonic() < deadline:
+    deadline = time.perf_counter() + 2.0  # the first frame follows the session's entry
+    while bridge.camera.latest() is None and time.perf_counter() < deadline:
         time.sleep(0.05)
     frame = bridge.camera.latest()
     assert frame is not None, "camera probed but bridge.camera.latest() stayed None"
@@ -82,8 +82,8 @@ def test_detection_runs_on_the_live_camera(live_bridge: LiveBridge) -> None:
                 "the detection loop did not report active"
             )
             seen = {bridge.faces.value.ts}
-            deadline = time.monotonic() + 2.0
-            while time.monotonic() < deadline:
+            deadline = time.perf_counter() + 2.0
+            while time.perf_counter() < deadline:
                 seen.add(bridge.faces.value.ts)
                 await asyncio.sleep(0.01)
             frame = bridge.camera.latest()

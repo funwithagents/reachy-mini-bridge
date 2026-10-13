@@ -73,8 +73,8 @@ def _probe_audio(mic: MicFeed) -> bool:
     Read on the feed, the one reader of ``get_audio_sample()`` — never beside it.
     """
     try:
-        deadline = time.monotonic() + _AUDIO_PROBE_TIMEOUT
-        while time.monotonic() < deadline:
+        deadline = time.perf_counter() + _AUDIO_PROBE_TIMEOUT
+        while time.perf_counter() < deadline:
             chunk = mic.latest()
             if chunk is not None and chunk.samples.size > 0:
                 return True
@@ -89,8 +89,8 @@ def _probe_camera(feed: CameraFeed) -> bool:
     needs a GL context for one; a robot always has one). Read on the feed, the one reader
     of upstream's ``get_frame()`` — never on ``get_frame()`` beside it."""
     try:
-        deadline = time.monotonic() + _CAMERA_PROBE_TIMEOUT
-        while time.monotonic() < deadline:
+        deadline = time.perf_counter() + _CAMERA_PROBE_TIMEOUT
+        while time.perf_counter() < deadline:
             if feed.latest() is not None:
                 return True
             time.sleep(0.1)

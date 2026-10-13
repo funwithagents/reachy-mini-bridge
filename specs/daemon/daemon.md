@@ -8,7 +8,7 @@ tests:
 
 # Daemon lifecycle (`daemon.py`)
 
-**Status:** Implemented
+**Status:** Updated
 
 ## Purpose
 
@@ -33,7 +33,7 @@ class DaemonHandle:
     # the spawned process, when owned
     pid: int | None
 
-    def stop(self) -> None: ...  # terminate, grace, kill an owned daemon; a no-op on a borrowed one
+    def stop(self) -> None: ...  # ask to exit, grace, kill an owned daemon; a no-op on a borrowed one
 
 
 def is_daemon_ready(host: str, port: int) -> bool: ...
@@ -120,13 +120,17 @@ The child's stdout and stderr are merged into one pipe that a reader thread drai
 
 ### The child runs in its own session
 
-The spawned daemon is started with `start_new_session=True` (`setsid()` in the child — the bridge's hosts are macOS and Linux) and its stdin detached (`DEVNULL`), so it belongs to neither the terminal's session nor its foreground process group. A terminal's Ctrl+C delivers `SIGINT` to every process in the foreground group; a daemon sharing that group would shut down *at the same moment* as the bridge process — closing its WebSocket clients with `1012 service restart` — and the bridge's ordered teardown ([bridge.md](../core/bridge.md) "Lifecycle") would then run against a daemon that is already gone: the motion loop's every tick failing (a warning per tick), upstream's wobbler printing tracebacks for the speech offsets still scheduled for a playing sound, the camera pipeline reporting end-of-stream, and the robot left wherever the dying daemon dropped it. In its own session the daemon sees no terminal signal at all: the bridge process alone gets the `KeyboardInterrupt`, exits the bridge against a live daemon (motion eases to neutral, tracking and wobbling are switched off daemon-side, media and the client close), and only then does teardown terminate the daemon, which uses its grace to put the robot to sleep. The order in which things stop is the bridge's to decide, and only the bridge stops the daemon.
+On macOS and Linux the spawned daemon is started with `start_new_session=True` (`setsid()` in the child) and its stdin detached (`DEVNULL`), so it belongs to neither the terminal's session nor its foreground process group. A terminal's Ctrl+C delivers `SIGINT` to every process in the foreground group; a daemon sharing that group would shut down *at the same moment* as the bridge process — closing its WebSocket clients with `1012 service restart` — and the bridge's ordered teardown ([bridge.md](../core/bridge.md) "Lifecycle") would then run against a daemon that is already gone: the motion loop's every tick failing (a warning per tick), upstream's wobbler printing tracebacks for the speech offsets still scheduled for a playing sound, the camera pipeline reporting end-of-stream, and the robot left wherever the dying daemon dropped it. In its own session the daemon sees no terminal signal at all: the bridge process alone gets the `KeyboardInterrupt`, exits the bridge against a live daemon (motion eases to neutral, tracking and wobbling are switched off daemon-side, media and the client close), and only then does teardown terminate the daemon, which uses its grace to put the robot to sleep. The order in which things stop is the bridge's to decide, and only the bridge stops the daemon.
+
+On Windows, which has no sessions, the daemon is started with `CREATE_NEW_PROCESS_GROUP` and the same detached stdin and merged pipe. The console's Ctrl+C is not delivered to a new process group, so the effect is the one above: the bridge alone gets the `KeyboardInterrupt`. The group is also what the stop below addresses.
 
 ### Teardown stops what the bridge started
 
-`DaemonHandle.stop()` terminates an **owned** daemon (`SIGTERM`), gives it 10 seconds to exit, then kills it, and stops the reader of its output; a real daemon uses that grace to put the robot to sleep (measured at about 8 seconds on a Lite). On a **borrowed** daemon it is a no-op — the daemon is left running — and a second `stop()` is a no-op too. `managed_daemon` calls it on every exit path, including when the body raises.
+`DaemonHandle.stop()` asks an **owned** daemon to exit, gives it 10 seconds, then kills it, and stops the reader of its output; a real daemon uses that grace to put the robot to sleep (measured at about 8 seconds on a Lite). On a **borrowed** daemon it is a no-op — the daemon is left running — and a second `stop()` is a no-op too. `managed_daemon` calls it on every exit path, including when the body raises.
 
-**An orphaned daemon is the accepted trade-off of the detached session.** Because the daemon no longer shares the terminal's session, it outlives a bridge process that never reaches teardown — one that is `SIGKILL`ed, crashes without unwinding, or loses its terminal (the `SIGHUP` of a closed window goes to the terminal's session, which the daemon has left). Such a daemon keeps serving on its port, with the robot awake. On the next run, `daemon.spawn: "auto"` borrows it (`owned=False`, so the bridge never stops it) and `"always"` raises `DaemonError` naming the port already in use; `pkill -f reachy-mini-daemon` stops it by hand. A parent-death watchdog is deferred (open question 1).
+The request to exit is the signal upstream's server (uvicorn) shuts down on, so its lifespan shutdown — the robot put to sleep — runs before the process ends: `SIGTERM` on macOS and Linux; on Windows `CTRL_BREAK_EVENT` sent to the daemon's process group, which uvicorn handles as `SIGBREAK`. `terminate()` is not the request on Windows, where it is `TerminateProcess` and ends the daemon with no shutdown at all; it remains the fallback when the break cannot be sent (a bridge process with no console to send it through), and the kill after the grace is `TerminateProcess` as everywhere.
+
+**An orphaned daemon is the accepted trade-off of the detached session.** Because the daemon no longer shares the terminal's session, it outlives a bridge process that never reaches teardown — one that is `SIGKILL`ed, crashes without unwinding, or loses its terminal (the `SIGHUP` of a closed window goes to the terminal's session, which the daemon has left). Such a daemon keeps serving on its port, with the robot awake. On the next run, `daemon.spawn: "auto"` borrows it (`owned=False`, so the bridge never stops it) and `"always"` raises `DaemonError` naming the port already in use; `pkill -f reachy-mini-daemon` stops it by hand (on Windows, the Task Manager or `taskkill`). A parent-death watchdog is deferred (open question 1).
 
 ### One implementation, two users
 

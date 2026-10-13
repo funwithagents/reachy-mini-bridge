@@ -752,7 +752,7 @@ class FaceMarkersView:
         self,
         frame_offset: Callable[[], npt.NDArray[np.float64]],
         *,
-        clock: Callable[[], float] = time.monotonic,
+        clock: Callable[[], float] = time.perf_counter,
         stale_s: float = FACE_MARKERS_STALE_S,
     ) -> None:
         self._frame_offset = frame_offset
@@ -1003,7 +1003,7 @@ class FaceMarkerPublisher:
         from .head_tracking import frame_head_pose
 
         head = frame_head_pose(
-            report, self._camera, self._history, self._delay(), time.monotonic()
+            report, self._camera, self._history, self._delay(), time.perf_counter()
         )
         followed = self._head_tracking.value.track_id
         markers = [

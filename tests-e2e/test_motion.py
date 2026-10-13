@@ -75,8 +75,8 @@ def test_breathing_moves_the_head_and_breathing_off_holds_it(
 
     async def sample_z(seconds: float) -> float:
         zs: list[float] = []
-        deadline = time.monotonic() + seconds
-        while time.monotonic() < deadline:
+        deadline = time.perf_counter() + seconds
+        while time.perf_counter() < deadline:
             pose = await asyncio.to_thread(robot.get_current_head_pose)
             zs.append(float(pose[2, 3]))
             await asyncio.sleep(0.1)
@@ -228,18 +228,18 @@ def test_cancelled_emotion_stops_motion_and_sound(
         try:
             task = asyncio.create_task(bridge.play_emotion("dance2"))
             await asyncio.sleep(3.0)  # long enough to see the dance and hear its sound
-            t0 = time.monotonic()
+            t0 = time.perf_counter()
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
-            latency = time.monotonic() - t0
+            latency = time.perf_counter() - t0
             # The head reaches its last target: the cancel drops the primary at once,
             # but the idle move then blends in from wherever it caught the head
             # (BLEND_S), so settling takes a bit longer than before the motion loop.
             await asyncio.sleep(BLEND_S + 1.0)
             samples: list[npt.NDArray[np.float64]] = []
-            t1 = time.monotonic()
-            while time.monotonic() - t1 < 2.0:
+            t1 = time.perf_counter()
+            while time.perf_counter() - t1 < 2.0:
                 head, antennas = await asyncio.to_thread(
                     robot.get_current_joint_positions
                 )

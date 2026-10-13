@@ -240,6 +240,18 @@ def test_upstream_scene_name_rejects_missing_or_non_xml_files(tmp_path: Path) ->
         upstream_scene_name(tmp_path / "scene.txt")
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="drives are Windows paths")
+def test_upstream_scene_name_names_the_drive_a_scene_must_be_on(
+    scene_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No relative path crosses drives, and upstream only takes one: a scene on another
+    drive than upstream's is refused with the drive it must be on."""
+    other = "Z:" if scene_path.drive.upper() != "Z:" else "Y:"
+    monkeypatch.setattr(sim_scene, "_mjcf_root", lambda: Path(f"{other}/mjcf"))
+    with pytest.raises(ValueError, match=other):
+        upstream_scene_name(scene_path)
+
+
 # --- the director through the physics loop ---
 
 
@@ -424,9 +436,9 @@ def served_director(
     )
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
-    deadline = time.monotonic() + 10.0
+    deadline = time.perf_counter() + 10.0
     while not server.started:
-        if time.monotonic() > deadline:
+        if time.perf_counter() > deadline:
             raise RuntimeError("uvicorn did not start")
         time.sleep(0.02)
     try:

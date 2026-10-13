@@ -70,7 +70,7 @@ def _report(x: float, y: float, ts: float) -> FaceReport:
 
 
 def _nobody() -> FaceReport:
-    return FaceReport(faces=(), ts=time.monotonic(), source="yunet", active=True)
+    return FaceReport(faces=(), ts=time.perf_counter(), source="yunet", active=True)
 
 
 def _project(
@@ -110,9 +110,9 @@ async def _closed_loop(
         yaws: list[float] = []
         report = _nobody()
         detected_at = -math.inf
-        deadline = time.monotonic() + seconds
-        while time.monotonic() < deadline:
-            now = time.monotonic()
+        deadline = time.perf_counter() + seconds
+        while time.perf_counter() < deadline:
+            now = time.perf_counter()
             if now - detected_at >= 1.0 / DETECT_HZ:
                 detected_at = now
                 frame_pose = session.head_pose_at(now - frame_delay_s)
@@ -174,7 +174,7 @@ def test_an_unreported_frame_delay_is_learned_and_the_head_still_settles() -> No
 def _jumping_face_while_turning() -> float:
     """The delay estimate after 2 s of a face jumping from side to side while the head
     turns 30 deg over the window — a scene no delay explains."""
-    now = time.monotonic()
+    now = time.perf_counter()
     times = now - 3.0 + np.arange(0.0, 3.001, 0.02, dtype=np.float64)
     poses = np.stack([_turned(yaw) for yaw in np.linspace(0.0, 30.0, len(times))])
     tracker = HeadTracker(
@@ -209,11 +209,11 @@ def test_the_estimate_holds_while_the_head_is_still() -> None:
     """A still head says nothing about the delay: every delay fits alike."""
     tracker = HeadTracker(
         CameraModel.for_sim(SimCameraSettings()),
-        history=lambda: (np.array([time.monotonic()]), np.eye(4)[np.newaxis]),
+        history=lambda: (np.array([time.perf_counter()]), np.eye(4)[np.newaxis]),
         set_gaze=lambda aim, *, focus=False: None,
     )
     for k in range(20):
-        tracker.observe(_report(0.1 * math.sin(k), 0.0, ts=time.monotonic()))
+        tracker.observe(_report(0.1 * math.sin(k), 0.0, ts=time.perf_counter()))
         time.sleep(0.01)
     assert tracker.delay_s == head_tracking.DELAY_PRIOR_S
 
@@ -224,13 +224,13 @@ def test_a_report_carrying_its_frame_pose_is_aimed_against_it() -> None:
     sent: list[Any] = []
     tracker = HeadTracker(
         CameraModel.for_sim(SimCameraSettings()),
-        history=lambda: (np.array([time.monotonic()]), np.eye(4)[np.newaxis]),
+        history=lambda: (np.array([time.perf_counter()]), np.eye(4)[np.newaxis]),
         set_gaze=lambda aim, *, focus=False: sent.append(aim),
     )
     turned = Rotation.from_euler("z", 20.0, degrees=True).as_matrix()
     pose = np.eye(4)
     pose[:3, :3] = turned
-    report = replace(_report(0.0, 0.0, ts=time.monotonic()), head_pose=pose)
+    report = replace(_report(0.0, 0.0, ts=time.perf_counter()), head_pose=pose)
     tracker.observe(report)
     assert _yaw_deg(sent[-1]) == pytest.approx(20.0, abs=0.5)
 
@@ -283,9 +283,9 @@ async def _constant_observation(camera: CameraModel, seconds: float) -> list[flo
         )
         session.resume()
         yaws: list[float] = []
-        deadline = time.monotonic() + seconds
-        while time.monotonic() < deadline:
-            tracker.observe(_report(0.3, 0.0, ts=time.monotonic()))
+        deadline = time.perf_counter() + seconds
+        while time.perf_counter() < deadline:
+            tracker.observe(_report(0.3, 0.0, ts=time.perf_counter()))
             yaws.append(_yaw_deg(robot.last_target[0]))
             await asyncio.sleep(1.0 / POLL_HZ)
         return yaws
@@ -316,12 +316,12 @@ def test_focus_goes_with_every_aim_and_stop_withdraws_it() -> None:
     sent: list[tuple[Any, bool]] = []
     tracker = HeadTracker(
         CameraModel.for_sim(SimCameraSettings()),
-        history=lambda: (np.array([time.monotonic()]), np.eye(4)[np.newaxis]),
+        history=lambda: (np.array([time.perf_counter()]), np.eye(4)[np.newaxis]),
         set_gaze=lambda aim, *, focus=False: sent.append((aim, focus)),
     )
-    tracker.observe(_report(0.0, 0.0, ts=time.monotonic()))
+    tracker.observe(_report(0.0, 0.0, ts=time.perf_counter()))
     tracker.focus = True
-    tracker.observe(_report(0.0, 0.0, ts=time.monotonic()))
+    tracker.observe(_report(0.0, 0.0, ts=time.perf_counter()))
     tracker.stop()
     assert [f for _, f in sent] == [False, True, True]
     assert sent[-1][0] is None and not tracker.engaged
@@ -337,7 +337,7 @@ class _Clock:
     def __init__(self) -> None:
         self.now = 1000.0
 
-    def monotonic(self) -> float:
+    def perf_counter(self) -> float:
         return self.now
 
 
@@ -363,7 +363,7 @@ class _Chooser:
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self.clock = _Clock()
         monkeypatch.setattr(
-            head_tracking, "time", SimpleNamespace(monotonic=self.clock.monotonic)
+            head_tracking, "time", SimpleNamespace(perf_counter=self.clock.perf_counter)
         )
         self.aims: list[Any] = []
         self.report = _Published()

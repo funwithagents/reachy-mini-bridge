@@ -523,7 +523,7 @@ def _wait_until_ready(
 ) -> None:
     hint = _VIEWER_HINT if backend == "sim" and not config.headless else ""
     tail = output.tail if output is not None else str
-    deadline = time.monotonic() + config.startup_timeout
+    deadline = time.perf_counter() + config.startup_timeout
     while True:
         if proc is not None and (code := proc.poll()) is not None:
             raise DaemonError(
@@ -532,7 +532,7 @@ def _wait_until_ready(
             )
         if _ready(host, port):
             return
-        if time.monotonic() >= deadline:
+        if time.perf_counter() >= deadline:
             what = (
                 f"spawned {backend} daemon did not become ready"
                 if proc is not None

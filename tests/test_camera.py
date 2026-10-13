@@ -62,9 +62,9 @@ class _Reader:
 
 
 def _wait_until(predicate: Callable[[], bool], timeout: float = 2.0) -> None:
-    deadline = time.monotonic() + timeout
+    deadline = time.perf_counter() + timeout
     while not predicate():
-        if time.monotonic() > deadline:
+        if time.perf_counter() > deadline:
             raise AssertionError("condition not met in time")
         time.sleep(0.005)
 
@@ -185,7 +185,7 @@ def test_head_pose_is_the_pose_at_the_capture_time_or_none(
     assert latest is not None
     assert latest.head_pose is None
     assert asked == [3.0]
-    assert latest.ts >= 3.0  # the arrival on the monotonic clock
+    assert latest.ts >= 3.0  # the arrival on the bridge's clock
     without = CameraFeed(_Reader([(_image(3), 7.0)]), None)
     asyncio.run(without.start())
     _wait_until(lambda: without.published_count == 1)
@@ -204,8 +204,8 @@ def test_two_consumers_both_see_every_frame(
     seen: dict[str, set[int]] = {"a": set(), "b": set()}
 
     def consume(name: str) -> None:
-        deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline and len(seen[name]) < 20:
+        deadline = time.perf_counter() + 2.0
+        while time.perf_counter() < deadline and len(seen[name]) < 20:
             frame = feed.latest()
             if frame is not None:
                 seen[name].add(frame.frame_id)
@@ -278,6 +278,6 @@ def test_stop_returns_promptly_during_the_empty_pace(
     feed = CameraFeed(reader, None)
     asyncio.run(feed.start())
     _wait_until(lambda: reader.reads >= 1)
-    started = time.monotonic()
+    started = time.perf_counter()
     asyncio.run(feed.stop())
-    assert time.monotonic() - started < 0.3
+    assert time.perf_counter() - started < 0.3

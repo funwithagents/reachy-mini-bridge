@@ -81,9 +81,19 @@ jobs:
       # leaves the others running. macOS and Windows take GStreamer from reachy_mini's
       # wheels, so they skip the apt step; Windows syncs without the placo extra, which
       # has no Windows wheel (pyproject.toml's dev group).
+      # The tier waits through real blends and breaths and bounds each motion tick's step,
+      # so a runner that runs its ticks late fails it: the macOS and Windows entries run two
+      # workers, leaving their cores to the loops under test (specs/testing/ci.md).
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, macos-15, windows-2025]
+        include:
+          - os: ubuntu-24.04
+            workers: logical
+          - os: macos-15
+            workers: "2"
+          - os: windows-2025
+            workers: "2"
     steps:
       - uses: actions/checkout@v7
       - name: System packages
@@ -98,7 +108,12 @@ jobs:
       - name: Sync (every group, against the lock)
         run: uv sync --locked
       - name: Fast tier
-        run: uv run pytest
+        # The temp folder on the checkout's drive: on Windows a test scene must sit on the
+        # drive upstream is installed on (specs/testing/sim_scene.md).
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: uv run pytest -n ${{ matrix.workers }}
 
   e2e-sim:
     name: live tier, headless sim (${{ matrix.kinematics }})

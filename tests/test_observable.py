@@ -123,11 +123,11 @@ def test_cancelling_a_subscriber_ends_it_promptly_and_detaches_it() -> None:
         task = asyncio.create_task(blocked())
         keeper = asyncio.create_task(other())
         await asyncio.sleep(0)
-        t0 = time.monotonic()
+        t0 = time.perf_counter()
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-        elapsed = time.monotonic() - t0
+        elapsed = time.perf_counter() - t0
         obs.set(1)  # a later publication does not fail on the detached subscriber
         await asyncio.sleep(0)
         keeper.cancel()
@@ -169,11 +169,11 @@ def test_cancelling_a_wait_for_ends_it_promptly_and_the_others_still_wait() -> N
         cancelled = asyncio.ensure_future(obs.wait_for(lambda v: v >= 2))
         other = asyncio.ensure_future(obs.wait_for(lambda v: v >= 2))
         await asyncio.sleep(0)
-        t0 = time.monotonic()
+        t0 = time.perf_counter()
         cancelled.cancel()
         with pytest.raises(asyncio.CancelledError):
             await cancelled
-        elapsed = time.monotonic() - t0
+        elapsed = time.perf_counter() - t0
         obs.set(1)  # a publication after the cancel fails nobody
         await asyncio.sleep(0)
         obs.set(2)
