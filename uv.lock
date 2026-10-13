@@ -2882,7 +2882,8 @@ dev = [
     { name = "pyright" },
     { name = "pytest" },
     { name = "pytest-xdist" },
-    { name = "reachy-mini-bridge", extra = ["placo", "sim", "test"] },
+    { name = "reachy-mini-bridge", extra = ["placo"], marker = "sys_platform != 'win32'" },
+    { name = "reachy-mini-bridge", extra = ["sim", "test"] },
     { name = "ruff" },
     { name = "scipy" },
 ]
@@ -2919,7 +2920,7 @@ dev = [
     { name = "pyright", specifier = ">=1.1.411" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },
-    { name = "reachy-mini-bridge", extras = ["placo"], editable = "." },
+    { name = "reachy-mini-bridge", extras = ["placo"], marker = "sys_platform != 'win32'", editable = "." },
     { name = "reachy-mini-bridge", extras = ["sim"], editable = "." },
     { name = "reachy-mini-bridge", extras = ["test"], editable = "." },
     { name = "ruff", specifier = ">=0.16.6" },

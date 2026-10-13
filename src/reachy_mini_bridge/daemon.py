@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -128,6 +129,7 @@ class _Process(Protocol):
     def stdout(self) -> IO[bytes] | None: ...
     def poll(self) -> int | None: ...
     def terminate(self) -> None: ...
+    def send_signal(self, sig: int) -> None: ...
     def kill(self) -> None: ...
     def wait(self, timeout: float | None = None) -> int: ...
 
@@ -401,6 +403,17 @@ def _placo_available() -> bool:
 
 
 def _spawn(cmd: list[str], env: dict[str, str]) -> _Process:
+    if sys.platform == "win32":
+        # Windows has no sessions: a process group of its own keeps the console's Ctrl+C
+        # away from the daemon, and makes it the target `_stop`'s CTRL_BREAK reaches.
+        return subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=env,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
     return subprocess.Popen(
         cmd,
         stdin=subprocess.DEVNULL,
@@ -532,9 +545,23 @@ def _wait_until_ready(
 
 
 def _stop(proc: _Process) -> None:
-    proc.terminate()
+    _ask_to_exit(proc)
     try:
         proc.wait(timeout=_TERMINATE_GRACE_S)
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait()
+
+
+def _ask_to_exit(proc: _Process) -> None:
+    """The graceful half of the stop: ``SIGTERM`` on POSIX; on Windows, where
+    ``terminate()`` is ``TerminateProcess`` and no shutdown runs, ``CTRL_BREAK_EVENT`` to
+    the child's process group — uvicorn's ``SIGBREAK``, a shutdown like ``SIGTERM``'s. A
+    bridge with no console to send it through falls back to ``terminate()``."""
+    if sys.platform == "win32":
+        try:
+            proc.send_signal(signal.CTRL_BREAK_EVENT)
+            return
+        except OSError:
+            pass
+    proc.terminate()

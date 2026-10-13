@@ -41,6 +41,11 @@ _ADDRESS = ["--fastapi-host", "127.0.0.1", "--fastapi-port", "8000"]
 _ENGINE = ["--kinematics-engine", "AnalyticalKinematics"]
 
 
+# How `_stop` asks the child to exit before the grace: SIGTERM on POSIX, the CTRL_BREAK the
+# child's process group receives on Windows (specs/daemon/daemon.md "Teardown").
+_EXIT_REQUEST = "break" if sys.platform == "win32" else "terminate"
+
+
 class _FakeProc:
     def __init__(
         self,
@@ -59,6 +64,9 @@ class _FakeProc:
 
     def terminate(self) -> None:
         self.calls.append("terminate")
+
+    def send_signal(self, sig: int) -> None:
+        self.calls.append("break")
 
     def kill(self) -> None:
         self.calls.append("kill")
@@ -562,6 +570,31 @@ def test_terminal_sigint_does_not_reach_the_child() -> None:
     )
 
 
+def test_stop_lets_the_child_shut_down_gracefully() -> None:
+    """`_stop` asks before it kills, on every platform: the spawned child receives the
+    signal uvicorn shuts down on — SIGTERM on POSIX, SIGBREAK (the CTRL_BREAK sent to its
+    process group) on Windows, where `terminate()` would end it with no shutdown at all —
+    and runs its handler. A real daemon spends that grace putting the robot to sleep."""
+    child = textwrap.dedent(
+        """
+        import signal, sys, time
+        def shut_down(*_):
+            print("graceful", flush=True)
+            sys.exit(0)
+        signal.signal(getattr(signal, "SIGBREAK", signal.SIGTERM), shut_down)
+        print("ready", flush=True)
+        while True:
+            time.sleep(0.05)
+        """
+    )
+    proc = daemon._spawn([sys.executable, "-c", child], daemon.scrubbed_env())
+    assert proc.stdout is not None
+    assert proc.stdout.readline().strip() == b"ready"
+    daemon._stop(proc)
+    assert proc.stdout.read().split() == [b"graceful"]
+    assert proc.wait() == 0
+
+
 # --- own it or borrow it -----------------------------------------------------------
 
 
@@ -592,7 +625,7 @@ def test_auto_spawns_when_the_port_is_free(harness: _Harness) -> None:
     assert cmd[1:3] == ["-m", "reachy_mini_bridge.sim_daemon"] and "--scene" in cmd
     assert cmd[-4:] == _ADDRESS  # bound to the address the handle reports
     assert not any(k in env for k in daemon._GST_BUNDLE_ENV)
-    assert harness.proc.calls == ["terminate", "wait"]
+    assert harness.proc.calls == [_EXIT_REQUEST, "wait"]
 
 
 def test_auto_spawns_the_real_recipe_for_a_real_backend(harness: _Harness) -> None:
@@ -602,7 +635,7 @@ def test_auto_spawns_the_real_recipe_for_a_real_backend(harness: _Harness) -> No
     (cmd, env), *_ = harness.spawned
     assert cmd == [*_REAL_LAUNCHER, "--preload-datasets", *_ENGINE, *_ADDRESS]
     assert not any(k in env for k in daemon._GST_BUNDLE_ENV)
-    assert harness.proc.calls == ["terminate", "wait"]
+    assert harness.proc.calls == [_EXIT_REQUEST, "wait"]
 
 
 def test_real_startup_errors_name_the_real_daemon(harness: _Harness) -> None:
@@ -717,7 +750,7 @@ def test_spawn_exit_during_startup_raises_with_exit_code(harness: _Harness) -> N
         daemon.managed_daemon(_AUTO),
     ):
         pass
-    assert harness.proc.calls == ["terminate", "wait"]
+    assert harness.proc.calls == [_EXIT_REQUEST, "wait"]
 
 
 def test_spawn_timeout_stops_the_child(harness: _Harness) -> None:
@@ -729,7 +762,7 @@ def test_spawn_timeout_stops_the_child(harness: _Harness) -> None:
         mp.setattr(daemon.time, "monotonic", lambda: next(clock))
         with daemon.managed_daemon(DaemonConfig(spawn="auto", startup_timeout=1.0)):
             pass
-    assert harness.proc.calls == ["terminate", "wait"]
+    assert harness.proc.calls == [_EXIT_REQUEST, "wait"]
 
 
 def test_viewer_timeout_mentions_the_gui_session(harness: _Harness) -> None:
@@ -763,14 +796,14 @@ def test_teardown_kills_after_terminate_timeout(harness: _Harness) -> None:
     harness.ready = iter([True])
     with daemon.managed_daemon(_AUTO):
         pass
-    assert harness.proc.calls == ["terminate", "wait", "kill", "wait"]
+    assert harness.proc.calls == [_EXIT_REQUEST, "wait", "kill", "wait"]
 
 
 def test_teardown_runs_when_the_body_raises(harness: _Harness) -> None:
     harness.ready = iter([True])
     with pytest.raises(RuntimeError, match="body"), daemon.managed_daemon(_AUTO):
         raise RuntimeError("body")
-    assert harness.proc.calls == ["terminate", "wait"]
+    assert harness.proc.calls == [_EXIT_REQUEST, "wait"]
 
 
 # --- the pair under managed_daemon ---------------------------------------------------
@@ -784,6 +817,6 @@ def test_start_daemon_returns_an_owned_handle_whose_stop_ends_the_child(
     assert handle == daemon.DaemonHandle("127.0.0.1", 8000, owned=True, pid=4242)
     assert harness.proc.calls == []  # running until stopped
     handle.stop()
-    assert harness.proc.calls == ["terminate", "wait"]
+    assert harness.proc.calls == [_EXIT_REQUEST, "wait"]
     handle.stop()  # a second stop is a no-op
-    assert harness.proc.calls == ["terminate", "wait"]
+    assert harness.proc.calls == [_EXIT_REQUEST, "wait"]
