@@ -98,6 +98,7 @@ def test_the_loop_publishes_active_then_a_face_appearing_once(
     async def run() -> tuple[list[FaceReport], FaceReport]:
         async with _running_custom(scene) as loop:
             await _wait_for(lambda: loop.faces.value.active)
+            await _heard(loop)
             scene.show(0.2, 0.1)
             await asyncio.sleep(0.2)
             return list(loop.woken), loop.faces.value
@@ -592,6 +593,7 @@ def test_a_detector_raising_on_every_frame_reads_inactive_then_recovers(
             silent = loop.silent
             scene.raises = False
             await _wait_for(lambda: loop.faces.value.active)
+            await _heard(loop)
             return down, silent, loop.faces.value.active, [r.active for r in loop.woken]
 
     down, silent, up, woken = _run(run)

@@ -147,7 +147,9 @@ def test_a_reader_failing_for_long_warns_once(
 ) -> None:
     monkeypatch.setattr(camera_module, "CAMERA_RETRY_S", 0.005)
     monkeypatch.setattr(camera_module, "CAMERA_DOWN_S", 0.05)
-    reader = _Reader([OSError(f"down {i}") for i in range(200)])
+    # Not many more failures than the 40 awaited: a retry waits a whole timer tick where
+    # the platform's is coarse (15.6 ms on Windows), and the frame comes after them all.
+    reader = _Reader([OSError(f"down {i}") for i in range(60)])
     with caplog.at_level("INFO", logger="reachy_mini_bridge.camera"):
         feed = running(reader, None)
         _wait_until(lambda: reader.reads >= 40)
