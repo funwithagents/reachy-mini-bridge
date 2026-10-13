@@ -798,7 +798,7 @@ def bridge_backend(
                 )
 
         def _warn_without_a_first_frame(self) -> None:
-            if not self._first_frame.wait(_FIRST_FRAME_WARN_S):
+            if not self._first_frame.is_set():
                 _logger.warning(
                     "offscreen camera render: no frame drawn %.0f s into the run on "
                     "%s=%s — the renderer's build or its first draw is stuck; the "
@@ -814,6 +814,8 @@ def bridge_backend(
             if relay is not None:
                 relay.start()
             render: threading.Thread | None = None
+            # Fires once, FIRST_FRAME_WARN_S into the run; cancelled when the run ends first.
+            watchdog: threading.Timer | None = None
             if headless_render is not None and not webcam:
                 self._first_frame.clear()
                 render = threading.Thread(
@@ -822,11 +824,12 @@ def bridge_backend(
                     daemon=True,
                 )
                 render.start()
-                threading.Thread(
-                    target=self._warn_without_a_first_frame,
-                    name="offscreen-camera-watchdog",
-                    daemon=True,
-                ).start()
+                watchdog = threading.Timer(
+                    _FIRST_FRAME_WARN_S, self._warn_without_a_first_frame
+                )
+                watchdog.name = "offscreen-camera-watchdog"
+                watchdog.daemon = True
+                watchdog.start()
             shown: list[ViewerDisplay] = [
                 display
                 for display in (overlay, self._scene_layer)
@@ -836,6 +839,8 @@ def bridge_backend(
                 with capture_viewer(shown, viewer_module) if shown else nullcontext():
                     super().run()
             finally:
+                if watchdog is not None:
+                    watchdog.cancel()
                 if relay is not None:
                     relay.stop()
                 if render is not None:

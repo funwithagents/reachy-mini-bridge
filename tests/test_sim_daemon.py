@@ -609,6 +609,26 @@ def test_a_render_without_a_first_frame_is_warned_about_once(
     assert not [r for r in caplog.records if r.levelno == logging.WARNING]
 
 
+def test_a_run_ending_before_the_first_frame_window_warns_of_nothing(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The watchdog belongs to the run: one that ends before the window — a stopped
+    daemon, a short test — leaves no timer behind to warn later from another context."""
+    monkeypatch.setattr(sim_daemon, "_FIRST_FRAME_WARN_S", 0.3)
+
+    class _NoDrawBackend(_StubBackend):
+        def rendering_loop(self, *args: Any) -> None:
+            return None  # draws nothing
+
+    with caplog.at_level(logging.WARNING, logger="reachy_mini_bridge.sim_daemon"):
+        bridge_backend(_NoDrawBackend, headless_render="egl")().run()
+        time.sleep(0.6)  # past the window: a leftover timer would have fired by now
+    assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert not [
+        t for t in threading.enumerate() if t.name == "offscreen-camera-watchdog"
+    ]
+
+
 def test_a_render_context_that_cannot_be_created_is_logged_and_the_run_goes_on(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
