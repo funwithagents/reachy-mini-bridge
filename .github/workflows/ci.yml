@@ -73,27 +73,18 @@ jobs:
         run: uv run pyright
 
   fast-tier:
-    name: fast tier (${{ matrix.os }})
+    name: fast tier (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
-      # One entry per platform, pinned images like the Linux ones; one platform's failure
-      # leaves the others running. macOS and Windows take GStreamer from reachy_mini's
-      # wheels, so they skip the apt step; Windows syncs without the placo extra, which
-      # has no Windows wheel (pyproject.toml's dev group).
-      # The tier waits through real blends and breaths and bounds each motion tick's step,
-      # so a runner that runs its ticks late fails it: the macOS and Windows entries run two
-      # workers, leaving their cores to the loops under test (specs/testing/ci.md).
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-15, windows-2025]
         include:
-          - os: ubuntu-24.04
-            workers: logical
-          - os: macos-15
-            workers: "2"
-          - os: windows-2025
-            workers: "2"
+          - {label: ubuntu-24.04, os: ubuntu-24.04, prefix: ""}
+          - {label: macos-15, os: macos-15, prefix: ""}
+          - {label: macos-15 taskpolicy, os: macos-15, prefix: "taskpolicy -t 0 -l 0"}
+          - {label: macos-15-intel, os: macos-15-intel, prefix: ""}
+          - {label: windows-2025, os: windows-2025, prefix: ""}
     steps:
       - uses: actions/checkout@v7
       - name: System packages
@@ -107,13 +98,16 @@ jobs:
           cache-dependency-glob: uv.lock
       - name: Sync (every group, against the lock)
         run: uv sync --locked
+      - name: Runner
+        if: runner.os == 'macOS'
+        run: |
+          sysctl -n hw.ncpu machdep.cpu.brand_string || true
+          ps -o pid,ppid,pri,nice,command -p $$ || true
       - name: Fast tier
-        # The temp folder on the checkout's drive: on Windows a test scene must sit on the
-        # drive upstream is installed on (specs/testing/sim_scene.md).
         env:
           TEMP: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
-        run: uv run pytest -n ${{ matrix.workers }}
+        run: ${{ matrix.prefix }} uv run pytest --durations=15
 
   e2e-sim:
     name: live tier, headless sim (${{ matrix.kinematics }})

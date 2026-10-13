@@ -116,6 +116,7 @@ def test_a_gap_shorter_than_the_absence_window_wakes_nobody(fast_frames: None) -
         async with _running_custom(scene) as loop:
             scene.show()
             await _wait_for(lambda: bool(loop.faces.value.faces))
+            await _heard(loop)
             loop.woken.clear()
             scene.hide()
             await asyncio.sleep(0.08)  # < 0.15 s, > two frames at 40 fps
@@ -138,6 +139,7 @@ def test_a_face_gone_past_the_window_wakes_once_with_an_empty_report(
         async with _running_custom(scene) as loop:
             scene.show()
             await _wait_for(lambda: bool(loop.faces.value.faces))
+            await _heard(loop)
             loop.woken.clear()
             scene.hide()
             await asyncio.sleep(0.5)
@@ -154,6 +156,7 @@ def test_a_moving_face_updates_the_value_without_waking(fast_frames: None) -> No
         async with _running_custom(scene) as loop:
             scene.show(0.0, 0.0)
             await _wait_for(lambda: bool(loop.faces.value.faces))
+            await _heard(loop)
             loop.woken.clear()
             scene.show(0.5, 0.0)
             await _wait_for(lambda: loop.faces.value.faces[0].x > 0.4)
@@ -501,6 +504,21 @@ async def _running_custom(
         subscriber.cancel()
 
 
+async def _heard(loop: _Loop) -> None:
+    """Until the subscriber has been woken on the value now published: a `set` reaches
+    the value at once and the subscriber a loop step later, so a test that clears the
+    wakes as soon as the value reads right would clear before the wake it means to drop."""
+
+    def heard() -> bool:
+        now = loop.faces.value
+        return bool(loop.woken) and (loop.woken[-1].active, loop.woken[-1].faces) == (
+            now.active,
+            now.faces,
+        )
+
+    await _wait_for(heard)
+
+
 async def _wait_for(predicate: Callable[[], bool], timeout: float = 2.0) -> None:
     deadline = time.perf_counter() + timeout
     while not predicate():
@@ -566,6 +584,7 @@ def test_a_detector_raising_on_every_frame_reads_inactive_then_recovers(
     async def run() -> tuple[FaceReport, int, bool, list[bool]]:
         async with _running_custom(scene) as loop:
             await _wait_for(lambda: bool(loop.faces.value.faces))
+            await _heard(loop)
             loop.woken.clear()
             scene.raises = True
             await asyncio.sleep(0.6)
