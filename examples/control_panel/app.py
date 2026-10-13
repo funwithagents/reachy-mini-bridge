@@ -47,22 +47,32 @@ def log_line(log: Log, message: str) -> None:
 
 
 def state_table(state: PanelState) -> str:
-    """The snapshot as a Markdown table."""
-    rows = [
+    """The snapshot as a Markdown table in two halves side by side: the session on the
+    left, the modes on the right."""
+    session = [
         ("backend", state.backend),
         ("motors", state.motors),
         ("attention", state.attention or "—"),
         ("voice", state.voice),
+        ("busy", ", ".join(state.busy) or "—"),
+        ("mic", f"{state.mic_sample_rate} Hz" if state.mic_sample_rate else "—"),
+    ]
+    modes = [
         ("presence", "on" if state.presence else "off"),
         ("idle", state.idle),
         ("wobbling", "on" if state.wobbling else "off"),
         ("tracking", "on" if state.tracking else "off"),
         ("detection", "on" if state.face_detection else "off"),
-        ("busy", ", ".join(state.busy) or "—"),
-        ("mic", f"{state.mic_sample_rate} Hz" if state.mic_sample_rate else "—"),
     ]
-    lines = ["| | |", "|---|---|"]
-    lines += [f"| **{name}** | {value} |" for name, value in rows]
+    modes += [("", "")] * (len(session) - len(modes))
+
+    def cells(name: str, value: str) -> str:
+        return f"**{name}** | {value}" if name else " | "
+
+    lines = ["| | | | |", "|---|---|---|---|"]
+    lines += [
+        f"| {cells(*left)} | {cells(*right)} |" for left, right in zip(session, modes)
+    ]
     return "\n".join(lines)
 
 
@@ -152,64 +162,67 @@ def build_app(controller: ControlPanelController) -> gr.Blocks:
         with gr.Accordion("Config (read-only)", open=False):
             gr.JSON(value=dataclasses.asdict(config))
 
+        # The controls first: one column per verb group, then the modes, then the
+        # motors on one line.
         with gr.Row():
             with gr.Column():
-                gr.Markdown("## State")
-                state_md = gr.Markdown()
-                mic_level = gr.Slider(
-                    0, 1, value=0, step=0.001, label="Mic level", interactive=False
-                )
-                camera = gr.Image(label="Camera", interactive=False, height=240)
-                faces_md = gr.Markdown()
-                log_box = gr.Textbox(label="Log", lines=10, interactive=False)
-
-            with gr.Column():
-                gr.Markdown("## Motors")
-                with gr.Row():
-                    motors_radio = gr.Radio(
-                        list(MOTOR_STATES), value=motors_now, label="Torque"
-                    )
-                    apply_motors = gr.Button("Apply")
-
                 gr.Markdown("## Expression")
+                emotion = gr.Dropdown(
+                    emotions,
+                    value=emotions[0] if emotions else None,
+                    label="Emotion",
+                )
                 with gr.Row():
-                    emotion = gr.Dropdown(
-                        emotions,
-                        value=emotions[0] if emotions else None,
-                        label="Emotion",
-                    )
                     play_emotion = gr.Button("Play")
                     stop_emotion = gr.Button("Stop", variant="stop")
 
+            with gr.Column():
                 gr.Markdown("## Speech")
+                text = gr.Textbox(label="Text", value="Hello, I am Reachy Mini.")
                 with gr.Row():
-                    text = gr.Textbox(
-                        label="Text", value="Hello, I am Reachy Mini.", scale=3
-                    )
                     say = gr.Button("Say")
                     stop_say = gr.Button("Stop", variant="stop")
+
+            with gr.Column():
+                gr.Markdown("## Sound")
+                sound_file = gr.Textbox(label="Sound file (path)")
                 with gr.Row():
-                    sound_file = gr.Textbox(label="Sound file (path)", scale=3)
                     play_sound = gr.Button("Play sound")
                     stop_sound = gr.Button("Stop sound", variant="stop")
 
-                gr.Markdown("## Gaze")
-                with gr.Row():
-                    tracking = gr.Checkbox(config.motion.tracking, label="Tracking")
-                    focus = gr.Checkbox(
-                        False, label="Focus (head held on the face, no idle motion)"
-                    )
+        gr.Markdown("## Modes")
+        with gr.Row(equal_height=True):
+            tracking = gr.Checkbox(config.motion.tracking, label="Tracking")
+            focus = gr.Checkbox(False, label="Focus")
+            wobbling = gr.Checkbox(config.motion.wobbling, label="Wobbling")
+            presence = gr.Checkbox(config.motion.presence, label="Presence")
+            detection = gr.Checkbox(config.face_detection.enabled, label="Detection")
+            idle = gr.Dropdown(list(IDLE_MODES), value=config.motion.idle, label="Idle")
+        gr.Markdown(
+            "*Focus: while tracking, the head is held on the face, no idle motion.*"
+        )
 
-                gr.Markdown("## Modes")
-                with gr.Row():
-                    wobbling = gr.Checkbox(config.motion.wobbling, label="Wobbling")
-                    presence = gr.Checkbox(config.motion.presence, label="Presence")
-                    detection = gr.Checkbox(
-                        config.face_detection.enabled, label="Detection"
-                    )
-                    idle = gr.Radio(
-                        list(IDLE_MODES), value=config.motion.idle, label="Idle"
-                    )
+        gr.Markdown("## Motors")
+        with gr.Row(equal_height=True):
+            motors_radio = gr.Radio(
+                list(MOTOR_STATES), value=motors_now, label="Torque", scale=4
+            )
+            apply_motors = gr.Button("Apply", scale=1)
+
+        # Then what the robot sees and hears (left), and the state and the log (right).
+        with gr.Row():
+            with gr.Column():
+                gr.Markdown("## Camera")
+                camera = gr.Image(label="Camera", interactive=False, height=240)
+                faces_md = gr.Markdown()
+                mic_level = gr.Slider(
+                    0, 1, value=0, step=0.001, label="Mic level", interactive=False
+                )
+
+            with gr.Column():
+                gr.Markdown("## State")
+                state_md = gr.Markdown()
+                log_box = gr.Textbox(label="Log", lines=10, interactive=False)
 
         timer = gr.Timer(REFRESH_S)
         timer.tick(
