@@ -47,6 +47,8 @@ Upstream's `run()` keeps the handle it launches as a local and closes it itself 
 
 The camera overlay draws through the handle's `set_images` / `set_texts`. `robot_gaze` and `face_markers` draw through the scene layer, the one owner of the handle's `user_scn` ("The scene layer" below).
 
+The displays make their viewer calls one at a time, under one process-wide lock: every `set_images` / `set_texts` / `clear_images` / `clear_texts`, and every scene write under `handle.lock()`. MuJoCo's `set_images` and `set_texts` wait for the render thread to take the previous request while holding the GIL, and the render thread takes it only after it has had the viewer's mutex. `handle.lock()` holds that mutex while Python writes `user_scn`, and Python needs the GIL to do it. So an overlay draw that waits during a scene write deadlocks the whole daemon, physics loop and API included. Under the lock, a draw always waits for the render thread while the mutex is free.
+
 A display that takes data from a client mounts its router under **`/api/sim/displays`** on upstream's app, through the same `create_app` wrap as the extensions' `on_app` ([sim_daemon.md](sim_daemon.md) "The launcher"). Today that is `face_markers`, with `PUT` / `GET /api/sim/displays/face_markers` ("Bridge → daemon: the displays route" below). The test scene's props sit beside it under `/api/sim/inject` ([sim_scene.md](../testing/sim_scene.md) "The router"), so a path says whether it puts something in the scene the camera sees or only draws for the person watching.
 
 ### Camera overlay

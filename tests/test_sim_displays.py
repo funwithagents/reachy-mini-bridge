@@ -603,6 +603,50 @@ def test_the_layer_writes_its_views_geoms_into_the_user_scene(
     layer.stop()  # idempotent
 
 
+def test_the_overlay_never_draws_while_the_layer_holds_the_viewer(
+    mujoco: Any, robot: tuple[Any, Any]
+) -> None:
+    """MuJoCo's `set_images` waits for the render thread holding the GIL, and the
+    render thread needs the viewer's mutex, which the layer holds while Python writes
+    the scene: one draw inside the other freezes the whole daemon. Both displays on one
+    handle, a frame for every tick: no draw ever lands inside the layer's lock."""
+    model, _ = robot
+
+    class _Both(_SceneHandle, _FakeHandle):
+        def __init__(self) -> None:
+            _SceneHandle.__init__(self, mujoco, model)
+            _FakeHandle.__init__(self)
+            self.inside = False
+            self.overlapped = 0
+
+        @contextmanager
+        def lock(self) -> Iterator[None]:
+            with _SceneHandle.lock(self):
+                self.inside = True
+                time.sleep(0.002)  # Python writing the scene, the mutex held
+                yield
+                self.inside = False
+
+        def set_images(self, pairs: list[tuple[Any, np.ndarray]]) -> None:
+            self.overlapped += self.inside
+            super().set_images(pairs)
+
+    handle = _Both()
+    overlay = _overlay()
+    layer = SceneLayer([_Geoms([_LINE])], hz=200.0)
+    overlay.attach(handle)
+    layer.attach(handle)
+    try:
+        for value in range(200):
+            overlay.show(np.full((36, 64, 3), value % 250, dtype=np.uint8))
+            time.sleep(0.001)
+        assert _wait(lambda: len(handle.images) > 50 and handle.locked > 50)
+    finally:
+        overlay.stop()
+        layer.stop()
+    assert handle.overlapped == 0
+
+
 def test_the_layer_drops_what_the_user_scene_cannot_hold(
     mujoco: Any, robot: tuple[Any, Any], caplog: pytest.LogCaptureFixture
 ) -> None:

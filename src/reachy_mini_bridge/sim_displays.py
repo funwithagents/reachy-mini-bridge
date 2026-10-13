@@ -129,6 +129,15 @@ _FACE_MARKERS_PATH = "/face_markers"
 _PUBLISH_POLL_HZ = 30.0
 _PUBLISH_TIMEOUT_S = 0.5
 
+# The viewer calls of the displays, one at a time. MuJoCo's ``set_images`` and
+# ``set_texts`` wait for the render thread to take the previous request while holding
+# the GIL, and the render thread takes it only once it has had the viewer's mutex —
+# which ``handle.lock()`` holds while Python writes the user scene, and so needs the
+# GIL back: an overlay draw inside a scene write is a deadlock of the whole daemon,
+# physics and API included. Every display draws under this lock, so a draw always
+# waits for the render thread with the mutex free.
+_VIEWER_CALLS = threading.Lock()
+
 
 # --- the camera overlay -----------------------------------------------------------------
 
@@ -272,9 +281,10 @@ class ViewerOverlay:
             thread.join(timeout=5.0)
         handle, self._handle = self._handle, None
         if handle is not None and handle.is_running():
-            handle.clear_images()
-            if hasattr(handle, "clear_texts"):
-                handle.clear_texts()
+            with _VIEWER_CALLS:
+                handle.clear_images()
+                if hasattr(handle, "clear_texts"):
+                    handle.clear_texts()
 
     def _run(
         self,
@@ -297,7 +307,8 @@ class ViewerOverlay:
             try:
                 if label is not None and label != shown_label:
                     if hasattr(handle, "set_texts"):
-                        handle.set_texts((*text_style, label, ""))
+                        with _VIEWER_CALLS:
+                            handle.set_texts((*text_style, label, ""))
                     shown_label = label
                 if frame is None:
                     continue
@@ -316,7 +327,8 @@ class ViewerOverlay:
                     _OVERLAY_BORDER_VALUE,
                     _OVERLAY_BORDER_VALUE,
                 )
-                handle.set_images([(rect_factory(*rect), image)])
+                with _VIEWER_CALLS:
+                    handle.set_images([(rect_factory(*rect), image)])
                 drawn += 1
                 if drawn == 1:
                     _logger.info(
@@ -660,7 +672,7 @@ class SceneLayer:
             thread.join(timeout=5.0)
         handle, self._handle = self._handle, None
         if handle is not None and handle.is_running():
-            with handle.lock():
+            with _VIEWER_CALLS, handle.lock():
                 handle.user_scn.ngeom = 0
 
     def _run(self, handle: Any, mujoco: Any) -> None:
@@ -671,7 +683,7 @@ class SceneLayer:
                 continue
             try:
                 geoms = [geom for view in self._views for geom in view.geoms()]
-                with handle.lock():
+                with _VIEWER_CALLS, handle.lock():
                     scene = handle.user_scn
                     count = min(len(geoms), int(scene.maxgeom))
                     for index in range(count):
