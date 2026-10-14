@@ -34,8 +34,10 @@ from reachy_mini_bridge.errors import (
 from reachy_mini_bridge.motion import (
     BLEND_S,
 )
-from reachy_mini_bridge.testing import LiveBridge, require_env, requires_caps
+from reachy_mini_bridge.testing import LiveBridge, require_env
 from reachy_mini_bridge.testing.gaze import angle_from_neutral_deg
+
+pytestmark = pytest.mark.requires("audio")
 
 
 class _ToneSynth:
@@ -64,7 +66,6 @@ def test_real_audio_format_matches_the_fake_assumptions(
     the `fake` backend bakes in are what a real daemon actually reports (specs/audio/audio.md
     "Background": 2 channels, float32, 16 kHz on sim and hardware).
     """
-    requires_caps(live_bridge, "audio")
     bridge, _caps = live_bridge
     media: Any = bridge.robot.media
 
@@ -97,7 +98,6 @@ def test_mic_tap_yields_int16_mono_frames(
     live_bridge: LiveBridge,
 ) -> None:
     """Draining the mic tap gives non-empty int16 mono PCM; `break` stops it."""
-    requires_caps(live_bridge, "audio")
     bridge, _caps = live_bridge
 
     async def take(n: int) -> list[bytes]:
@@ -120,7 +120,6 @@ def test_two_mic_subscribers_each_receive_the_whole_capture(
 ) -> None:
     """Two concurrent `audio_input()` streams each get every chunk the feed publishes —
     neither takes chunks from the other (specs/audio/microphone.md "Subscribers")."""
-    requires_caps(live_bridge, "audio")
     bridge, _caps = live_bridge
 
     async def both(window_s: float) -> tuple[int, int, int]:
@@ -158,7 +157,6 @@ def test_say_completes_after_the_utterance_has_played(
     The tone synthesizes in microseconds and the daemon's `appsrc` queues it without
     pacing, so only the bridge's completion wait can make a 1 s utterance take 1 s.
     """
-    requires_caps(live_bridge, "audio")
     bridge, _caps = live_bridge
 
     start = time.perf_counter()
@@ -169,7 +167,6 @@ def test_say_completes_after_the_utterance_has_played(
 def test_a_new_say_interrupts_the_one_playing(live_bridge: LiveBridge) -> None:
     """The newest `say` wins (specs/audio/audio.md "TTS out"): the one in flight ends
     at once with SpeechInterruptedError, and the new one plays in full."""
-    requires_caps(live_bridge, "audio")
     bridge, _caps = live_bridge
 
     async def scenario() -> tuple[float, float]:
@@ -194,7 +191,6 @@ def test_play_sound_spans_the_file_and_a_cancel_stops_it(
     """`play_sound` is a spanning verb (specs/audio/audio.md "Sound files"): it
     completes when the file has been heard — `go_sleep.wav`, an SDK asset, lasts
     3.6 s — and a cancel returns at once, the file stopped, the session usable."""
-    requires_caps(live_bridge, "audio")
     bridge, _caps = live_bridge
 
     async def scenario() -> tuple[float, float]:
@@ -269,6 +265,7 @@ async def _peak_deviation_during_loud_say(
     return peak
 
 
+@pytest.mark.requires("motion")
 def test_wobbling_is_on_by_default_and_sways_the_head(
     live_bridge: LiveBridge,
 ) -> None:
@@ -280,7 +277,6 @@ def test_wobbling_is_on_by_default_and_sways_the_head(
     the polled deadline): still, within `REST_FROM_NEUTRAL_DEG` of the neutral the hold
     commands — the check that the sway ends rather than freezing mid-swing.
     """
-    requires_caps(live_bridge, "audio", "motion")
     bridge, _caps = live_bridge
     assert bridge.wobbling is True
     robot: Any = bridge.robot
@@ -318,6 +314,7 @@ def test_wobbling_is_on_by_default_and_sways_the_head(
     )
 
 
+@pytest.mark.requires("motion")
 def test_wobbling_off_keeps_the_head_still_while_audio_plays(
     live_bridge: LiveBridge,
 ) -> None:
@@ -327,7 +324,6 @@ def test_wobbling_off_keeps_the_head_still_while_audio_plays(
     must stay within 0.5 deg. Wobbling is restored afterwards, since the module-scoped
     fixture is shared and on by default.
     """
-    requires_caps(live_bridge, "audio", "motion")
     bridge, _caps = live_bridge
 
     async def scenario() -> float:
@@ -348,6 +344,7 @@ def test_wobbling_off_keeps_the_head_still_while_audio_plays(
     assert peak < 0.5, f"head moved with wobbling off (peak deviation {peak:.2f} deg)"
 
 
+@pytest.mark.requires("motion")
 def test_cancelled_say_stops_the_sound_and_the_next_say_works(
     live_bridge: LiveBridge,
 ) -> None:
@@ -361,7 +358,6 @@ def test_cancelled_say_stops_the_sound_and_the_next_say_works(
     swinging it — still, not back on its starting pose, which hardware misses by a few
     degrees (`REST_FROM_NEUTRAL_DEG`).
     """
-    requires_caps(live_bridge, "audio", "motion")
     bridge, _caps = live_bridge
     robot: Any = bridge.robot
 
@@ -426,7 +422,6 @@ def test_say_with_real_tts_speaks_through_the_robot(
     pytest.importorskip(
         "pocket_tts", reason="the tts dependency group is not installed"
     )
-    requires_caps(live_bridge, "audio")
     bridge, _caps = live_bridge
 
     synth = TTSEngineSynthesizer({"module": {"type": "pocket", "voice": "george"}})
@@ -448,7 +443,6 @@ def test_say_with_elevenlabs_speaks_through_the_robot(
         "elevenlabs", reason="the tts dependency group is not installed"
     )
     require_env("ELEVENLABS_API_KEY")
-    requires_caps(live_bridge, "audio")
     bridge, _caps = live_bridge
 
     synth = TTSEngineSynthesizer(
@@ -478,7 +472,6 @@ def test_say_with_gradium_speaks_through_the_robot(
     """
     pytest.importorskip("gradium", reason="the tts dependency group is not installed")
     require_env("GRADIUM_API_KEY")
-    requires_caps(live_bridge, "audio")
     bridge, _caps = live_bridge
 
     synth = TTSEngineSynthesizer(

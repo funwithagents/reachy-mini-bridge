@@ -49,6 +49,8 @@ from reachy_mini_bridge.testing import (
 )
 from reachy_mini_bridge.testing.sim_scene import BodyState
 
+pytest_plugins = ["pytester"]
+
 # --- requires_caps skip gate ---
 
 
@@ -66,6 +68,206 @@ def test_requires_caps_does_not_skip_when_all_present():
         requires_caps(live, "motion", "audio")
     except pytest.skip.Exception:  # pragma: no cover - a wrong skip is the failure
         pytest.fail("requires_caps skipped despite every capability being present")
+
+
+def test_requires_caps_refuses_a_name_outside_the_vocabulary():
+    live = (object(), frozenset({"motion", "camera"}))
+    with pytest.raises(pytest.UsageError) as excinfo:
+        requires_caps(live, "camra")
+    assert "camra" in str(excinfo.value) and "camera" in str(excinfo.value)
+
+
+def test_required_capabilities_refuse_a_name_outside_the_vocabulary(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("REACHY_MINI_E2E_REQUIRED_CAPS", "motion, Camera")
+    assert _daemon.required_capabilities() == {"motion", "camera"}
+    monkeypatch.setenv("REACHY_MINI_E2E_REQUIRED_CAPS", "motion,face")
+    with pytest.raises(pytest.UsageError, match="face"):
+        _daemon.required_capabilities()
+
+
+# --- the `requires` marker and its gate (an inner pytest run over the plugin) ---
+
+# The plugin, already imported by this module, so not rewritten: no warning about it.
+INNER = (
+    "-p",
+    "reachy_mini_bridge.testing.fixtures",
+    "-W",
+    "ignore::pytest.PytestAssertRewriteWarning",
+)
+
+
+@pytest.fixture
+def probed(monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
+    """Set the run's probed capabilities as the first session over the daemon would, for
+    the inner run (the plugin module is this process's), with no capability required."""
+    for name in (
+        "REACHY_MINI_E2E_REQUIRED_CAPS",
+        "REACHY_MINI_HOST",
+        "REACHY_MINI_PORT",
+        "REACHY_MINI_E2E_TARGET",
+        "REACHY_MINI_E2E_SIM_VIEWER",
+        "REACHY_MINI_E2E_KINEMATICS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    def set_caps(*caps: str) -> None:
+        monkeypatch.setitem(fixtures._PROBED, _daemon.address(), frozenset(caps))
+
+    yield set_caps
+
+
+# A module-scoped fixture standing for a test file's bridge session: it fails if it is
+# ever set up, so a test that skips through it skipped before its fixtures.
+_SESSION_THAT_MUST_NOT_START = """
+import pytest
+
+pytestmark = pytest.mark.requires("camera")
+
+
+@pytest.fixture(scope="module")
+def bridge_session():
+    pytest.fail("the bridge session started")
+
+
+def test_one(bridge_session):
+    pass
+
+
+@pytest.mark.requires("faces")
+def test_two(bridge_session):
+    pass
+"""
+
+
+def test_once_probed_the_gate_skips_before_the_files_bridge_session(
+    pytester: pytest.Pytester, probed: Any
+):
+    probed("motion")
+    pytester.makepyfile(test_live=_SESSION_THAT_MUST_NOT_START)
+    result = pytester.runpytest_inprocess(*INNER, "-rs")
+    result.assert_outcomes(skipped=2)
+    result.stdout.fnmatch_lines(["*target lacks required capability/ies: camera*"])
+    result.stdout.fnmatch_lines(["*capability/ies: camera, faces*"])
+
+
+def test_the_marks_of_the_file_and_the_test_add_up(
+    pytester: pytest.Pytester, probed: Any
+):
+    probed("motion", "camera")
+    pytester.makepyfile(
+        test_live="""
+        import pytest
+
+        pytestmark = pytest.mark.requires("camera")
+
+
+        def test_camera_only():
+            pass
+
+
+        @pytest.mark.requires("faces")
+        def test_camera_and_faces():
+            pass
+
+
+        def test_unmarked_in_another_file_runs():
+            pass
+        """
+    )
+    result = pytester.runpytest_inprocess(*INNER, "-rs")
+    result.assert_outcomes(passed=2, skipped=1)
+    result.stdout.fnmatch_lines(["*target lacks required capability/ies: faces"])
+
+
+def test_a_missing_capability_the_run_requires_fails_instead_of_skipping(
+    pytester: pytest.Pytester, probed: Any, monkeypatch: pytest.MonkeyPatch
+):
+    probed("motion")
+    monkeypatch.setenv("REACHY_MINI_E2E_REQUIRED_CAPS", "camera")
+    pytester.makepyfile(test_live=_SESSION_THAT_MUST_NOT_START)
+    result = pytester.runpytest_inprocess(*INNER)
+    result.assert_outcomes(errors=2)
+    result.stdout.fnmatch_lines(["*this run requires camera*"])
+
+
+def test_before_any_probe_the_gate_reads_live_capabilities(
+    pytester: pytest.Pytester, probed: Any
+):
+    # Nothing probed yet: the gate asks `live_capabilities` (here a stand-in for the
+    # short probe session), and only for a test that carries a mark.
+    pytester.makeconftest(
+        """
+        import pytest
+
+        asked = []
+
+
+        @pytest.fixture(scope="session")
+        def live_capabilities():
+            asked.append(1)
+            return frozenset({"motion"})
+        """
+    )
+    pytester.makepyfile(
+        test_live="""
+        import pytest
+
+        import conftest
+
+
+        def test_unmarked_never_asks():
+            assert conftest.asked == []
+
+
+        @pytest.mark.requires("camera")
+        def test_needs_camera():
+            pass
+
+
+        @pytest.mark.requires("motion")
+        def test_needs_motion():
+            assert conftest.asked == [1]
+        """
+    )
+    result = pytester.runpytest_inprocess(*INNER)
+    result.assert_outcomes(passed=2, skipped=1)
+
+
+def test_a_misspelt_mark_stops_the_run(pytester: pytest.Pytester, probed: Any):
+    probed("motion", "camera")
+    pytester.makepyfile(
+        test_live="""
+        import pytest
+
+
+        @pytest.mark.requires("camra")
+        def test_typo():
+            pass
+        """
+    )
+    result = pytester.runpytest_inprocess(*INNER)
+    assert result.ret == pytest.ExitCode.USAGE_ERROR
+    result.stderr.fnmatch_lines(["*unknown capability camra; choose from *camera*"])
+
+
+def test_the_run_closes_with_what_the_target_had(
+    pytester: pytest.Pytester, probed: Any, monkeypatch: pytest.MonkeyPatch
+):
+    probed("motion", "audio")
+    monkeypatch.setenv("REACHY_MINI_E2E_REQUIRED_CAPS", "motion")
+    pytester.makepyfile(test_live="def test_nothing():\n    pass\n")
+    result = pytester.runpytest_inprocess(*INNER)
+    result.stdout.fnmatch_lines(
+        [
+            "*live target*",
+            "target    sim headless at 127.0.0.1:8000",
+            "engine    analytical",
+            "probed    audio, motion",
+            "required  motion",
+        ]
+    )
 
 
 # --- require_env skip gate ---
@@ -99,6 +301,7 @@ def test_the_daemon_is_the_runs_and_the_bridge_session_the_modules():
     scopes = {
         fixtures._live_daemon: "session",
         fixtures.live_bridge: "module",
+        fixtures.live_capabilities: "session",
         fixtures.sim_scene: "module",
         fixtures.face_scene: "function",
         fixtures.emotions_library: "function",

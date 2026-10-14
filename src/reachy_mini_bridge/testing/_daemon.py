@@ -43,6 +43,7 @@ from reachy_mini_bridge.config import (
 )
 from reachy_mini_bridge.errors import DaemonError
 from reachy_mini_bridge.testing.sim_scene import write_test_scene
+from reachy_mini_bridge.testing.support import check_capability_names
 
 _DEFAULT_HOST = "127.0.0.1"
 _DEFAULT_PORT = 8000
@@ -118,9 +119,12 @@ def required_capabilities() -> frozenset[str]:
     """The capabilities the run must probe, from `REACHY_MINI_E2E_REQUIRED_CAPS` (comma-
     separated, case-insensitive; unset or empty: none). Where one is missing the harness
     fails instead of skipping — the knob CI sets so a sim that comes up without its camera
-    or its audio turns the job red (specs/testing/ci.md)."""
+    or its audio turns the job red (specs/testing/ci.md). A name outside `CAPABILITIES`
+    is a ``pytest.UsageError``: a typo must not require a capability nothing probes."""
     raw = os.environ.get("REACHY_MINI_E2E_REQUIRED_CAPS", "")
-    return frozenset(name.strip().lower() for name in raw.split(",") if name.strip())
+    names = frozenset(name.strip().lower() for name in raw.split(",") if name.strip())
+    check_capability_names(names, "REACHY_MINI_E2E_REQUIRED_CAPS")
+    return names
 
 
 def _unavailable(reason: str) -> NoReturn:

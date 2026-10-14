@@ -22,15 +22,18 @@ import time
 from collections.abc import AsyncIterator
 
 import numpy as np
+import pytest
 
 from reachy_mini_bridge.face_detection import FACE_ABSENT_S, FaceReport
-from reachy_mini_bridge.testing import LiveBridge, requires_caps
+from reachy_mini_bridge.testing import LiveBridge
 from reachy_mini_bridge.testing.gaze import (
     LATERAL_M,
     face_at,
     wait_for,
 )
 from reachy_mini_bridge.testing.sim_scene import DEFAULT_FACE_POS, SimSceneClient
+
+pytestmark = pytest.mark.requires("camera")
 
 
 def test_camera_frame_delivers_a_frame(
@@ -44,7 +47,6 @@ def test_camera_frame_delivers_a_frame(
     robot. So this **skips** on the headless sim / CI and runs where the camera exists,
     driving the public API rather than reaching into `robot.media`.
     """
-    requires_caps(live_bridge, "camera")
     bridge, _caps = live_bridge
     deadline = time.perf_counter() + 2.0  # the first frame follows the session's entry
     while bridge.camera.latest() is None and time.perf_counter() < deadline:
@@ -67,12 +69,12 @@ def test_camera_frame_delivers_a_frame(
     print(f"[e2e] camera frame pose stamped: {frame.head_pose is not None}")
 
 
+@pytest.mark.requires("faces")
 def test_detection_runs_on_the_live_camera(live_bridge: LiveBridge) -> None:
     """specs/vision/user_perception.md: the configured detector (`yunet`) runs on the
     live camera's frames — the report is active and advances at the loop's rate, with
     nobody in view. Gated on `faces` like every detection test: the sim's view holds only
     the portraits a test spawns, where a robot's holds whoever stands in front of it."""
-    requires_caps(live_bridge, "camera", "faces")
     bridge, _caps = live_bridge
 
     async def scenario() -> tuple[float, FaceReport, tuple[int, ...] | None]:
@@ -101,6 +103,7 @@ def test_detection_runs_on_the_live_camera(live_bridge: LiveBridge) -> None:
     assert rate >= 5.0, f"the detector reported {rate:.1f} times a second"
 
 
+@pytest.mark.requires("faces")
 def test_faces_report_someone_appearing_and_leaving(
     live_bridge: LiveBridge, face_scene: SimSceneClient
 ) -> None:
@@ -140,6 +143,7 @@ def test_faces_report_someone_appearing_and_leaving(
     assert left.faces == ()
 
 
+@pytest.mark.requires("faces")
 def test_faces_report_two_portraits_spawned_side_by_side(
     live_bridge: LiveBridge, face_scene: SimSceneClient
 ) -> None:

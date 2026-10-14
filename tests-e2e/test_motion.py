@@ -37,8 +37,10 @@ from reachy_mini_bridge.motion import (
     IdleMove,
     IdleOffsets,
 )
-from reachy_mini_bridge.testing import LiveBridge, requires_caps
+from reachy_mini_bridge.testing import LiveBridge
 from reachy_mini_bridge.testing._daemon import kinematics_engine
+
+pytestmark = pytest.mark.requires("motion")
 
 
 def test_daemon_runs_the_engine_the_run_asked_for(live_bridge: LiveBridge) -> None:
@@ -51,7 +53,6 @@ def test_daemon_runs_the_engine_the_run_asked_for(live_bridge: LiveBridge) -> No
     fails here instead of silently testing the wrong engine — set the variable to what
     it runs (specs/testing/testing.md "One engine per run").
     """
-    requires_caps(live_bridge, "motion")
     bridge, _caps = live_bridge
     asked = kinematics_engine()
     engine = live_bridge.run(asyncio.to_thread(_daemon_kinematics_engine, bridge.robot))
@@ -69,7 +70,6 @@ def test_breathing_moves_the_head_and_breathing_off_holds_it(
     """specs/motion/motion.md: with presence and breathing on, the idle move visibly breathes
     (slow breaths on the z axis, with random rests between them); `set_idle("hold")`
     holds the head still afterwards."""
-    requires_caps(live_bridge, "motion")
     bridge, _caps = live_bridge
     robot: Any = bridge.robot
 
@@ -114,7 +114,6 @@ def test_custom_idle_move_drives_the_head(
     """specs/motion/motion.md "Custom idle moves": a registered `IdleMove` plays in the
     `custom` idle mode — the head rises to its offset — and leaving the mode brings the
     head back to neutral."""
-    requires_caps(live_bridge, "motion")
     bridge, _caps = live_bridge
     robot: Any = bridge.robot
 
@@ -161,7 +160,6 @@ def test_play_emotion_plays_a_real_move(
     the dataset truly can't be fetched (offline). On the headfull-viewer sim you should
     see the robot perform the move.
     """
-    requires_caps(live_bridge, "motion")
     bridge, _caps = live_bridge
 
     async def scenario() -> tuple[str, float, float]:
@@ -214,7 +212,6 @@ def test_cancelled_emotion_stops_motion_and_sound(
     at once, the joints are still afterwards (no sound left driving the wobbler), and
     the local backend's playbin is cleared. Measured before the fix: the sound played
     its remaining 15 s and the head kept swaying 0.1–0.2 rad per half second."""
-    requires_caps(live_bridge, "motion")
     bridge, _caps = live_bridge
     robot = bridge.robot
     assert isinstance(robot, ReachyMini)

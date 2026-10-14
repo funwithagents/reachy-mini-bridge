@@ -25,7 +25,9 @@ from reachy_mini_bridge.bridge import ReachyMiniBridge
 from reachy_mini_bridge.errors import (
     GravityCompensationUnsupportedError,
 )
-from reachy_mini_bridge.testing import LiveBridge, requires_caps
+from reachy_mini_bridge.testing import LiveBridge
+
+pytestmark = pytest.mark.requires("motion")
 
 
 async def _motors_state_after_set(bridge: ReachyMiniBridge, state: str) -> str:
@@ -68,7 +70,6 @@ def test_motor_state_reads_and_dispatches_over_the_live_path(
         SLEEP_HEAD_POSE,
     )
 
-    requires_caps(live_bridge, "motion")
     bridge, caps = live_bridge
     # goto_target is upstream-only (not on the fake); this tier is live-only.
     robot: Any = bridge.robot
@@ -110,6 +111,7 @@ def test_motor_state_reads_and_dispatches_over_the_live_path(
         assert results == {"enabled": "enabled", "disabled": "disabled"}
 
 
+@pytest.mark.requires("gravity_compensation")
 def test_gravity_compensation_dispatches_over_the_live_path(
     live_bridge: LiveBridge,
 ) -> None:
@@ -119,7 +121,6 @@ def test_gravity_compensation_dispatches_over_the_live_path(
     (`reachy-mini[placo_kinematics]`). On the default engine the daemon rejects the mode and
     closes the client connection, which would fail every later test in the module.
     """
-    requires_caps(live_bridge, "motion", "gravity_compensation")
     bridge, _caps = live_bridge
 
     async def scenario() -> tuple[str, str]:
@@ -144,7 +145,6 @@ def test_gravity_compensation_is_refused_off_placo_and_the_connection_survives(
     afterwards over the same connection. Skips where there is nothing to refuse: a daemon
     that supports the mode, or a simulation (which ignores motor modes).
     """
-    requires_caps(live_bridge, "motion")
     bridge, caps = live_bridge
     if "gravity_compensation" in caps:
         pytest.skip("the daemon supports gravity compensation; nothing to refuse")
