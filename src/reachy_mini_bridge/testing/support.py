@@ -76,7 +76,7 @@ def missing_reason(caps: frozenset[str], needs: Iterable[str]) -> str | None:
     missing = sorted(set(needs) - caps)
     if not missing:
         return None
-    return f"target lacks required capability/ies: {', '.join(missing)}"
+    return f"the target lacks {', '.join(missing)}"
 
 
 def require_env(name: str) -> str:

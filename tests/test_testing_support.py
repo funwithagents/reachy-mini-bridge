@@ -148,8 +148,8 @@ def test_once_probed_the_gate_skips_before_the_files_bridge_session(
     pytester.makepyfile(test_live=_SESSION_THAT_MUST_NOT_START)
     result = pytester.runpytest_inprocess(*INNER, "-rs")
     result.assert_outcomes(skipped=2)
-    result.stdout.fnmatch_lines(["*target lacks required capability/ies: camera*"])
-    result.stdout.fnmatch_lines(["*capability/ies: camera, faces*"])
+    result.stdout.fnmatch_lines(["*the target lacks camera"])
+    result.stdout.fnmatch_lines(["*the target lacks camera, faces"])
 
 
 def test_the_marks_of_the_file_and_the_test_add_up(
@@ -178,7 +178,7 @@ def test_the_marks_of_the_file_and_the_test_add_up(
     )
     result = pytester.runpytest_inprocess(*INNER, "-rs")
     result.assert_outcomes(passed=2, skipped=1)
-    result.stdout.fnmatch_lines(["*target lacks required capability/ies: faces"])
+    result.stdout.fnmatch_lines(["*the target lacks faces"])
 
 
 def test_a_missing_capability_the_run_requires_fails_instead_of_skipping(
