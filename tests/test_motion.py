@@ -493,6 +493,7 @@ def test_presence_off_goes_quiet_when_idle() -> None:
     assert final_count == after_count
 
 
+@pytest.mark.realtime  # bounds the primary's duration and the blend back after it
 def test_primary_plays_after_a_blend_then_idle_resumes() -> None:
     async def run() -> tuple[float, list[float], list[float]]:
         robot = FakeReachyMini()

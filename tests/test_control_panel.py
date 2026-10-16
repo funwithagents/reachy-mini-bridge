@@ -363,6 +363,7 @@ def test_build_app_constructs_the_blocks_and_refresh_reads_the_state() -> None:
 # --- faces ----------------------------------------------------------------------------
 
 
+@pytest.mark.realtime  # the meter reads the fake camera's 10 fps
 def test_snapshot_reports_face_positions_and_the_update_rate() -> None:
     scene = _Scene()
     with ControlPanelController(_faces_config(scene)) as controller:

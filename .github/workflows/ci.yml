@@ -170,4 +170,7 @@ jobs:
         # Warnings and errors logged while the tier runs — the spawned daemon's own lines
         # among them, forwarded by the harness — print live, so a daemon that comes up
         # without its camera or its media server says so in the job log.
-        run: uv run pytest tests-e2e -rs -o log_cli=true --log-cli-level=WARNING
+        # -rsP: the skips (read by subject) and the passing tests' captured output — the
+        # `[e2e]` track numbers every live test prints, the baseline a red run is read
+        # against (specs/testing/ci.md).
+        run: uv run pytest tests-e2e -rsP -o log_cli=true --log-cli-level=WARNING

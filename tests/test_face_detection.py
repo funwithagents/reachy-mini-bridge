@@ -100,7 +100,8 @@ def test_the_loop_publishes_active_then_a_face_appearing_once(
             await _wait_for(lambda: loop.faces.value.active)
             await _heard(loop)
             scene.show(0.2, 0.1)
-            await asyncio.sleep(0.2)
+            await _heard(loop)  # woken on the face's appearance
+            await asyncio.sleep(0.1)  # and on nothing else after it
             return list(loop.woken), loop.faces.value
 
     woken, value = _run(run)

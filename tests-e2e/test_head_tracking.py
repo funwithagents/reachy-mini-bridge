@@ -49,6 +49,7 @@ from reachy_mini_bridge.testing.gaze import (
     assert_tracked,
     expected_yaw_deg,
     face_at,
+    followed_face,
     sample_idle,
     track_onto,
     wait_for,
@@ -328,6 +329,17 @@ class _Changes:
             await self._task
 
 
+# How much of the tracker's switch time the hold test hides the face for; the rest is
+# for the sim to show it again and the detector to see it before the switch would come.
+HIDDEN_FRACTION = 0.3
+
+
+def _followed_centred(bridge: ReachyMiniBridge) -> bool:
+    """The tracker follows a face that is in view, and the head is on it."""
+    face = followed_face(bridge)
+    return face is not None and abs(face.x) < 0.2
+
+
 async def _both_in_view(bridge: ReachyMiniBridge, count: int = 2) -> None:
     """Poll the report's value: a face returning within the absence window is a silent
     `update` (the published count never dropped), which `wait_for` would not see."""
@@ -443,27 +455,36 @@ def test_a_nearer_face_arriving_does_not_take_the_head(
 def test_a_face_hidden_briefly_is_waited_for_and_followed_again(
     live_bridge: LiveBridge, face_scene: SimSceneClient
 ) -> None:
-    """The hold: the followed face gone for half the switch time, the head holds toward
-    where it was — not turning to the other face — and follows it again, same track_id,
-    with nothing published on `bridge.head_tracking` meanwhile."""
+    """The hold: the followed face gone for a third of the switch time, the head holds
+    toward where it was — not turning to the other face — and follows it again, same
+    track_id, with nothing published on `bridge.head_tracking` meanwhile. The rest of
+    the switch time is the sim's to show the face again and the detector's to see it
+    (0.2 s on a Mac's viewer sim, longer on a CI runner); the gap the bridge saw is
+    printed beside the switch time."""
     bridge, _caps = live_bridge
     robot: Any = bridge.robot
 
     async def scenario() -> tuple[
-        float, list[float], int | None, int | None, list[Any]
+        float, list[float], int | None, int | None, list[Any], float
     ]:
         await _prepare(bridge)
         await bridge.start_head_tracking()
         followed_name = face_scene.spawn(face_at(LATERAL_M))
         await track_onto(bridge, "the first face", LATERAL_M)
-        followed = bridge.head_tracking.value.track_id
         face_scene.spawn(face_at(-LATERAL_M))
         await _both_in_view(bridge)
+        # The followed id is read once the tracker follows a face in view, centred on
+        # it. A track re-created under a new id (a detector flicker) leaves the tracker
+        # holding toward the stale id with its switch clock already running, and the
+        # hold this test measures would be half consumed before the face is hidden.
+        await _until(lambda: _followed_centred(bridge), 3.0)
+        followed = bridge.head_tracking.value.track_id
         before, _ = yaw_pitch_deg(await asyncio.to_thread(robot.get_current_head_pose))
         changes = _Changes(bridge)
+        gone_at = time.perf_counter()
         face_scene.despawn(followed_name)
         yaws: list[float] = []
-        deadline = time.perf_counter() + TRACKING_SWITCH_S / 2
+        deadline = time.perf_counter() + TRACKING_SWITCH_S * HIDDEN_FRACTION
         while time.perf_counter() < deadline:
             pose = await asyncio.to_thread(robot.get_current_head_pose)
             yaws.append(yaw_pitch_deg(pose)[0])
@@ -471,6 +492,7 @@ def test_a_face_hidden_briefly_is_waited_for_and_followed_again(
         again = face_scene.spawn(face_at(LATERAL_M))
         assert again == followed_name  # the pool hands the same portrait back
         await _both_in_view(bridge)
+        gap = time.perf_counter() - gone_at  # how long the bridge saw one face
         await asyncio.sleep(1.0)
         await changes.stop()
         return (
@@ -479,12 +501,14 @@ def test_a_face_hidden_briefly_is_waited_for_and_followed_again(
             followed,
             bridge.head_tracking.value.track_id,
             changes.woken,
+            gap,
         )
 
-    before, yaws, followed, after, woken = live_bridge.run(scenario())
+    before, yaws, followed, after, woken, gap = live_bridge.run(scenario())
     print(
         f"\n[e2e] hold: yaw {before:+.1f} deg before, "
-        f"{min(yaws):+.1f}..{max(yaws):+.1f} while the face was gone"
+        f"{min(yaws):+.1f}..{max(yaws):+.1f} while the face was gone; the bridge saw "
+        f"one face for {gap:.2f} s (the switch comes at {TRACKING_SWITCH_S:.1f} s)"
     )
     # The evidence a failure needs: a head that left the face either switched (a change
     # naming another id — the hold already consumed by detection flicker) or followed

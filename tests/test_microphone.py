@@ -66,6 +66,15 @@ async def _take(stream: AsyncIterator[bytes], n: int) -> list[bytes]:
     return out
 
 
+async def _until(predicate: Callable[[], bool], timeout: float = 3.0) -> None:
+    """Wait on the loop until `predicate` holds: on the feed's progress, never on how
+    long the host's timers took."""
+    deadline = time.perf_counter() + timeout
+    while not predicate():
+        assert time.perf_counter() < deadline, "condition not met in time"
+        await asyncio.sleep(0.005)
+
+
 def _run_with(feed: MicFeed, body: Callable[[], Awaitable[object]]) -> object:
     async def run() -> object:
         await feed.start()
@@ -144,6 +153,7 @@ def test_a_lapped_subscriber_reports_one_gap_and_costs_no_one_else(
     assert fast == list(range(fast[0], fast[0] + 30))  # the fast one lost nothing
 
 
+@pytest.mark.realtime  # the chunks in the last 50 ms: the fake capture's cadence
 def test_preroll_starts_a_subscriber_in_the_past() -> None:
     feed = _feed()
 
@@ -252,13 +262,13 @@ def test_latest_and_published_count_across_sessions() -> None:
     ]:
         before = feed.latest()
         await feed.start()
-        await asyncio.sleep(0.1)
+        await _until(lambda: feed.published_count >= 3)
         during = feed.latest()
         await feed.stop()
         after = feed.latest()
         first_session = feed.published_count
         await feed.start()
-        await asyncio.sleep(0.05)
+        await _until(lambda: feed.latest() is not None)
         second = feed.latest()
         await feed.stop()
         assert second is not None
