@@ -111,6 +111,29 @@ def test_the_loop_publishes_active_then_a_face_appearing_once(
     assert value.source == "custom"
 
 
+def test_a_run_never_detects_on_a_frame_from_before_it_started() -> None:
+    """specs/vision/user_perception.md "Tracks": the feed's newest frame when detection
+    switches on may show a scene that is gone (a person who just left), and a track
+    seeded on it would draw the head there. The run's first observation is a frame that
+    arrived after it started."""
+    scene = _Scene()
+    scene.show(0.0, 0.0)
+
+    async def run() -> tuple[int, int]:
+        async with _running_custom(scene, start=False) as loop:
+            await _wait_for(lambda: loop.feed.latest() is not None)
+            cached = loop.feed.latest()
+            assert cached is not None
+            await loop.detection.start()
+            await _wait_for(lambda: bool(loop.observed))
+            first = loop.observed[0].frame
+            assert first is not None
+            return cached.frame_id, first.frame_id
+
+    cached_id, first_id = _run(run)
+    assert first_id > cached_id
+
+
 @pytest.mark.realtime
 def test_a_gap_shorter_than_the_absence_window_wakes_nobody(fast_frames: None) -> None:
     scene = _Scene()
@@ -444,6 +467,30 @@ def test_the_jump_gate_scales_with_the_face() -> None:
     # a small face 30 px from the big track's last place: within 1.5 × 48 but not
     # 1.5 × 12 — held to its own size, it opens a track rather than taking the big one
     assert tracks.update([_face(30, 24, w=8, h=12)], size) == [4]
+
+
+def test_a_departed_faces_track_never_takes_a_face_its_own_track_continues() -> None:
+    """The ghost at the image centre (measured on the viewer sim, 2026-10-16): the
+    followed face leaves the centre, another appears to the side, and the head turning
+    onto it slides it toward the centre — nearer the departed face's track than its own,
+    and within the gate of both. Fresh tracks pair first: it keeps its id."""
+    tracks = fd._FaceTracks(_counter())
+    size = (WIDTH, HEIGHT)
+    assert tracks.update([_face(32, 24)], size) == [1]  # followed, centred
+    assert tracks.update([_face(6, 24)], size) == [2]  # gone; another to the side
+    # 15 px from its own track (1.25 sizes), 11 px from the departed one's
+    assert tracks.update([_face(21, 24)], size) == [2]
+    assert tracks.update([_face(30, 24)], size) == [2]  # centred now, still itself
+
+
+def test_a_face_back_from_a_miss_takes_its_own_track_beside_a_fresh_one() -> None:
+    """Fresh first never steals a returning face: a fresh track is taken by its own,
+    nearer face, and the returning face finds its own track, stale but within reach."""
+    tracks = fd._FaceTracks(_counter())
+    size = (WIDTH, HEIGHT)
+    assert tracks.update([_face(12, 24), _face(40, 24)], size) == [1, 2]
+    assert tracks.update([_face(40, 24)], size) == [2]  # the first one missed once
+    assert tracks.update([_face(14, 24), _face(40, 24)], size) == [1, 2]
 
 
 # --- the runner over the camera feed ------------------------------------------------------

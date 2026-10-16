@@ -122,8 +122,9 @@ while the loop runs it is refused — stop head tracking and face detection firs
 ## 3. What happens to your faces
 
 The bridge runs the detector on each new frame of `bridge.camera`, gives every face it
-returns a **`track_id`** carried from frame to frame by nearest matching (kept through a
-short run of misses, never reused), and publishes a `FaceReport` on `bridge.faces`: every
+returns a **`track_id`** carried from frame to frame by nearest matching, a track seen on
+the previous frame matched before one that missed it (kept through a short run of misses,
+never reused), and publishes a `FaceReport` on `bridge.faces`: every
 face in normalised image coordinates with its pixel box and head angles, in `track_id`
 order, with the frame they were found in, its time and — when the feed knows it — the head
 pose it was taken from, so the tracker aims each face against the pose it was actually seen

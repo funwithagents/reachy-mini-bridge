@@ -1529,7 +1529,7 @@ def test_faces_are_inactive_outside_a_session_and_active_inside(
 
     async def run() -> bool:
         async with bridge:
-            await asyncio.sleep(0.15)  # the first poll
+            await _until(lambda: bridge.faces.value.active)  # the first observation
             return bridge.faces.value.active
 
     inside = asyncio.run(run())
@@ -1552,7 +1552,7 @@ def test_set_face_detection_off_without_tracking_stops_the_loop(
             await asyncio.sleep(0.3)
             idle_calls = scene.calls - calls  # the detector no longer runs
             await bridge.set_face_detection(True)
-            await asyncio.sleep(0.2)
+            await _until(lambda: scene.calls > calls)  # the run's first observation
             return *off, idle_calls, bridge.faces.value.active, scene.calls - calls
 
     switch, active, idle_calls, active_again, calls_again = asyncio.run(run())
@@ -1590,7 +1590,7 @@ def test_stopping_tracking_stops_a_loop_nobody_else_wants(fast_faces: None) -> N
     async def run() -> tuple[bool, bool]:
         async with ReachyMiniBridge(config) as bridge:
             await bridge.set_motors_state("enabled")
-            await asyncio.sleep(0.15)
+            await _until(lambda: bridge.faces.value.active)  # the first observation
             running = bridge.faces.value.active
             await bridge.stop_head_tracking()
             return running, bridge.faces.value.active

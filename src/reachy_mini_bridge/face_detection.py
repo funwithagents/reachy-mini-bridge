@@ -228,7 +228,8 @@ class _FaceTracks:
     faces continue the tracks whose centres lie nearest, within ``TRACK_MAX_JUMP_FACES``
     face sizes (a size is a box's larger side, in pixels; the smaller of the track's and
     the face's, so a small face near a large track's last place is held to its own
-    size) — pairs taken nearest first,
+    size) — pairs taken fresh tracks first (a track seen on the previous observation
+    before one with misses), nearest first within each,
     each track and face used once; an unmatched face opens a
     track with ``new_id()``; an unmatched track counts a miss and is dropped after
     ``TRACK_MAX_MISSES``. Pure geometry, no smoothing, no face singled out — whom the
@@ -252,8 +253,11 @@ class _FaceTracks:
         del size  # the gate is in the face's own pixels, whatever the frame's size
         centres = [_pixel_centre(face) for face in faces]
         sizes = [_pixel_size(face) for face in faces]
+        # Fresh tracks first: a track missed on the last observation (a face that left)
+        # never takes a face its own fresh track could continue — the image centre, where
+        # the head brings every followed face, is where a departed face's track waits.
         pairs = sorted(
-            (d2, t, f)
+            (track.misses > 0, d2, t, f)
             for t, track in enumerate(self._tracks)
             for f, centre in enumerate(centres)
             if (d2 := _dist2(track.centre, centre))
@@ -261,7 +265,7 @@ class _FaceTracks:
         )
         ids: list[int | None] = [None] * len(faces)
         matched: set[int] = set()
-        for _d2, t, f in pairs:
+        for _stale, _d2, t, f in pairs:
             if t in matched or ids[f] is not None:
                 continue
             track = self._tracks[t]
@@ -403,6 +407,10 @@ class FaceDetection:
         self._allocate_track_id = new_track_id or self._new_track_id
         self._tracks = _FaceTracks(self._allocate_track_id)
         self._last_frame_id = 0
+        # When the current run's tracks began: a frame older than this shows the scene
+        # from before the run, and never seeds a track (specs/vision/user_perception.md
+        # "Tracks").
+        self._tracks_since = 0.0
         # target_fps: when the detector last started; the cost log's window.
         self._last_detect_at: float | None = None
         self._cost_since: float | None = None
@@ -463,6 +471,7 @@ class FaceDetection:
             factory = self._factory()
             self._detector = await self._acquire(factory)
             self._tracks = _FaceTracks(self._allocate_track_id)
+            self._tracks_since = time.perf_counter()
             self._last_detect_at = None
             self._cost_since, self._cost_calls, self._cost_total_s = None, 0, 0.0
             self._cost_logged = False
@@ -606,9 +615,12 @@ class FaceDetection:
                 return None
             self._detector = detector
             self._tracks = _FaceTracks(self._allocate_track_id)
+            self._tracks_since = time.perf_counter()
         frame = feed.latest()
         if frame is None or frame.frame_id == self._last_frame_id:
             return None  # nothing new: the detector runs once per frame
+        if frame.ts < self._tracks_since:
+            return None  # from before the run: the scene it shows may be gone
         # Marked before the detector runs: a frame it raises on — or one skipped under
         # the rate ceiling — is not retried.
         self._last_frame_id = frame.frame_id
