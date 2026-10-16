@@ -100,6 +100,9 @@ def test_the_loop_publishes_active_then_a_face_appearing_once(
             await _wait_for(lambda: loop.faces.value.active)
             await _heard(loop)
             scene.show(0.2, 0.1)
+            # The face reaches the value first, then the subscriber: `_heard` alone
+            # would return at once on the wake it already had for the empty report.
+            await _wait_for(lambda: bool(loop.faces.value.faces))
             await _heard(loop)  # woken on the face's appearance
             await asyncio.sleep(0.1)  # and on nothing else after it
             return list(loop.woken), loop.faces.value
