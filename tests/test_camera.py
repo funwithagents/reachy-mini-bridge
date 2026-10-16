@@ -291,6 +291,15 @@ def test_stop_returns_promptly_during_the_empty_pace(
 # --- followers: frames() and wait_for (specs/vision/camera.md "Followers") -----------------
 
 
+async def _until(predicate: Callable[[], bool], timeout: float = 3.0) -> None:
+    """Wait on the loop until `predicate` holds: the tests synchronise on what the
+    feed did, never on how long the host's timers took (a CI runner's run slow)."""
+    deadline = time.perf_counter() + timeout
+    while not predicate():
+        assert time.perf_counter() < deadline, "condition not met in time"
+        await asyncio.sleep(0.005)
+
+
 def _frames(n: int, pace_s: float) -> _Reader:
     """`n` frames at `pace_s`, after three empty reads so a follower subscribed right
     after `start()` is in place before the first frame lands."""
@@ -326,7 +335,8 @@ def test_a_slow_follower_gets_the_newest_frame_not_a_backlog() -> None:
         await feed.start()
         it = feed.frames()
         first = await asyncio.wait_for(anext(it), 2.0)
-        await asyncio.sleep(0.15)  # a dozen frames pass while the follower is busy
+        # Half a dozen frames pass while the follower is busy elsewhere.
+        await _until(lambda: feed.published_count >= first.frame_id + 6)
         after = await asyncio.wait_for(anext(it), 2.0)
         published = feed.published_count
         await feed.stop()
@@ -400,13 +410,14 @@ def test_cancelling_a_follower_leaves_the_others_and_the_reader_untouched() -> N
 
         cancelled = asyncio.create_task(follow(a))
         keeper = asyncio.create_task(follow(b))
-        await asyncio.sleep(0.15)  # the empty reads, then a few frames
+        await _until(lambda: len(a) >= 3)  # a few frames in
         cancelled.cancel()
         with pytest.raises(asyncio.CancelledError):
             await cancelled
         before = feed.published_count
-        await asyncio.sleep(0.1)
+        await _until(lambda: feed.published_count >= before + 3)
         after = feed.published_count
+        await _until(lambda: len(b) >= 1 and b[-1] > a[-1])
         await feed.stop()
         await asyncio.wait_for(keeper, 1.0)  # ends on its own with the session
         return a, b, before, after
@@ -431,14 +442,12 @@ def test_a_follower_never_yields_a_frame_of_a_later_session() -> None:
                 got.append(frame.frame_id)
 
         follower = asyncio.create_task(follow())
-        deadline = time.perf_counter() + 2.0
-        while got != [1]:
-            assert time.perf_counter() < deadline
-            await asyncio.sleep(0.005)
+        await _until(lambda: got == [1])
         await feed.stop()
         reader.extend([(_image(2), 2.0)])
         await feed.start()  # right behind the stop: no turn of the loop in between
-        await asyncio.sleep(0.1)
+        await _until(lambda: feed.published_count == 2)
+        await _until(follower.done)
         latest = feed.latest()
         await feed.stop()
         return got, follower.done(), -1 if latest is None else latest.frame_id

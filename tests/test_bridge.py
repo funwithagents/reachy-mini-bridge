@@ -1716,6 +1716,13 @@ def test_a_bad_idle_move_in_the_config_fails_bring_up() -> None:
 # --- perception (camera): the feed (specs/vision/camera.md) ---------------------------------
 
 
+async def _until(predicate: Callable[[], bool], timeout: float = 3.0) -> None:
+    deadline = time.perf_counter() + timeout
+    while not predicate():
+        assert time.perf_counter() < deadline, "condition not met in time"
+        await asyncio.sleep(0.005)
+
+
 async def _first_frame(bridge: ReachyMiniBridge, timeout: float = 0.5) -> Any:
     deadline = time.perf_counter() + timeout
     while bridge.camera.latest() is None:
@@ -1803,11 +1810,11 @@ def test_camera_followers_run_through_the_session_and_a_cancel_owns_only_itself(
 
             cancelled = asyncio.create_task(follow(a))
             keeper = asyncio.create_task(follow(b))
-            await asyncio.sleep(3.5 / FAKE_FRAME_HZ)
+            await _until(lambda: len(a) >= 2)  # a couple of frames in (10 fps)
             cancelled.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await cancelled
-            await asyncio.sleep(2.5 / FAKE_FRAME_HZ)
+            await _until(lambda: len(b) >= len(a) + 2)
             latest, b_then = bridge.camera.latest(), list(b)
         await asyncio.wait_for(keeper, 1.0)  # ended with the session
         return first, a, b_then, latest
