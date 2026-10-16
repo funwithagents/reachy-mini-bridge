@@ -308,6 +308,7 @@ def _frames(n: int, pace_s: float) -> _Reader:
     return _Reader(script, pace_s)
 
 
+@pytest.mark.realtime  # bounds the loop's keep-up with a 50 Hz reader
 def test_two_followers_each_receive_every_frame() -> None:
     async def run() -> tuple[list[int], list[int]]:
         feed = CameraFeed(_frames(10, pace_s=0.02), None)
@@ -329,6 +330,7 @@ def test_two_followers_each_receive_every_frame() -> None:
     assert a == b == list(range(1, 11))
 
 
+@pytest.mark.realtime  # bounds how far behind the reader a woken follower is
 def test_a_slow_follower_gets_the_newest_frame_not_a_backlog() -> None:
     async def run() -> tuple[int, int, int]:
         feed = CameraFeed(_frames(40, pace_s=0.01), None)
@@ -423,11 +425,11 @@ def test_cancelling_a_follower_leaves_the_others_and_the_reader_untouched() -> N
         return a, b, before, after
 
     a, b, before, after = asyncio.run(run())
-    assert len(a) >= 2 and a == list(range(a[0], a[-1] + 1))
+    assert len(a) >= 2 and a == sorted(
+        set(a)
+    )  # in order; consecutive only when the loop keeps up
     assert after > before  # the reader kept publishing
-    assert b[-1] > a[-1] and b == list(
-        range(b[0], b[-1] + 1)
-    )  # the keeper kept receiving
+    assert b[-1] > a[-1] and b == sorted(set(b))  # the keeper kept receiving
 
 
 def test_a_follower_never_yields_a_frame_of_a_later_session() -> None:

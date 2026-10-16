@@ -1821,8 +1821,10 @@ def test_camera_followers_run_through_the_session_and_a_cancel_owns_only_itself(
 
     first, a, b, latest = asyncio.run(run())
     assert first.frame_id >= 1 and first.head_pose is not None
-    assert len(a) >= 2 and a == list(range(a[0], a[-1] + 1))
-    assert b[-1] > a[-1] and b == list(range(b[0], b[-1] + 1))
+    assert len(a) >= 2 and a == sorted(
+        set(a)
+    )  # in order; consecutive only when the loop keeps up
+    assert b[-1] > a[-1] and b == sorted(set(b))
     assert latest is not None and latest.frame_id >= b[-1]
     with pytest.raises(BridgeError, match="not running"):
         bridge.camera.frames()  # after exit: no follower on a camera that is gone
