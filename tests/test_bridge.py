@@ -1716,6 +1716,13 @@ def test_a_bad_idle_move_in_the_config_fails_bring_up() -> None:
 # --- perception (camera): the feed (specs/vision/camera.md) ---------------------------------
 
 
+async def _until(predicate: Callable[[], bool], timeout: float = 3.0) -> None:
+    deadline = time.perf_counter() + timeout
+    while not predicate():
+        assert time.perf_counter() < deadline, "condition not met in time"
+        await asyncio.sleep(0.005)
+
+
 async def _first_frame(bridge: ReachyMiniBridge, timeout: float = 0.5) -> Any:
     deadline = time.perf_counter() + timeout
     while bridge.camera.latest() is None:
@@ -1776,6 +1783,51 @@ def test_camera_frame_ids_count_on_across_sessions() -> None:
             return frame.frame_id
 
     assert asyncio.run(run()) >= 2
+
+
+def test_camera_followers_run_through_the_session_and_a_cancel_owns_only_itself() -> (
+    None
+):
+    """specs/vision/camera.md "Followers": `bridge.camera.frames()` follows the fake's
+    frames (with their head pose) at its rate; it is a spanning verb under the
+    cancellation contract — a cancelled follower ends promptly, the other follower,
+    `latest()` and the session go on; every follower ends on its own at exit."""
+    bridge = ReachyMiniBridge("fake")
+    with pytest.raises(BridgeError, match="not running"):
+        bridge.camera.frames()
+
+    async def run() -> tuple[Any, list[int], list[int], Any]:
+        async with bridge:
+            first = await asyncio.wait_for(
+                bridge.camera.wait_for(lambda f: f.head_pose is not None), 1.0
+            )
+            a: list[int] = []
+            b: list[int] = []
+
+            async def follow(into: list[int]) -> None:
+                async for frame in bridge.camera.frames():
+                    into.append(frame.frame_id)
+
+            cancelled = asyncio.create_task(follow(a))
+            keeper = asyncio.create_task(follow(b))
+            await _until(lambda: len(a) >= 2)  # a couple of frames in (10 fps)
+            cancelled.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await cancelled
+            await _until(lambda: len(b) >= len(a) + 2)
+            latest, b_then = bridge.camera.latest(), list(b)
+        await asyncio.wait_for(keeper, 1.0)  # ended with the session
+        return first, a, b_then, latest
+
+    first, a, b, latest = asyncio.run(run())
+    assert first.frame_id >= 1 and first.head_pose is not None
+    assert len(a) >= 2 and a == sorted(
+        set(a)
+    )  # in order; consecutive only when the loop keeps up
+    assert b[-1] > a[-1] and b == sorted(set(b))
+    assert latest is not None and latest.frame_id >= b[-1]
+    with pytest.raises(BridgeError, match="not running"):
+        bridge.camera.frames()  # after exit: no follower on a camera that is gone
 
 
 # --- faces: the custom detection source (specs/vision/user_perception.md) --------------------

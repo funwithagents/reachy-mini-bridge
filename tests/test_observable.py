@@ -204,3 +204,29 @@ def test_set_and_update_from_a_plain_thread_raise() -> None:
     thread.join()
     assert len(errors) == 2
     assert obs.value == 0
+
+
+def test_set_threadsafe_publishes_from_another_thread_onto_the_loop() -> None:
+    async def run() -> tuple[int, int, bool]:
+        obs = Observable(0)
+        loop = asyncio.get_running_loop()
+        changes = obs.changes()
+        pending = asyncio.ensure_future(_next_within(changes))
+        await asyncio.sleep(0)  # subscribed
+        producer = threading.Thread(target=obs.set_threadsafe, args=(loop, 7))
+        producer.start()
+        producer.join()
+        unchanged_yet = obs.value == 0  # queued on the loop, not applied on the thread
+        got = await pending
+        return got, obs.value, unchanged_yet
+
+    assert asyncio.run(run()) == (7, 7, True)
+
+
+def test_set_threadsafe_on_a_closed_loop_raises() -> None:
+    loop = asyncio.new_event_loop()
+    loop.close()
+    obs = Observable(0)
+    with pytest.raises(RuntimeError):
+        obs.set_threadsafe(loop, 1)
+    assert obs.value == 0

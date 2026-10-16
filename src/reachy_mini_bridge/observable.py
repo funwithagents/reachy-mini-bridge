@@ -4,8 +4,9 @@
 ``value`` is the current state, readable from any thread; ``changes()`` is an async
 iterator woken on every *published* value; ``wait_for`` waits for a value matching a
 predicate. The owner decides what counts as a change: ``set`` replaces and publishes,
-``update`` replaces silently. A slow subscriber gets the latest value, never a backlog,
-and nothing blocks the producer.
+``update`` replaces silently, ``set_threadsafe`` is the ``set`` of a producer on another
+thread. A slow subscriber gets the latest value, never a backlog, and nothing blocks the
+producer.
 """
 
 from __future__ import annotations
@@ -23,8 +24,8 @@ class Observable[T]:
     """A value read directly and subscribed to (specs/core/observable.md).
 
     ``set`` / ``update`` run on the event-loop thread (they raise ``RuntimeError``
-    elsewhere); a producer on another thread marshals through
-    ``loop.call_soon_threadsafe(observable.set, value)``.
+    elsewhere); a producer on another thread publishes through
+    :meth:`set_threadsafe`, which marshals the ``set`` onto the loop it is given.
     """
 
     def __init__(self, initial: T) -> None:
@@ -50,6 +51,13 @@ class Observable[T]:
         """Replace the value silently: readers of :attr:`value` see it, nobody wakes."""
         asyncio.get_running_loop()
         self._value = value
+
+    def set_threadsafe(self, loop: asyncio.AbstractEventLoop, value: T) -> None:
+        """:meth:`set` from another thread: the publication is queued on ``loop`` and runs
+        there, so subscribers wake in publication order and :attr:`value` changes on the
+        loop's thread. Raises ``RuntimeError`` when ``loop`` is closed, as
+        ``call_soon_threadsafe`` does; the caller decides whether that matters."""
+        loop.call_soon_threadsafe(self.set, value)
 
     def changes(self) -> AsyncIterator[T]:
         """Yield each value published from the moment the iterator is first driven.

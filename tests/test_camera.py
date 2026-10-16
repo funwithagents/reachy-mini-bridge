@@ -1,7 +1,8 @@
 """Functional tests for the camera feed (specs/vision/camera.md) on a scripted reader.
 
 The feed runs its real thread over a stub `read_frame` that returns scripted frames,
-`None`s, or raises, and a stub `pose_at`; tests observe what `latest()` publishes.
+`None`s, or raises, and a stub `pose_at`; tests observe what `latest()` publishes and,
+from an event loop, what the followers (`frames()`, `wait_for`) receive.
 """
 
 from __future__ import annotations
@@ -285,3 +286,174 @@ def test_stop_returns_promptly_during_the_empty_pace(
     started = time.perf_counter()
     asyncio.run(feed.stop())
     assert time.perf_counter() - started < 0.3
+
+
+# --- followers: frames() and wait_for (specs/vision/camera.md "Followers") -----------------
+
+
+async def _until(predicate: Callable[[], bool], timeout: float = 3.0) -> None:
+    """Wait on the loop until `predicate` holds: the tests synchronise on what the
+    feed did, never on how long the host's timers took (a CI runner's run slow)."""
+    deadline = time.perf_counter() + timeout
+    while not predicate():
+        assert time.perf_counter() < deadline, "condition not met in time"
+        await asyncio.sleep(0.005)
+
+
+def _frames(n: int, pace_s: float) -> _Reader:
+    """`n` frames at `pace_s`, after three empty reads so a follower subscribed right
+    after `start()` is in place before the first frame lands."""
+    script: list[Read | Exception] = [None] * 3
+    script += [(_image(i), float(i)) for i in range(1, n + 1)]
+    return _Reader(script, pace_s)
+
+
+@pytest.mark.realtime  # bounds the loop's keep-up with a 50 Hz reader
+def test_two_followers_each_receive_every_frame() -> None:
+    async def run() -> tuple[list[int], list[int]]:
+        feed = CameraFeed(_frames(10, pace_s=0.02), None)
+        await feed.start()
+
+        async def follow(n: int) -> list[int]:
+            got: list[int] = []
+            async for frame in feed.frames():
+                got.append(frame.frame_id)
+                if len(got) == n:
+                    break
+            return got
+
+        a, b = await asyncio.wait_for(asyncio.gather(follow(10), follow(10)), 3.0)
+        await feed.stop()
+        return a, b
+
+    a, b = asyncio.run(run())
+    assert a == b == list(range(1, 11))
+
+
+@pytest.mark.realtime  # bounds how far behind the reader a woken follower is
+def test_a_slow_follower_gets_the_newest_frame_not_a_backlog() -> None:
+    async def run() -> tuple[int, int, int]:
+        feed = CameraFeed(_frames(40, pace_s=0.01), None)
+        await feed.start()
+        it = feed.frames()
+        first = await asyncio.wait_for(anext(it), 2.0)
+        # Half a dozen frames pass while the follower is busy elsewhere.
+        await _until(lambda: feed.published_count >= first.frame_id + 6)
+        after = await asyncio.wait_for(anext(it), 2.0)
+        published = feed.published_count
+        await feed.stop()
+        return first.frame_id, after.frame_id, published
+
+    first, after, published = asyncio.run(run())
+    assert after - first >= 5  # the frames it missed are gone, not queued
+    assert published - after <= 2  # what it got is the newest at the time
+
+
+def test_wait_for_returns_the_newest_frame_or_the_first_matching_publication() -> None:
+    async def run() -> tuple[bool, int, int]:
+        reader = _Reader([(_image(1), 1.0)], pace_s=0.02)  # paced: no burst collapses
+        feed = CameraFeed(reader, None)
+        await feed.start()
+        one = await asyncio.wait_for(feed.wait_for(lambda f: f.frame_id == 1), 1.0)
+        same = one is feed.latest()  # the newest, handed back without a wait
+        waiter = asyncio.ensure_future(feed.wait_for(lambda f: f.frame_id >= 3))
+        await asyncio.sleep(0.05)
+        assert not waiter.done()
+        reader.extend([(_image(2), 2.0), (_image(3), 3.0), (_image(4), 4.0)])
+        matched = await asyncio.wait_for(waiter, 2.0)
+        await feed.stop()
+        return same, one.frame_id, matched.frame_id
+
+    assert asyncio.run(run()) == (True, 1, 3)
+
+
+def test_followers_end_when_the_feed_stops_and_the_checks_are_at_the_call() -> None:
+    async def run() -> list[int]:
+        feed = CameraFeed(_Reader([(_image(1), 1.0)]), None)
+        with pytest.raises(BridgeError, match="not running"):
+            feed.frames()  # before the session: refused where it is called
+        with pytest.raises(BridgeError, match="not running"):
+            await feed.wait_for(lambda f: True)
+        await feed.start()
+        await asyncio.wait_for(feed.wait_for(lambda f: f.frame_id == 1), 1.0)
+        got: list[int] = []
+
+        async def follow() -> str:
+            async for frame in feed.frames():
+                got.append(frame.frame_id)
+            return "ended"
+
+        follower = asyncio.create_task(follow())
+        waiter = asyncio.create_task(feed.wait_for(lambda f: f.frame_id >= 2))
+        await asyncio.sleep(0.05)
+        assert not follower.done() and not waiter.done()
+        await feed.stop()
+        assert await asyncio.wait_for(follower, 1.0) == "ended"
+        with pytest.raises(BridgeError, match="stopped"):
+            await asyncio.wait_for(waiter, 1.0)
+        with pytest.raises(BridgeError, match="not running"):
+            feed.frames()  # after the session too
+        assert feed.latest() is None
+        return got
+
+    assert asyncio.run(run()) == []  # frame 1 was before the follower; nothing after
+
+
+def test_cancelling_a_follower_leaves_the_others_and_the_reader_untouched() -> None:
+    async def run() -> tuple[list[int], list[int], int, int]:
+        feed = CameraFeed(_frames(60, pace_s=0.01), None)
+        await feed.start()
+        a: list[int] = []
+        b: list[int] = []
+
+        async def follow(into: list[int]) -> None:
+            async for frame in feed.frames():
+                into.append(frame.frame_id)
+
+        cancelled = asyncio.create_task(follow(a))
+        keeper = asyncio.create_task(follow(b))
+        await _until(lambda: len(a) >= 3)  # a few frames in
+        cancelled.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await cancelled
+        before = feed.published_count
+        await _until(lambda: feed.published_count >= before + 3)
+        after = feed.published_count
+        await _until(lambda: len(b) >= 1 and b[-1] > a[-1])
+        await feed.stop()
+        await asyncio.wait_for(keeper, 1.0)  # ends on its own with the session
+        return a, b, before, after
+
+    a, b, before, after = asyncio.run(run())
+    assert len(a) >= 2 and a == sorted(
+        set(a)
+    )  # in order; consecutive only when the loop keeps up
+    assert after > before  # the reader kept publishing
+    assert b[-1] > a[-1] and b == sorted(set(b))  # the keeper kept receiving
+
+
+def test_a_follower_never_yields_a_frame_of_a_later_session() -> None:
+    async def run() -> tuple[list[int], bool, int]:
+        reader = _frames(1, pace_s=0.0)
+        feed = CameraFeed(reader, None)
+        await feed.start()
+        got: list[int] = []
+
+        async def follow() -> None:
+            async for frame in feed.frames():
+                got.append(frame.frame_id)
+
+        follower = asyncio.create_task(follow())
+        await _until(lambda: got == [1])
+        await feed.stop()
+        reader.extend([(_image(2), 2.0)])
+        await feed.start()  # right behind the stop: no turn of the loop in between
+        await _until(lambda: feed.published_count == 2)
+        await _until(follower.done)
+        latest = feed.latest()
+        await feed.stop()
+        return got, follower.done(), -1 if latest is None else latest.frame_id
+
+    got, ended, latest_id = asyncio.run(run())
+    assert got == [1] and ended
+    assert latest_id == 2  # the later session ran; the old follower saw none of it
