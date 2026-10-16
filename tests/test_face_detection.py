@@ -782,6 +782,7 @@ def test_the_shipped_detector_is_resolved_by_name(
 # loop") -------------------------------------------------------------------------------------
 
 
+@pytest.mark.realtime  # counts detections a second at the fake's 40 fps
 def test_target_fps_caps_the_detector_below_the_frame_rate(fast_frames: None) -> None:
     """At 40 fps from the fake, a 2.0 ceiling runs the detector about twice a second —
     the loop skips the frames, so it holds for any detector."""

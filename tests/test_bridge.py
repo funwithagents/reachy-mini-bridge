@@ -598,7 +598,8 @@ def test_start_head_tracking_needs_no_motors() -> None:
             await bridge.set_motors_state("gravity_compensation")
             before = len(_fake(bridge).commands)
             await bridge.start_head_tracking()
-            await asyncio.sleep(0.15)
+            await _until(lambda: bridge.faces.value.active)  # the first observation
+            await asyncio.sleep(0.1)  # a moment more for anything sent to the robot
             return (
                 bridge.tracking,
                 bridge.faces.value.active,
@@ -1567,7 +1568,7 @@ def test_set_face_detection_off_with_tracking_on_changes_nothing(
     async def run() -> tuple[bool, bool, int, int]:
         async with ReachyMiniBridge(_custom_config(_Scene([]))) as bridge:
             await bridge.set_motors_state("enabled")
-            await asyncio.sleep(0.15)
+            await _until(lambda: bridge.faces.value.active)  # the first observation
             before = len(_fake(bridge).commands)
             await bridge.set_face_detection(False)
             await asyncio.sleep(0.15)
@@ -1762,7 +1763,13 @@ def test_camera_frames_carry_the_head_pose_at_their_time() -> None:
             first = await _first_frame(bridge)
             robot = _fake(bridge)
             robot.set_target(head=turned)  # the fake's head is now at this pose
-            await asyncio.sleep(3.0 / FAKE_FRAME_HZ)
+            turned_at = time.perf_counter()
+
+            def turned_frame() -> bool:
+                frame = bridge.camera.latest()
+                return frame is not None and frame.ts > turned_at + 1.0 / FAKE_FRAME_HZ
+
+            await _until(turned_frame)  # a frame taken a whole period after the turn
             return first, bridge.camera.latest()
 
     first, later = asyncio.run(run())
