@@ -208,7 +208,9 @@ def test_two_consumers_both_see_every_frame(
     seen: dict[str, set[int]] = {"a": set(), "b": set()}
 
     def consume(name: str) -> None:
-        deadline = time.perf_counter() + 2.0
+        # 20 frames at 30 ms is 0.6 s; the deadline only bounds a broken feed, so it
+        # leaves room for a host whose sleeps run long (CI's macOS runner).
+        deadline = time.perf_counter() + 8.0
         while time.perf_counter() < deadline and len(seen[name]) < 20:
             frame = feed.latest()
             if frame is not None:

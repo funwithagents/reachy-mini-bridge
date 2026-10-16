@@ -132,6 +132,10 @@ class Track:
         self.face = face  # the target face of `bridge.faces` once settled, or None
         self.delay_s: float | None = None  # the tracker's delay estimate once settled
         self.frame_note = ""  # the camera frame's age and whether it carried a pose
+        # Each `track_id` the tracker followed along the way, in order (None: no aim).
+        # One id is a clean track; more means the face's track was re-created under
+        # a new id while the head turned (a detector flicker, a jump past the gate).
+        self.ids: list[int | None] = []
 
     def _settled(self) -> list[tuple[float, float]]:
         """The samples of the track's last SETTLE_WINDOW_S."""
@@ -197,11 +201,14 @@ async def track_onto(
     min_seconds: float = 2.5,
     expected_yaw_deg: float | None = None,
 ) -> Track:
-    """Sample the head until it holds still (yaw within 1° over a second, and at least
-    ``min_seconds`` in — detection and the gaze layer's fade take a moment to start the
-    head moving), or ``settle_timeout``; then read the followed face from
-    ``bridge.faces``. The expected yaw is a face at ``lateral`` at the default distance,
-    unless given. ``where`` names the step in the assertion messages and the printout.
+    """Sample the head until it holds still (yaw within 1° over ``SETTLE_WINDOW_S``, and
+    at least ``min_seconds`` in — detection and the gaze layer's fade take a moment to
+    start the head moving), or ``settle_timeout``; then read the followed face from
+    ``bridge.faces``. The window outlasts the tracker's hold (``TRACKING_SWITCH_S``, 1 s
+    toward a face gone missing), so a head pausing while the tracker waits for a
+    re-created track never reads as settled. The expected yaw is a face at ``lateral`` at
+    the default distance, unless given. ``where`` names the step in the assertion
+    messages and the printout.
     """
     robot: Any = bridge.robot
     start_yaw, _ = yaw_pitch_deg(await asyncio.to_thread(robot.get_current_head_pose))
@@ -213,13 +220,22 @@ async def track_onto(
     deadline = started + settle_timeout
     while True:
         pose = await asyncio.to_thread(robot.get_current_head_pose)
+        now = time.perf_counter()
         track.samples.append(yaw_pitch_deg(pose))
-        track.times.append(time.perf_counter())
-        recent = [y for y, _ in track.samples[-20:]]
-        still = len(recent) == 20 and max(recent) - min(recent) < 1.0
-        if still and time.perf_counter() - started >= min_seconds:
+        track.times.append(now)
+        followed = bridge.head_tracking.value.track_id
+        if not track.ids or track.ids[-1] != followed:
+            track.ids.append(followed)
+        recent = [
+            y
+            for (y, _), t in zip(track.samples, track.times, strict=True)
+            if t >= now - SETTLE_WINDOW_S
+        ]
+        covered = track.times[0] <= now - SETTLE_WINDOW_S
+        still = covered and max(recent) - min(recent) < 1.0
+        if still and now - started >= min_seconds:
             break
-        if time.perf_counter() >= deadline:
+        if now >= deadline:
             break
         await asyncio.sleep(0.05)
     track.face = followed_face(bridge)
@@ -247,8 +263,8 @@ def assert_tracked(track: Track, *, pitch_ahead: float | None = None) -> None:
         f"\n[e2e] {track.where}: yaw {track.start_yaw:+.1f} -> {track.yaw:+.1f} deg "
         f"(expected {track.expected_yaw:+.1f}, overshoot {track.overshoot_deg:.1f}, "
         f"swing back {track.swing_back_deg:.1f}), "
-        f"pitch {track.pitch:+.1f}, settled in {track.settle_s:.1f} s, face {face}, "
-        f"delay estimate {track.delay_s}, {track.frame_note}"
+        f"pitch {track.pitch:+.1f}, settled in {track.settle_s:.1f} s, ids followed "
+        f"{track.ids}, face {face}, delay estimate {track.delay_s}, {track.frame_note}"
     )
     assert track.overshoot_deg <= OVERSHOOT_MAX_DEG, (
         f"{track.where}: the head swung {track.overshoot_deg:.1f} deg past the face"

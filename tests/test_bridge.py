@@ -2064,7 +2064,7 @@ def test_a_custom_config_enters_and_reports_the_stubs_faces() -> None:
         async with ReachyMiniBridge(_custom_config(scene, tracking=False)) as bridge:
             assert bridge.face_detector is scene.detector
             await _wait_for_face_x(bridge, 0.5)
-            await asyncio.sleep(0.5)
+            await _until(lambda: scene.calls >= 4)  # once per frame: it keeps running
             return bridge.faces.value, _command_names(bridge), scene.calls
 
     report, commands, calls = asyncio.run(run())
@@ -2073,7 +2073,7 @@ def test_a_custom_config_enters_and_reports_the_stubs_faces() -> None:
     assert face.y == pytest.approx(-0.25) and face.size == pytest.approx(16 / 48)
     assert report.head_pose is not None  # the frame's, on the fake
     assert not any(c.endswith("head_tracking") for c in commands)
-    assert calls >= 4  # once per frame at 10 fps, over at least half a second
+    assert calls >= 4  # once per frame, frame after frame (waited for, not timed)
 
 
 def test_set_face_detector_swaps_detectors_mid_session() -> None:
