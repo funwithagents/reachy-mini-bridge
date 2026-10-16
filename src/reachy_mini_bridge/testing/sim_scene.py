@@ -6,10 +6,9 @@ depends on.
 Upstream's MuJoCo daemon loads a scene by *name* from inside its own package, ships
 nothing to look at, and offers no way to add or move anything in it once it runs. This
 module closes all three gaps for the ``sim`` backend: a scene with a pool of named props
-— today **faces** (portrait planes, ``face_1`` … ``face_3``), room for other kinds later —
-that start **hidden** and that a test spawns, moves and despawns over HTTP while the
-daemon runs. Showing
-the face exercises the real pipeline (the daemon's offscreen render → GStreamer → the
+— today **faces** (portrait planes, ``face_1`` … ``face_4``, one person each), room for
+other kinds later — that start **hidden** and that a test spawns, moves and despawns over
+HTTP while the daemon runs. Showing the face exercises the real pipeline (the daemon's offscreen render → GStreamer → the
 bridge's camera feed → its face detector → its head tracker's aim → the motion loop →
 head IK) and, on top of it, the bridge's attention hand-back (specs/core/bridge.md "Attention"); hiding it again leaves the scene exactly as a test
 that needs no face found it.
@@ -64,8 +63,11 @@ from ..sim_daemon import SimDaemonExtension, run_sim_daemon
 __all__ = [
     "DEFAULT_FACE_IMAGE",
     "DEFAULT_FACE_POS",
+    "FACE_IMAGES",
     "FACE_POOL_SIZE",
     "FACE_QUAT",
+    "LOOKING_DOWN_FACE",
+    "TURNED_FACE",
     "BodyState",
     "FacePlane",
     "SceneDirector",
@@ -79,8 +81,20 @@ __all__ = [
 
 _logger = logging.getLogger(__name__)
 
-# The bundled public-domain portrait (assets/ATTRIBUTION.md).
-DEFAULT_FACE_IMAGE = Path(__file__).parent / "assets" / "face.png"
+_ASSETS = Path(__file__).parent / "assets"
+
+# The bundled public-domain portraits (assets/ATTRIBUTION.md), one person each, in pool
+# order: the pool's ``face_<n>`` shows the n-th (specs/testing/sim_scene.md "A pool of
+# portraits"). Two frontal faces, then a head turned ~30° toward the image's right and a
+# head tilted down — every one detected over the tracking tests' range.
+FACE_IMAGES = (
+    _ASSETS / "armstrong.png",
+    _ASSETS / "chawla.png",
+    _ASSETS / "schmid.png",
+    _ASSETS / "malenchenko.png",
+)
+# The portrait a ``FacePlane`` shows when it names none: the pool's first, frontal face.
+DEFAULT_FACE_IMAGE = FACE_IMAGES[0]
 
 # Orientation (w, x, y, z) of a face plane: the box's thin axis points at the robot (world
 # -x, the eye camera looks along +x from the neutral head pose), its width axis runs
@@ -98,9 +112,12 @@ DEFAULT_FACE_SIZE = (0.20, 0.25)
 
 # The test scene's pool of hidden portraits (specs/testing/sim_scene.md "A pool of
 # portraits"): MuJoCo compiles a scene at load, so the props a test may spawn are written
-# into the file up front. Three covers the tracking scenarios (the followed face, a
-# rival, one more); a portrait costs a body and a box — portraits sharing an image share one texture.
-FACE_POOL_SIZE = 3
+# into the file up front. One prop per person — no two props show the same face, so a
+# test's users never look alike; a portrait costs a body and a box.
+FACE_POOL_SIZE = len(FACE_IMAGES)
+# The pool's props whose person is not looking at the robot, for the tests that need one.
+TURNED_FACE = "face_3"
+LOOKING_DOWN_FACE = "face_4"
 
 # A portrait's material is named after its image, so the director reads a body's image
 # back from the compiled model (specs/testing/sim_scene.md "A pool of portraits").
@@ -137,17 +154,19 @@ def _mjcf_root() -> Path:
 
 
 def face_pool(
-    count: int = FACE_POOL_SIZE, images: Sequence[str | Path] | None = None
+    count: int | None = None, images: Sequence[str | Path] | None = None
 ) -> tuple[FacePlane, ...]:
     """The portraits of a pool (specs/testing/sim_scene.md "A pool of portraits"):
     ``face_1`` … ``face_<count>``, hidden, parked at ``DEFAULT_FACE_POS``, their images
-    assigned round-robin from ``images`` (the bundled portrait alone when ``None``). A
-    test spawns them with ``SimSceneClient.spawn``."""
-    if count < 1:
-        raise ValueError(f"a face pool needs at least one portrait, got {count}")
-    paths = [DEFAULT_FACE_IMAGE] if images is None else [Path(i) for i in images]
+    assigned in order from ``images`` (the bundled ``FACE_IMAGES`` when ``None``) — one
+    prop per image by default, round-robin when ``count`` is larger. A test spawns them
+    with ``SimSceneClient.spawn``, by name for a given person."""
+    paths = list(FACE_IMAGES) if images is None else [Path(i) for i in images]
     if not paths:
         raise ValueError("a face pool needs at least one image")
+    count = len(paths) if count is None else count
+    if count < 1:
+        raise ValueError(f"a face pool needs at least one portrait, got {count}")
     return tuple(
         FacePlane(name=f"face_{i + 1}", image=paths[i % len(paths)])
         for i in range(count)
@@ -158,8 +177,8 @@ def write_test_scene(
     out_dir: str | Path, faces: Sequence[FacePlane] | None = None
 ) -> Path:
     """Write ``<out_dir>/scene.xml``: upstream's ``empty`` scene plus one prop per entry
-    of ``faces`` — by default ``face_pool()``, three hidden portraits (only one prop shape
-    exists today, the portrait plane). Returns the scene path (hand it to
+    of ``faces`` — by default ``face_pool()``, four hidden portraits, one person each
+    (only one prop shape exists today, the portrait plane). Returns the scene path (hand it to
     ``DaemonConfig.scene``).
 
     Each prop starts at its own ``visible`` — a pool starts hidden, so the scene this
@@ -501,49 +520,45 @@ class SceneDirector:
         pos: Any,
         quat: Any = None,
         *,
+        name: str | None = None,
         kind: str = "face",
-        image: str | None = None,
         duration: float = 0.0,
     ) -> BodyState:
-        """Take the lowest-numbered hidden prop of ``kind`` (showing ``image``, when
-        given), place it at ``pos`` — over ``duration`` seconds from where it is parked,
-        or at once — and show it, in one command (specs/testing/sim_scene.md "A pool of
-        portraits"). ``LookupError`` when none is free, ``ValueError`` for an image no
-        prop of that kind carries or a malformed value."""
+        """Show a prop of the pool at ``pos`` — ``name`` when given (a given person),
+        else the lowest-numbered hidden prop of ``kind`` — placed over ``duration``
+        seconds from where it is parked, or at once, in one command
+        (specs/testing/sim_scene.md "A pool of portraits"). ``KeyError`` for an unknown
+        ``name``; ``LookupError`` when that prop is already shown, or when no prop of
+        ``kind`` is free; ``ValueError`` for a malformed value."""
         if duration < 0:
             raise ValueError("duration must be >= 0")
         new_pos = _vec3(pos)
         new_quat = None if quat is None else _quat(quat)
         now = self._clock()
         with self._lock:
-            of_kind = sorted(
-                (
-                    (name, body)
-                    for name, body in self._bodies.items()
-                    if body.kind == kind
-                ),
-                key=lambda item: _pool_order(item[0]),
-            )
-            if image is not None:
-                images = sorted({b.image for _, b in of_kind if b.image is not None})
-                if image not in images:
-                    raise ValueError(
-                        f"no {kind!r} prop shows the image {image!r}; the scene's "
-                        f"images: {', '.join(images) or 'none'}"
+            if name is not None:
+                body = self._body(name)
+                if body.visible:
+                    raise LookupError(
+                        f"{name} is already shown — despawn it before spawning it again"
                     )
-            free = [
-                (name, body)
-                for name, body in of_kind
-                if not body.visible and (image is None or body.image == image)
-            ]
-            if not free:
-                what = kind if image is None else f"{kind} ({image})"
-                raise LookupError(
-                    f"no free {what} prop: the scene's pool holds {len(of_kind)} "
-                    f"{kind} prop(s), all shown — despawn one, or write a bigger pool "
-                    "(face_pool(count=...))"
+            else:
+                of_kind = sorted(
+                    (
+                        (prop, body)
+                        for prop, body in self._bodies.items()
+                        if body.kind == kind
+                    ),
+                    key=lambda item: _pool_order(item[0]),
                 )
-            name, body = free[0]
+                free = [(prop, body) for prop, body in of_kind if not body.visible]
+                if not free:
+                    raise LookupError(
+                        f"no free {kind} prop: the scene's pool holds {len(of_kind)} "
+                        f"{kind} prop(s), all shown — despawn one, or write a bigger "
+                        "pool (face_pool(count=...))"
+                    )
+                name, body = free[0]
             current_pos, current_quat = self._pose_at(body, now)
             body.start_pos, body.start_quat = current_pos, current_quat
             body.pos = new_pos
@@ -650,19 +665,22 @@ def build_router(director: SceneDirector) -> Any:
 
     @router.post("/bodies/spawn")
     def spawn(payload: dict[str, Any] = spawn_body) -> dict[str, Any]:
-        unknown = set(payload) - {"pos", "quat", "duration", "kind", "image"}
+        unknown = set(payload) - {"pos", "quat", "duration", "kind", "name"}
         if unknown:
             raise HTTPException(400, f"unknown field(s): {', '.join(sorted(unknown))}")
         if "pos" not in payload:
             raise HTTPException(400, "spawn needs a pos")
+        name = payload.get("name")
         try:
             state = director.spawn(
                 payload["pos"],
                 payload.get("quat"),
+                name=None if name is None else str(name),
                 kind=str(payload.get("kind", "face")),
-                image=payload.get("image"),
                 duration=float(payload.get("duration", 0.0)),
             )
+        except KeyError:
+            raise HTTPException(404, f"unknown body {name!r}") from None
         except LookupError as e:
             raise HTTPException(409, str(e.args[0] if e.args else e)) from None
         except (TypeError, ValueError) as e:
@@ -798,19 +816,21 @@ class SimSceneClient:
         pos: Sequence[float],
         quat: Sequence[float] | None = None,
         *,
+        name: str | None = None,
         kind: str = "face",
-        image: str | None = None,
         duration: float = 0.0,
     ) -> str:
-        """Show a free prop of the scene's pool at ``pos`` (world metres) — the
-        lowest-numbered hidden one of ``kind``, showing ``image`` when given — and return
-        its name, the handle to ``place`` or ``despawn`` it (specs/testing/sim_scene.md "A
-        pool of portraits"). ``SimSceneError`` when the pool is exhausted."""
+        """Show a prop of the scene's pool at ``pos`` (world metres) — ``name`` when
+        given, the same person every time (``face_2``, ``TURNED_FACE``), else the
+        lowest-numbered hidden one of ``kind`` — and return its name, the handle to
+        ``place`` or ``despawn`` it (specs/testing/sim_scene.md "A pool of portraits").
+        ``SimSceneError`` when that prop is unknown or already shown, or the pool is
+        exhausted."""
         body: dict[str, Any] = {"pos": list(pos), "duration": duration, "kind": kind}
         if quat is not None:
             body["quat"] = list(quat)
-        if image is not None:
-            body["image"] = image
+        if name is not None:
+            body["name"] = name
         return BodyState.from_dict(self._request("POST", "/bodies/spawn", body)).name
 
     def despawn(self, name: str) -> BodyState:
