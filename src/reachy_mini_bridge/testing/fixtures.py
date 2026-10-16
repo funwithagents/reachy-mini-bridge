@@ -32,6 +32,7 @@ See ../../../specs/testing/testing_support.md for the strategy and
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Iterator
 
@@ -369,8 +370,21 @@ def face_scene(
         yield sim_scene
     finally:
         sim_scene.clear()
+        live_bridge.run(_seen_empty(live_bridge.bridge))
         live_bridge.run(live_bridge.bridge.stop_head_tracking())
         live_bridge.run(live_bridge.bridge.set_face_detection(False))
+
+
+async def _seen_empty(bridge: ReachyMiniBridge, timeout: float = 3.0) -> None:
+    """Until the running detection reports nobody, so the camera has shown the cleared
+    scene before detection goes off: the next test's run starts from frames without the
+    portraits this one spawned. A no-op with detection off; past ``timeout`` it returns
+    (a portrait the sim failed to hide is the next test's ``clear()`` to fix)."""
+    deadline = time.perf_counter() + timeout
+    while bridge.faces.value.active and bridge.faces.value.faces:
+        if time.perf_counter() > deadline:
+            return
+        await asyncio.sleep(0.05)
 
 
 @pytest.fixture

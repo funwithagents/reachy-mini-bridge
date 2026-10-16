@@ -882,7 +882,11 @@ def test_each_idle_entry_builds_a_fresh_custom_move() -> None:
             await asyncio.wrap_future(
                 session.submit(_TestPrimary(0.15, 0.01), None).done
             )
-            await asyncio.sleep(BLEND_S + 0.2)
+            # Waited for, not timed: the idle move after the primary is built and plays.
+            deadline = time.perf_counter() + BLEND_S + 5.0
+            while not (len(built) > before and len(built[-1].ts) > 2):
+                assert time.perf_counter() < deadline, "no fresh idle move played"
+                await asyncio.sleep(0.02)
             return before
 
     before = asyncio.run(run())
