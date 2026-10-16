@@ -7,7 +7,9 @@ each other, silently. The feed owns the read: one thread loops the robot's ``get
 (the only call site of it in the bridge, through :func:`frame_reader`), stamps every
 frame with its time and, when it can stand behind it, the head pose at that time, and
 publishes the newest frame for any number of consumers to sample at their own rate —
-the ``custom`` detection source, a display, a vision graph plugged on by shape.
+the ``custom`` detection source, a display, a vision graph plugged on by shape — or to
+follow, frame by frame, through ``frames()`` and ``wait_for()``: an ``Observable`` the
+thread publishes into through the session's event loop.
 """
 
 from __future__ import annotations
@@ -21,9 +23,10 @@ from typing import TYPE_CHECKING
 
 from .errors import BridgeError
 from .fake_reachy_mini import FakeReachyMini
+from .observable import Observable
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import AsyncGenerator, AsyncIterator, Callable
 
     import numpy as np
     import numpy.typing as npt
@@ -104,8 +107,10 @@ def frame_reader(robot: AnyReachyMini) -> FrameReader:
 class CameraFeed:
     """The one reader of the robot's camera (specs/vision/camera.md "The feed"): ``start()``
     spawns the reader thread, ``latest()`` is the newest frame from any thread,
-    ``stop()`` joins the thread and resets ``latest()`` to ``None`` — the async
-    ``start()`` / ``stop()`` pair every session of the bridge has, the bridge's to call.
+    ``frames()`` follows them from the event loop (latest-wins, ending with the
+    session), ``wait_for()`` waits for one, ``stop()`` joins the thread, resets
+    ``latest()`` to ``None`` and ends every follower — the async ``start()`` / ``stop()``
+    pair every session of the bridge has, the bridge's to call.
 
     Built unbound by the bridge (``bridge.camera`` exists from construction) and bound to the
     session's robot and motion session at entry through :meth:`bind`; a test binds at
@@ -122,6 +127,12 @@ class CameraFeed:
         self._count = 0
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        # The followers' channel (specs/vision/camera.md "Followers"): the thread publishes
+        # every frame into it through the session's loop, a hop behind ``latest()``; the
+        # ``None`` published at ``stop()`` ends every ``frames()`` of the session.
+        self._frames: Observable[CameraFrame | None] = Observable(None)
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._session = 0  # bumped at each start(): a follower ends with its session
 
     def bind(self, read_frame: FrameReader, pose_at: PoseAt | None) -> None:
         """Give the feed its reader and pose source (before ``start()``)."""
@@ -152,6 +163,8 @@ class CameraFeed:
             return
         if self._read_frame is None:
             raise BridgeError("the camera feed has no reader: bind it to a robot first")
+        self._loop = asyncio.get_running_loop()  # the followers' loop
+        self._session += 1
         self._stop.clear()
         self._thread = threading.Thread(
             target=self._run, name="reachy-mini-camera", daemon=True
@@ -169,6 +182,46 @@ class CameraFeed:
             self._thread = None
         with self._lock:
             self._latest = None
+        if thread is not None:
+            # After the join: every frame the thread queued on the loop ran before the
+            # join's completion did, so this None is the last value the followers see.
+            self._frames.set(None)
+
+    # --- followers ---
+
+    def frames(self) -> AsyncIterator[CameraFrame]:
+        """Follow the feed from the event loop: each frame published from the first
+        ``async for`` on, the newest when the follower falls behind (never a backlog),
+        ending on its own when the feed stops — a follower never carries over into a
+        later session. ``BridgeError`` at the call when the feed is not running.
+        Cancelling the task blocked in ``async for`` ends the follower and leaves the
+        reader and the other followers untouched (specs/core/bridge.md "Cancellation").
+        """
+        self._check_running("frames()")
+        return self._follow(self._session)
+
+    async def wait_for(self, predicate: Callable[[CameraFrame], bool]) -> CameraFrame:
+        """The newest frame when ``predicate`` holds for it, else the first published
+        frame that matches. ``BridgeError`` at the call when the feed is not running,
+        and when it stops before a frame matched."""
+        self._check_running("wait_for()")
+        latest = self.latest()
+        if latest is not None and predicate(latest):
+            return latest
+        async for frame in self._follow(self._session):
+            if predicate(frame):
+                return frame
+        raise BridgeError("the camera feed stopped before a frame matched")
+
+    def _check_running(self, what: str) -> None:
+        if self._thread is None:
+            raise BridgeError(f"the camera feed is not running: {what} needs a session")
+
+    async def _follow(self, session: int) -> AsyncGenerator[CameraFrame]:
+        async for frame in self._frames.changes():
+            if frame is None or self._session != session:
+                return  # the session stopped (or a later one started meanwhile)
+            yield frame
 
     # --- the thread ---
 
@@ -216,4 +269,15 @@ class CameraFeed:
                     _logger.debug("camera feed: no head pose for the frame: %s", e)
             with self._lock:
                 self._count += 1
-                self._latest = CameraFrame(self._count, ts, image, head_pose)
+                frame = self._latest = CameraFrame(self._count, ts, image, head_pose)
+            self._wake(frame)
+
+    def _wake(self, frame: CameraFrame) -> None:
+        """Publish ``frame`` to the followers, through the session's loop."""
+        loop = self._loop
+        if loop is None:
+            return
+        try:
+            self._frames.set_threadsafe(loop, frame)
+        except RuntimeError:  # the loop is closed: nobody is left to follow
+            pass

@@ -1104,7 +1104,10 @@ class ReachyMiniBridge:
         available: before the session, after it, and wherever the daemon has no frame
         (the headless sim on macOS). A property, not a verb: an instant, thread-safe
         sample any number of consumers take without stealing frames from one another.
-        The feed exists from construction, so a consumer wires to it before entry.
+        ``camera.frames()`` follows the feed instead, frame by frame from the event loop
+        (latest-wins, ending with the session), and ``camera.wait_for(predicate)``
+        waits for one frame; both need a running session. The feed exists from
+        construction, so a consumer wires to it before entry.
         """
         return self._camera
 

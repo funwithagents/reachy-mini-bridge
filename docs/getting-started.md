@@ -124,7 +124,7 @@ The perception values are readable at any time and tell you whether they are liv
 report = await bridge.faces.wait_for(lambda r: r.active and len(r.faces) > 0)
 ```
 
-A frame on a fresh session can take a couple of seconds on a live daemon; poll `camera.latest()` with a short sleep, or read it when a face report hands it to you (`report.frame`). A voice that failed to build is on `bridge.synthesizer_error` right after construction, so a host that wants hard failure raises there rather than at the first `say`.
+A frame on a fresh session can take a couple of seconds on a live daemon; `await bridge.camera.wait_for(lambda frame: True)` returns the first one, or read it when a face report hands it to you (`report.frame`). A voice that failed to build is on `bridge.synthesizer_error` right after construction, so a host that wants hard failure raises there rather than at the first `say`.
 
 ## Driving it from an agent
 
