@@ -1,18 +1,25 @@
-"""The importable pytest plugin: the ``live_bridge`` fixture and its capability probe,
-the ``sim_scene`` client and the ``face_scene`` / ``emotions_library`` helpers.
+"""The importable pytest plugin: the ``requires`` marker and its gate, the
+``live_bridge`` fixture and its capability probe, ``live_capabilities``, the
+``sim_scene`` client, the ``face_scene`` / ``emotions_library`` helpers and the
+``live target`` summary.
 
 A consumer opts in from their own (root) ``conftest.py``::
 
     pytest_plugins = ["reachy_mini_bridge.testing.fixtures"]
 
-then writes target-agnostic e2e tests that gate on probed capabilities::
+(a conftest below the rootdir registers it from its ``pytest_configure`` instead:
+``config.pluginmanager.import_plugin("reachy_mini_bridge.testing.fixtures")``), then
+writes target-agnostic e2e tests that name the capabilities they need::
 
-    from reachy_mini_bridge.testing import requires_caps
+    pytestmark = pytest.mark.requires("audio")  # every test of the file
 
-    def test_it_speaks(live_bridge):
-        requires_caps(live_bridge, "audio")
+    @pytest.mark.requires("motion")  # this one needs the head too
+    def test_it_nods_while_speaking(live_bridge):
         bridge, _caps = live_bridge
         live_bridge.run(bridge.say("hello", my_synth))
+
+The gate skips a test whose capabilities the target lacks — before any of its fixtures
+once the run has probed, so a file the target cannot serve never starts its bridge.
 
 ``live_bridge`` resolves the target (``REACHY_MINI_E2E_TARGET`` = ``sim`` default | ``real``),
 brings a daemon up under own-it-or-borrow-it (see ``_daemon``), builds a ``ReachyMiniBridge``
@@ -43,7 +50,15 @@ from reachy_mini_bridge.robot import AnyReachyMini
 from reachy_mini_bridge.sim_displays import fetch_face_markers
 from reachy_mini_bridge.testing import _daemon
 from reachy_mini_bridge.testing.sim_scene import SimSceneClient
-from reachy_mini_bridge.testing.support import BridgeLoop, LiveBridge, requires_caps
+from reachy_mini_bridge.testing.support import (
+    BridgeLoop,
+    LiveBridge,
+    check_capability_names,
+    missing_reason,
+    requires_caps,
+)
+
+MARKER = "requires"
 
 _AUDIO_PROBE_TIMEOUT = 5.0
 # The audio probe reads the bridge's mic feed, the one reader of upstream's one-shot
@@ -194,6 +209,12 @@ def _probe_capabilities(
 _PROBED: dict[tuple[str, int], frozenset[str]] = {}
 
 
+def known_capabilities() -> frozenset[str] | None:
+    """The capabilities probed on the run's daemon (at ``REACHY_MINI_HOST`` /
+    ``REACHY_MINI_PORT``), or ``None`` while no session has probed it yet."""
+    return _PROBED.get(_daemon.address())
+
+
 def check_required_capabilities(caps: frozenset[str]) -> None:
     """Fail — not skip — when the run requires a capability (`REACHY_MINI_E2E_REQUIRED_CAPS`)
     the daemon did not probe; a no-op when none is required. Called by every harness
@@ -254,6 +275,27 @@ def _bridge_daemon_config() -> DaemonConfig:
     return DaemonConfig(headless=False, sim_displays=displays)
 
 
+def _harness_config(host: str, port: int) -> ReachyMiniConfig:
+    """The config of every bridge session the harness opens over the run's daemon."""
+    # Build the bridge on the target's own backend (`sim`/`real`) with the daemon left to
+    # this harness (`daemon.spawn` stays "never"): the bridge connects as a plain network
+    # client to the daemon `_live_daemon` already manages — the run's one daemon, this
+    # module's own session over it — its media backend by the host's locality
+    # (`_daemon.robot_options`). See `_daemon.backend` for why the label is safe here.
+    # The config names the shipped `yunet` detector (the defaults run none —
+    # specs/vision/user_perception.md "Configuration") with detection and tracking off: a
+    # face test turns on what it needs and `face_scene` turns both off after it, so every
+    # other test keeps the head on its idle move whoever stands in front of a real robot.
+    # The model downloads into the Hugging Face cache on the first live run, as the
+    # emotions library does.
+    return ReachyMiniConfig(
+        backend=_daemon.backend(),
+        robot=_daemon.robot_options(host, port),
+        face_detection=FaceDetectionSettings(detector="yunet"),
+        daemon=_bridge_daemon_config(),
+    )
+
+
 @pytest.fixture(scope="module")
 def live_bridge(
     _live_daemon: tuple[str, int],
@@ -272,25 +314,7 @@ def live_bridge(
     run: a later module's session reuses the set (``probed_capabilities``).
     """
     host, port = _live_daemon
-    # Build the bridge on the target's own backend (`sim`/`real`) with the daemon left to
-    # this harness (`daemon.spawn` stays "never"): the bridge connects as a plain network
-    # client to the daemon `_live_daemon` already manages — the run's one daemon, this
-    # module's own session over it — its media backend by the host's locality
-    # (`_daemon.robot_options`). See `_daemon.backend` for why the label is safe here.
-    # The config names the shipped `yunet` detector (the defaults run none —
-    # specs/vision/user_perception.md "Configuration") with detection and tracking off: a
-    # face test turns on what it needs and `face_scene` turns both off after it, so every
-    # other test keeps the head on its idle move whoever stands in front of a real robot.
-    # The model downloads into the Hugging Face cache on the first live run, as the
-    # emotions library does.
-    bridge = ReachyMiniBridge(
-        ReachyMiniConfig(
-            backend=_daemon.backend(),
-            robot=_daemon.robot_options(host, port),
-            face_detection=FaceDetectionSettings(detector="yunet"),
-            daemon=_bridge_daemon_config(),
-        )
-    )
+    bridge = ReachyMiniBridge(_harness_config(host, port))
     with BridgeLoop() as loop:
         loop.run(bridge.start())
         try:
@@ -301,6 +325,30 @@ def live_bridge(
             yield LiveBridge(bridge, caps, loop)
         finally:
             loop.run(bridge.stop())
+
+
+@pytest.fixture(scope="session")
+def live_capabilities(request: pytest.FixtureRequest) -> frozenset[str]:
+    """The run's probed capabilities: the set the first bridge session over the daemon
+    probed, or — where none has yet — the set a short session of its own probes (the
+    harness's config, started, probed, stopped) on the run's daemon, brought up then.
+    What the ``requires`` gate reads, and a consumer's fixture that needs the set without
+    a bridge session of its own."""
+    known = known_capabilities()
+    if known is not None:
+        return known
+    host, port = request.getfixturevalue("_live_daemon")
+    bridge = ReachyMiniBridge(_harness_config(host, port))
+    with BridgeLoop() as loop:
+        loop.run(bridge.start())
+        try:
+            caps = probed_capabilities(
+                bridge.robot, (host, port), bridge.camera, bridge.mic
+            )
+        finally:
+            loop.run(bridge.stop())
+    check_required_capabilities(caps)
+    return caps
 
 
 @pytest.fixture
@@ -347,3 +395,88 @@ def emotions_library() -> None:
             snapshot_download(DEFAULT_EMOTIONS_DATASET, repo_type="dataset")
         except Exception as exc:  # noqa: BLE001  (offline / fetch failure)
             pytest.skip(f"emotions dataset not cached and download failed: {exc}")
+
+
+# --- the `requires` marker and its gate ---
+
+
+def _needs(item: pytest.Item) -> list[str]:
+    """The capabilities ``item``'s ``requires`` marks name — its own and its file's."""
+    return [name for mark in item.iter_markers(MARKER) for name in mark.args]
+
+
+def _gate(needs: list[str], caps: frozenset[str]) -> None:
+    """Skip a test needing ``needs`` where ``caps`` lacks one — fail it instead where the
+    missing one is required (``REACHY_MINI_E2E_REQUIRED_CAPS``), so every test of the run
+    that needs it is red, not only the fixture that probed."""
+    reason = missing_reason(caps, needs)
+    if reason is None:
+        return
+    required = sorted(set(needs) & _daemon.required_capabilities() - caps)
+    if required:
+        pytest.fail(
+            f"{reason} — and this run requires {', '.join(required)}", pytrace=False
+        )
+    pytest.skip(reason)
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Register the marker, and stop the run at once on an unknown capability in
+    ``REACHY_MINI_E2E_REQUIRED_CAPS``."""
+    config.addinivalue_line(
+        "markers",
+        f"{MARKER}(*capabilities): run the test only where the live target probed every "
+        "capability; skip it elsewhere (specs/testing/testing_support.md)",
+    )
+    _daemon.required_capabilities()
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """A typo in a mark stops the run instead of skipping its test on every target."""
+    for item in items:
+        for mark in item.iter_markers(MARKER):
+            check_capability_names(mark.args, f"{item.nodeid}: @pytest.mark.{MARKER}")
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    """Gate a test ahead of its fixtures once the run has probed: a test that cannot run
+    skips before its bridge session starts. Before the first probe, ``_requires_gate``
+    gates it."""
+    needs = _needs(item)
+    caps = known_capabilities()
+    if needs and caps is not None:
+        _gate(needs, caps)
+
+
+@pytest.fixture(autouse=True)
+def _requires_gate(request: pytest.FixtureRequest) -> None:
+    """The gate of a test that runs before the run's first probe: reads the capabilities
+    through ``live_capabilities`` — probed by the test's own bridge session, set up
+    before this fixture, or by a short session of its own. Once the run has probed, the
+    hook has gated the test already; a test with no ``requires`` mark never asks for a
+    daemon."""
+    needs = _needs(request.node)
+    if needs and known_capabilities() is None:
+        _gate(needs, request.getfixturevalue("live_capabilities"))
+
+
+def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
+    """The ``live target`` section: what the target had, to read the run's skips against."""
+    caps = known_capabilities()
+    if caps is None:
+        return
+    host, port = _daemon.address()
+    target = _daemon.target()
+    if target == "sim":
+        target = f"sim {'viewer' if _daemon._sim_viewer() else 'headless'}"
+    required = _daemon.required_capabilities()
+    lines = [
+        ("target", f"{target} at {host}:{port}"),
+        ("engine", _daemon.kinematics_engine()),
+        ("probed", ", ".join(sorted(caps)) or "nothing"),
+        ("required", ", ".join(sorted(required)) or "nothing"),
+    ]
+    terminalreporter.section("live target")
+    for label, value in lines:
+        terminalreporter.write_line(f"{label:<9} {value}")

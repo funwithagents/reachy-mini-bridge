@@ -6,9 +6,14 @@ run it:
 - `require_env(...)` — a live test needs real credentials; rather than fail when
   they're absent, it *skips* cleanly (you only exercise services you hold keys for).
 - `requires_caps(...)` — a test needs a robot capability (`motion`, `audio`, `camera`,
-  …); it *skips* when the current target didn't probe that capability. The probed set
-  rides along in the `live_bridge` fixture value, so a test passes that value in:
-  `requires_caps(live_bridge, "audio")` — see specs/testing/testing_support.md.
+  …); it *skips* when the current target didn't probe that capability. The call form of
+  the plugin's `@pytest.mark.requires(...)`, for a fixture (which cannot carry a mark) or
+  a need known only at run time; the probed set rides along in the `live_bridge` fixture
+  value, so a test passes that value in: `requires_caps(live_bridge, "audio")` — see
+  specs/testing/testing_support.md.
+
+Both check their names against `CAPABILITIES`, the one vocabulary: a misspelt
+capability is a usage error, never a skip that reads like a capability nobody has.
 
 And the loop a bridge's lifecycle runs on across a test module:
 
@@ -33,11 +38,45 @@ from typing import TYPE_CHECKING, Any, Self
 import pytest
 
 if TYPE_CHECKING:
-    from collections.abc import Coroutine, Iterator
+    from collections.abc import Coroutine, Iterable, Iterator
 
     from reachy_mini_bridge.bridge import ReachyMiniBridge
 
 _STOP_TIMEOUT_S = 10.0
+
+# What the harness probes against the live daemon (specs/testing/testing.md, the
+# capabilities table), plus `doa`, reserved and never probed: a test needing it skips on
+# every target today.
+CAPABILITIES: frozenset[str] = frozenset(
+    {
+        "motion",
+        "audio",
+        "camera",
+        "motor_states",
+        "gravity_compensation",
+        "faces",
+        "face_markers",
+        "doa",
+    }
+)
+
+
+def check_capability_names(names: Iterable[str], where: str) -> None:
+    """A ``pytest.UsageError`` naming the vocabulary when one of ``names`` isn't in it."""
+    unknown = sorted(set(names) - CAPABILITIES)
+    if unknown:
+        raise pytest.UsageError(
+            f"{where}: unknown capability {', '.join(unknown)}; "
+            f"choose from {', '.join(sorted(CAPABILITIES))}"
+        )
+
+
+def missing_reason(caps: frozenset[str], needs: Iterable[str]) -> str | None:
+    """Why a test needing ``needs`` can't run with ``caps``, or ``None`` when it can."""
+    missing = sorted(set(needs) - caps)
+    if not missing:
+        return None
+    return f"the target lacks {', '.join(missing)}"
 
 
 def require_env(name: str) -> str:
@@ -152,9 +191,10 @@ def requires_caps(live: LiveBridge | tuple[object, frozenset[str]], *caps: str) 
     """Skip the calling test unless the live target probed every capability in `caps`.
 
     Pass the `live_bridge` fixture value; the probed set travels in it, so no ambient
-    state is needed.
+    state is needed. A name outside `CAPABILITIES` fails the test (``pytest.UsageError``).
     """
+    check_capability_names(caps, "requires_caps")
     available = live.capabilities if isinstance(live, LiveBridge) else live[1]
-    missing = sorted(set(caps) - available)
-    if missing:
-        pytest.skip(f"target lacks required capability/ies: {', '.join(missing)}")
+    reason = missing_reason(available, caps)
+    if reason is not None:
+        pytest.skip(reason)

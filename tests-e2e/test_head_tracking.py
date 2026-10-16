@@ -25,6 +25,8 @@ from collections.abc import Callable
 from contextlib import suppress
 from typing import Any
 
+import pytest
+
 from reachy_mini_bridge.bridge import ReachyMiniBridge
 from reachy_mini_bridge.head_tracking import (
     TRACKING_LOST_S,
@@ -36,7 +38,7 @@ from reachy_mini_bridge.motion import (
     BREATH_REST_S,
     BREATH_S,
 )
-from reachy_mini_bridge.testing import LiveBridge, requires_caps
+from reachy_mini_bridge.testing import LiveBridge
 from reachy_mini_bridge.testing.gaze import (
     LATERAL_M,
     MOVE_THRESHOLD_DEG,
@@ -72,6 +74,9 @@ from reachy_mini_bridge.testing.sim_scene import DEFAULT_FACE_POS, SimSceneClien
 # after every test, so a tracking test starts by `arm_tracking`
 # (reachy_mini_bridge.testing.gaze — the convergence kit every assertion here comes from):
 # tracking on, with no aim held — which the tracker only reaches if the loop ticks it.
+
+
+pytestmark = pytest.mark.requires("camera", "faces")
 
 
 def test_head_tracking_turns_onto_a_face_and_follows_it(
@@ -175,6 +180,7 @@ def test_attention_hands_the_head_back_and_reengages_on_the_face(
     assert_tracked(again)
 
 
+@pytest.mark.requires("motion")
 def test_emotion_plays_over_tracking_and_the_head_returns_to_the_face(
     live_bridge: LiveBridge,
     face_scene: SimSceneClient,
@@ -185,7 +191,6 @@ def test_emotion_plays_over_tracking_and_the_head_returns_to_the_face(
     moves through the choreography rather than staying pinned toward the face — and once
     the move ends the layer fades back in and the head turns back onto the still-visible
     face, attention engaged."""
-    requires_caps(live_bridge, "motion")
     bridge, _caps = live_bridge
     robot: Any = bridge.robot
 

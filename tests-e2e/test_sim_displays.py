@@ -2,8 +2,8 @@
 face markers"): the marker the bridge sends for a portrait lands where the portrait is,
 and stays put while an emotion swings the head.
 
-Gated on `face_markers` (the viewer sim the harness spawns, with the display on), and on
-`camera` + `faces` through the `face_scene` fixture.
+Gated through `pytestmark` on `face_markers` (the viewer sim the harness spawns, with the
+display on), `camera` and `faces` (the `face_scene` fixture's portraits).
 
 Run explicitly (the viewer sim: the camera needs its GL context; headless the whole
 module skips on `camera`):
@@ -21,11 +21,12 @@ from typing import Any
 
 import numpy as np
 import numpy.typing as npt
+import pytest
 
 from reachy_mini_bridge.bridge import ReachyMiniBridge
 from reachy_mini_bridge.face_detection import FACE_ABSENT_S
 from reachy_mini_bridge.sim_displays import fetch_face_markers
-from reachy_mini_bridge.testing import LiveBridge, requires_caps
+from reachy_mini_bridge.testing import LiveBridge
 from reachy_mini_bridge.testing.gaze import (
     LATERAL_M,
     MOVE_THRESHOLD_DEG,
@@ -45,6 +46,9 @@ from reachy_mini_bridge.testing.sim_scene import DEFAULT_FACE_POS, SimSceneClien
 # direction, the distance estimated from the face's size, and the head pose of the frame.
 # Watch the viewer: a green ellipsoid sits on the portrait and stays there while the
 # head moves.
+
+
+pytestmark = pytest.mark.requires("camera", "faces", "face_markers")
 
 
 # Sideways, the marker is on the portrait; in height it is on the face's nose, a few
@@ -90,7 +94,6 @@ def test_a_face_marker_lands_on_the_portrait(
     """The marker the bridge sends for a portrait is where the portrait is: at its side
     of the robot, on its face, at its distance — near, at the default distance and
     far, ahead and to either side."""
-    requires_caps(live_bridge, "face_markers")
     bridge, _caps = live_bridge
     places = [
         (0.35, 0.0, FACE_Z),
@@ -134,6 +137,7 @@ def test_a_face_marker_lands_on_the_portrait(
         )
 
 
+@pytest.mark.requires("motion")
 def test_a_face_marker_stays_put_while_the_head_moves(
     live_bridge: LiveBridge,
     face_scene: SimSceneClient,
@@ -142,7 +146,6 @@ def test_a_face_marker_stays_put_while_the_head_moves(
     """A marker is placed with the head pose its frame was taken from, so a portrait
     that stands still keeps its marker where it is while an emotion swings the head
     under tracking — it does not ride along with the head."""
-    requires_caps(live_bridge, "motion", "face_markers")
     bridge, _caps = live_bridge
     robot: Any = bridge.robot
 

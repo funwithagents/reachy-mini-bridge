@@ -46,6 +46,8 @@ from reachy_mini_bridge.testing.gaze import (
 from reachy_mini_bridge.testing.sim_scene import DEFAULT_FACE_POS, SimSceneClient
 from reachy_mini_bridge.yunet import YuNetDetector
 
+pytestmark = pytest.mark.requires("camera", "faces")
+
 
 @pytest.fixture(scope="module")
 def live_bridge_custom_faces(
@@ -70,7 +72,9 @@ def live_bridge_custom_faces(
     with BridgeLoop() as loop:
         loop.run(bridge.start())
         try:
-            caps = probed_capabilities(bridge.robot, (host, port))
+            caps = probed_capabilities(
+                bridge.robot, (host, port), bridge.camera, bridge.mic
+            )
             check_required_capabilities(caps)
             yield LiveBridge(bridge, caps, loop)
         finally:

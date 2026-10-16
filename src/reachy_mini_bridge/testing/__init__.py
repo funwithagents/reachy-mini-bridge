@@ -10,16 +10,18 @@ backends ([specs/core/robot.md]) the same way the bridge does:
   ``conftest.py`` — ``pytest_plugins = ["reachy_mini_bridge.testing.fixtures"]`` — to get
   the ``live_bridge`` fixture (own-it-or-borrow-it daemon lifecycle, GStreamer env scrub,
   capability probing, and one event loop for the bridge's lifetime — run a test's
-  coroutines through ``live_bridge.run(...)``), then gate each test with ``requires_caps``.
+  coroutines through ``live_bridge.run(...)``), then gate each test, or each file through
+  ``pytestmark``, with ``@pytest.mark.requires(...)`` on the capabilities it needs.
 
 See ../../../specs/testing/testing_support.md and ../../../docs/guides/testing.md.
 """
 
 from reachy_mini_bridge.testing.support import (
+    CAPABILITIES,
     BridgeLoop,
     LiveBridge,
     require_env,
     requires_caps,
 )
 
-__all__ = ["BridgeLoop", "LiveBridge", "require_env", "requires_caps"]
+__all__ = ["CAPABILITIES", "BridgeLoop", "LiveBridge", "require_env", "requires_caps"]

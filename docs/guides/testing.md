@@ -80,6 +80,15 @@ Opt into the shipped pytest plugin from your **root** `conftest.py`:
 pytest_plugins = ["reachy_mini_bridge.testing.fixtures"]
 ```
 
+A conftest below your rootdir (a `tests-e2e/conftest.py`, say) cannot declare
+`pytest_plugins`; register the plugin from its `pytest_configure` instead, as the bridge's own
+live tier does:
+
+```python
+def pytest_configure(config):
+    config.pluginmanager.import_plugin("reachy_mini_bridge.testing.fixtures")
+```
+
 **Run the live tier serially.** Every live test file shares the one daemon at `REACHY_MINI_HOST:REACHY_MINI_PORT`, and pytest-xdist workers would race to spawn it, borrow one another's and stop it under each other. The plugin forces no worker count (that would reach your whole run), so if your project runs xdist by default, pass `-n 0` for the live tier — `pytest tests-e2e -n 0 -rs` — or force it from that tier's own `conftest.py`, as the bridge's does:
 
 ```python
@@ -94,26 +103,35 @@ def pytest_cmdline_main(config: pytest.Config) -> None:
 
 That gives you the `live_bridge` fixture: one bridge session per test file, over one daemon
 per `pytest` run (spawned by the first file that needs it, stopped at the end — or borrowed, if
-one is already running at the address). Gate each test on the capabilities it
-needs with `requires_caps` — a test skips (never fails) where the current target can't meet
-its needs, so one test runs unchanged on the headless sim, the headfull viewer, or a real
-robot:
+one is already running at the address). Mark each test with the capabilities it needs —
+or a whole file, through `pytestmark` — and a test skips (never fails) where the current target
+can't meet its needs, so one test runs unchanged on the headless sim, the headfull viewer, or
+a real robot:
 
 ```python
-from reachy_mini_bridge.testing import require_env, requires_caps
+import pytest
+
+pytestmark = pytest.mark.requires("audio")  # every test of this file
 
 
 def test_it_speaks(live_bridge):
-    requires_caps(live_bridge, "audio")
     bridge, _caps = live_bridge
     live_bridge.run(bridge.say("hello", my_synth))
 
 
-def test_it_nods(live_bridge):
-    requires_caps(live_bridge, "motion")
+@pytest.mark.requires("motion")  # adds to the file's mark: audio and motion
+def test_it_nods_while_speaking(live_bridge):
     bridge, _caps = live_bridge
     ...
 ```
+
+Once the run has probed its capabilities (the first bridge session does), a test that cannot
+run skips before its fixtures are set up — a file the target cannot serve never starts its
+bridge session. A capability name the harness does not know (`CAPABILITIES`, the table
+below) stops the run as a usage error rather than skipping the test everywhere, and the run
+closes with a `live target` section — the target, its engine, what it probed and what the run
+required — to read the skips against. `requires_caps(live_bridge, "audio")` is the same gate
+as a call, for a fixture (a fixture cannot carry a mark) or a need known only at run time.
 
 `live_bridge.run(...)` executes a coroutine on the one event loop the harness runs the
 bridge on, from its `start()` to its `stop()`, and returns the result. Use it for
@@ -141,8 +159,8 @@ loop stays fast and daemon-free.
 
 ### Capabilities
 
-`requires_caps(live_bridge, ...)` accepts the capabilities the harness probes against the live
-daemon at setup:
+The `requires` mark (and `requires_caps`) accepts the capabilities the harness probes against
+the live daemon, once per run:
 
 | Capability | What the probe checks |
 |---|---|
@@ -262,7 +280,7 @@ harness-spawned `real` daemon run it (the default run keeps upstream's analytica
 a daemon you start yourself needs `--kinematics-engine Placo`. On any other engine
 `bridge.set_motors_state("gravity_compensation")` raises `GravityCompensationUnsupportedError`
 (sending the mode would make the robot daemon close the connection), so gate such tests on
-`requires_caps(live_bridge, "gravity_compensation")`. A sim never probes it, whatever its engine:
+`@pytest.mark.requires("gravity_compensation")`. A sim never probes it, whatever its engine:
 it accepts the mode and does nothing. See
 [running-daemons.md](running-daemons.md) for the launch recipes and the
 macOS viewer notes.

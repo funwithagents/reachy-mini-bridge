@@ -5,18 +5,18 @@
 #
 # The harness itself is shipped library code — `reachy_mini_bridge.testing` — so consumers
 # of the bridge reuse it (see specs/testing/testing_support.md). The bridge dogfoods its own
-# shipped harness here: we pull the `live_bridge` fixture (and the session-scoped `_live_daemon`
-# it depends on — one daemon per run, one bridge session per file) in from
-# `reachy_mini_bridge.testing.fixtures` rather than defining them.
-# A downstream project instead opts in from its root conftest with
-# `pytest_plugins = ["reachy_mini_bridge.testing.fixtures"]`; we import the fixtures here
-# because this conftest isn't the rootdir conftest. `requires_caps` / `require_env` come
-# from `reachy_mini_bridge.testing` directly at each test's import site.
+# shipped harness here: its plugin, `reachy_mini_bridge.testing.fixtures`, brings the
+# `live_bridge` fixture (and the session-scoped `_live_daemon` it depends on — one daemon
+# per run, one bridge session per file), the `requires` marker and its gate, and the
+# `live target` summary. A downstream project opts in from its root conftest with
+# `pytest_plugins = ["reachy_mini_bridge.testing.fixtures"]`; this conftest isn't the
+# rootdir conftest, so it registers the plugin itself (`pytest_configure` below).
 #
-# The tier is one file per subject, each sharing a capability gate (specs/testing/testing.md):
-# test_motors / test_motion (`motion`), test_audio (`audio`), test_perception (`camera`,
-# then `faces`), test_head_tracking and test_custom_faces (`camera` + `faces`),
-# test_sim_displays (`face_markers`). The fixtures several of them share — `face_scene`,
+# The tier is one file per subject, each gated through its `pytestmark`
+# (specs/testing/testing.md): test_motors / test_motion (`motion`), test_audio (`audio`),
+# test_perception (`camera`, then `faces`), test_head_tracking and test_custom_faces
+# (`camera` + `faces`), test_sim_displays (`camera` + `faces` + `face_markers`); a test
+# needing more adds its own mark. The fixtures several of them share — `face_scene`,
 # `emotions_library` — are the plugin module's too.
 #
 # Mirror any isolation fixture the fast tier uses here — tests-e2e/ isn't a package that
@@ -26,13 +26,9 @@
 
 import pytest
 
-from reachy_mini_bridge.testing.fixtures import (  # noqa: F401
-    _live_daemon,
-    emotions_library,
-    face_scene,
-    live_bridge,
-    sim_scene,
-)
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.pluginmanager.import_plugin("reachy_mini_bridge.testing.fixtures")
 
 
 @pytest.hookimpl(tryfirst=True)
