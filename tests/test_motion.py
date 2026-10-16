@@ -987,11 +987,21 @@ def test_clearing_the_idle_move_returns_custom_mode_to_the_hold() -> None:
             session.resume()
             await asyncio.sleep(BLEND_S + 0.2)
             session.set_idle_move(None)
-            await asyncio.sleep(2 * BLEND_S + 0.2)
+            # Waited for, not timed: the fade-out's length is the realtime tests' to
+            # bound; this one checks where it ends (a slow host's ticks run late).
+            deadline = time.perf_counter() + 2 * BLEND_S + 5.0
+            while not _at_hold(_head_zs(robot)[-5:]):
+                assert time.perf_counter() < deadline, "never back at the hold"
+                await asyncio.sleep(0.05)
+            await asyncio.sleep(0.2)  # and it stays there
             return _head_zs(robot)
 
     zs = asyncio.run(run())
-    assert all(z == pytest.approx(0.0, abs=1e-6) for z in zs[-5:])
+    assert _at_hold(zs[-5:])
+
+
+def _at_hold(zs: list[float]) -> bool:
+    return len(zs) == 5 and all(z == pytest.approx(0.0, abs=1e-6) for z in zs)
 
 
 # --- the gaze layer (specs/motion/motion.md "The gaze layer") ----------------------------------
