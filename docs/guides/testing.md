@@ -211,7 +211,9 @@ The `live_bridge` fixture reads the same knobs the bridge's own tier uses:
 | `REACHY_MINI_E2E_KINEMATICS` | `analytical` | the kinematics engine of the daemon the harness spawns, sim or real: `analytical`, `placo` (needs the `placo` extra) or `nn` — the same suite runs on each, and the sim solves every target through the engine chosen ([configuration.md](../reference/configuration.md#kinematics-engines)). On `nn` expect two head-tracking tests to fail on the image-centring check: the engine itself over-rotates by 3 to 4° at 18° of yaw, which is why the bridge's CI runs `analytical` and `placo` only. A borrowed daemon runs its own engine, so set this to match it. Another word fails the run |
 
 **Testing tracking without a person.** Every sim the harness spawns runs the bridge's test
-scene: upstream's empty scene plus a pool of portraits (`face_1` … `face_3`) that stay hidden until a test spawns them, so
+scene: upstream's empty scene plus a pool of portraits (`face_1` … `face_4`, one person each: two frontal, `TURNED_FACE` and
+`LOOKING_DOWN_FACE`) that stay hidden until a test spawns them — `spawn(pos, name="face_2")` for a
+given person, `spawn(pos)` for the next free one — so
 tests that don't use it are unaffected, and `faces` is probed on every spawned sim. With a
 camera — the viewer (`REACHY_MINI_E2E_SIM_VIEWER=1`), or a Linux headless sim, which renders
 it offscreen — the `sim_scene` fixture (from the same plugin module) hands you a `SimSceneClient` to spawn portraits — as many at once as the

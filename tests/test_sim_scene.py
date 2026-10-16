@@ -27,7 +27,10 @@ from reachy_mini_bridge.testing import sim_scene
 from reachy_mini_bridge.testing.sim_scene import (
     DEFAULT_FACE_IMAGE,
     DEFAULT_FACE_POS,
+    FACE_IMAGES,
     FACE_POOL_SIZE,
+    LOOKING_DOWN_FACE,
+    TURNED_FACE,
     FacePlane,
     SceneDirector,
     SimSceneClient,
@@ -137,7 +140,7 @@ def test_test_scene_takes_several_props_custom_images_and_starting_visibility(
     assert model.geom_rgba[guest_geom, 3] == 1.0
     # each image has its own material, named after the image
     for geom, material in (
-        (face_geom, "portrait_face"),
+        (face_geom, "portrait_armstrong"),
         (guest_geom, "portrait_other"),
     ):
         name = mujoco.mj_id2name(
@@ -154,11 +157,11 @@ def _portrait_materials(model: Any) -> list[str]:
     return [n for n in names if n and n.startswith("portrait_")]
 
 
-def test_default_scene_is_a_pool_of_hidden_portraits_sharing_one_texture(
+def test_default_scene_is_a_pool_of_hidden_portraits_one_person_each(
     model_and_data: tuple[Any, Any],
 ) -> None:
     """specs/testing/sim_scene.md "A pool of portraits": `face_1` … `face_<N>`, all
-    hidden mocap bodies, one texture and material for the one bundled image."""
+    hidden mocap bodies, each showing its own bundled person with a texture of its own."""
     model, _data = model_and_data
     for i in range(1, FACE_POOL_SIZE + 1):
         body = _body_id(model, f"face_{i}")
@@ -166,8 +169,18 @@ def test_default_scene_is_a_pool_of_hidden_portraits_sharing_one_texture(
         geom = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, f"face_{i}_geom")
         assert model.geom_rgba[geom, 3] == 0.0
     assert _body_id(model, f"face_{FACE_POOL_SIZE + 1}") < 0
-    assert _portrait_materials(model) == ["portrait_face"]
-    assert int(model.ntex) - 2 == 1  # the skybox and the floor, plus one portrait
+    people = [image.stem for image in FACE_IMAGES]
+    assert len(set(people)) == FACE_POOL_SIZE  # no two props look alike
+    assert sorted(_portrait_materials(model)) == sorted(f"portrait_{p}" for p in people)
+    assert (
+        int(model.ntex) - 2 == FACE_POOL_SIZE
+    )  # the skybox and the floor, plus one each
+    director = SceneDirector()
+    director.attach(model, _data)
+    states = director.states()
+    assert [states[f"face_{i + 1}"].image for i in range(FACE_POOL_SIZE)] == people
+    assert states[TURNED_FACE].image == "schmid"
+    assert states[LOOKING_DOWN_FACE].image == "malenchenko"
 
 
 def test_face_pool_assigns_images_round_robin_with_one_texture_each(
@@ -175,12 +188,17 @@ def test_face_pool_assigns_images_round_robin_with_one_texture_each(
 ) -> None:
     other = tmp_path / "other.png"
     other.write_bytes(DEFAULT_FACE_IMAGE.read_bytes())
+    assert len(face_pool(images=[DEFAULT_FACE_IMAGE, other])) == 2  # one per image
     pool = face_pool(4, images=[DEFAULT_FACE_IMAGE, other])
     assert [f.name for f in pool] == ["face_1", "face_2", "face_3", "face_4"]
-    assert [Path(str(f.image)).stem for f in pool] == ["face", "other", "face", "other"]
+    stems = [Path(str(f.image)).stem for f in pool]
+    assert stems == ["armstrong", "other", "armstrong", "other"]
     assert all(not f.visible and f.pos == DEFAULT_FACE_POS for f in pool)
     model = mujoco.MjModel.from_xml_path(str(write_test_scene(tmp_path, pool)))
-    assert sorted(_portrait_materials(model)) == ["portrait_face", "portrait_other"]
+    assert sorted(_portrait_materials(model)) == [
+        "portrait_armstrong",
+        "portrait_other",
+    ]
     geom = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "face_4_geom")
     material = mujoco.mj_id2name(
         model, mujoco.mjtObj.mjOBJ_MATERIAL, int(model.geom_matid[geom])
@@ -269,9 +287,11 @@ def test_director_moves_and_hides_the_face_through_mj_step(
     geom = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "face_1_geom")
 
     mujoco.mj_step(model, data)
-    assert director.attached and director.names() == ["face_1", "face_2", "face_3"]
+    assert director.attached and director.names() == [
+        f"face_{i + 1}" for i in range(FACE_POOL_SIZE)
+    ]
     start = director.state("face_1")
-    assert start.kind == "face" and start.image == "face"
+    assert start.kind == "face" and start.image == "armstrong"
     assert start.pos == pytest.approx((0.45, 0.0, 0.20)) and not start.moving
     # seeded from the scene's compiled alpha (`FacePlane.visible` defaults to False).
     assert start.visible is False
@@ -343,13 +363,15 @@ def test_director_spawns_despawns_and_clears_the_pool(
     mujoco.set_mjcb_control(director.step)
     mujoco.mj_step(model, data)
 
-    spots = [(0.45, -0.15, 0.2), (0.45, 0.15, 0.2), (0.6, 0.0, 0.2)]
+    spots = [(0.45, -0.15, 0.2), (0.45, 0.15, 0.2), (0.6, 0.0, 0.2), (0.6, 0.1, 0.2)]
     spawned = [director.spawn(pos) for pos in spots]
-    assert [s.name for s in spawned] == ["face_1", "face_2", "face_3"]
-    assert all(s.visible and s.kind == "face" and s.image == "face" for s in spawned)
+    names = ["face_1", "face_2", "face_3", "face_4"]
+    assert [s.name for s in spawned] == names
+    assert all(s.visible and s.kind == "face" for s in spawned)
+    assert [s.image for s in spawned] == [image.stem for image in FACE_IMAGES]
     mujoco.mj_step(model, data)
     mujoco.mj_step(model, data)
-    for name, pos in zip(("face_1", "face_2", "face_3"), spots, strict=True):
+    for name, pos in zip(names, spots, strict=True):
         assert np.allclose(data.xpos[_body_id(model, name)], pos, atol=1e-6)
         geom = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, f"{name}_geom")
         assert model.geom_rgba[geom, 3] == 1.0
@@ -389,20 +411,27 @@ def test_director_timed_spawn_is_visible_at_once_and_arrives_after_its_duration(
     assert not director.state(state.name).moving
 
 
-def test_director_spawns_by_image(tmp_path: Path) -> None:
-    other = tmp_path / "other.png"
-    other.write_bytes(DEFAULT_FACE_IMAGE.read_bytes())
-    path = write_test_scene(tmp_path, face_pool(4, images=[DEFAULT_FACE_IMAGE, other]))
-    model = mujoco.MjModel.from_xml_path(str(path))
+def test_director_spawns_a_given_person_by_name(
+    model_and_data: tuple[Any, Any],
+) -> None:
+    """specs/testing/sim_scene.md "A pool of portraits": `spawn(name=...)` shows that
+    prop — the same person every time it comes back; one already shown, or a name the
+    scene lacks, is refused; an unnamed spawn still takes the lowest free prop."""
+    model, data = model_and_data
     director = SceneDirector()
-    director.attach(model, mujoco.MjData(model))
-    assert director.spawn((0.5, 0.0, 0.2), image="other").name == "face_2"
-    assert director.spawn((0.5, 0.1, 0.2), image="other").name == "face_4"
-    with pytest.raises(LookupError, match=r"face \(other\)"):
-        director.spawn((0.5, 0.2, 0.2), image="other")
+    director.attach(model, data)
+    state = director.spawn((0.5, 0.1, 0.2), name=TURNED_FACE)
+    assert (state.name, state.image, state.visible) == (TURNED_FACE, "schmid", True)
+    assert state.pos == pytest.approx((0.5, 0.1, 0.2))
+    with pytest.raises(LookupError, match="already shown"):
+        director.spawn((0.5, 0.0, 0.2), name=TURNED_FACE)
+    with pytest.raises(KeyError, match="face_9"):
+        director.spawn((0.5, 0.0, 0.2), name="face_9")
     assert director.spawn((0.5, 0.0, 0.2)).name == "face_1"
-    with pytest.raises(ValueError, match="face, other"):
-        director.spawn((0.5, 0.0, 0.2), image="nobody")
+    assert director.spawn((0.5, 0.0, 0.2)).name == "face_2"
+    assert director.spawn((0.5, 0.0, 0.2)).name == LOOKING_DOWN_FACE  # face_3 is shown
+    director.command(TURNED_FACE, visible=False)  # despawned: the same person returns
+    assert director.spawn((0.4, -0.1, 0.2), name=TURNED_FACE).image == "schmid"
     with pytest.raises(ValueError, match="three numbers"):
         director.spawn((0.5, 0.0))
     with pytest.raises(ValueError, match="duration"):
@@ -452,7 +481,7 @@ def test_client_drives_the_router(served_director: tuple[SceneDirector, int]) ->
     director, port = served_director
     client = SimSceneClient("127.0.0.1", port)
     bodies = client.bodies()
-    assert set(bodies) == {"face_1", "face_2", "face_3"}
+    assert set(bodies) == {f"face_{i + 1}" for i in range(FACE_POOL_SIZE)}
     assert not any(state.visible for state in bodies.values())
 
     assert client.show("face_1").visible
@@ -480,16 +509,20 @@ def test_client_spawns_despawns_and_clears(
 ) -> None:
     director, port = served_director
     client = SimSceneClient("127.0.0.1", port)
+    assert client.spawn((0.6, 0.1, 0.2), name=TURNED_FACE) == TURNED_FACE
+    assert director.state(TURNED_FACE).pos == (0.6, 0.1, 0.2)
+    with pytest.raises(SimSceneError, match="already shown"):
+        client.spawn((0.5, 0.0, 0.2), name=TURNED_FACE)
+    with pytest.raises(SimSceneError, match="unknown body 'nobody'"):
+        client.spawn((0.5, 0.0, 0.2), name="nobody")
     names = [client.spawn((0.45, y, 0.2)) for y in (-0.15, 0.0, 0.15)]
-    assert names == ["face_1", "face_2", "face_3"]
-    assert director.state("face_3").visible
-    assert director.state("face_3").pos == (0.45, 0.15, 0.2)
+    assert names == ["face_1", "face_2", LOOKING_DOWN_FACE]
+    assert director.state(LOOKING_DOWN_FACE).visible
+    assert director.state(LOOKING_DOWN_FACE).pos == (0.45, 0.15, 0.2)
     with pytest.raises(SimSceneError, match=f"holds {FACE_POOL_SIZE}"):
         client.spawn((0.5, 0.0, 0.2))
     assert not client.despawn("face_2").visible
     assert client.spawn((0.5, 0.0, 0.2), duration=0.2) == "face_2"
-    with pytest.raises(SimSceneError, match="nobody"):
-        client.spawn((0.5, 0.0, 0.2), image="nobody")
     with pytest.raises(SimSceneError, match="unknown field"):
         client._request(
             "POST", "/bodies/spawn", {"pos": [0.5, 0, 0.2], "colour": "red"}
@@ -497,7 +530,7 @@ def test_client_spawns_despawns_and_clears(
     with pytest.raises(SimSceneError, match="needs a pos"):
         client._request("POST", "/bodies/spawn", {})
     cleared = client.clear()
-    assert set(cleared) == {"face_1", "face_2", "face_3"}
+    assert set(cleared) == {f"face_{i + 1}" for i in range(FACE_POOL_SIZE)}
     assert not any(state.visible for state in client.bodies().values())
 
 
@@ -614,7 +647,9 @@ def test_scene_extension_installs_the_director_once_the_model_exists(
     )(scene=name, headless=True, use_audio=False)
     assert mujoco.get_mjcb_control() is not None
     mujoco.mj_step(backend.model, backend.data)
-    assert director.attached and director.names() == ["face_1", "face_2", "face_3"]
+    assert director.attached and director.names() == [
+        f"face_{i + 1}" for i in range(FACE_POOL_SIZE)
+    ]
 
 
 def test_run_daemon_viewer_keeps_upstream_headfull_and_passes_the_camera(
@@ -648,7 +683,7 @@ def test_a_numbered_portrait_keeps_its_image_name(tmp_path: Path) -> None:
     director = SceneDirector()
     director.attach(model, mujoco.MjData(model))
     assert {s.image for s in director.states().values()} == {"person_1"}
-    assert director.spawn((0.5, 0.0, 0.2), image="person_1").name == "face_1"
+    assert director.spawn((0.5, 0.0, 0.2)).image == "person_1"
 
 
 def test_the_writer_refuses_a_stem_that_looks_like_its_own_suffix(

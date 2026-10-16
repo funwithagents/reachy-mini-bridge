@@ -54,7 +54,13 @@ from reachy_mini_bridge.testing.gaze import (
     wait_for,
     yaw_pitch_deg,
 )
-from reachy_mini_bridge.testing.sim_scene import DEFAULT_FACE_POS, SimSceneClient
+from reachy_mini_bridge.testing.sim_scene import (
+    DEFAULT_FACE_POS,
+    DEFAULT_FACE_SIZE,
+    LOOKING_DOWN_FACE,
+    TURNED_FACE,
+    SimSceneClient,
+)
 
 # --- attention / gaze: tracking a face in the sim ---------------------------------------
 #
@@ -130,6 +136,60 @@ def test_head_tracking_turns_onto_a_face_and_follows_it(
     assert_tracked(first)
     for track in moves:
         assert_tracked(track, pitch_ahead=first.pitch)
+
+
+# Where the nose sits across each portrait not looking at the robot, as a fraction of the
+# image's width from its left edge (YuNet on the bundled PNG): the tracker centres the
+# nose, so the head settles on the nose's bearing, not the plane's centre.
+_NOSE_ACROSS = {TURNED_FACE: 0.647, LOOKING_DOWN_FACE: 0.660}
+
+
+def _nose_yaw_deg(person: str, lateral: float) -> float:
+    """The yaw that looks at ``person``'s nose on a plane ``lateral`` metres to the side:
+    the plane's width runs right-to-left as the camera sees it, so a nose right of the
+    image's middle sits toward the robot's right (negative lateral)."""
+    width = DEFAULT_FACE_SIZE[0]
+    return expected_yaw_deg(lateral - (_NOSE_ACROSS[person] - 0.5) * width)
+
+
+@pytest.mark.parametrize("person", [TURNED_FACE, LOOKING_DOWN_FACE])
+def test_head_tracking_follows_someone_not_looking_at_the_robot(
+    live_bridge: LiveBridge, face_scene: SimSceneClient, person: str
+) -> None:
+    """specs/testing/sim_scene.md "A pool of portraits": a person whose head is turned
+    ~30° or tilted down is detected and followed like a frontal face — the head turns onto
+    them to one side, then follows them to the other, the face centred each time. The
+    tracker aims at the nose, which sits off the plane's centre on these photos (3 cm,
+    about 4° at 0.45 m), so the expected yaw is the nose's. Tracks with focus, as the
+    first test does."""
+    bridge, _caps = live_bridge
+
+    async def scenario() -> list[Track]:
+        await bridge.set_motors_state("enabled")
+        await arm_tracking(bridge, focus=True)
+        face_scene.spawn(face_at(LATERAL_M), name=person)
+        tracks = [
+            await track_onto(
+                bridge,
+                f"{person} to one side",
+                LATERAL_M,
+                expected_yaw_deg=_nose_yaw_deg(person, LATERAL_M),
+            )
+        ]
+        face_scene.place(person, face_at(-LATERAL_M), duration=1.0)
+        tracks.append(
+            await track_onto(
+                bridge,
+                f"{person} to the other side",
+                -LATERAL_M,
+                min_seconds=5.0,
+                expected_yaw_deg=_nose_yaw_deg(person, -LATERAL_M),
+            )
+        )
+        return tracks
+
+    for track in live_bridge.run(scenario()):
+        assert_tracked(track)
 
 
 def test_attention_hands_the_head_back_and_reengages_on_the_face(
