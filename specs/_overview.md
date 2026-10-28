@@ -62,7 +62,7 @@ The layers above are backend-agnostic — they are typed against `AnyReachyMini`
 ## External pieces
 
 - **[`reachy_mini`](https://github.com/pollen-robotics/reachy_mini)** — the upstream SDK we wrap. Hard runtime dependency, installed by default. What we learned about its API is in [../docs/internals/upstream-sdk-notes.md](../docs/internals/upstream-sdk-notes.md).
-- **[`tts-engine`](https://github.com/funwithagents/tts-engine)** — our first-party streaming TTS engine, the **default** (but swappable) backend for `ReachyMiniBridge.say` behind the bridge-owned `SpeechSynthesizer` interface. A base dependency (a small engine with no provider); its providers come through the `tts-pocket` (local model, no key) / `tts-elevenlabs` / `tts-gradium` (cloud) extras, one per tts-engine extra. Referenced by its GitHub URL (tracking `main` until it settles, then pinned).
+- **[`tts-engine`](https://github.com/funwithagents/tts-engine)** — our first-party streaming TTS engine, the **default** (but swappable) backend for `ReachyMiniBridge.say` behind the bridge-owned `SpeechSynthesizer` interface. A base dependency (a small engine with no provider); its providers come through the `tts-<module.type>` extras, one per tts-engine provider, local or hosted, plus the bundles mirroring tts-engine's (`tts-hosted`, `tts-all`). Referenced by its GitHub URL (tracking `main` until it settles, then pinned).
 - **[`asr-engine`](https://github.com/funwithagents/asr-engine)** — our first-party streaming ASR engine. **Not a bridge dependency.** The bridge exposes the robot's echo-cancelled microphone as a stream (see [audio.md](audio/audio.md)) and a caller runs ASR on top; `asr-engine` is one natural choice a caller can attach in a few lines.
 
 ## Tech stack

@@ -1285,11 +1285,11 @@ def _default_synthesizer(
     """The config's `tts` block as a ``TTSEngineSynthesizer``, and any build error.
 
     ``(None, None)`` without a block. Any exception from building the adapter — a
-    tts-engine ``ConfigError`` for a provider whose extra is not installed (its message
-    names the ``tts-engine[<provider>]`` to install) or for a bad block, an unset
-    ``api_key_env``, a model that fails to load — is caught and returned as the cause,
-    so a `tts` block that cannot be built degrades to no voice rather than failing
-    construction.
+    ``BridgeError`` for a provider whose extra is not installed (its message names the
+    ``reachy-mini-bridge[tts-<provider>]`` to install), a tts-engine ``ConfigError``
+    for a bad block, an unset ``api_key_env``, a model that fails to load — is caught
+    and returned as the cause, so a `tts` block that cannot be built degrades to no
+    voice rather than failing construction.
     """
     if tts_block is None:
         return None, None

@@ -751,22 +751,48 @@ class _StreamResampler:
 # --- the default synthesizer adapter (tts-engine) -----------------------------------
 
 
+def _missing_provider_error(
+    module_type: object, error: Exception
+) -> BridgeError | None:
+    """A :class:`BridgeError` naming the bridge's extra when ``error`` is a missing provider.
+
+    tts-engine reports a provider whose library is absent as a ``ConfigError`` raised
+    from the ``ImportError``, with its own ``tts-engine[<type>]`` install hint. A bridge
+    consumer installs the provider as ``reachy-mini-bridge[tts-<type>]`` (one alias per
+    provider, kept in step by ``tests/test_tts_extras.py``), so that case is reworded;
+    ``None`` for every other build error, which the caller re-raises unchanged.
+    """
+    from tts_engine.modules import REGISTRY
+
+    module = REGISTRY.get(module_type) if isinstance(module_type, str) else None
+    if (
+        module is None
+        or module.kind == "fixture"
+        or not isinstance(error.__cause__, ImportError)
+    ):
+        return None
+    return BridgeError(
+        f"The {module_type!r} TTS provider is not installed: install "
+        f"reachy-mini-bridge[tts-{module_type}] (tts-engine: {error})"
+    )
+
+
 class TTSEngineSynthesizer:
     """Default :class:`SpeechSynthesizer`, adapting our first-party ``tts-engine``.
 
     ``tts-engine`` is a base dependency; the provider the block's ``module.type``
-    names comes from the matching extra (``reachy-mini-bridge[tts-elevenlabs]`` /
-    ``[tts-gradium]`` / ``[tts-pocket]``), and tts-engine raises its own
-    ``ConfigError`` naming the missing one. The import stays local to the constructor so importing this module
-    stays cheap for a caller who supplies their own synthesizer. ``tts-engine`` is
-    push-based (a sink is fed int16 chunks); this adapter bridges that to the
-    pull-based float32 iterator the contract requires via a thread-safe queue,
-    converting int16 -> float32 with :func:`int16_to_float32`.
+    names comes from the matching ``reachy-mini-bridge[tts-<module.type>]`` extra. A
+    provider whose extra is missing raises a :class:`BridgeError` naming that extra,
+    chained to tts-engine's ``ConfigError``. The import stays local to the constructor
+    so importing this module stays cheap for a caller who supplies their own
+    synthesizer. ``tts-engine`` is push-based (a sink is fed int16 chunks); this
+    adapter bridges that to the pull-based float32 iterator the contract requires via
+    a thread-safe queue, converting int16 -> float32 with :func:`int16_to_float32`.
     """
 
     def __init__(self, config: object) -> None:
         # Local import: only constructing the default adapter needs tts-engine loaded.
-        from tts_engine.config import TTSEngineConfig
+        from tts_engine.config import ConfigError, TTSEngineConfig
         from tts_engine.engine import TTSEngine
 
         engine_config = (
@@ -775,7 +801,13 @@ class TTSEngineSynthesizer:
             else TTSEngineConfig.from_dict(cast("dict[str, Any]", config))
         )
         self._sink = _QueueSink()
-        self._engine = TTSEngine(engine_config, sink=self._sink)
+        try:
+            self._engine = TTSEngine(engine_config, sink=self._sink)
+        except ConfigError as e:
+            hint = _missing_provider_error(engine_config.module.get("type"), e)
+            if hint is None:
+                raise
+            raise hint from e
         # The engine serializes producers, but binding the sink must also wait for
         # the previous producer's cancellation/drain to finish.
         self._stream_lock = asyncio.Lock()

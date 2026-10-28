@@ -1113,7 +1113,7 @@ def test_adapter_cleanup_cannot_drain_or_feed_the_replacement(
         class Provider:
             sample_rate = 16000
 
-            async def stream(
+            async def synthesize_text(
                 self, text: str, options: Any, callback: Callable[[bytes], None]
             ) -> None:
                 produced.append(text)
@@ -1204,7 +1204,7 @@ def test_adapter_provider_failure_and_cancel_leave_it_usable(
         class Provider:
             sample_rate = 16000
 
-            async def stream(
+            async def synthesize_text(
                 self, text: str, options: Any, callback: Callable[[bytes], None]
             ) -> None:
                 callback(np.full(32, 4000, dtype=np.int16).tobytes())

@@ -14,7 +14,7 @@ The project's own structure and tooling — conventions for the whole repo rathe
 
 | Spec | Description | Status |
 |---|---|---|
-| [project.md](project.md) | Project structure and tooling: Python version, the platforms (macOS on Apple silicon, Linux x86_64 and arm64, Windows), packaging with uv, the dependency groups (`dev`, `tts`, `demo`; CPU torch on Linux; no `placo` on Windows), the `placo` extra, layout conventions | Implemented |
+| [project.md](project.md) | Project structure and tooling: Python version, the platforms (macOS on Apple silicon, Linux x86_64 and arm64, Windows), packaging with uv, the dependency groups (`dev`, `tts`, `demo`; CPU torch on Linux; no `placo` on Windows), the `placo` extra, the `tts-*` extras mirroring tts-engine's, layout conventions | Implemented |
 
 ### core/
 

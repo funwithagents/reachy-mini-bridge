@@ -47,3 +47,4 @@ The folder is pruned over time: it keeps the recent plans only, and older ones �
 - **Todo** — written, not yet started
 - **In progress** — actively being implemented
 - **Done** — implemented, verified (lint/type-check/tests pass), and merged
+| [202610281200_tts-provider-extras-mirror.md](202610281200_tts-provider-extras-mirror.md) | TTS provider extras (`specs/project.md`, `specs/audio/audio.md`, `specs/core/config.md`): one `tts-<module.type>` alias per tts-engine provider plus `tts-hosted` / `tts-all` over its `hosted-modules` / `all-modules` bundles, a test keeping the mirror equal to tts-engine's extras, the adapter naming the bridge's extra for a missing provider, provider facts linked to tts-engine's module pages | Done |

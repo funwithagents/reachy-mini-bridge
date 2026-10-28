@@ -25,7 +25,7 @@ The other profiles run headless. The profiles are parsed by the bridge's tests, 
 
 ## Adding a voice
 
-A `tts` block is a [tts-engine](https://github.com/funwithagents/tts-engine) `engine` block carried through verbatim: `module.type` picks the provider, the matching extra installs it, and the remaining keys are the provider's own. One template per provider, to paste as a top-level `"tts"` key next to `"backend"` in any profile; the field-by-field documentation is the `tts` section of [docs/reference/configuration.md](../../docs/reference/configuration.md#tts--the-default-voice-for-say), and setting a voice up task by task, [docs/guides/audio.md](../../docs/guides/audio.md).
+A `tts` block is a [tts-engine](https://github.com/funwithagents/tts-engine) `engine` block carried through verbatim: `module.type` picks the provider, the matching extra installs it, and the remaining keys are the provider's own. Three templates follow, to paste as a top-level `"tts"` key next to `"backend"` in any profile; the field-by-field documentation is the `tts` section of [docs/reference/configuration.md](../../docs/reference/configuration.md#tts--the-default-voice-for-say), and setting a voice up task by task, [docs/guides/audio.md](../../docs/guides/audio.md). Every other provider installs as `reachy-mini-bridge[tts-<type>]` and documents its fields on [tts-engine's module pages](https://github.com/funwithagents/tts-engine/blob/main/docs/modules/index.md).
 
 **pocket** (`reachy-mini-bridge[tts-pocket]`) — the local model: no key, no network once its weights are cached; pulls torch.
 
@@ -39,7 +39,7 @@ A `tts` block is a [tts-engine](https://github.com/funwithagents/tts-engine) `en
 }
 ```
 
-**elevenlabs** (`reachy-mini-bridge[tts-elevenlabs]`) — a cloud provider; the key is read from the environment variable `api_key_env` names.
+**elevenlabs** (`reachy-mini-bridge[tts-elevenlabs]`) — a hosted provider; the key is read from the environment variable `api_key_env` names.
 
 ```json
 "tts": {
@@ -51,7 +51,7 @@ A `tts` block is a [tts-engine](https://github.com/funwithagents/tts-engine) `en
 }
 ```
 
-**gradium** (`reachy-mini-bridge[tts-gradium]`) — a cloud provider, keyed the same way; `sample_rate: 16000` makes it emit the speaker's rate, so nothing is resampled.
+**gradium** (`reachy-mini-bridge[tts-gradium]`) — a hosted provider, keyed the same way; `sample_rate: 16000` makes it emit the speaker's rate, so nothing is resampled.
 
 ```json
 "tts": {

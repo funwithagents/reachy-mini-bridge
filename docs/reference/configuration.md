@@ -112,9 +112,9 @@ Installing the `placo` extra changes nothing by itself: the engine is this field
 
 ## `tts` — the default voice for `say`
 
-A [tts-engine](https://github.com/funwithagents/tts-engine) `engine` block, carried through verbatim: `module.type` picks the provider, and the matching `tts-*` extra must be installed. The remaining keys are the provider's own.
+A [tts-engine](https://github.com/funwithagents/tts-engine) `engine` block, carried through verbatim: `module.type` picks the provider, and its extra, `reachy-mini-bridge[tts-<module.type>]`, must be installed. The remaining keys are the provider's own, documented on [tts-engine's module pages](https://github.com/funwithagents/tts-engine/blob/main/docs/modules/index.md). Three examples follow; every other provider has the same shape.
 
-The local model (`tts-pocket`), no key and no network once its weights are cached:
+A local model (`tts-pocket`), no key and no network once its weights are cached:
 
 ```json
 "tts": {
@@ -126,7 +126,7 @@ The local model (`tts-pocket`), no key and no network once its weights are cache
 }
 ```
 
-A cloud provider (`tts-elevenlabs`), whose key is read from the named environment variable:
+A hosted provider (`tts-elevenlabs`), whose key is read from the named environment variable:
 
 ```json
 "tts": {
@@ -152,7 +152,7 @@ Or Gradium (`tts-gradium`), keyed the same way:
 
 Whatever the provider, `say` plays audio that arrives at the speaker's 16 kHz as is and resamples any other rate to it.
 
-Omit the block and `say` raises unless you pass your own `SpeechSynthesizer`. A block that fails to build — extra not installed, API key unset — leaves the robot fully usable without a voice and puts the cause on `bridge.synthesizer_error`. Setting up a voice, task by task: [../guides/audio.md](../guides/audio.md).
+Omit the block and `say` raises unless you pass your own `SpeechSynthesizer`. A block that fails to build — extra not installed (the error names the extra), API key unset — leaves the robot fully usable without a voice and puts the cause on `bridge.synthesizer_error`. Setting up a voice, task by task: [../guides/audio.md](../guides/audio.md).
 
 ## `audio` — the microphone array
 

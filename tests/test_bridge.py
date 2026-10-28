@@ -11,6 +11,7 @@ import asyncio
 import inspect
 import itertools
 import json
+import sys
 import threading
 import time
 import wave
@@ -268,6 +269,30 @@ def test_tts_block_for_an_uninstalled_provider_degrades_to_no_voice() -> None:
     async def run() -> None:
         async with bridge:
             with pytest.raises(BridgeError, match="no-such-provider"):
+                await bridge.say("hi")
+
+    asyncio.run(run())
+
+
+def test_tts_block_for_a_missing_provider_names_the_bridge_extra(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A registered provider whose library is absent: the recorded error names the
+    `reachy-mini-bridge[tts-<type>]` extra, chained to tts-engine's own error."""
+    from tts_engine.config import ConfigError as TTSEngineConfigError
+
+    monkeypatch.setitem(sys.modules, "gradium", None)  # importing it now fails
+    bridge = ReachyMiniBridge(
+        ReachyMiniConfig(backend="fake", tts={"module": {"type": "gradium"}})
+    )
+    error = bridge.synthesizer_error
+    assert isinstance(error, BridgeError)
+    assert "reachy-mini-bridge[tts-gradium]" in str(error)
+    assert isinstance(error.__cause__, TTSEngineConfigError)
+
+    async def run() -> None:
+        async with bridge:
+            with pytest.raises(BridgeError, match=r"tts-gradium"):
                 await bridge.say("hi")
 
     asyncio.run(run())
