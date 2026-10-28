@@ -11,8 +11,8 @@
 # target through one engine and the matrix is where the bridge's poses meet Placo's
 # limits on every push; the NN engine's own error fails the tracking tests, so it stays
 # a local run (specs/testing/testing.md "One engine per run"). None waits on another: a
-# run takes as long as its slowest job. Every dependency group installs — on Linux torch comes from
-# PyTorch's CPU index, a few seconds — so the real pocket-TTS test runs here too. No
+# run takes as long as its slowest job. Every dependency group installs — the `tts` group is
+# phonon, a local model with no torch — so the real-TTS test runs here too. No
 # secret is needed: tests whose needs the runner cannot meet skip, and the spec's
 # expected-skips table says which.
 
@@ -135,7 +135,7 @@ jobs:
           cache-dependency-glob: uv.lock
       - name: Sync (every group, against the lock)
         run: uv sync --locked
-      - name: Hugging Face cache (emotions library, YuNet model, pocket-tts weights)
+      - name: Hugging Face cache (emotions library, YuNet model, phonon model)
         uses: actions/cache@v6
         with:
           path: ~/.cache/huggingface
@@ -154,9 +154,6 @@ jobs:
       - name: Rust webrtc plugin (upstream's action, pinned)
         uses: pollen-robotics/reachy_mini/.github/actions/webrtc-plugin@c14dc5fd43100582d349466aec4bdc4960490522
       - name: Live tier
-        # The cloud TTS keys, when the repository holds them as secrets: the two cloud
-        # `say` tests run; absent (or on a fork's pull request, which never receives a
-        # secret) the variables are empty and the tests skip (specs/testing/ci.md).
         # The capabilities this runner is provisioned for: a sim that comes up without
         # its camera (the EGL render), its audio (the null sink) or at all fails the job
         # instead of skipping the files that need them (specs/testing/ci.md).
@@ -165,8 +162,6 @@ jobs:
           # The engine the harness's sim solves through; the tier's engine check fails
           # the entry if the daemon reports another (specs/testing/testing.md).
           REACHY_MINI_E2E_KINEMATICS: ${{ matrix.kinematics }}
-          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
-          GRADIUM_API_KEY: ${{ secrets.GRADIUM_API_KEY }}
         # Warnings and errors logged while the tier runs — the spawned daemon's own lines
         # among them, forwarded by the harness — print live, so a daemon that comes up
         # without its camera or its media server says so in the job log.

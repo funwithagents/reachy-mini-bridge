@@ -27,9 +27,8 @@
   },
   "tts": {
     "module": {
-      "type": "pocket",
-      "voice": "george",
-      "device": "auto"
+      "type": "phonon",
+      "voice": "Micah"
     }
   },
   "audio": {

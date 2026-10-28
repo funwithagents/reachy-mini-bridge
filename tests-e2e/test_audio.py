@@ -1,8 +1,8 @@
 """E2E tier — audio over a live daemon (specs/audio/audio.md, specs/core/bridge.md
 "Cancellation"): the daemon's format against the fake's assumptions, the mic tap, `say`
 spanning its playback — interrupted by a newer `say`, cancelled —, `play_sound` spanning
-its file, the TTS providers end to end (pocket needs no key; ElevenLabs and Gradium are
-key-gated), and upstream's head wobbling on the speaker path.
+its file, a real TTS provider end to end (the local phonon model, no key), and upstream's
+head wobbling on the speaker path.
 
 Gated on `audio` (every target; the wobbling tests on `motion` too).
 
@@ -34,7 +34,7 @@ from reachy_mini_bridge.errors import (
 from reachy_mini_bridge.motion import (
     BLEND_S,
 )
-from reachy_mini_bridge.testing import LiveBridge, require_env
+from reachy_mini_bridge.testing import LiveBridge
 from reachy_mini_bridge.testing.gaze import angle_from_neutral_deg
 
 pytestmark = pytest.mark.requires("audio")
@@ -408,83 +408,22 @@ def test_cancelled_say_stops_the_sound_and_the_next_say_works(
 def test_say_with_real_tts_speaks_through_the_robot(
     live_bridge: LiveBridge,
 ) -> None:
-    """Real TTS end-to-end: `TTSEngineSynthesizer` on the local pocket model → speaker.
+    """Real TTS end-to-end: `TTSEngineSynthesizer` on the local phonon model → speaker.
 
     Exercises the full real path the tone test can't: tts-engine synthesis (in-process,
     the model loaded from the Hugging Face cache — no key, no network once cached), the
-    push→pull queue-bridge sink, int16→float32, and the 24 kHz→16 kHz resample. Gated
-    on `audio` and on the provider being installed: the `tts` dependency group carries
-    it, default in a local sync and installed in CI (specs/testing/ci.md); a sync
-    without it skips this test on the missing module rather than fail on tts-engine's
-    ConfigError.
+    push→pull queue-bridge sink, int16→float32, and the 24 kHz→16 kHz resample. Each
+    provider's own synthesis is tts-engine's live tier; this one proves the adapter and
+    the speaker path. Gated on `audio` and on the provider being installed: the `tts`
+    dependency group carries it, default in a local sync and installed in CI
+    (specs/testing/ci.md); a sync without it skips this test on the missing module
+    rather than fail on the adapter's missing-provider error.
     On the headfull-viewer sim you should hear the phrase; assert it completes.
     """
-    pytest.importorskip(
-        "pocket_tts", reason="the tts dependency group is not installed"
-    )
+    pytest.importorskip("ptts", reason="the tts dependency group is not installed")
     bridge, _caps = live_bridge
 
-    synth = TTSEngineSynthesizer({"module": {"type": "pocket", "voice": "george"}})
-    # pocket-tts emits its model's native 24 kHz, so the say sink resamples to 16 kHz.
+    synth = TTSEngineSynthesizer({"module": {"type": "phonon", "voice": "Micah"}})
+    # Phonon emits 24 kHz, so the say sink resamples to the speaker's 16 kHz.
     assert synth.sample_rate == 24000
-    live_bridge.run(bridge.say("Hello, I am Reachy Mini.", synth))
-
-
-def test_say_with_elevenlabs_speaks_through_the_robot(
-    live_bridge: LiveBridge,
-) -> None:
-    """The cloud provider end-to-end: `TTSEngineSynthesizer` (ElevenLabs) → speaker.
-
-    The path the pocket test doesn't cover: synthesis over the network and the
-    44.1 kHz→16 kHz resample. Gated on the provider being installed (the `tts`
-    dependency group), on `ELEVENLABS_API_KEY` (skips cleanly without a key) and `audio`.
-    """
-    pytest.importorskip(
-        "elevenlabs", reason="the tts dependency group is not installed"
-    )
-    require_env("ELEVENLABS_API_KEY")
-    bridge, _caps = live_bridge
-
-    synth = TTSEngineSynthesizer(
-        {
-            "module": {
-                "type": "elevenlabs",
-                "api_key_env": "ELEVENLABS_API_KEY",
-                # A public voice used throughout tts-engine's own docs.
-                "voice_id": "JBFqnCBsd6RMkjVDRZzb",
-            }
-        }
-    )
-    # The real ElevenLabs module emits 44.1 kHz, so the say sink resamples to 16 kHz.
-    assert synth.sample_rate == 44100
-    live_bridge.run(bridge.say("Hello, I am Reachy Mini.", synth))
-
-
-def test_say_with_gradium_speaks_through_the_robot(
-    live_bridge: LiveBridge,
-) -> None:
-    """Another cloud provider end-to-end: `TTSEngineSynthesizer` (Gradium) → speaker.
-
-    Configured at 16 kHz, the speaker rate, so it covers the path the other two
-    providers' rates don't: the say sink's resample skipped on real network audio.
-    Gated on the provider being installed (the `tts` dependency group), on
-    `GRADIUM_API_KEY` (skips cleanly without a key) and `audio`.
-    """
-    pytest.importorskip("gradium", reason="the tts dependency group is not installed")
-    require_env("GRADIUM_API_KEY")
-    bridge, _caps = live_bridge
-
-    synth = TTSEngineSynthesizer(
-        {
-            "module": {
-                "type": "gradium",
-                "api_key_env": "GRADIUM_API_KEY",
-                # "Alex", from the flagship catalog, used in tts-engine's own docs.
-                "voice_id": "91EdXxJDbWICDBgz",
-                "sample_rate": 16000,
-            }
-        }
-    )
-    # At `sample_rate: 16000` the module emits the speaker rate: nothing to resample.
-    assert synth.sample_rate == 16000
     live_bridge.run(bridge.say("Hello, I am Reachy Mini.", synth))

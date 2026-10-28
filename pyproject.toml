@@ -119,17 +119,14 @@ dev = [
     # the tests import it themselves, so they declare it.
     "scipy>=1.18.1",
 ]
-# The TTS providers (specs/project.md "Dependency groups"): pocket so the real-TTS live
-# test runs with no credential, elevenlabs and gradium so the key-gated cloud tests run
-# when a key is set rather than fail on a missing extra. A default group, so a plain
-# `uv sync` has every provider (the cost is torch in every local sync, as in tts-engine's
-# own dev group); CI installs it too (specs/testing/ci.md), and a sync without it
-# (`--no-group tts`) makes the provider e2e tests skip on the missing module. Consumers install one extra at a time. `torch` is
-# named here, although pocket-tts brings it, because a uv source applies only to a
-# dependency the project declares itself: this is what routes it to the CPU index below.
+# The TTS provider (specs/project.md "Dependency groups"): phonon, a local model with no
+# key and no torch, so the real-TTS live test, the greeter and the example voices run
+# in a plain `uv sync`. Each provider's own synthesis is tts-engine's live tier; the
+# bridge's proves the adapter and the speaker path on this one. CI installs it too
+# (specs/testing/ci.md), and a sync without it (`--no-group tts`) makes the real-TTS
+# test skip on the missing module. Consumers install the providers they use.
 tts = [
-    "reachy-mini-bridge[tts-elevenlabs,tts-gradium,tts-pocket]",
-    "torch",
+    "reachy-mini-bridge[tts-phonon]",
 ]
 # The Gradio control panel in examples/control_panel (specs/examples/control_panel.md): a
 # manual test/demo app, not part of the package. Its own group so a consumer can leave
@@ -141,20 +138,9 @@ demo = [
     "reachy-mini-bridge[sim]",
 ]
 
-[[tool.uv.index]]
-# PyPI's Linux torch wheel is the CUDA build and drags gigabytes of NVIDIA libraries no
-# machine of ours uses (a CI runner has no GPU, the robot none either); on Linux torch
-# resolves from PyTorch's CPU index instead (the `torch` source below). `explicit`: only
-# the packages pinned to it below come from here. macOS keeps PyPI's CPU-only wheel.
-# A uv source is not inherited by a downstream project, which declares its own if wanted.
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true
-
 [tool.uv.sources]
 # Self-reference for the groups above that pull in the package's own extras.
 reachy-mini-bridge = { workspace = true }
-torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
 
 [tool.uv]
 # Every group installs by default — a sync is exact, so a group left out of a sync is
