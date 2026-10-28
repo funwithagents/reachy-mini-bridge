@@ -27,9 +27,9 @@ uv add "reachy-mini-bridge[sim,test] @ ../reachy-mini-bridge"   # a checkout nex
 |---|---|---|
 | *(none)* | `reachy_mini`, `numpy`, `samplerate`, `tts-engine` | The `real` backend, the offline `fake`, and `say` with your own synthesizer. `tts-engine` is our small first-party engine with no provider; one of the `tts-*` extras adds one |
 | `sim` | `mujoco` 3.3.1+ (3.3.x) | The `sim` backend (MuJoCo). Declared directly rather than through `reachy_mini[mujoco]`, whose exact pin on 3.3.0 predates the viewer overlays the sim launcher needs; don't install that upstream extra alongside ([docs/guides/running-daemons.md](docs/guides/running-daemons.md) "The MuJoCo version") |
-| `tts-pocket` | `tts-engine[pocket]` | The default voice for `say` on the local pocket-tts model: no key, no network once the weights are cached, but torch (hundreds of MB; on Linux a dev checkout takes the CPU build from PyTorch's index) |
-| `tts-elevenlabs` | `tts-engine[elevenlabs]` | The default voice for `say` on ElevenLabs (`ELEVENLABS_API_KEY`); a few MB |
-| `tts-gradium` | `tts-engine[gradium]` | The default voice for `say` on Gradium (`GRADIUM_API_KEY`); a few MB |
+| `tts-<provider>` | `tts-engine[<provider>]` | The default voice for `say` on one tts-engine provider, named as the `tts` block's `module.type` names it: `tts-pocket`, `tts-elevenlabs`, `tts-openai-compatible`… One extra per provider, local or hosted; what each needs (a key, a platform, torch) is on [tts-engine's module pages](https://github.com/funwithagents/tts-engine/blob/main/docs/modules/index.md) |
+| `tts-hosted` | `tts-engine[hosted-modules]` | Every hosted voice at once, a few MB each; the key you set picks the one that works |
+| `tts-all` | `tts-engine[all-modules]` | Every voice, local models included (torch among them) |
 | `test` | `pytest` | The shipped `reachy_mini_bridge.testing` harness for your e2e tests |
 | `placo` | `reachy-mini[placo_kinematics]` | The Placo kinematics engine, selected with `"daemon": {"kinematics_engine": "placo"}` — the one engine with gravity compensation ([docs/reference/configuration.md](docs/reference/configuration.md#kinematics-engines)). Installing it changes nothing until a config asks for it; no Windows wheel |
 

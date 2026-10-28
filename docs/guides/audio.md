@@ -10,15 +10,9 @@ The bridge opens the robot's audio once per session, for both directions: speech
 
 `say(text)` streams text-to-speech to the speaker through a `SpeechSynthesizer`. Two ways to have one:
 
-**The config's `tts` block** builds the default voice from the first-party [tts-engine](https://github.com/funwithagents/tts-engine): `module.type` picks the provider, the matching extra installs it, the remaining keys are the provider's own ([../reference/configuration.md](../reference/configuration.md) "`tts`").
+**The config's `tts` block** builds the default voice from the first-party [tts-engine](https://github.com/funwithagents/tts-engine): `module.type` picks the provider, `reachy-mini-bridge[tts-<module.type>]` installs it, and the remaining keys are the provider's own ([../reference/configuration.md](../reference/configuration.md) "`tts`"). Every tts-engine provider has its extra, local models and hosted APIs alike; `tts-hosted` installs every hosted one and `tts-all` all of them. Each provider's fields, voices, key, platform and output rate are on [tts-engine's module pages](https://github.com/funwithagents/tts-engine/blob/main/docs/modules/index.md).
 
-| Provider | Extra | Needs | Emits |
-|---|---|---|---|
-| `pocket` | `reachy-mini-bridge[tts-pocket]` | no key, no network once the weights are cached; torch (hundreds of MB; on Linux a dev checkout takes the CPU build) | 24 kHz |
-| `elevenlabs` | `reachy-mini-bridge[tts-elevenlabs]` | `ELEVENLABS_API_KEY` (or the variable `api_key_env` names) | 44.1 kHz |
-| `gradium` | `reachy-mini-bridge[tts-gradium]` | `GRADIUM_API_KEY` | 48 kHz by default |
-
-The bridge resamples whatever rate arrives to the speaker's 16 kHz and fans mono out to its channels, so the provider's rate is its own business. A block that fails to build — extra not installed, key unset — leaves the robot fully usable without a voice: the session starts, `say` raises `BridgeError` chained to the cause, and the cause sits on `bridge.synthesizer_error` right after construction for a host that wants to fail hard.
+The bridge resamples whatever rate arrives to the speaker's 16 kHz and fans mono out to its channels, so the provider's rate is its own business. A block that fails to build — extra not installed (the error names the `tts-*` extra to add), key unset — leaves the robot fully usable without a voice: the session starts, `say` raises `BridgeError` chained to the cause, and the cause sits on `bridge.synthesizer_error` right after construction for a host that wants to fail hard.
 
 **Your own synthesizer** is any object with a fixed `sample_rate` (Hz) and a `stream(text)` returning an async iterator of float32 mono chunks in [-1, 1], shape `(n,)`. Pass it to `ReachyMiniBridge(config, synthesizer=...)` as the default voice (it wins over the `tts` block), or per call: `say(text, synth)`. The smallest complete one — a beep — is in [../getting-started.md](../getting-started.md); an engine that emits int16 converts each chunk with `reachy_mini_bridge.audio.int16_to_float32`. Keep the protocol minimal: voices, speed and SSML belong to your synthesizer's own config.
 

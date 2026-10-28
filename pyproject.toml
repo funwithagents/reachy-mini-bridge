@@ -46,16 +46,32 @@ Issues = "https://github.com/funwithagents/reachy-mini-bridge/issues"
 # When bumping reachy-mini, check its `mujoco` extra is still only `mujoco`. The
 # user-facing note: docs/guides/running-daemons.md "The MuJoCo version".
 sim = ["mujoco>=3.3.1,<3.4"]
-# One extra per tts-engine provider, mapping onto tts-engine's own extras (see
-# specs/audio/audio.md): the `tts` block's `module.type` picks the provider, and the matching
-# extra installs it. A caller supplying their own SpeechSynthesizer needs neither.
-# ElevenLabs: the cloud provider (needs ELEVENLABS_API_KEY); a few MB.
+# tts-engine's provider extras and module bundles, mirrored one-to-one as `tts-<extra>`
+# -> `tts-engine[<extra>]`, a bundle's `-modules` suffix dropped (specs/project.md
+# "Optional extras"): the `tts` block's `module.type` picks the provider, and
+# `tts-<module.type>` installs it; `tts-hosted` installs every hosted provider,
+# `tts-all` every provider.
+# tts-engine's transports and its `all` bundle (which adds them) are not mirrored: the
+# bridge runs no tts-engine server. tts-engine is a git dependency, so these aliases
+# are how a consumer installs a provider without repeating its URL. What each provider
+# needs (key, platform, size) is on tts-engine's module pages (docs/modules/index.md
+# there). tests/test_tts_extras.py keeps the mirror equal
+# to tts-engine's extras. A caller supplying their own SpeechSynthesizer needs none.
+tts-cartesia = ["tts-engine[cartesia]"]
+tts-deepgram = ["tts-engine[deepgram]"]
 tts-elevenlabs = ["tts-engine[elevenlabs]"]
-# Gradium: a cloud provider (needs GRADIUM_API_KEY); a few MB.
+tts-gemini = ["tts-engine[gemini]"]
 tts-gradium = ["tts-engine[gradium]"]
-# pocket-tts: the local model (no key, no network at synthesis time) — pulls torch
-# (hundreds of MB) and downloads the model weights on first use.
+tts-kokoro = ["tts-engine[kokoro]"]
+tts-mistral = ["tts-engine[mistral]"]
+tts-openai = ["tts-engine[openai]"]
+tts-openai-compatible = ["tts-engine[openai-compatible]"]
+tts-phonon = ["tts-engine[phonon]"]
+tts-piper = ["tts-engine[piper]"]
 tts-pocket = ["tts-engine[pocket]"]
+tts-qwen3 = ["tts-engine[qwen3]"]
+tts-hosted = ["tts-engine[hosted-modules]"]
+tts-all = ["tts-engine[all-modules]"]
 # The shipped test harness (`reachy_mini_bridge.testing`, see specs/testing/testing_support.md)
 # needs pytest to define its fixtures/skip gates. A downstream project running the e2e
 # tier installs `reachy-mini-bridge[test]` (plus `[sim]` for the sim daemon launcher).
