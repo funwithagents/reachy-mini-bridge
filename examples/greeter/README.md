@@ -21,7 +21,7 @@ Ctrl-C stops it; a daemon the bridge started is stopped with it (the robot goes 
 
 ## Configs
 
-The two profiles under [configs/](configs/) are the project's [examples/configs/](../configs/) ones with a voice added — the local pocket model (`tts-pocket`, in a plain `uv sync`; the weights download into the Hugging Face cache on first use):
+The two profiles under [configs/](configs/) are the project's [examples/configs/](../configs/) ones with a voice added — the local phonon model (`tts-phonon`, in a plain `uv sync`; the model downloads into the Hugging Face cache on first use):
 
 | Config | Needs |
 |---|---|

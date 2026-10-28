@@ -23,8 +23,8 @@ Every field of the bridge's declarative config: its default, what it does, and t
 
   "tts": {
     "module": {
-      "type": "pocket",
-      "voice": "george"
+      "type": "phonon",
+      "voice": "Micah"
     }
   },
 
@@ -114,14 +114,13 @@ Installing the `placo` extra changes nothing by itself: the engine is this field
 
 A [tts-engine](https://github.com/funwithagents/tts-engine) `engine` block, carried through verbatim: `module.type` picks the provider, and its extra, `reachy-mini-bridge[tts-<module.type>]`, must be installed. The remaining keys are the provider's own, documented on [tts-engine's module pages](https://github.com/funwithagents/tts-engine/blob/main/docs/modules/index.md). Three examples follow; every other provider has the same shape.
 
-A local model (`tts-pocket`), no key and no network once its weights are cached:
+A local model (`tts-phonon`), no key, no torch, and no network once its model is cached:
 
 ```json
 "tts": {
   "module": {
-    "type": "pocket",
-    "voice": "george",
-    "device": "auto"
+    "type": "phonon",
+    "voice": "Micah"
   }
 }
 ```

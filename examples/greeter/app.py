@@ -8,7 +8,7 @@
 
 The config must name a detector, turn tracking on, and carry a ``tts`` block for the voice:
 the two under ``configs/`` do (the sim seeing through the webcam, the default; a Lite over
-USB), both on the local pocket voice (the ``tts-pocket`` extra, in a plain ``uv sync``).
+USB), both on the local phonon voice (the ``tts-phonon`` extra, in a plain ``uv sync``).
 """
 
 from __future__ import annotations

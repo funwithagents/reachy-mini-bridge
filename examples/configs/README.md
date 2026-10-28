@@ -27,14 +27,13 @@ The other profiles run headless. The profiles are parsed by the bridge's tests, 
 
 A `tts` block is a [tts-engine](https://github.com/funwithagents/tts-engine) `engine` block carried through verbatim: `module.type` picks the provider, the matching extra installs it, and the remaining keys are the provider's own. Three templates follow, to paste as a top-level `"tts"` key next to `"backend"` in any profile; the field-by-field documentation is the `tts` section of [docs/reference/configuration.md](../../docs/reference/configuration.md#tts--the-default-voice-for-say), and setting a voice up task by task, [docs/guides/audio.md](../../docs/guides/audio.md). Every other provider installs as `reachy-mini-bridge[tts-<type>]` and documents its fields on [tts-engine's module pages](https://github.com/funwithagents/tts-engine/blob/main/docs/modules/index.md).
 
-**pocket** (`reachy-mini-bridge[tts-pocket]`) — the local model: no key, no network once its weights are cached; pulls torch.
+**phonon** (`reachy-mini-bridge[tts-phonon]`) — a local model: no key, no torch, no network once its model is cached.
 
 ```json
 "tts": {
   "module": {
-    "type": "pocket",
-    "voice": "george",
-    "device": "auto"
+    "type": "phonon",
+    "voice": "Micah"
   }
 }
 ```
@@ -64,4 +63,4 @@ A `tts` block is a [tts-engine](https://github.com/funwithagents/tts-engine) `en
 }
 ```
 
-Whatever the provider, `say` resamples what arrives to the speaker's 16 kHz. A block that fails to build, the extra not installed or the key unset, leaves the robot usable without a voice, as above. Two of these profiles with the `pocket` template added, `sim-webcam` and `lite-usb`, are what the greeter demo runs on: [examples/greeter/configs/](../greeter/configs/) ([its README](../greeter/README.md)).
+Whatever the provider, `say` resamples what arrives to the speaker's 16 kHz. A block that fails to build, the extra not installed or the key unset, leaves the robot usable without a voice, as above. Two of these profiles with the `phonon` template added, `sim-webcam` and `lite-usb`, are what the greeter demo runs on: [examples/greeter/configs/](../greeter/configs/) ([its README](../greeter/README.md)).
