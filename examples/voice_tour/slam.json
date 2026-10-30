@@ -1,0 +1,118 @@
+{
+  "parts": [
+    {
+      "voice": "pocket-george",
+      "label": "Pocket · George",
+      "lines": [
+        "Hi, I'm Reachy Mini, and I came here to rhyme.",
+        "I can't sing a note, so I'll slam, one voice at a time."
+      ]
+    },
+    {
+      "voice": "piper-ryan-medium",
+      "label": "Piper · Ryan",
+      "lines": [
+        "I don't have a voice of my own, just a text and a voice on loan.",
+        "Letters into phonemes, phonemes into tone."
+      ]
+    },
+    {
+      "voice": "kokoro-am-fenrir",
+      "label": "Kokoro · Fenrir",
+      "lines": [
+        {
+          "text": "A model takes your sentence apart and builds it back as sound.",
+          "pause_s": 0.3
+        },
+        "It finds where it rises, where it breaks, where the meaning comes around."
+      ]
+    },
+    {
+      "voice": "qwen3-1.7b-aiden-bf16",
+      "label": "Qwen3 · Aiden",
+      "lines": [
+        {
+          "text": "Nine motors and one loop hold my pose as best they can.",
+          "pause_s": 0.0
+        },
+        "When the sound comes out I move, and that's always been the plan."
+      ]
+    },
+    {
+      "voice": "phonon-31m-micah",
+      "label": "Phonon · Micah",
+      "lines": [
+        "This voice runs right here, on this desk, with no cloud and no key.",
+        "Remember how it sounds, because the next voice is also me."
+      ]
+    },
+    {
+      "voice": "gradium-micah",
+      "label": "Gradium · Micah",
+      "lines": [
+        "Same voice, same name, now streamed from servers far away.",
+        "Only the road is different; the timbre's here to stay."
+      ]
+    },
+    {
+      "voice": "cartesia-zeke-happy",
+      "label": "Cartesia · Zeke",
+      "lines": [
+        {
+          "text": "Faster now, and brighter: somebody set my mood to glad!",
+          "pause_s": 0.35
+        },
+        "Joy is just a parameter, and it's the nicest one I've had."
+      ]
+    },
+    {
+      "voice": "elevenlabs-will-v3c",
+      "label": "ElevenLabs · Will",
+      "lines": [
+        "But a voice is more than pitch: it's the pause, the lift, the why.",
+        "A question mark's a melody, if you let it fly."
+      ]
+    },
+    {
+      "voice": "gemini-achird",
+      "label": "Gemini · Achird",
+      "lines": [
+        {
+          "text": "A model made for language can do more than write a page.",
+          "pause_s": 0.15
+        },
+        "Give it my lines and a friendly tone, and it takes me to the stage."
+      ]
+    },
+    {
+      "voice": "openai-verse",
+      "label": "OpenAI · Verse",
+      "lines": [
+        {
+          "text": "This voice was made for live talk, not for scripts that you can learn.",
+          "pause_s": 0.0
+        },
+        "Cut me off at any moment, and I'll wait to take my turn."
+      ]
+    },
+    {
+      "voice": "deepgram-aries",
+      "label": "Deepgram · Aries",
+      "lines": [
+        "So who am I, when every couple of lines the voice is someone new?",
+        "Maybe a voice is just a coat, and the robot's still here with you."
+      ]
+    },
+    {
+      "voice": "mistral-hugo",
+      "label": "Mistral · Hugo",
+      "lines": [
+        {
+          "text": "One robot, twelve voices, and every one of them fits me fine.",
+          "pause_s": 0.2
+        },
+        "So tell me: which one should I keep, and which voice is mine?"
+      ]
+    }
+  ]
+}

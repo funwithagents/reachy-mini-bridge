@@ -1,0 +1,10 @@
+{
+  "tts": {
+    "module": {
+      "type": "kokoro",
+      "voice": "am_fenrir",
+      "model": "../models/kokoro-v1.0.int8.onnx"
+    },
+    "gain_db": -1.2
+  }
+}

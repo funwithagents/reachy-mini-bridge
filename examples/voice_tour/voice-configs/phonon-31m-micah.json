@@ -1,0 +1,9 @@
+{
+  "tts": {
+    "module": {
+      "type": "phonon",
+      "voice": "Micah"
+    },
+    "gain_db": 0.7
+  }
+}
