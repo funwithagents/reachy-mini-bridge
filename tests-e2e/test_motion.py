@@ -37,10 +37,27 @@ from reachy_mini_bridge.motion import (
     IdleMove,
     IdleOffsets,
 )
-from reachy_mini_bridge.testing import LiveBridge
+from reachy_mini_bridge.testing import LiveBridge, _daemon
 from reachy_mini_bridge.testing._daemon import kinematics_engine
 
 pytestmark = pytest.mark.requires("motion")
+
+
+def test_daemon_reports_how_it_runs(live_bridge: LiveBridge) -> None:
+    """`bridge.daemon` reads a real daemon: the engine the run asked for from upstream's
+    API, on any target; on a spawned sim, the launcher's report, the rendered camera
+    and the test scene among it. A borrowed upstream daemon has no launcher to ask."""
+    bridge, _caps = live_bridge
+    info = bridge.daemon
+    assert info is not None
+    assert info.kinematics_engine == UPSTREAM_KINEMATICS_ENGINES[kinematics_engine()]
+    if _daemon.backend() != "sim" or info.launcher is None:
+        pytest.skip("the launcher's report is the sim's")
+    assert info.launcher == "sim"
+    assert info.camera is not None and info.camera.source == "sim"
+    assert info.scene is not None and info.headless is not None
+    tracker = bridge._tracker
+    assert tracker is not None and not tracker.camera.fixed
 
 
 def test_daemon_runs_the_engine_the_run_asked_for(live_bridge: LiveBridge) -> None:

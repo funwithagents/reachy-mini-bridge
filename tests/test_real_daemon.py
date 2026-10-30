@@ -208,3 +208,19 @@ def test_run_real_daemon_rewrites_argv_and_installs_the_camera_check(
     argv, installed = _run(args, monkeypatch)
     assert argv == ["reachy-mini-daemon", *forwarded]
     assert installed == 1
+
+
+def test_the_launcher_reports_itself(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`GET /api/bridge/daemon` on the app upstream builds: the launcher's name."""
+    fastapi = pytest.importorskip("fastapi")
+    testclient = pytest.importorskip("fastapi.testclient")
+    from reachy_mini.daemon.app import main as upstream_main
+
+    monkeypatch.setattr(
+        upstream_main, "create_app", lambda *a, **kw: fastapi.FastAPI(title="upstream")
+    )
+    _run([], monkeypatch)
+    upstream_args: Any = SimpleNamespace()
+    app = upstream_main.create_app(upstream_args, None)
+    answer = testclient.TestClient(app).get("/api/bridge/daemon").json()
+    assert answer == {"launcher": "real"}

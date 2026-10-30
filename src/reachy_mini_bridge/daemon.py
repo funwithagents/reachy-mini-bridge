@@ -31,19 +31,125 @@ from collections import deque
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import IO, Protocol
+from pathlib import Path
+from typing import IO, Any, Protocol
 
-from .config import DAEMON_BACKENDS, UPSTREAM_KINEMATICS_ENGINES, DaemonConfig
+from .config import (
+    DAEMON_BACKENDS,
+    UPSTREAM_KINEMATICS_ENGINES,
+    DaemonConfig,
+    SimCameraSettings,
+)
 from .errors import DaemonError
 
 __all__ = [
     "DaemonHandle",
+    "DaemonInfo",
+    "daemon_differences",
+    "describe_camera",
     "is_daemon_ready",
     "launch_command",
     "managed_daemon",
     "scrubbed_env",
     "status_url",
 ]
+
+
+@dataclass(frozen=True)
+class DaemonInfo:
+    """How the daemon a session runs on is running (specs/daemon/daemon.md "What the daemon
+    reports"): ``kinematics_engine`` from upstream's API, for any daemon; the rest from
+    a bridge launcher. ``None`` is unknown: a daemon that does not say."""
+
+    kinematics_engine: str | None = None  # upstream's name, e.g. "AnalyticalKinematics"
+    launcher: str | None = None  # "sim" | "real"; None: not a bridge launcher
+    camera: SimCameraSettings | None = None
+    scene: str | None = None
+    headless: bool | None = None
+    preload_datasets: bool | None = None
+    sim_displays: tuple[str, ...] | None = None
+
+    @classmethod
+    def from_report(cls, report: Any, kinematics_engine: str | None) -> DaemonInfo:
+        """From a launcher's answer, ``None`` for a daemon with no such route. Raises on
+        a malformed answer and ignores fields it does not know, so the report can grow."""
+        if report is None:
+            return cls(kinematics_engine=kinematics_engine)
+        launcher = report["launcher"]
+        if launcher == "real":
+            return cls(kinematics_engine=kinematics_engine, launcher=launcher)
+        if launcher != "sim":
+            raise ValueError(f"unknown launcher {launcher!r}")
+        camera = report["camera"]
+        fields = {"source": camera["source"]}
+        if camera["source"] == "webcam":
+            fields["hfov_deg"] = camera["hfov_deg"]
+        return cls(
+            kinematics_engine=kinematics_engine,
+            launcher=launcher,
+            camera=SimCameraSettings.from_dict(fields),
+            scene=str(report["scene"]),
+            headless=bool(report["headless"]),
+            preload_datasets=bool(report["preload_datasets"]),
+            sim_displays=tuple(report["sim_displays"]),
+        )
+
+
+def describe_camera(camera: SimCameraSettings) -> str:
+    if camera.source == "webcam":
+        return f"webcam ({camera.hfov_deg:g}° hfov)"
+    return camera.source
+
+
+def _same_camera(a: SimCameraSettings, b: SimCameraSettings) -> bool:
+    """Whether the two give one camera model: ``device`` plays no part in it, and
+    ``hfov_deg`` none for a ``sim`` source."""
+    if a.source != b.source:
+        return False
+    return a.source != "webcam" or a.hfov_deg == b.hfov_deg
+
+
+def _scene_stem(scene: str) -> str:
+    """A scene's name: a file's stem, since a launcher reports a file by the upstream
+    scene name that resolves to it."""
+    return Path(scene).stem
+
+
+def daemon_differences(info: DaemonInfo, config: DaemonConfig) -> list[str]:
+    """Where a known value of ``info`` contradicts ``config``, one phrase each
+    (specs/daemon/daemon.md "What the daemon reports"). A scene the config does not name
+    is no opinion; a display counts when the config turns it on and the daemon does not
+    run it; ``headless`` and ``preload_datasets`` change nothing for a session."""
+    differences = []
+    wanted_engine = UPSTREAM_KINEMATICS_ENGINES[config.kinematics_engine]
+    if info.kinematics_engine not in (None, wanted_engine):
+        differences.append(
+            f"kinematics engine is {info.kinematics_engine}, "
+            f"the config says {wanted_engine}"
+        )
+    if info.camera is not None and not _same_camera(info.camera, config.camera):
+        differences.append(
+            f"camera is {describe_camera(info.camera)}, "
+            f"the config says {describe_camera(config.camera)}"
+        )
+    if (
+        info.scene is not None
+        and config.scene is not None
+        and _scene_stem(info.scene) != _scene_stem(config.scene)
+    ):
+        differences.append(f"scene is {info.scene}, the config says {config.scene}")
+    if info.sim_displays is not None:
+        missing = [
+            name
+            for name, on in vars(config.sim_displays).items()
+            if on and name not in info.sim_displays
+        ]
+        if missing:
+            differences.append(
+                f"display(s) {', '.join(missing)} off, the config turns them on"
+            )
+    return differences
+
 
 _POLL_INTERVAL_S = 1.0
 # One readiness probe's HTTP timeout: a daemon that answers slower than this is polled again.

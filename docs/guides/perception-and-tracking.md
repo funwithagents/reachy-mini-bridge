@@ -94,7 +94,7 @@ Who it is stays yours: keep a map from `track_id` to the identity your model fou
 - **Angles are radians, offsets are degrees.** A face's `roll` / `pitch` / `yaw` are radians as seen from the camera; the motion API's offsets (`IdleOffsets`) are degrees and millimetres ([../reference/api.md](../reference/api.md) "Units").
 - **Frames are shared and read-only.** `frame.image` is the feed's array, seen by every consumer: copy before drawing on it.
 - **Tracking moves the head only with torque on.** It is a mode: it holds, and the head starts moving once motors are `enabled`.
-- **The sim camera's geometry is handled.** The bridge's tracker aims with its own pinhole model of the rendered eye camera, and treats a webcam as fixed at the robot's resting eye (`daemon.camera.hfov_deg` sets its field of view), so the head converges on the face in the sim as on a robot.
+- **The sim camera's geometry is handled.** The bridge's tracker aims with its own pinhole model of the rendered eye camera, and treats a webcam as fixed at the robot's resting eye, with the source and field of view the daemon reports ([running-daemons.md](running-daemons.md) "You in front of the sim"), so the head converges on the face in the sim as on a robot.
 
 ## Beside a vision graph
 

@@ -17,6 +17,7 @@ from .audio import SpeechSynthesizer, TTSEngineSynthesizer
 from .bridge import ReachyMiniBridge
 from .camera import CameraFrame
 from .config import ReachyMiniConfig
+from .daemon import DaemonInfo
 from .errors import (
     BridgeError,
     ConfigError,
@@ -35,6 +36,7 @@ __all__ = [
     "BridgeError",
     "CameraFrame",
     "ConfigError",
+    "DaemonInfo",
     "Face",
     "FaceDetector",
     "FaceReport",

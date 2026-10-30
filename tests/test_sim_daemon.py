@@ -1007,6 +1007,53 @@ def test_the_displays_router_is_mounted_with_face_markers_only(
 
 
 @pytest.mark.parametrize(
+    ("argv", "report"),
+    [
+        (
+            ["--headless"],
+            {"camera": {"source": "sim", "hfov_deg": None}, "headless": True},
+        ),
+        (
+            ["--camera", "webcam"],
+            {"camera": {"source": "webcam", "hfov_deg": 70.0}, "headless": False},
+        ),
+        (
+            ["--camera", "webcam", "--webcam-hfov", "88"],
+            {"camera": {"source": "webcam", "hfov_deg": 88.0}},
+        ),
+        (["--scene", "minimal"], {"scene": "minimal"}),
+        ([], {"scene": "empty", "preload_datasets": True, "sim_displays": []}),
+        (["--no-preload-datasets"], {"preload_datasets": False}),
+        (
+            ["--sim-display", "robot_gaze", "--sim-display", "camera_overlay"],
+            {"sim_displays": ["camera_overlay", "robot_gaze"]},
+        ),
+    ],
+)
+def test_the_launcher_reports_how_it_runs(
+    argv: list[str], report: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`GET /api/bridge/daemon` answers with the launcher's own arguments: every run
+    serves it (specs/daemon/daemon.md "What the daemon reports")."""
+    fastapi = pytest.importorskip("fastapi")
+    testclient = pytest.importorskip("fastapi.testclient")
+    from reachy_mini.daemon.app import main as upstream_main
+
+    monkeypatch.setattr(
+        upstream_main, "create_app", lambda *a, **kw: fastapi.FastAPI(title="upstream")
+    )
+    monkeypatch.setattr(
+        sim_daemon, "bridge_backend", lambda backend_class, **kw: backend_class
+    )
+    _run(argv, monkeypatch)
+    upstream_args: Any = SimpleNamespace()
+    http = testclient.TestClient(upstream_main.create_app(upstream_args, None))
+    answer = http.get("/api/bridge/daemon").json()
+    assert answer["launcher"] == "sim"
+    assert {key: answer[key] for key in report} == report
+
+
+@pytest.mark.parametrize(
     "argv",
     [
         ["--webcam-device", "1"],

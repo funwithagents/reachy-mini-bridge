@@ -98,6 +98,8 @@ uv run python -m reachy_mini_bridge.sim_daemon --headless --camera webcam
 
 or, from a config, `"daemon": {"spawn": "auto", "headless": false, "camera": {"source": "webcam"}}` (the control panel takes such a config). The webcam is treated as a fixed camera at the robot's resting eye: step aside and the head turns by the angle the webcam sees you at, stand still and it holds. `--webcam-hfov` is the camera's horizontal field of view (70° default, typical of a laptop camera) — set it to your camera's for an accurate aim. `--webcam-device` is an index on macOS, a `/dev/videoN` path on Linux; omitted, the default camera.
 
+The launcher reports how it runs at `GET /api/bridge/daemon` (`curl localhost:8000/api/bridge/daemon`), and a bridge session on it, borrowed or spawned, aims with the camera it reports: a config that says nothing about the camera needs no change. When `daemon.camera` differs, the daemon's values win and the session logs one warning naming both. Upstream's `reachy-mini-daemon --sim` has no such route, so there the config's `daemon.camera` applies. `bridge.daemon` holds what a session learned: the kinematics engine for any daemon, the camera, scene and displays for the bridge's sim launcher, `None` for what a daemon does not say.
+
 On macOS the app that launched the daemon (your terminal, or VS Code) needs **Camera** access in System Settings → Privacy & Security. Without it the daemon keeps running, logs `webcam relay (...): no frame ...` once with that hint, and retries every 5 s — granting the permission brings frames back without a restart. The test scene's portrait is invisible to a webcam; the automated face tests use the default rendered camera.
 
 ### Real robot

@@ -44,6 +44,10 @@ It runs in the bridge's own interpreter (`<this interpreter> -m reachy_mini_brid
 
 Round-robin rather than a retry on the same index: a retry alone is enough for an order that moves between opens, and the rotation also covers an order that is stable but offset from the monitor's. The check adds nothing to a build that opened the right camera, which is the common case on a Mac with no second camera. Off macOS (`avfvideosrc` is macOS-only), or with a non-numeric camera path, the wrapped start is upstream's start and nothing more.
 
+### The report
+
+The launcher serves `GET /api/bridge/daemon` on every run, through a `create_app` wrap: `{"launcher": "real"}` ([daemon.md](daemon.md) "What the daemon reports"). The engine a session needs comes from upstream's own route.
+
 ### What it is not
 
 The launcher does not touch readiness, which is the bridge's side of the same failure: [daemon.md](daemon.md)'s probe reads `GET /api/daemon/status` precisely so that it never makes the daemon rebuild its media pipeline — an SDK client built with `media_backend="no_media"` (upstream 1.10 / 1.11) does, and every rebuild was one more draw.

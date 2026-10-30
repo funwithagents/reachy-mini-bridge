@@ -46,7 +46,12 @@ from typing import Any, Protocol
 
 import numpy as np
 
-from .config import CAMERA_SOURCES, DEFAULT_WEBCAM_HFOV_DEG, SIM_DISPLAYS
+from .config import (
+    CAMERA_SOURCES,
+    DAEMON_INFO_ROUTE,
+    DEFAULT_WEBCAM_HFOV_DEG,
+    SIM_DISPLAYS,
+)
 from .sim_displays import (
     DISPLAYS_ROUTE_PREFIX,
     OVERLAY_SOURCE_SIZE,
@@ -87,6 +92,8 @@ _SOURCE_NAME = "camera"
 STREAM_SIZE = (1280, 720)
 STREAM_PORT = 5005
 _STREAM_FPS = 25
+# The scene upstream loads with no `--scene`.
+_UPSTREAM_DEFAULT_SCENE = "empty"
 # The scene's head-mounted camera upstream renders the stream from (its `CAMERA_REACHY`).
 EYE_CAMERA = "eye_camera"
 # MuJoCo's GL backend variable, read once when `mujoco` is imported; the headless render on
@@ -684,6 +691,13 @@ class _Camera:
     hfov_deg: float = DEFAULT_WEBCAM_HFOV_DEG
 
 
+def _camera_report(camera: _Camera) -> dict[str, Any]:
+    """The report's camera: a ``sim`` source's field of view is the scene's, not the
+    launcher's."""
+    webcam = camera.source == "webcam"
+    return {"source": camera.source, "hfov_deg": camera.hfov_deg if webcam else None}
+
+
 def bridge_backend(
     backend_class: type,
     *,
@@ -961,6 +975,15 @@ def run_sim_daemon(
         headless_render = offscreen_gl_backend()
         if headless_render is not None and not os.environ.get(_MUJOCO_GL, "").strip():
             os.environ[_MUJOCO_GL] = headless_render
+    # What the daemon says about itself (specs/daemon/daemon.md "What the daemon reports").
+    report = {
+        "launcher": "sim",
+        "camera": _camera_report(camera),
+        "scene": args.scene or _UPSTREAM_DEFAULT_SCENE,
+        "headless": args.headless,
+        "preload_datasets": args.preload_datasets,
+        "sim_displays": sorted(set(args.sim_display or ())),
+    }
     # The face markers view exists once the backend is built; the displays router,
     # mounted on the app before that, reaches the latest one through this holder.
     face_markers: list[FaceMarkersView] = []
@@ -980,6 +1003,7 @@ def run_sim_daemon(
 
     def create_app(*a: Any, **kw: Any) -> Any:
         app = original_create_app(*a, **kw)
+        app.get(DAEMON_INFO_ROUTE, tags=["bridge-daemon"])(lambda: report)
         if displays.face_markers:
             app.include_router(
                 build_router(lambda: face_markers[-1] if face_markers else None),

@@ -26,7 +26,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import urllib.error
 from contextlib import AsyncExitStack
+from http.client import HTTPException
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self, cast
 
@@ -37,7 +39,13 @@ from . import robot as _robot
 from .audio import MediaSession, SoundToken, TTSEngineSynthesizer, cancel_safe_step
 from .camera import CameraFeed, frame_reader
 from .concurrency import owned
-from .config import IDLE_MODES, UPSTREAM_KINEMATICS_ENGINES, ReachyMiniConfig
+from .config import (
+    DAEMON_INFO_ROUTE,
+    IDLE_MODES,
+    UPSTREAM_KINEMATICS_ENGINES,
+    ReachyMiniConfig,
+)
+from .daemon import DaemonInfo, daemon_differences, describe_camera
 from .errors import (
     BridgeError,
     GravityCompensationUnsupportedError,
@@ -183,6 +191,10 @@ class _MotorCommands:
             await asyncio.shield(asyncio.gather(self._tail, return_exceptions=True))
 
 
+# What a read of the daemon's HTTP API can raise: the transport, the status, the payload.
+_DAEMON_READ_ERRORS = (OSError, HTTPException, ValueError, KeyError, TypeError)
+
+
 def _daemon_kinematics_engine(robot: AnyReachyMini) -> str:
     """The kinematics engine the robot's daemon runs (e.g. ``"Placo"``). Blocking.
 
@@ -194,6 +206,28 @@ def _daemon_kinematics_engine(robot: AnyReachyMini) -> str:
         return robot.client.kinematics_engine
     info = _robot.fetch_daemon_json(robot, "/api/kinematics/info")
     return str(info["info"]["engine"])
+
+
+def _read_daemon_info(robot: AnyReachyMini) -> DaemonInfo:
+    """What the daemon says about itself (specs/daemon/daemon.md "What the daemon reports").
+    Blocking. A failed read is one warning and leaves its values unknown: it never stops
+    a session."""
+    engine = None
+    try:
+        engine = _daemon_kinematics_engine(robot)
+    except _DAEMON_READ_ERRORS as e:
+        _logger.warning("could not read the daemon's kinematics engine (%s)", e)
+    try:
+        try:
+            report = _robot.fetch_daemon_json(robot, DAEMON_INFO_ROUTE)
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                raise
+            report = None  # upstream's daemon, or an older launcher
+        return DaemonInfo.from_report(report, engine)
+    except _DAEMON_READ_ERRORS as e:
+        _logger.warning("could not read the daemon's report (%s): using the config", e)
+        return DaemonInfo(kinematics_engine=engine)
 
 
 # Stub emotion names for the fake/offline path (no HuggingFace access) — enough to
@@ -319,6 +353,7 @@ class ReachyMiniBridge:
         # reports while the switch is on.
         self._tracking_wanted = self._config.motion.tracking
         self._tracker: HeadTracker | None = None
+        self._daemon_info: DaemonInfo | None = None
         # The tracker's state (specs/motion/head_tracking.md "The head tracking report"):
         # readable at any time and outliving sessions, published by the tracker.
         self._head_tracking: Observable[HeadTrackingReport] = Observable(
@@ -410,6 +445,12 @@ class ReachyMiniBridge:
                 "the robot is only available while the bridge runs (`await bridge.start()`, or `async with ReachyMiniBridge(...)`)"
             )
         return self._robot
+
+    @property
+    def daemon(self) -> DaemonInfo | None:
+        """How the session's daemon runs, as it reports it; ``None`` outside a session
+        (specs/daemon/daemon.md "What the daemon reports")."""
+        return self._daemon_info
 
     @property
     def raw(self) -> AnyReachyMini:
@@ -519,8 +560,9 @@ class ReachyMiniBridge:
             if cfg.motion.wobbling:
                 await self.set_wobbling(True)
             motors_enabled = await self.get_motors_state() == "enabled"
+            info = await self._start_daemon_info(robot)
             self._tracker = HeadTracker(
-                self._camera_model(robot),
+                self._camera_model(robot, info),
                 history=motion.head_pose_history,
                 set_gaze=motion.set_gaze,
                 report=self._head_tracking,
@@ -550,7 +592,12 @@ class ReachyMiniBridge:
                 await detection.start()
             # The sim's face markers (specs/daemon/sim_displays.md): the faces sent to the
             # daemon's viewer. Exits after the motion session, before the detection loop.
-            if cfg.backend == "sim" and cfg.daemon.sim_displays.face_markers:
+            daemon_displays = info.sim_displays
+            if (
+                cfg.backend == "sim"
+                and cfg.daemon.sim_displays.face_markers
+                and (daemon_displays is None or "face_markers" in daemon_displays)
+            ):
                 tracker = self._tracker
                 publisher = FaceMarkerPublisher(
                     self._faces,
@@ -582,6 +629,7 @@ class ReachyMiniBridge:
             self._motion = None
             self._motor_commands = None
             self._tracker = None
+            self._daemon_info = None
             # The stack's callbacks read the mode records (wobbling left on is disabled),
             # so they are cleared only once it has unwound. The unwind is owned past any
             # further cancel (specs/core/bridge.md "Lifecycle": nothing is leaked) — a
@@ -618,6 +666,7 @@ class ReachyMiniBridge:
         self._motion = None
         self._motor_commands = None
         self._tracker = None
+        self._daemon_info = None
         self._recorded_moves_future = None
         try:
             interrupted = await owned(stack.aclose())
@@ -667,13 +716,37 @@ class ReachyMiniBridge:
         opts = self._config.effective_robot_options()
         return (str(opts.get("host", "127.0.0.1")), int(opts.get("port", 8000)))
 
-    def _camera_model(self, robot: AnyReachyMini) -> CameraModel:
+    def _camera_model(self, robot: AnyReachyMini, info: DaemonInfo) -> CameraModel:
         """The tracker's camera (specs/motion/head_tracking.md "The aim"): the bridge's pinhole
-        of the sim's camera source for a `sim` backend, the SDK client's calibration
-        otherwise."""
+        of the sim's camera for a `sim` backend — the daemon's, the config's when it
+        reports none — the SDK client's calibration otherwise."""
         if self._config.backend == "sim":
-            return CameraModel.for_sim(self._config.daemon.camera)
+            return CameraModel.for_sim(info.camera or self._config.daemon.camera)
         return CameraModel.for_robot(robot)
+
+    async def _start_daemon_info(self, robot: AnyReachyMini) -> DaemonInfo:
+        """Read the daemon, warn on what contradicts the config, and keep the answer for
+        ``bridge.daemon`` (specs/daemon/daemon.md "What the daemon reports")."""
+        if self._config.backend == "fake":
+            info = DaemonInfo()  # no daemon to ask
+        else:
+            info = await asyncio.to_thread(_read_daemon_info, robot)
+            differences = daemon_differences(info, self._config.daemon)
+            if differences:
+                _logger.warning(
+                    "the daemon and the config differ: %s; the daemon's values hold",
+                    "; ".join(differences),
+                )
+        camera = None if info.camera is None else describe_camera(info.camera)
+        _logger.info(
+            "daemon: launcher %s, kinematics engine %s, camera %s, scene %s",
+            info.launcher,
+            info.kinematics_engine,
+            camera,
+            info.scene,
+        )
+        self._daemon_info = info
+        return info
 
     def _on_face_observation(self, report: FaceReport | None) -> None:
         """The detection loop's every poll, undebounced: the tracker's feed while
