@@ -1,0 +1,10 @@
+{
+  "tts": {
+    "module": {
+      "type": "deepgram",
+      "api_key_env": "DEEPGRAM_API_KEY",
+      "model": "aura-2-aries-en"
+    },
+    "gain_db": -1.8
+  }
+}

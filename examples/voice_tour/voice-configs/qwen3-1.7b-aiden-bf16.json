@@ -1,0 +1,13 @@
+{
+  "tts": {
+    "module": {
+      "type": "qwen3",
+      "model": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+      "quant": "BF16",
+      "language": "english",
+      "voice": "aiden",
+      "instruct": "Speak at a brisk, lively pace."
+    },
+    "gain_db": -5.9
+  }
+}

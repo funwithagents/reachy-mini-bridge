@@ -1,0 +1,13 @@
+{
+  "tts": {
+    "module": {
+      "type": "cartesia",
+      "api_key_env": "CARTESIA_API_KEY",
+      "model": "sonic-3.6",
+      "voice_id": "e00d0e4c-a5c8-443f-a8a3-473eb9a62355",
+      "emotion": "happy",
+      "speed": 1.1
+    },
+    "gain_db": -5.8
+  }
+}
