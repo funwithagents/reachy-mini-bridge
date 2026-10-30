@@ -4,6 +4,8 @@ code:
   - src/reachy_mini_bridge/errors.py
 tests:
   - tests/test_daemon.py
+  - tests/test_bridge.py
+  - tests-e2e/test_motion.py
 ---
 
 # Daemon lifecycle (`daemon.py`)
@@ -131,6 +133,38 @@ On Windows, which has no sessions, the daemon is started with `CREATE_NEW_PROCES
 The request to exit is the signal upstream's server (uvicorn) shuts down on, so its lifespan shutdown — the robot put to sleep — runs before the process ends: `SIGTERM` on macOS and Linux; on Windows `CTRL_BREAK_EVENT` sent to the daemon's process group, which uvicorn handles as `SIGBREAK`. `terminate()` is not the request on Windows, where it is `TerminateProcess` and ends the daemon with no shutdown at all; it remains the fallback when the break cannot be sent (a bridge process with no console to send it through), and the kill after the grace is `TerminateProcess` as everywhere.
 
 **An orphaned daemon is the accepted trade-off of the detached session.** Because the daemon no longer shares the terminal's session, it outlives a bridge process that never reaches teardown — one that is `SIGKILL`ed, crashes without unwinding, or loses its terminal (the `SIGHUP` of a closed window goes to the terminal's session, which the daemon has left). Such a daemon keeps serving on its port, with the robot awake. On the next run, `daemon.spawn: "auto"` borrows it (`owned=False`, so the bridge never stops it) and `"always"` raises `DaemonError` naming the port already in use; `pkill -f reachy-mini-daemon` stops it by hand (on Windows, the Task Manager or `taskkill`). A parent-death watchdog is deferred (open question 1).
+
+### What the daemon reports
+
+The daemon a session runs on is the authority on how it runs, spawned or borrowed, so the session asks it. `bridge.daemon` holds the answer for the session, a frozen `DaemonInfo` (`None` outside a session, every field `None` on the `fake`, which has no daemon). `None` in a field is unknown: a daemon that does not say.
+
+| Field | Comes from | On a daemon no bridge launcher started |
+|---|---|---|
+| `kinematics_engine` | upstream's `GET /api/kinematics/info`, upstream's name for it (`AnalyticalKinematics`, `Placo`, `NN`) | known |
+| `launcher` | `GET /api/bridge/daemon` — `"sim"` or `"real"` | `None` |
+| `camera` (`SimCameraSettings`), `scene`, `headless`, `preload_datasets`, `sim_displays` | `GET /api/bridge/daemon`, sim launcher | `None`; upstream exposes none of them |
+
+**The route.** Both launchers serve `GET /api/bridge/daemon` on every run ([sim_daemon.md](sim_daemon.md), [real_daemon.md](real_daemon.md)). It carries only what upstream does not, so each value has one source. The hardware launcher answers `{"launcher": "real"}`; the sim launcher answers with its arguments:
+
+```json
+{"launcher": "sim", "camera": {"source": "webcam", "hfov_deg": 70.0},
+ "scene": "empty", "headless": true, "preload_datasets": true, "sim_displays": ["camera_overlay"]}
+```
+
+`camera.hfov_deg` is `null` for a `sim` source, whose field of view is the scene's. `scene` is the upstream scene name, a file's being the relative name that resolves to it. A client ignores a field it does not know, so the report can grow.
+
+**The read.** On a `real` or `sim` backend `start()` reads both, on a worker thread, once the robot is connected, and logs one `INFO` line.
+
+| The read | The session | Log, besides the `INFO` line |
+|---|---|---|
+| answers, agrees with the config | the daemon's values | none |
+| answers, contradicts the config | the daemon's values | one `WARNING` naming every contradiction |
+| 404 on the bridge's route (upstream's daemon, an older launcher) | those fields unknown | none |
+| unreachable, or a malformed answer | those fields unknown | one `WARNING` per read; the session starts |
+
+**What contradicts.** A known value against the config: the engine, the camera (`source`, and `hfov_deg` for a `webcam`; `device` plays no part in the model), a scene the config names (a file by its stem), a display the config turns on and the daemon does not run. `headless`, `preload_datasets` and a display the config leaves off are reported and never compared: they change nothing for a session, and their defaults would warn on every borrowed viewer daemon.
+
+**What reads it.** The tracker's camera ([head_tracking.md](../motion/head_tracking.md) "The sim's camera") and the face marker publisher, which starts only on a daemon that runs the display or does not say. The gravity-compensation guard reads the engine afresh at the call and refuses when it cannot ([bridge.md](../core/bridge.md) "Motors"): a stale or unknown engine there would risk the connection. The report describes a daemon and configures nothing: changing a borrowed daemon means restarting it.
 
 ### One implementation, two users
 

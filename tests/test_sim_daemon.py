@@ -1009,19 +1009,32 @@ def test_the_displays_router_is_mounted_with_face_markers_only(
 @pytest.mark.parametrize(
     ("argv", "report"),
     [
-        ([], {"source": "sim", "hfov_deg": None}),
-        (["--camera", "webcam"], {"source": "webcam", "hfov_deg": 70.0}),
+        (
+            ["--headless"],
+            {"camera": {"source": "sim", "hfov_deg": None}, "headless": True},
+        ),
+        (
+            ["--camera", "webcam"],
+            {"camera": {"source": "webcam", "hfov_deg": 70.0}, "headless": False},
+        ),
         (
             ["--camera", "webcam", "--webcam-hfov", "88"],
-            {"source": "webcam", "hfov_deg": 88.0},
+            {"camera": {"source": "webcam", "hfov_deg": 88.0}},
+        ),
+        (["--scene", "minimal"], {"scene": "minimal"}),
+        ([], {"scene": "empty", "preload_datasets": True, "sim_displays": []}),
+        (["--no-preload-datasets"], {"preload_datasets": False}),
+        (
+            ["--sim-display", "robot_gaze", "--sim-display", "camera_overlay"],
+            {"sim_displays": ["camera_overlay", "robot_gaze"]},
         ),
     ],
 )
-def test_the_launcher_reports_its_camera(
+def test_the_launcher_reports_how_it_runs(
     argv: list[str], report: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`GET /api/sim/camera` answers with the launcher's own arguments, with no display
-    on: every run serves it (specs/daemon/sim_daemon.md "The camera report")."""
+    """`GET /api/bridge/daemon` answers with the launcher's own arguments: every run
+    serves it (specs/daemon/daemon.md "What the daemon reports")."""
     fastapi = pytest.importorskip("fastapi")
     testclient = pytest.importorskip("fastapi.testclient")
     from reachy_mini.daemon.app import main as upstream_main
@@ -1035,7 +1048,9 @@ def test_the_launcher_reports_its_camera(
     _run(argv, monkeypatch)
     upstream_args: Any = SimpleNamespace()
     http = testclient.TestClient(upstream_main.create_app(upstream_args, None))
-    assert http.get("/api/sim/camera").json() == report
+    answer = http.get("/api/bridge/daemon").json()
+    assert answer["launcher"] == "sim"
+    assert {key: answer[key] for key in report} == report
 
 
 @pytest.mark.parametrize(

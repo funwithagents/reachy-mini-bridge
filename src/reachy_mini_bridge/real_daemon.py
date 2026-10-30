@@ -25,6 +25,8 @@ import time
 from collections.abc import Callable, Sequence
 from typing import Any
 
+from .config import DAEMON_INFO_ROUTE
+
 __all__ = [
     "install_macos_camera_check",
     "is_robot_camera",
@@ -216,6 +218,12 @@ def _parser(prog: str) -> argparse.ArgumentParser:
     return parser
 
 
+def _report() -> dict[str, Any]:
+    """The answer of ``GET /api/bridge/daemon`` (specs/daemon/daemon.md "What the daemon
+    reports"): the rest of the report is the sim's."""
+    return {"launcher": "real"}
+
+
 def run_real_daemon(
     argv: Sequence[str] | None = None,
     *,
@@ -225,13 +233,21 @@ def run_real_daemon(
 
     Upstream's ``main()`` parses ``sys.argv``; this rewrites it to
     ``--[no-]preload-datasets`` plus anything unrecognised (``--kinematics-engine Placo``,
-    say), installs the check, and calls ``main()``.
+    say), installs the check and the report's route, and calls ``main()``.
     """
     args, passthrough = _parser(prog).parse_known_args(argv)
 
     from reachy_mini.daemon.app import main as upstream_main
 
     install_macos_camera_check()
+    original_create_app = upstream_main.create_app
+
+    def create_app(*a: Any, **kw: Any) -> Any:
+        app = original_create_app(*a, **kw)
+        app.get(DAEMON_INFO_ROUTE, tags=["bridge-daemon"])(_report)
+        return app
+
+    upstream_main.create_app = create_app
     sys.argv = [
         "reachy-mini-daemon",
         "--preload-datasets" if args.preload_datasets else "--no-preload-datasets",
