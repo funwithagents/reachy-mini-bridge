@@ -1007,6 +1007,38 @@ def test_the_displays_router_is_mounted_with_face_markers_only(
 
 
 @pytest.mark.parametrize(
+    ("argv", "report"),
+    [
+        ([], {"source": "sim", "hfov_deg": None}),
+        (["--camera", "webcam"], {"source": "webcam", "hfov_deg": 70.0}),
+        (
+            ["--camera", "webcam", "--webcam-hfov", "88"],
+            {"source": "webcam", "hfov_deg": 88.0},
+        ),
+    ],
+)
+def test_the_launcher_reports_its_camera(
+    argv: list[str], report: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`GET /api/sim/camera` answers with the launcher's own arguments, with no display
+    on: every run serves it (specs/daemon/sim_daemon.md "The camera report")."""
+    fastapi = pytest.importorskip("fastapi")
+    testclient = pytest.importorskip("fastapi.testclient")
+    from reachy_mini.daemon.app import main as upstream_main
+
+    monkeypatch.setattr(
+        upstream_main, "create_app", lambda *a, **kw: fastapi.FastAPI(title="upstream")
+    )
+    monkeypatch.setattr(
+        sim_daemon, "bridge_backend", lambda backend_class, **kw: backend_class
+    )
+    _run(argv, monkeypatch)
+    upstream_args: Any = SimpleNamespace()
+    http = testclient.TestClient(upstream_main.create_app(upstream_args, None))
+    assert http.get("/api/sim/camera").json() == report
+
+
+@pytest.mark.parametrize(
     "argv",
     [
         ["--webcam-device", "1"],

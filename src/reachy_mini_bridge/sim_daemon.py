@@ -46,7 +46,12 @@ from typing import Any, Protocol
 
 import numpy as np
 
-from .config import CAMERA_SOURCES, DEFAULT_WEBCAM_HFOV_DEG, SIM_DISPLAYS
+from .config import (
+    CAMERA_SOURCES,
+    DEFAULT_WEBCAM_HFOV_DEG,
+    SIM_CAMERA_ROUTE,
+    SIM_DISPLAYS,
+)
 from .sim_displays import (
     DISPLAYS_ROUTE_PREFIX,
     OVERLAY_SOURCE_SIZE,
@@ -684,6 +689,13 @@ class _Camera:
     hfov_deg: float = DEFAULT_WEBCAM_HFOV_DEG
 
 
+def _camera_report(camera: _Camera) -> dict[str, Any]:
+    """The answer of ``GET /api/sim/camera`` (specs/daemon/sim_daemon.md "The camera
+    report"): a ``sim`` source's field of view is the scene's, not the launcher's."""
+    webcam = camera.source == "webcam"
+    return {"source": camera.source, "hfov_deg": camera.hfov_deg if webcam else None}
+
+
 def bridge_backend(
     backend_class: type,
     *,
@@ -980,6 +992,7 @@ def run_sim_daemon(
 
     def create_app(*a: Any, **kw: Any) -> Any:
         app = original_create_app(*a, **kw)
+        app.get(SIM_CAMERA_ROUTE, tags=["sim-camera"])(lambda: _camera_report(camera))
         if displays.face_markers:
             app.include_router(
                 build_router(lambda: face_markers[-1] if face_markers else None),

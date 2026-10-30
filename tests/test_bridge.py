@@ -11,11 +11,15 @@ import asyncio
 import inspect
 import itertools
 import json
+import logging
+import math
 import sys
 import threading
 import time
+import urllib.error
 import wave
 from collections.abc import AsyncIterator, Awaitable, Callable
+from email.message import Message
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -35,6 +39,7 @@ from reachy_mini_bridge.config import (
     FaceDetectionSettings,
     MotionSettings,
     ReachyMiniConfig,
+    SimCameraSettings,
     SimDisplaySettings,
 )
 from reachy_mini_bridge.errors import (
@@ -47,7 +52,7 @@ from reachy_mini_bridge.errors import (
 )
 from reachy_mini_bridge.face_detection import FaceReport, PixelFace
 from reachy_mini_bridge.fake_reachy_mini import FAKE_FRAME_HZ, FakeReachyMini
-from reachy_mini_bridge.head_tracking import HeadTrackingReport
+from reachy_mini_bridge.head_tracking import CameraModel, HeadTrackingReport
 from reachy_mini_bridge.motion import (
     BLEND_S,
     NEUTRAL_HEAD,
@@ -355,6 +360,24 @@ class _Recorder:
 def _install(monkeypatch: pytest.MonkeyPatch, rec: _Recorder) -> None:
     monkeypatch.setattr(bridge_module._daemon, "start_daemon", rec.start_daemon)
     monkeypatch.setattr(bridge_module, "build_robot", rec.build_robot)
+    _daemon_answers(monkeypatch, _no_route())
+
+
+def _no_route() -> urllib.error.HTTPError:
+    """What upstream's daemon answers on a route of the bridge's launcher."""
+    return urllib.error.HTTPError("http://daemon", 404, "Not Found", Message(), None)
+
+
+def _daemon_answers(monkeypatch: pytest.MonkeyPatch, answer: object) -> None:
+    """The sim daemon's HTTP port: `answer`, raised when it is an exception."""
+
+    def fetch(robot: object, path: str) -> object:
+        assert path == "/api/sim/camera"
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(robot_module, "fetch_daemon_json", fetch)
 
 
 _SPAWNING = ReachyMiniConfig(backend="sim", daemon=DaemonConfig(spawn="auto"))
@@ -1865,6 +1888,154 @@ def test_camera_followers_run_through_the_session_and_a_cancel_owns_only_itself(
 # --- faces: the custom detection source (specs/vision/user_perception.md) --------------------
 
 
+# --- the sim's camera (specs/motion/head_tracking.md "The sim's camera") ----------------------
+
+_SIM = SimCameraSettings(source="sim")
+_WEBCAM_70 = SimCameraSettings(source="webcam", hfov_deg=70.0)
+_WEBCAM_40 = SimCameraSettings(source="webcam", hfov_deg=40.0)
+_REPORTS_SIM = {"source": "sim", "hfov_deg": None}
+_REPORTS_WEBCAM_40 = {"source": "webcam", "hfov_deg": 40.0}
+
+
+def _sim_on_camera(
+    monkeypatch: pytest.MonkeyPatch, configured: SimCameraSettings, answer: object
+) -> ReachyMiniConfig:
+    """A `sim` session whose robot is the fake, on a daemon answering `answer`."""
+    monkeypatch.setattr(
+        bridge_module, "build_robot", lambda backend, **kw: FakeReachyMini()
+    )
+    _daemon_answers(monkeypatch, answer)
+    return ReachyMiniConfig(backend="sim", daemon=DaemonConfig(camera=configured))
+
+
+@pytest.mark.parametrize(
+    ("configured", "answer", "used", "warning"),
+    [
+        # Same as the config: the daemon's, quietly; a `sim` source's hfov plays no part.
+        (_SIM, _REPORTS_SIM, _SIM, None),
+        (SimCameraSettings(source="sim", hfov_deg=50.0), _REPORTS_SIM, _SIM, None),
+        (_WEBCAM_40, _REPORTS_WEBCAM_40, _WEBCAM_40, None),
+        # Differs from the config: the daemon's, naming both.
+        (
+            _SIM,
+            _REPORTS_WEBCAM_40,
+            _WEBCAM_40,
+            "camera is webcam (40° hfov), the config says sim",
+        ),
+        (
+            _WEBCAM_40,
+            _REPORTS_SIM,
+            _SIM,
+            "camera is sim, the config says webcam (40° hfov)",
+        ),
+        (
+            _WEBCAM_70,
+            _REPORTS_WEBCAM_40,
+            _WEBCAM_40,
+            "camera is webcam (40° hfov), the config says webcam (70° hfov)",
+        ),
+        # A report that grew: what the bridge does not know is ignored.
+        (
+            _WEBCAM_40,
+            {**_REPORTS_WEBCAM_40, "effective_hfov_deg": 38.0},
+            _WEBCAM_40,
+            None,
+        ),
+        # Upstream's daemon, or an older launcher: the config's, as a matter of course.
+        (_WEBCAM_70, _no_route(), _WEBCAM_70, None),
+        # Unreachable, or a broken daemon: the config's, and the session starts.
+        (_WEBCAM_70, urllib.error.URLError("refused"), _WEBCAM_70, "could not read"),
+        (
+            _WEBCAM_70,
+            urllib.error.HTTPError("http://daemon", 500, "Boom", Message(), None),
+            _WEBCAM_70,
+            "could not read",
+        ),
+        (_WEBCAM_70, TimeoutError("timed out"), _WEBCAM_70, "could not read"),
+        (_WEBCAM_70, ["webcam"], _WEBCAM_70, "could not read"),
+        (_WEBCAM_70, {"hfov_deg": 40.0}, _WEBCAM_70, "could not read"),
+        (
+            _WEBCAM_70,
+            {"source": "stereo", "hfov_deg": 40.0},
+            _WEBCAM_70,
+            "could not read",
+        ),
+        (
+            _WEBCAM_70,
+            {"source": "webcam", "hfov_deg": None},
+            _WEBCAM_70,
+            "could not read",
+        ),
+        (_WEBCAM_70, {"source": "webcam"}, _WEBCAM_70, "could not read"),
+    ],
+)
+def test_the_tracker_uses_the_camera_the_daemon_reports(
+    configured: SimCameraSettings,
+    answer: object,
+    used: SimCameraSettings,
+    warning: str | None,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """One row of the spec's table per case: the session starts on the camera model of
+    `used`, logs one line naming it and warns only when the spec says so."""
+    config = _sim_on_camera(monkeypatch, configured, answer)
+
+    async def run() -> CameraModel:
+        async with ReachyMiniBridge(config) as bridge:
+            tracker = bridge._tracker
+            assert tracker is not None
+            return tracker.camera
+
+    with caplog.at_level(logging.INFO, logger="reachy_mini_bridge.bridge"):
+        camera = asyncio.run(run())
+
+    expected = CameraModel.for_sim(used)
+    assert camera.fixed == expected.fixed
+    assert camera.K == pytest.approx(expected.K)
+    records = [r for r in caplog.records if r.name == "reachy_mini_bridge.bridge"]
+    warnings = [r.getMessage() for r in records if r.levelno == logging.WARNING]
+    assert len(warnings) == (0 if warning is None else 1)
+    if warning is not None:
+        assert warning in warnings[0]
+    named = [r for r in records if "head tracker camera" in r.getMessage()]
+    assert len(named) == 1
+
+
+def _settled_yaw(config: ReachyMiniConfig, x: float) -> float:
+    """Where the head ends up in a `sim` session with a face shown at `x`."""
+    scene = _Scene([_pixel_face(x)])
+    config.face_detection = FaceDetectionSettings(
+        detector="custom", enabled=True, face_detector=scene.detector
+    )
+    config.motion = MotionSettings(tracking=True, idle="hold")
+
+    async def run() -> list[float]:
+        async with ReachyMiniBridge(config) as bridge:
+            await bridge.set_motors_state("enabled")
+            await asyncio.sleep(2.5)
+            heads = [h for h, _, _ in _fake(bridge).targets if h is not None]
+            return [_yaw_deg(h) for h in heads[-30:]]
+
+    yaws = asyncio.run(run())
+    assert max(yaws) - min(yaws) < 0.5  # it settled: no feedback runs it away
+    return yaws[-1]
+
+
+def test_a_silent_config_on_a_webcam_daemon_tracks_with_a_fixed_camera(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The failure the report removes: a config saying nothing about a daemon running a
+    40° webcam. The head settles at the angle that webcam sees the face at, the same
+    as under a config that names it, instead of running on as a head-mounted camera."""
+    silent = _sim_on_camera(monkeypatch, _SIM, _REPORTS_WEBCAM_40)
+    named = _sim_on_camera(monkeypatch, _WEBCAM_40, _REPORTS_WEBCAM_40)
+    yaw = _settled_yaw(silent, 0.5)
+    seen_at = math.degrees(math.atan(math.tan(math.radians(20.0)) * 0.5))
+    assert abs(yaw) == pytest.approx(seen_at, abs=2.0)
+    assert yaw == pytest.approx(_settled_yaw(named, 0.5), abs=0.5)
+
+
 # --- the sim's face markers (specs/daemon/sim_displays.md) ------------------------------------
 
 
@@ -1931,6 +2102,7 @@ def displays_daemon(monkeypatch: pytest.MonkeyPatch) -> Any:
     monkeypatch.setattr(
         bridge_module, "build_robot", lambda backend, **kw: FakeReachyMini()
     )
+    _daemon_answers(monkeypatch, _no_route())
     daemon = _DisplaysDaemon()
     yield daemon
     daemon.close()

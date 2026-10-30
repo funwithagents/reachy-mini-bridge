@@ -43,7 +43,7 @@ def build_robot(backend: str = "real", **opts: Any) -> AnyReachyMini:
     return ReachyMini(use_sim=(backend == "sim"), **opts)
 
 
-def fetch_daemon_json(robot: ReachyMini, path: str) -> Any:
+def fetch_daemon_json(robot: AnyReachyMini, path: str) -> Any:
     """GET ``path`` (``/api/...``) from the robot's daemon over HTTP and decode the JSON body.
 
     Blocking; the host and port are the ones the SDK client connected to. Raises on an

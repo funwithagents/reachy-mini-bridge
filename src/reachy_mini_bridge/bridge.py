@@ -26,7 +26,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import urllib.error
 from contextlib import AsyncExitStack
+from http.client import HTTPException
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self, cast
 
@@ -37,7 +39,13 @@ from . import robot as _robot
 from .audio import MediaSession, SoundToken, TTSEngineSynthesizer, cancel_safe_step
 from .camera import CameraFeed, frame_reader
 from .concurrency import owned
-from .config import IDLE_MODES, UPSTREAM_KINEMATICS_ENGINES, ReachyMiniConfig
+from .config import (
+    IDLE_MODES,
+    SIM_CAMERA_ROUTE,
+    UPSTREAM_KINEMATICS_ENGINES,
+    ReachyMiniConfig,
+    SimCameraSettings,
+)
 from .errors import (
     BridgeError,
     GravityCompensationUnsupportedError,
@@ -194,6 +202,38 @@ def _daemon_kinematics_engine(robot: AnyReachyMini) -> str:
         return robot.client.kinematics_engine
     info = _robot.fetch_daemon_json(robot, "/api/kinematics/info")
     return str(info["info"]["engine"])
+
+
+def _daemon_sim_camera(robot: AnyReachyMini) -> SimCameraSettings | None:
+    """The camera the sim daemon reports, ``None`` for a daemon with no such route. Blocking.
+
+    Raises on an unreachable daemon or a malformed answer. Fields it does not know are
+    ignored, so the report can grow (specs/daemon/sim_daemon.md "The camera report").
+    """
+    try:
+        report = _robot.fetch_daemon_json(robot, SIM_CAMERA_ROUTE)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None
+        raise
+    fields = {"source": report["source"]}
+    if report["source"] == "webcam":
+        fields["hfov_deg"] = report["hfov_deg"]
+    return SimCameraSettings.from_dict(fields)
+
+
+def _same_sim_camera(a: SimCameraSettings, b: SimCameraSettings) -> bool:
+    """Whether the two give one camera model: ``device`` plays no part in it, and
+    ``hfov_deg`` none for a ``sim`` source."""
+    if a.source != b.source:
+        return False
+    return a.source != "webcam" or a.hfov_deg == b.hfov_deg
+
+
+def _describe_sim_camera(camera: SimCameraSettings) -> str:
+    if camera.source == "webcam":
+        return f"webcam ({camera.hfov_deg:g}° hfov)"
+    return camera.source
 
 
 # Stub emotion names for the fake/offline path (no HuggingFace access) — enough to
@@ -520,7 +560,7 @@ class ReachyMiniBridge:
                 await self.set_wobbling(True)
             motors_enabled = await self.get_motors_state() == "enabled"
             self._tracker = HeadTracker(
-                self._camera_model(robot),
+                await self._camera_model(robot),
                 history=motion.head_pose_history,
                 set_gaze=motion.set_gaze,
                 report=self._head_tracking,
@@ -667,13 +707,37 @@ class ReachyMiniBridge:
         opts = self._config.effective_robot_options()
         return (str(opts.get("host", "127.0.0.1")), int(opts.get("port", 8000)))
 
-    def _camera_model(self, robot: AnyReachyMini) -> CameraModel:
+    async def _camera_model(self, robot: AnyReachyMini) -> CameraModel:
         """The tracker's camera (specs/motion/head_tracking.md "The aim"): the bridge's pinhole
-        of the sim's camera source for a `sim` backend, the SDK client's calibration
-        otherwise."""
+        of the sim's camera for a `sim` backend, the SDK client's calibration otherwise."""
         if self._config.backend == "sim":
-            return CameraModel.for_sim(self._config.daemon.camera)
+            return CameraModel.for_sim(await self._sim_camera(robot))
         return CameraModel.for_robot(robot)
+
+    async def _sim_camera(self, robot: AnyReachyMini) -> SimCameraSettings:
+        """The camera the daemon reports, the config's when it reports none; a failed
+        read never stops the session (specs/motion/head_tracking.md "The sim's camera")."""
+        configured = self._config.daemon.camera
+        camera, origin = configured, "the config"
+        try:
+            reported = await asyncio.to_thread(_daemon_sim_camera, robot)
+        except (OSError, HTTPException, ValueError, KeyError, TypeError) as e:
+            _logger.warning(
+                "could not read the sim daemon's camera (%s): using the config's", e
+            )
+        else:
+            if reported is not None:
+                if not _same_sim_camera(reported, configured):
+                    _logger.warning(
+                        "the sim daemon's camera is %s, the config says %s: using the daemon's",
+                        _describe_sim_camera(reported),
+                        _describe_sim_camera(configured),
+                    )
+                camera, origin = reported, "the daemon"
+        _logger.info(
+            "head tracker camera: %s, from %s", _describe_sim_camera(camera), origin
+        )
+        return camera
 
     def _on_face_observation(self, report: FaceReport | None) -> None:
         """The detection loop's every poll, undebounced: the tracker's feed while

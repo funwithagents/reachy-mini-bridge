@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import urllib.error
 from typing import Any
 
 import numpy as np
@@ -29,7 +30,10 @@ import pytest
 from reachy_mini import ReachyMini
 
 from reachy_mini_bridge.bridge import _daemon_kinematics_engine
-from reachy_mini_bridge.config import UPSTREAM_KINEMATICS_ENGINES
+from reachy_mini_bridge.config import (
+    SIM_CAMERA_ROUTE,
+    UPSTREAM_KINEMATICS_ENGINES,
+)
 from reachy_mini_bridge.motion import (
     BLEND_S,
     BREATH_REST_S,
@@ -37,10 +41,29 @@ from reachy_mini_bridge.motion import (
     IdleMove,
     IdleOffsets,
 )
-from reachy_mini_bridge.testing import LiveBridge
+from reachy_mini_bridge.robot import fetch_daemon_json
+from reachy_mini_bridge.testing import LiveBridge, _daemon
 from reachy_mini_bridge.testing._daemon import kinematics_engine
 
 pytestmark = pytest.mark.requires("motion")
+
+
+def test_sim_daemon_reports_its_camera(live_bridge: LiveBridge) -> None:
+    """A spawned sim daemon answers `GET /api/sim/camera` with its rendered camera, and
+    the session's tracker holds the head-mounted model built from it. A real robot has
+    no such route; a borrowed upstream daemon answers 404."""
+    bridge, _caps = live_bridge
+    if _daemon.backend() != "sim":
+        pytest.skip("the camera report is the sim launcher's")
+    try:
+        report = fetch_daemon_json(bridge.robot, SIM_CAMERA_ROUTE)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            pytest.skip("a daemon without the bridge's launcher")
+        raise
+    assert report == {"source": "sim", "hfov_deg": None}
+    tracker = bridge._tracker
+    assert tracker is not None and not tracker.camera.fixed
 
 
 def test_daemon_runs_the_engine_the_run_asked_for(live_bridge: LiveBridge) -> None:

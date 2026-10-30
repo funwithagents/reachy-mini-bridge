@@ -94,7 +94,7 @@ The daemon turns every head pose into motor angles through one kinematics engine
 
 Installing the `placo` extra changes nothing by itself: the engine is this field's choice. A stock wireless robot's own daemon runs the analytical engine ([backends-and-capabilities.md](backends-and-capabilities.md)); to run on another, start that daemon yourself with upstream's `--kinematics-engine` flag. What the bridge learned about the three engines is in [../internals/upstream-sdk-notes.md](../internals/upstream-sdk-notes.md).
 
-**`daemon.camera`** — the sim's eyes ([specs/daemon/sim_daemon.md](../../specs/daemon/sim_daemon.md)):
+**`daemon.camera`** — the sim's eyes ([specs/daemon/sim_daemon.md](../../specs/daemon/sim_daemon.md)). The block launches a daemon the bridge spawns. A daemon that reports its camera, as every run of the bridge's launcher does, wins over the block, with a warning when the two differ; the block is what the tracker uses on a daemon that reports none, such as upstream's `reachy-mini-daemon --sim`:
 
 | Field | Default | What it does |
 |---|---|---|

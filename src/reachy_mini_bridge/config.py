@@ -57,6 +57,8 @@ UPSTREAM_KINEMATICS_ENGINES = {
 }
 # What the sim daemon's camera stream carries (specs/daemon/sim_daemon.md "Camera sources").
 CAMERA_SOURCES = ("sim", "webcam")
+# Where a bridge launcher reports its camera (specs/daemon/sim_daemon.md "The camera report").
+SIM_CAMERA_ROUTE = "/api/sim/camera"
 DEFAULT_WEBCAM_HFOV_DEG = 70.0
 # The sim displays (specs/core/config.md `daemon.sim_displays`; specs/daemon/sim_displays.md):
 # each name is a field of SimDisplaySettings and a `--sim-display` value of the sim
@@ -224,8 +226,10 @@ class DaemonConfig:
     MuJoCo backend solves its targets through the same engine as the hardware one
     (specs/core/config.md "Kinematics engines"); the default is upstream's, and
     ``placo`` needs the ``placo`` extra, checked when the daemon is launched
-    (specs/daemon/daemon.md). Like every field here, it applies only to a daemon the
-    bridge spawns — a borrowed one runs whatever it was started with.
+    (specs/daemon/daemon.md). Every field here applies only to a daemon the bridge
+    spawns — a borrowed one runs whatever it was started with — but for ``camera``,
+    which is also the fallback for a daemon that reports no camera of its own
+    (specs/motion/head_tracking.md "The sim's camera").
     """
 
     spawn: str = "never"
