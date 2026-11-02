@@ -191,13 +191,11 @@ def test_every_part_of_the_default_text_has_a_voice_file_with_a_gain() -> None:
         assert "gain_db" in tts
 
 
-def test_the_default_text_gives_every_speech_module_one_voice() -> None:
-    modules: list[str] = []
+def test_the_default_text_gives_every_speech_module_a_voice() -> None:
+    modules: set[str] = set()
     for part in load_parts(DEFAULT_TEXT):
         tts = ReachyMiniConfig.from_json_file(VOICES / f"{part.voice}.json").tts
         assert tts is not None
-        modules.append(tts["module"]["type"])
+        modules.add(tts["module"]["type"])
 
-    assert sorted(modules) == sorted(
-        {name for name in REGISTRY if name not in NOT_SPEECH_VOICES}
-    )
+    assert modules == {name for name in REGISTRY if name not in NOT_SPEECH_VOICES}

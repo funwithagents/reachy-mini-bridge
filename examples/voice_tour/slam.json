@@ -13,7 +13,10 @@
       "label": "Piper · Ryan",
       "lines": [
         "I don't have a voice of my own, just a text and a voice on loan.",
-        "Letters into phonemes, phonemes into tone."
+        {
+          "text": "Letters into phonemes, phonemes into tone.",
+          "pause_s": 0.4
+        }
       ]
     },
     {
@@ -22,7 +25,7 @@
       "lines": [
         {
           "text": "A model takes your sentence apart and builds it back as sound.",
-          "pause_s": 0.3
+          "pause_s": 0.1
         },
         "It finds where it rises, where it breaks, where the meaning comes around."
       ]
@@ -32,10 +35,10 @@
       "label": "Qwen3 · Aiden",
       "lines": [
         {
-          "text": "Nine motors and one loop hold my pose as best they can.",
+          "text": "A local model, yet it listens when I tell it how to play.",
           "pause_s": 0.0
         },
-        "When the sound comes out I move, and that's always been the plan."
+        "I asked for brisk and lively, and it reads my lines that way."
       ]
     },
     {

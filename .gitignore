@@ -21,6 +21,3 @@ dist/
 
 # OS cruft
 .DS_Store
-
-# The voice tour's kokoro int8 export, downloaded by hand (examples/voice_tour/README.md)
-examples/voice_tour/models/
