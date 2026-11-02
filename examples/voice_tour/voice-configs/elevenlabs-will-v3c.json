@@ -1,0 +1,11 @@
+{
+  "tts": {
+    "module": {
+      "type": "elevenlabs",
+      "api_key_env": "ELEVENLABS_API_KEY",
+      "model": "eleven_v3_conversational",
+      "voice_id": "bIHbv24MWmeRgasZH58o"
+    },
+    "gain_db": -3.4
+  }
+}

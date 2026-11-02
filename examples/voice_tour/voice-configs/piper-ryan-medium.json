@@ -1,0 +1,9 @@
+{
+  "tts": {
+    "module": {
+      "type": "piper",
+      "voice": "en_US-ryan-medium"
+    },
+    "gain_db": -7.6
+  }
+}

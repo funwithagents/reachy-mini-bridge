@@ -1,0 +1,11 @@
+{
+  "tts": {
+    "module": {
+      "type": "gemini",
+      "api_key_env": "GEMINI_API_KEY",
+      "model": "gemini-3.8-flash-lite-tts",
+      "voice": "Achird"
+    },
+    "gain_db": -4.3
+  }
+}

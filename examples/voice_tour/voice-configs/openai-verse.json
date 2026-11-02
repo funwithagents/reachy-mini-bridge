@@ -1,0 +1,11 @@
+{
+  "tts": {
+    "module": {
+      "type": "openai",
+      "api_key_env": "OPENAI_API_KEY",
+      "model": "gpt-realtime-2.1-mini",
+      "voice": "verse"
+    },
+    "gain_db": 2.2
+  }
+}

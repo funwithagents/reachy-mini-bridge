@@ -1,0 +1,10 @@
+{
+  "tts": {
+    "module": {
+      "type": "pocket",
+      "voice": "george",
+      "language": "english_2026-10"
+    },
+    "gain_db": -1.6
+  }
+}

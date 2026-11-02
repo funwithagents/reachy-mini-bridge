@@ -1,0 +1,11 @@
+{
+  "tts": {
+    "module": {
+      "type": "mistral",
+      "api_key_env": "MISTRAL_API_KEY",
+      "model": "voxtral-mini-tts-3-0",
+      "voice_id": "01a14675-dc1f-7473-9675-43fb05d7d230"
+    },
+    "gain_db": 0.4
+  }
+}

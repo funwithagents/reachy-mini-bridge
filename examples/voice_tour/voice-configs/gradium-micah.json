@@ -1,0 +1,10 @@
+{
+  "tts": {
+    "module": {
+      "type": "gradium",
+      "api_key_env": "GRADIUM_API_KEY",
+      "voice_id": "40QrMVgAxFiUnP9f"
+    },
+    "gain_db": -0.5
+  }
+}
