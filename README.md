@@ -2,7 +2,7 @@
 
 A Python library that sits between the [Reachy Mini](https://github.com/pollen-robotics/reachy_mini) robot and whatever drives it — a script, a service, or an LLM agent. It wraps the upstream `reachy_mini` SDK behind one async, intent-level API (`ReachyMiniBridge`) whose methods speak in human terms — *enable the motors, play "happy", follow my face, say this, give me the mic, give me a camera frame* — and runs the same code unchanged against the real robot, the MuJoCo simulator, or an offline fake.
 
-**Start here:** [docs/getting-started.md](docs/getting-started.md) — your first application, on the offline fake, then on a simulator or a robot; [docs/index.md](docs/index.md) — the documentation by task. The [quick start](#quick-start) below is the shortest program; [what the bridge gives you](#what-the-bridge-gives-you) is the feature list.
+**Start here:** [docs/getting-started.md](docs/getting-started.md) — your first application, on the offline fake, then on a simulator or a robot; [docs/index.md](docs/index.md) — the documentation by task. Below, [what the bridge gives you](#what-the-bridge-gives-you) is the feature list, the [quick start](#quick-start) the shortest program, and the [examples](#examples) what you can run from a checkout.
 
 ## Project status
 
@@ -12,6 +12,26 @@ A Python library that sits between the [Reachy Mini](https://github.com/pollen-r
 
 > [!TIP]
 > **Feedback is welcome: open an issue.** Bug reports, questions, and what you would want the API or the config to do differently all go to [the issue tracker](https://github.com/funwithagents/reachy-mini-bridge/issues). The project is developed by one person and is not taking pull requests yet; [CONTRIBUTING.md](CONTRIBUTING.md) says why and how to help anyway.
+
+## What the bridge gives you
+
+The upstream `reachy_mini` SDK gives full, low-level access to the robot, and the bridge keeps it: `bridge.robot` is the native `ReachyMini`. On top of it, the bridge adds what a conversational application otherwise has to build itself — one feature per row.
+
+| Feature | What you get |
+|---|---|
+| **One async API in human units** | A small set of `async` methods that speak the way a person or an agent does — *enable the motors, play "happy", say this, follow my face* — in named emotions, degrees and seconds rather than pose matrices and radians; the same code runs on the robot, the MuJoCo simulator and an offline fake. |
+| **One JSON configuration** | Backend, connection, daemon, voice, detector and idle behaviour in one file; changing `backend` moves it between the robot, the simulator and the fake. |
+| **Everything is cancellable** | Cancel the task awaiting `say`, `play_sound`, `play_emotion` or the microphone stream and the effect stops at once — speech flushed, the file stopped, the move no longer commanded — with the robot ready for the next call. |
+| **Audio input** | `async for chunk in bridge.audio_input()` yields the echo-cancelled microphone as int16 mono PCM at 16 kHz, ready for any speech recognizer, while the robot talks — to as many listeners as you start, each receiving the whole stream. |
+| **Camera input** | `bridge.camera` is one feed of the robot's camera that any number of consumers plug onto at once — the bridge's face detector, a display, an agent tool, a vision pipeline of your own — each reading `latest()` at its own rate: the newest frame with its id, its time and the head pose at that time. |
+| **Motors, emotions, sounds, wobbling** | The robot's own capabilities, as bridge calls: `set_motors_state` / `get_motors_state` for torque (`enabled`, `disabled`, `gravity_compensation`, checked before a move is sent), `list_emotions` / `play_emotion` for the recorded emotions library, `play_sound` for the robot's sound player, `set_wobbling` for the audio-reactive head sway — and `bridge.robot`, the native `ReachyMini`, for everything else the SDK offers. |
+| **Speech through TTS modules** | `say(text)` streams any text-to-speech engine to the robot's speaker behind a small `SpeechSynthesizer` protocol — the first-party tts-engine's providers from the config's `tts` block, or your own — and returns when the utterance has been heard. Playback and capture share one media session, which keeps the robot's echo cancellation working. |
+| **Face detection** | Name a detector — the shipped `yunet`, upstream's own model run by the bridge, or a `FaceDetector` of your own — and `bridge.faces` reports every face in view with its size, its box and a `track_id` that follows the same person from frame to frame; read it, or subscribe to learn who appears and leaves. |
+| **Head tracking** | The bridge's own tracker follows one face by its `track_id`, waits for a face that vanishes before turning to another, and hands the head back to the idle motion when nobody has been seen for two seconds; `bridge.head_tracking` says whom it follows. |
+| **Motion: presence, idle and blending** | Between actions the robot breathes — or holds a still neutral, or plays an `IdleMove` you wrote — so it never looks dead; emotions, tracking and the idle move are composed by one motion loop, every transition a blend, so the robot looks at someone *and* breathes, and an emotion plays over tracking and hands back to it. Head wobbling sways the head with the audio and is paused around emotions. |
+| **Daemon management** | The bridge starts the daemon when asked — the sim, or a robot plugged in over USB — or reuses one already running, and stops what it started on exit, the robot going to sleep; leaving `async with` tears everything down in order, even when a step fails. |
+| **Simulator** | Everything above runs unchanged on the MuJoCo sim, face detection and head tracking included: the bridge detects in the sim's camera stream and aims with the sim camera's true geometry. Its launcher can put portraits in the scene for tests, or use your **webcam** as the robot's camera, so the simulated robot follows you ([the simulator guide](docs/guides/running-daemons.md)). |
+| **Testing, unit and e2e** | The `fake` backend records every command and keeps the real timing, for unit tests with no daemon. A shipped pytest plugin runs live tests against the sim or a robot, probes what the target can do (motion, audio, camera, faces, gravity compensation) and skips instead of failing; its sim scene has portraits a test shows and moves, so tracking is tested without a person. |
 
 ## Install
 
@@ -69,6 +89,18 @@ async with ReachyMiniBridge.from_json_file("robot.json") as bridge:
 
 Face detection and tracking are opt-in: name a detector in the config's `face_detection` block (`"detector": "yunet"`) and switch on what you want — `"enabled": true` for detection alone, or `"motion": {"tracking": true}` for the head to follow whoever is in view; the detector name alone starts nothing ([docs/guides/perception-and-tracking.md](docs/guides/perception-and-tracking.md)). The complete first application — a voice, the microphone, the lifecycle, an agent's tools — continues in [docs/getting-started.md](docs/getting-started.md).
 
+## Examples
+
+Three runnable examples under [examples/](examples/), run from a checkout:
+
+| | |
+|---|---|
+| [control_panel](examples/control_panel/) | A Gradio control panel: every action a button, the bridge's state on screen ([below](#try-it-from-a-browser)) |
+| [greeter](examples/greeter/) | The robot breathes until a face shows up, greets it with an emotion and a "Hello there" while the head follows it, and says goodbye when it leaves: one loop over the head tracker's events |
+| [voice_tour](examples/voice_tour/) | The robot performs a slam in twelve voices, one per tts-engine speech module, local models and hosted APIs, through one bridge; each voice is a config file whose `tts` block you can copy |
+
+The greeter and the voice tour each have a README on how to run them and how they work.
+
 ### Try it from a browser
 
 The repo ships a Gradio **control panel** — every action a button, the bridge's state on screen and refreshed twice a second (motor state, attention, the mode flags, a mic level meter, the camera frame, a log), with a Stop button next to `say` and `play_emotion` that interrupts it mid-flight. It runs from a checkout (it needs the `demo` dependency group, and its voice the `tts` group — both installed by a plain `uv sync`):
@@ -79,26 +111,6 @@ uv run python -m examples.control_panel                                # no conf
 ```
 
 then open `http://127.0.0.1:7860`. The example config opens the MuJoCo viewer window next to the panel and uses your **webcam** as the robot's camera, shown in the corner of that window: enable the motors and the simulated robot turns to follow you ([docs/guides/running-daemons.md](docs/guides/running-daemons.md)). It needs an unlocked GUI session and, on macOS, camera permission for the terminal that runs it. Set the config's `daemon.camera.source` to `"sim"` for the rendered scene instead. Point `--config` at a `real` config to drive the robot. Design and limits: [specs/examples/control_panel.md](specs/examples/control_panel.md).
-
-## What the bridge gives you
-
-The upstream `reachy_mini` SDK gives full, low-level access to the robot, and the bridge keeps it: `bridge.robot` is the native `ReachyMini`. On top of it, the bridge adds what a conversational application otherwise has to build itself — one feature per row.
-
-| Feature | What you get |
-|---|---|
-| **One async API in human units** | A small set of `async` methods that speak the way a person or an agent does — *enable the motors, play "happy", say this, follow my face* — in named emotions, degrees and seconds rather than pose matrices and radians; the same code runs on the robot, the MuJoCo simulator and an offline fake. |
-| **One JSON configuration** | Backend, connection, daemon, voice, detector and idle behaviour in one file; changing `backend` moves it between the robot, the simulator and the fake. |
-| **Everything is cancellable** | Cancel the task awaiting `say`, `play_sound`, `play_emotion` or the microphone stream and the effect stops at once — speech flushed, the file stopped, the move no longer commanded — with the robot ready for the next call. |
-| **Audio input** | `async for chunk in bridge.audio_input()` yields the echo-cancelled microphone as int16 mono PCM at 16 kHz, ready for any speech recognizer, while the robot talks — to as many listeners as you start, each receiving the whole stream. |
-| **Camera input** | `bridge.camera` is one feed of the robot's camera that any number of consumers plug onto at once — the bridge's face detector, a display, an agent tool, a vision pipeline of your own — each reading `latest()` at its own rate: the newest frame with its id, its time and the head pose at that time. |
-| **Motors, emotions, sounds, wobbling** | The robot's own capabilities, as bridge calls: `set_motors_state` / `get_motors_state` for torque (`enabled`, `disabled`, `gravity_compensation`, checked before a move is sent), `list_emotions` / `play_emotion` for the recorded emotions library, `play_sound` for the robot's sound player, `set_wobbling` for the audio-reactive head sway — and `bridge.robot`, the native `ReachyMini`, for everything else the SDK offers. |
-| **Speech through TTS modules** | `say(text)` streams any text-to-speech engine to the robot's speaker behind a small `SpeechSynthesizer` protocol — the first-party tts-engine's providers from the config's `tts` block, or your own — and returns when the utterance has been heard. Playback and capture share one media session, which keeps the robot's echo cancellation working. |
-| **Face detection** | Name a detector — the shipped `yunet`, upstream's own model run by the bridge, or a `FaceDetector` of your own — and `bridge.faces` reports every face in view with its size, its box and a `track_id` that follows the same person from frame to frame; read it, or subscribe to learn who appears and leaves. |
-| **Head tracking** | The bridge's own tracker follows one face by its `track_id`, waits for a face that vanishes before turning to another, and hands the head back to the idle motion when nobody has been seen for two seconds; `bridge.head_tracking` says whom it follows. |
-| **Motion: presence, idle and blending** | Between actions the robot breathes — or holds a still neutral, or plays an `IdleMove` you wrote — so it never looks dead; emotions, tracking and the idle move are composed by one motion loop, every transition a blend, so the robot looks at someone *and* breathes, and an emotion plays over tracking and hands back to it. Head wobbling sways the head with the audio and is paused around emotions. |
-| **Daemon management** | The bridge starts the daemon when asked — the sim, or a robot plugged in over USB — or reuses one already running, and stops what it started on exit, the robot going to sleep; leaving `async with` tears everything down in order, even when a step fails. |
-| **Simulator** | Everything above runs unchanged on the MuJoCo sim, face detection and head tracking included: the bridge detects in the sim's camera stream and aims with the sim camera's true geometry. Its launcher can put portraits in the scene for tests, or use your **webcam** as the robot's camera, so the simulated robot follows you ([the simulator guide](docs/guides/running-daemons.md)). |
-| **Testing, unit and e2e** | The `fake` backend records every command and keeps the real timing, for unit tests with no daemon. A shipped pytest plugin runs live tests against the sim or a robot, probes what the target can do (motion, audio, camera, faces, gravity compensation) and skips instead of failing; its sim scene has portraits a test shows and moves, so tracking is tested without a person. |
 
 ## Documentation
 

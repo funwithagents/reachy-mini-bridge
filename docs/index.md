@@ -9,6 +9,7 @@ The bridge's documentation, by what you want to do. The [README](../README.md) i
 | write my first application | [getting-started.md](getting-started.md) — a complete program on the offline fake, then the config that moves it to a sim or a robot |
 | connect a robot or the simulator | [reference/backends-and-capabilities.md](reference/backends-and-capabilities.md) — what each setup needs and gives, and how far it is validated; [examples/configs/](../examples/configs/) — a short profile per setup; [guides/running-daemons.md](guides/running-daemons.md) — starting a daemon by hand, to be borrowed; [guides/linux.md](guides/linux.md) — the Linux setup |
 | make the robot speak and listen | [guides/audio.md](guides/audio.md) — a voice, `say`, sound files, wobbling, the microphone for your own speech recognizer |
+| choose a voice by ear, on the robot | the [voice tour](../examples/voice_tour/) — one slam in twelve voices, one per tts-engine speech module, each voice a `tts` block to copy |
 | make the robot look at people | [guides/perception-and-tracking.md](guides/perception-and-tracking.md) — detection and head tracking, the reports and their events |
 | run my own face detector | [guides/custom-face-detector.md](guides/custom-face-detector.md) |
 | replace the breathing with my own idle move | [guides/custom-idle-move.md](guides/custom-idle-move.md) |
