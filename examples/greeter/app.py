@@ -3,6 +3,8 @@
 - nobody in view: the idle move (breathing) runs, the tracker is on and waits;
 - a face appears: the head starts following it and, ``HELLO_DELAY_S`` later so the gaze
   has settled on the face, the robot plays a welcoming emotion and says "Hello there";
+- the person comes too close (enters the personal space, ``in_personal_space``): the
+  robot is startled and says so, as its head steps back; they step back out: relieved;
 - the face is gone (the tracker hands the head back after its loss timeout): the robot
   says "Good bye" with a short farewell move, and the head eases back into breathing.
 
@@ -29,6 +31,8 @@ DEFAULT_CONFIG = CONFIGS / "sim-webcam.json"
 # The first name of each list the library has (the fake lists `happy` and `sad`).
 HELLO_EMOTIONS = ("welcoming1", "welcoming2", "cheerful1", "happy")
 GOODBYE_EMOTIONS = ("downcast1", "sad1", "sad")
+TOO_CLOSE_EMOTIONS = ("surprised1", "fear1")
+RELIEVED_EMOTIONS = ("relief1", "relief2")
 HELLO_DELAY_S = 1.0  # the head turns onto the face before the greeting starts
 
 
@@ -55,6 +59,14 @@ async def greet(bridge: ReachyMiniBridge, emotion: str | None) -> None:
     await asyncio.gather(*calls)
 
 
+async def react(bridge: ReachyMiniBridge, text: str, emotion: str | None) -> None:
+    """A line and a move at the same time, as the greeting does."""
+    calls = [say_safely(bridge, text)]
+    if emotion is not None:
+        calls.append(bridge.play_emotion(emotion))
+    await asyncio.gather(*calls)
+
+
 async def farewell(bridge: ReachyMiniBridge, emotion: str | None) -> None:
     log.info("nobody left: good bye")
     calls = [say_safely(bridge, "Good bye")]
@@ -74,32 +86,52 @@ async def run(bridge: ReachyMiniBridge) -> None:
         emotions = await bridge.list_emotions()
         hello = pick(HELLO_EMOTIONS, emotions)
         goodbye = pick(GOODBYE_EMOTIONS, emotions)
+        too_close = pick(TOO_CLOSE_EMOTIONS, emotions)
+        relieved = pick(RELIEVED_EMOTIONS, emotions)
         log.info("waiting for a face (hello: %s, goodbye: %s)", hello, goodbye)
 
         engaged = bridge.head_tracking.value.attention == "engaged"
-        # `head_tracking.changes()` wakes when the head engages someone, hands it back, or
-        # switches person — never when the face moves. Only the engaged <-> not-engaged
-        # edge matters here: a switch from one person to another is the same visitor.
+        close = False
+        # `head_tracking.changes()` wakes when the head engages someone, hands it back,
+        # switches person, or the person it follows enters or leaves the personal space —
+        # never when the face moves. Two edges matter here: engaged <-> not engaged (a
+        # switch from one person to another is the same visitor), and in <-> out of the
+        # personal space while someone is engaged.
         async for state in bridge.head_tracking.changes():
             now_engaged = state.attention == "engaged"
-            if now_engaged == engaged:
-                continue
-            engaged = now_engaged
-            if engaged:
-                await greet(bridge, hello)
-            else:
-                await farewell(bridge, goodbye)
-            _log_state(state)
+            if now_engaged != engaged:
+                engaged = now_engaged
+                if engaged:
+                    await greet(bridge, hello)
+                else:
+                    close = False  # the visitor left: no relief to express
+                    await farewell(bridge, goodbye)
+                _log_state(state)
+            # the latest state, not the one that woke the loop: a greeting takes seconds
+            now_close = engaged and bridge.head_tracking.value.in_personal_space
+            if now_close != close:
+                close = now_close
+                if close:
+                    log.info("too close")
+                    await react(bridge, "Whoa, you're a bit close!", too_close)
+                else:
+                    log.info("back at a comfortable distance")
+                    await react(bridge, "Ah, that's better.", relieved)
 
 
 def _log_state(state: HeadTrackingReport) -> None:
-    log.info("attention %s (track %s)", state.attention, state.track_id)
+    log.info(
+        "attention %s (track %s, in personal space: %s)",
+        state.attention,
+        state.track_id,
+        state.in_personal_space,
+    )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="python -m examples.greeter",
-        description="The robot breathes until someone shows up, then greets and follows them.",
+        description="The robot breathes until someone shows up, then greets and follows them, and reacts when they come too close.",
     )
     parser.add_argument(
         "--config",

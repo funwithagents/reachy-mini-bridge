@@ -1,14 +1,16 @@
 # The greeter
 
-A demo over `ReachyMiniBridge`: the robot breathes until a face shows up, greets it while the head follows it, and says goodbye when it leaves.
+A demo over `ReachyMiniBridge`: the robot breathes until a face shows up, greets it while the head follows it, reacts when the person comes too close, and says goodbye when it leaves.
 
 | The robot | What the greeter does |
 |---|---|
 | sees nobody | breathes (the idle move); the head tracker is on and waits |
 | sees a face | the head turns onto it; a second later the robot plays a welcoming emotion and says "Hello there", then keeps following |
+| sees the person come too close (they enter its personal space, `motion.tracking.personal_space.distance_m`) | the head steps back; the robot plays a surprised emotion and says "Whoa, you're a bit close!" |
+| sees them step back out (beyond the personal space's exit margin) | a relieved emotion and "Ah, that's better." |
 | loses the face | after the tracker's two-second loss timeout, the robot says "Good bye" with a farewell move; the head eases back into breathing |
 
-It is one loop over `bridge.head_tracking.changes()` ([app.py](app.py)), acting on the engaged / not-engaged edge: a switch from one person to another does not re-greet, a detector's blink does not say goodbye.
+It is one loop over `bridge.head_tracking.changes()` ([app.py](app.py)), acting on two edges: engaged / not engaged — a switch from one person to another does not re-greet, a detector's blink does not say goodbye — and in / out of the personal space (`in_personal_space`) while someone is engaged; the margin on the way out keeps someone standing at the boundary from setting it off again and again.
 
 ## Run it
 
