@@ -59,6 +59,7 @@ from reachy_mini_bridge.fake_reachy_mini import FAKE_FRAME_HZ, FakeReachyMini
 from reachy_mini_bridge.head_tracking import CameraModel, HeadTrackingReport
 from reachy_mini_bridge.motion import (
     BLEND_S,
+    GAZE_FADE_S,
     NEUTRAL_HEAD,
     HoldMove,
     IdleMove,
@@ -666,7 +667,12 @@ def test_focus_holds_the_head_on_the_face_without_the_breath(
         ) as bridge:  # breathing by default
             await bridge.set_motors_state("enabled")
             await bridge.start_head_tracking(focus=True)
-            await asyncio.sleep(BLEND_S + 0.5)
+            # From the engagement, not the call: the gaze and focus fades start when the
+            # first aim arrives, and a slow runner can take most of a second to get one.
+            await asyncio.wait_for(
+                bridge.head_tracking.wait_for(lambda r: r.attention == "engaged"), 5.0
+            )
+            await asyncio.sleep(GAZE_FADE_S + 0.3)
             marker = len(_fake(bridge).targets)
             await asyncio.sleep(1.0)  # the first breath rises over these seconds
             zs = _head_z(bridge)[marker:]
