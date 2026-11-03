@@ -54,6 +54,7 @@ def state_table(state: PanelState) -> str:
         ("motors", state.motors),
         ("attention", state.attention or "—"),
         ("posture", _posture(state.posture)),
+        ("body yaw", f"{state.body_yaw_deg:+.0f}°"),
         ("voice", state.voice),
         ("busy", ", ".join(state.busy) or "—"),
         ("mic", f"{state.mic_sample_rate} Hz" if state.mic_sample_rate else "—"),
@@ -63,6 +64,7 @@ def state_table(state: PanelState) -> str:
         ("idle", state.idle),
         ("wobbling", "on" if state.wobbling else "off"),
         ("tracking", "on" if state.tracking else "off"),
+        ("following", "on" if state.base_following else "off"),
         ("detection", "on" if state.face_detection else "off"),
     ]
     modes += [("", "")] * (len(session) - len(modes))
@@ -224,11 +226,16 @@ def build_app(controller: ControlPanelController) -> gr.Blocks:
             personal = gr.Checkbox(
                 tracking_config.personal_space.enabled, label="Personal space"
             )
+            following = gr.Checkbox(
+                config.motion.base_following.enabled, label="Base following"
+            )
         gr.Markdown(
             "*Focus: while tracking, the head is held on the face, no idle motion. "
             "Mirroring, approach, personal space: the posture the head takes toward "
             "the person it follows — their head roll mirrored, a lean toward them, a "
-            "step back from someone too close.*"
+            "step back from someone too close. Base following: the base turns toward "
+            "the person, every move played around that body yaw, held after they "
+            "leave.*"
         )
 
         gr.Markdown("## Motors")
@@ -302,6 +309,12 @@ def build_app(controller: ControlPanelController) -> gr.Blocks:
                 controller.set_posture,
                 [mirroring, approach, personal],
             )
+        bind(
+            following.input,
+            "set_base_following",
+            controller.set_base_following,
+            following,
+        )
         bind(wobbling.input, "set_wobbling", controller.set_wobbling, wobbling)
         bind(presence.input, "set_presence", controller.set_presence, presence)
         bind(idle.input, "set_idle", controller.set_idle, idle)

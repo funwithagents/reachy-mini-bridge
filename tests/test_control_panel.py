@@ -445,6 +445,27 @@ def test_the_posture_boxes_switch_each_behaviour_and_the_state_shows_it() -> Non
         assert "lean +" in state_table(state)
 
 
+def test_the_base_following_box_switches_it_and_the_state_shows_the_body_yaw() -> None:
+    """The panel's Base following checkbox goes through `set_base_following`, keeping
+    the rest of the settings; the state table shows the switch and where the base
+    points."""
+    pytest.importorskip("gradio")
+    from examples.control_panel.app import state_table
+
+    with ControlPanelController(_faces_config(_Scene())) as controller:
+        assert controller.snapshot().base_following is True  # the config's default
+        controller.set_base_following(False)
+        settings = controller.bridge.base_following
+        assert settings.enabled is False
+        assert settings.deadband_deg == 20.0  # the rest kept
+        state = controller.snapshot()
+        assert state.base_following is False
+        assert state.body_yaw_deg == 0.0
+        table = state_table(state)
+        assert "**following** | off" in table
+        assert "**body yaw** | +0°" in table
+
+
 def test_draw_faces_tilts_the_square_with_the_faces_roll() -> None:
     frame = np.zeros((100, 200, 3), dtype=np.uint8)
     upright = (draw_faces(frame, [(0.0, 0.0)], [0.0]) == FACE_MARKER_RGB).all(axis=2)

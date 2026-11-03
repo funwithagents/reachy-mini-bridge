@@ -63,6 +63,12 @@
         "span_m": 0.2,
         "exit_margin_m": 0.2
       }
+    },
+    "base_following": {
+      "enabled": true,
+      "deadband_deg": 20.0,
+      "hold_s": 45.0,
+      "lag_s": 0.8
     }
   }
 }

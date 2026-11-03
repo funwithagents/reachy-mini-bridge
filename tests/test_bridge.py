@@ -37,6 +37,7 @@ from reachy_mini_bridge import robot as robot_module
 from reachy_mini_bridge.bridge import ReachyMiniBridge
 from reachy_mini_bridge.config import (
     ApproachSettings,
+    BaseFollowingSettings,
     DaemonConfig,
     FaceDetectionSettings,
     MotionSettings,
@@ -184,6 +185,7 @@ def test_package_front_door_drives_the_fake() -> None:
 
     assert set(rmb.__all__) == {
         "ApproachSettings",
+        "BaseFollowingSettings",
         "BridgeError",
         "CameraFrame",
         "ConfigError",
@@ -1680,6 +1682,54 @@ def test_presence_from_the_config_and_set_presence_reach_the_loop() -> None:
     assert idling > 0
 
 
+def test_base_following_from_the_config_and_set_base_following_reach_the_loop(
+    fast_attention: None,
+) -> None:
+    """The config's `motion.base_following` turns the base toward the followed face
+    (specs/motion/motion.md "The body yaw"); `body_yaw_deg` reads where the loop sends
+    it; `set_base_following` off eases it back to the front; outside a session the
+    reading is 0 and the settings the config's. The stub's face is shown for a second
+    only: at a fixed pixel it runs the aim away with the head, and a withdrawn aim
+    leaves the base its last goal to settle on."""
+    following = BaseFollowingSettings(enabled=True, deadband_deg=3.0, hold_s=30.0)
+    scene = _Scene([])
+    config = _custom_config(scene, idle="hold", base_following=following)
+
+    async def run() -> tuple[float, float, float, float, bool]:
+        async with ReachyMiniBridge(config) as bridge:
+            assert bridge.base_following == following
+            before_motors = bridge.body_yaw_deg
+            await bridge.set_motors_state("enabled")
+            robot = _fake(bridge)
+            scene.show(0.5, 0.0)
+            # the head turned toward the face and, the lag over, the turn has begun
+            await _until(lambda: bridge.body_yaw_deg < -1.0, timeout=5.0)
+            scene.hide()
+            await asyncio.sleep(3.5)  # the aim withdrawn, the base settled on its goal
+            turned = bridge.body_yaw_deg
+            _, _, sent = robot.last_target
+            with pytest.raises(ValueError, match="BaseFollowingSettings"):
+                await bridge.set_base_following(True)  # type: ignore[arg-type]
+            await bridge.set_base_following(replace(following, enabled=False))
+            off = bridge.base_following.enabled
+            await _until(
+                lambda: abs(bridge.body_yaw_deg) < 1.0, timeout=8.0
+            )  # eased back
+            return before_motors, turned, math.degrees(sent), bridge.body_yaw_deg, off
+
+    before_motors, turned, sent, back, off = asyncio.run(run())
+    assert before_motors == 0.0
+    assert turned < -3.0  # toward the face's side (negative yaw is to the right)
+    assert turned == pytest.approx(sent, abs=2.0)  # what the loop sends, a tick stale
+    assert off is False
+    assert abs(back) < 1.0
+    bridge = ReachyMiniBridge(config)
+    assert bridge.body_yaw_deg == 0.0
+    assert bridge.base_following == following
+    with pytest.raises(BridgeError):
+        asyncio.run(bridge.set_base_following(following))
+
+
 def test_the_default_config_breathes() -> None:
     """The config's default idle reaches the loop; the breath's shape and the antennas'
     range are test_motion's to pin."""
@@ -2400,6 +2450,10 @@ def _custom_config(
     if not isinstance(tracking, TrackingSettings):
         tracking = TrackingSettings(enabled=tracking)
     motion["tracking"] = tracking
+    # The stub's face sits at a fixed pixel whatever the head does, so an aim built on
+    # it runs away with the head; the base stays on the front unless a test says
+    # otherwise (specs/motion/motion.md "The body yaw" is test_motion's to pin).
+    motion.setdefault("base_following", BaseFollowingSettings(enabled=False))
     return ReachyMiniConfig(
         backend="fake",
         face_detection=FaceDetectionSettings(

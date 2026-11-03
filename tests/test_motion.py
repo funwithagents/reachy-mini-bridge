@@ -27,6 +27,7 @@ import websockets.exceptions
 from reachy_mini.motion.move import Move
 from scipy.spatial.transform import Rotation
 
+from reachy_mini_bridge.config import BaseFollowingSettings
 from reachy_mini_bridge.errors import BridgeError
 from reachy_mini_bridge.fake_reachy_mini import FakeReachyMini
 from reachy_mini_bridge.motion import (
@@ -35,6 +36,8 @@ from reachy_mini_bridge.motion import (
     ANTENNA_MIN_RAD,
     ANTENNA_OUTWARD,
     BLEND_S,
+    BODY_YAW_EASE_TAU_S,
+    BODY_YAW_EXIT_S,
     BREATH_REST_S,
     BREATH_S,
     BREATH_Z_M,
@@ -61,7 +64,11 @@ from reachy_mini_bridge.motion import (
     _roam_target,
     analytical_reach,
     blend_into,
+    body_yaw_ease,
+    rz,
+    unframed,
     within_reach,
+    yaw_of,
 )
 
 if TYPE_CHECKING:
@@ -1546,7 +1553,7 @@ def test_upstream_kinematics_solve_every_pose_the_gaze_layer_sends() -> None:
     upstream's analytical IK refuses that pair from 38° of yaw), breathing on top: the
     loop sends what does, the roll kept and the retreat cut, every tick."""
     reachable = analytical_reach()
-    assert not reachable(_turned_aim(45.0, 25.0, -0.025).pose())
+    assert not reachable(_turned_aim(45.0, 25.0, -0.025).pose(), 0.0)
 
     async def run() -> list[npt.NDArray[np.float64]]:
         robot = FakeReachyMini()
@@ -1561,7 +1568,7 @@ def test_upstream_kinematics_solve_every_pose_the_gaze_layer_sends() -> None:
             return [h for h, _, _ in robot.targets[before:] if h is not None]
 
     heads = asyncio.run(run())
-    assert all(reachable(h) for h in heads)
+    assert all(reachable(h, 0.0) for h in heads)
     settled = heads[-1]
     assert _roll_of(settled) == pytest.approx(25.0, abs=1.0)  # the mirror kept
     assert -25.0 < _along_look_mm(settled, 45.0) < 0.0  # the retreat cut, not dropped
@@ -1573,7 +1580,7 @@ def test_a_share_given_up_returns_gradually_once_it_fits() -> None:
     fit, whatever the tick rate — never in a step."""
     opened_at: list[float] = []
 
-    def reachable(pose: npt.NDArray[np.float64]) -> bool:
+    def reachable(pose: npt.NDArray[np.float64], _body_yaw: float) -> bool:
         if opened_at and time.perf_counter() >= opened_at[0]:
             return True
         return float(np.linalg.norm(pose[:2, 3])) < 1e-6
@@ -1609,7 +1616,7 @@ def test_at_the_edge_of_reach_the_head_holds_still() -> None:
     """An offset reachable to 10 mm of the 25 asked: the loop settles at the edge and
     stays there — it never recovers, fails and cuts again tick after tick."""
 
-    def reachable(pose: npt.NDArray[np.float64]) -> bool:
+    def reachable(pose: npt.NDArray[np.float64], _body_yaw: float) -> bool:
         return float(np.linalg.norm(pose[:2, 3])) <= 0.010
 
     async def run() -> list[float]:
@@ -1633,3 +1640,343 @@ def test_at_the_edge_of_reach_the_head_holds_still() -> None:
     assert all(lean <= 10.0 + 1e-6 for lean in leans)
     assert max(leans) - min(leans) < 0.05  # still
     assert min(leans) > 7.0  # near the edge, not far inside it
+
+
+# --- the body yaw: the base toward the person (specs/motion/motion.md "The body yaw") ---
+
+FOLLOWING = BaseFollowingSettings(
+    enabled=True, deadband_deg=20.0, hold_s=1.0, lag_s=0.8
+)
+# A turn of 40° begins after the lag and settles within a degree about 3.5 s later
+# (two stages of 0.6 s).
+TURN_S = 5.5
+# The ease peaks near 37°/s on a 60° turn: under a degree a tick at 60 Hz, and a tick
+# that ran late (a loaded CI runner) steps by at most 0.2 s of it, 8°; a snap would be
+# the whole turn.
+MAX_BODY_YAW_STEP_DEG = 12.0
+
+
+def _body_yaws(robot: FakeReachyMini, since: int = 0) -> list[float]:
+    return [math.degrees(y) for _, _, y in robot.targets[since:] if y is not None]
+
+
+def _relative_yaws(robot: FakeReachyMini, since: int = 0) -> list[float]:
+    """The head's yaw relative to the base, per target: the move-frame yaw."""
+    return [
+        math.degrees(yaw_of(unframed(h, y)))
+        for h, _, y in robot.targets[since:]
+        if h is not None and y is not None
+    ]
+
+
+def _no_step(values: list[float], bound: float = MAX_BODY_YAW_STEP_DEG) -> None:
+    assert values, "nothing recorded"
+    assert max(abs(b - a) for a, b in itertools.pairwise(values)) < bound
+
+
+async def _turned(session: MotionSession, robot: FakeReachyMini, yaw_deg: float) -> int:
+    """Resume the session, aim it at ``yaw_deg`` and wait for the base to settle
+    there; returns the target index the settled stream starts at."""
+    session.resume()
+    await asyncio.sleep(BLEND_S + 0.1)
+    session.set_gaze(GazeAim(_yaw_pose(yaw_deg)))
+    await asyncio.sleep(TURN_S)
+    assert _body_yaws(robot)[-1] == pytest.approx(yaw_deg, abs=1.0)
+    return len(robot.targets)
+
+
+def test_an_aim_past_the_deadband_turns_the_base_onto_it_and_one_inside_does_not() -> (
+    None
+):
+    """A turn: the head leads — the base has not moved while the lag runs — then the
+    recorded body yaw eases from 0 onto the aim's yaw with no step, the head's world
+    yaw on the aim throughout and the head square on the base once settled; an aim
+    moved 10° — inside the deadband — leaves the base where it is."""
+
+    async def run() -> tuple[float, list[float], list[float], list[float], list[float]]:
+        robot = FakeReachyMini()
+        async with _running(
+            MotionSession(robot, presence=True, idle="hold", base_following=FOLLOWING)
+        ) as session:
+            session.resume()
+            await asyncio.sleep(BLEND_S + 0.1)
+            before = len(robot.targets)
+            session.set_gaze(GazeAim(_yaw_pose(40.0)))
+            await asyncio.sleep(FOLLOWING.lag_s - 0.2)
+            during_lag = session.body_yaw
+            await asyncio.sleep(TURN_S)
+            turn, heads = _body_yaws(robot, before), _yaws(robot, before)
+            relative = _relative_yaws(robot, before)
+            before = len(robot.targets)
+            session.set_gaze(GazeAim(_yaw_pose(50.0)))
+            await asyncio.sleep(1.5)
+            return during_lag, turn, heads, relative, _body_yaws(robot, before)
+
+    during_lag, turn, heads, relative, inside = asyncio.run(run())
+    assert during_lag == 0.0  # the head leads: the base waits out the lag
+    assert turn[0] == pytest.approx(0.0, abs=0.5)
+    assert all(b >= a - 1e-6 for a, b in itertools.pairwise(turn))  # only ever toward
+    assert turn[-1] == pytest.approx(40.0, abs=1.0)
+    _no_step(turn)
+    assert heads[-1] == pytest.approx(40.0, abs=1.0)  # the head on the aim
+    assert relative[-1] == pytest.approx(0.0, abs=1.5)  # and square on the base
+    assert all(y == pytest.approx(turn[-1], abs=0.5) for y in inside)
+
+
+def test_the_goal_follows_a_person_moving_during_the_turn() -> None:
+    """The goal is the aim's yaw itself while the turn lasts: an aim moved from 40° to
+    60° a third of the way in is followed through, with no pause and no step."""
+
+    async def run() -> list[float]:
+        robot = FakeReachyMini()
+        async with _running(
+            MotionSession(robot, presence=True, idle="hold", base_following=FOLLOWING)
+        ) as session:
+            session.resume()
+            await asyncio.sleep(BLEND_S + 0.1)
+            before = len(robot.targets)
+            session.set_gaze(GazeAim(_yaw_pose(40.0)))
+            await asyncio.sleep(0.5)
+            session.set_gaze(GazeAim(_yaw_pose(60.0)))
+            await asyncio.sleep(TURN_S)
+            return _body_yaws(robot, before)
+
+    turn = asyncio.run(run())
+    assert turn[-1] == pytest.approx(60.0, abs=1.0)
+    assert all(b >= a - 1e-6 for a, b in itertools.pairwise(turn))
+    _no_step(turn)
+
+
+@pytest.mark.realtime
+def test_an_emotion_plays_in_the_body_yaw_frame_with_no_swing_to_the_front() -> None:
+    """The base turned onto a person, an emotion plays toward them: body yaw stays at
+    the turn's value throughout — entry blend, trajectory, exit blend — and every head
+    pose is the recording's rotated by it (the primary faces the front in its own
+    frame, so its world yaw is the body yaw)."""
+
+    async def run() -> tuple[list[float], list[float], list[float]]:
+        robot = FakeReachyMini()
+        async with _running(
+            MotionSession(robot, presence=True, idle="hold", base_following=FOLLOWING)
+        ) as session:
+            since = await _turned(session, robot, 40.0)
+            primary = session.submit(_TestPrimary(0.6, z=0.02), sound_path=None)
+            await asyncio.wait_for(asyncio.wrap_future(primary.done), timeout=3.0)
+            await asyncio.sleep(BLEND_S + 0.2)  # the idle re-entry after it
+            heads = [h for h, _, _ in robot.targets[since:] if h is not None]
+            return (
+                _body_yaws(robot, since),
+                [_yaw_pitch_deg(h)[0] for h in heads],
+                [float(h[2, 3]) for h in heads],
+            )
+
+    body_yaws, head_yaws, zs = asyncio.run(run())
+    assert min(body_yaws) > 39.0 and max(body_yaws) < 41.0
+    assert all(y == pytest.approx(40.0, abs=1.0) for y in head_yaws)
+    assert max(zs) == pytest.approx(0.02, abs=0.002)  # the emotion did play
+
+
+@pytest.mark.realtime
+def test_a_cancelled_emotion_leaves_the_session_on_the_body_yaw() -> None:
+    async def run() -> list[float]:
+        robot = FakeReachyMini()
+        async with _running(
+            MotionSession(robot, presence=True, idle="hold", base_following=FOLLOWING)
+        ) as session:
+            since = await _turned(session, robot, 40.0)
+            primary = session.submit(_TestPrimary(5.0, z=0.02), sound_path=None)
+            await asyncio.sleep(BLEND_S + 0.3)
+            primary.done.cancel()
+            await asyncio.to_thread(primary.dropped.wait, 1.0)
+            await asyncio.sleep(1.0)
+            return _body_yaws(robot, since)
+
+    body_yaws = asyncio.run(run())
+    assert min(body_yaws) > 39.0 and max(body_yaws) < 41.0
+
+
+def test_the_body_yaw_holds_past_the_loss_and_returns_after_the_hold() -> None:
+    """The aim withdrawn, the base stays where the person was for ``hold_s``, then
+    eases back to the front with no step."""
+
+    async def run() -> tuple[list[float], list[float]]:
+        robot = FakeReachyMini()
+        async with _running(
+            MotionSession(robot, presence=True, idle="hold", base_following=FOLLOWING)
+        ) as session:
+            since = await _turned(session, robot, 40.0)
+            session.set_gaze(None)
+            await asyncio.sleep(FOLLOWING.hold_s - 0.3)
+            held = _body_yaws(robot, since)
+            since = len(robot.targets)
+            await asyncio.sleep(0.3 + TURN_S)
+            return held, _body_yaws(robot, since)
+
+    held, back = asyncio.run(run())
+    assert all(y == pytest.approx(40.0, abs=0.5) for y in held)
+    assert back[-1] == pytest.approx(0.0, abs=1.0)
+    # only ever toward the front (the turn's last tenth of a degree may still creep
+    # the other way while the hold lasts)
+    assert all(b <= a + 0.05 for a, b in itertools.pairwise(back))
+    _no_step(back)
+
+
+def test_base_following_off_keeps_the_base_on_the_front_and_switching_it_off_eases_back() -> (
+    None
+):
+    async def run() -> tuple[list[float], list[float], list[float]]:
+        robot = FakeReachyMini()
+        async with _running(
+            MotionSession(
+                robot,
+                presence=True,
+                idle="hold",
+                base_following=BaseFollowingSettings(enabled=False),
+            )
+        ) as session:
+            session.resume()
+            await asyncio.sleep(BLEND_S + 0.1)
+            session.set_gaze(GazeAim(_yaw_pose(40.0)))
+            await asyncio.sleep(1.5)
+            off = _body_yaws(robot)
+            heads_off = _yaws(robot)
+            session.set_base_following(FOLLOWING)
+            await asyncio.sleep(TURN_S)
+            assert _body_yaws(robot)[-1] == pytest.approx(40.0, abs=1.0)
+            since = len(robot.targets)
+            session.set_base_following(BaseFollowingSettings(enabled=False))
+            await asyncio.sleep(TURN_S + 1.0)  # the ease's tail, to the pin
+            return off, heads_off, _body_yaws(robot, since)
+
+    off, heads_off, back = asyncio.run(run())
+    assert all(y == 0.0 for y in off)
+    assert heads_off[-1] == pytest.approx(40.0, abs=1.0)  # the head alone turned
+    assert back[-1] == 0.0  # pinned on the front once there
+    _no_step(back)
+
+
+def test_a_change_during_an_emotion_waits_for_the_idle_entry() -> None:
+    async def run() -> tuple[list[float], list[float]]:
+        robot = FakeReachyMini()
+        async with _running(
+            MotionSession(robot, presence=True, idle="hold", base_following=FOLLOWING)
+        ) as session:
+            since = await _turned(session, robot, 40.0)
+            primary = session.submit(_TestPrimary(1.0, z=0.02), sound_path=None)
+            await asyncio.sleep(0.2)
+            session.set_gaze(GazeAim(_yaw_pose(-40.0)))
+            await asyncio.wait_for(asyncio.wrap_future(primary.done), timeout=3.0)
+            during = _body_yaws(robot, since)
+            since = len(robot.targets)
+            await asyncio.sleep(BLEND_S + TURN_S)
+            return during, _body_yaws(robot, since)
+
+    during, after = asyncio.run(run())
+    assert during[0] == pytest.approx(40.0, abs=1.0)
+    assert max(during) - min(during) < 0.05  # frozen for the emotion's length
+    assert after[-1] == pytest.approx(-40.0, abs=1.0)
+
+
+def test_a_resume_adopts_the_robot_s_base_and_blends_from_there() -> None:
+    """A robot whose base is turned (an earlier app, upstream's own override): the
+    body yaw starts there, the first blend from the present pose, and with nobody
+    followed the base eases to the front."""
+
+    async def run() -> tuple[list[float], list[float]]:
+        robot = FakeReachyMini()
+        robot.set_target(
+            head=rz(math.radians(30.0)),
+            antennas=NEUTRAL_ANTENNAS.copy(),
+            body_yaw=math.radians(30.0),
+        )
+        since = len(robot.targets)
+        async with _running(
+            MotionSession(robot, presence=True, idle="hold", base_following=FOLLOWING)
+        ) as session:
+            session.resume()
+            await asyncio.sleep(TURN_S)
+            return _body_yaws(robot, since), _yaws(robot, since)
+
+    body_yaws, head_yaws = asyncio.run(run())
+    assert body_yaws[0] == pytest.approx(30.0, abs=0.5)
+    assert head_yaws[0] == pytest.approx(30.0, abs=0.5)
+    assert body_yaws[-1] == pytest.approx(0.0, abs=1.0)
+    _no_step(body_yaws)
+    _no_step(head_yaws)
+
+
+def test_the_exit_ends_facing_the_front() -> None:
+    async def run() -> tuple[float, float, float]:
+        robot = FakeReachyMini()
+        session = MotionSession(
+            robot, presence=True, idle="breathing", base_following=FOLLOWING
+        )
+        await session.start()
+        await _turned(session, robot, 40.0)
+        started = time.perf_counter()
+        await session.stop()
+        head, _, body_yaw = robot.targets[-1]
+        assert head is not None and body_yaw is not None
+        return (
+            time.perf_counter() - started,
+            math.degrees(body_yaw),
+            _yaw_pitch_deg(head)[0],
+        )
+
+    took, body_yaw, head_yaw = asyncio.run(run())
+    assert abs(body_yaw) < 0.5
+    assert abs(head_yaw) < 0.5
+    assert BODY_YAW_EXIT_S - 0.2 < took < BODY_YAW_EXIT_S + 1.0
+
+
+def test_the_ease_starts_at_rest_follows_a_moving_goal_and_settles_in_time() -> None:
+    """The two-stage ease on its own: zero velocity at the start of a turn, about 90 %
+    of a step in 2.3 s, and a goal moved later changes the velocity by a little, not
+    the position by a step."""
+    dt = 1.0 / CONTROL_HZ
+    value = mid = 0.0
+    steps: list[float] = []
+    for i in range(int(5.5 * CONTROL_HZ)):
+        goal = 1.0 if i < 2.5 * CONTROL_HZ else 1.5  # the goal moves at 2.5 s
+        new, mid = body_yaw_ease(value, mid, goal, dt)
+        steps.append(new - value)
+        value = new
+    assert steps[0] < 0.1 * dt / BODY_YAW_EASE_TAU_S  # at rest: a second-order start
+    at_2_3_s = sum(steps[: int(2.3 * CONTROL_HZ)])
+    assert 0.85 < at_2_3_s < 0.95  # 0.89 of the step
+    assert max(abs(b - a) for a, b in itertools.pairwise(steps)) < 0.1 * max(steps)
+    assert value == pytest.approx(1.5, abs=0.06)  # three seconds after the goal moved
+
+
+def test_the_base_turned_keeps_the_posture_whole_at_the_far_side() -> None:
+    """A full retreat with a 25° roll at 60° of yaw, refused on a front-facing base,
+    is reachable once the base has turned: through the loop, the base turns onto the
+    person and the posture comes back whole, every target solvable at its body yaw."""
+    reachable = analytical_reach()
+    aim = _turned_aim(60.0, 25.0, -0.025)
+    assert not reachable(aim.pose(), 0.0)
+    assert reachable(aim.pose(), math.radians(60.0))
+
+    async def run() -> tuple[list[tuple[npt.NDArray[np.float64], float]], float]:
+        robot = FakeReachyMini()
+        async with _running(
+            MotionSession(robot, presence=True, idle="hold", base_following=FOLLOWING)
+        ) as session:
+            session.resume()
+            await asyncio.sleep(BLEND_S + 0.1)
+            before = len(robot.targets)
+            session.set_gaze(aim, focus=True)
+            await asyncio.sleep(TURN_S + 1.5)  # the turn, then the shares' recovery
+            return [
+                (h, y)
+                for h, _, y in robot.targets[before:]
+                if h is not None and y is not None
+            ], session.body_yaw
+
+    targets, body_yaw = asyncio.run(run())
+    assert all(reachable(h, y) for h, y in targets)
+    settled_head, settled_yaw = targets[-1]
+    assert math.degrees(settled_yaw) == pytest.approx(60.0, abs=1.0)
+    assert math.degrees(body_yaw) == pytest.approx(60.0, abs=1.0)
+    assert _roll_of(settled_head) == pytest.approx(25.0, abs=1.0)
+    assert _along_look_mm(settled_head, 60.0) == pytest.approx(-25.0, abs=0.5)

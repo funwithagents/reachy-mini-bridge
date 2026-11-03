@@ -40,6 +40,7 @@ from reachy_mini.utils.interpolation import (
     time_trajectory,
 )
 
+from .config import BaseFollowingSettings
 from .errors import BridgeError
 
 if TYPE_CHECKING:
@@ -50,6 +51,10 @@ if TYPE_CHECKING:
     from .robot import AnyReachyMini
 
 __all__ = [
+    "BODY_YAW_EASE_TAU_S",
+    "BODY_YAW_EXIT_S",
+    "BODY_YAW_MAX_DEG",
+    "BODY_YAW_SETTLED_DEG",
     "FULL_SHARES",
     "REACH_RECOVER_PER_S",
     "REACH_STEPS",
@@ -62,8 +67,12 @@ __all__ = [
     "IdleOffsets",
     "MotionSession",
     "analytical_reach",
+    "body_yaw_ease",
+    "framed",
     "postured",
+    "unframed",
     "within_reach",
+    "yaw_of",
 ]
 
 _logger = logging.getLogger(__name__)
@@ -134,6 +143,23 @@ REACH_RECOVER_PER_S = 1.0
 # While the head holds a face, breathing keeps its breath and antennas in full and tones
 # its head roaming down to this fraction — ±8° of yaw would carry it off the person.
 BREATHING_GAZE_ROTATION_SCALE = 0.25
+# The body yaw (specs/motion/motion.md "The body yaw"): the base turned toward the person
+# the head follows, a frame every move plays in. The head leads: a turn begins once the
+# person's direction has been past the deadband for the settings' lag, by when the head
+# is on them, and ends within BODY_YAW_SETTLED_DEG of its goal; the goal is clamped to
+# upstream's own base limit; the ease is two first-order stages of BODY_YAW_EASE_TAU_S
+# (about 90 % of a turn in 2.3 s, continuous when the goal moves during it); the exit
+# stage lasts BODY_YAW_EXIT_S while the base eases back to the front, the time a turn
+# needs to come within half a degree. The ease is judged on the Lite
+# (specs/motion/motion.md open question 8).
+BODY_YAW_SETTLED_DEG = 1.0
+BODY_YAW_MAX_DEG = 160.0
+BODY_YAW_EASE_TAU_S = 0.6
+BODY_YAW_EXIT_S = 4.0
+# A tick that ran late steps the ease by at most this, as the posture filters do.
+_BODY_YAW_MAX_STEP_S = 0.2
+# Within this of the front with the goal there, the body yaw is pinned at exactly 0.
+_BODY_YAW_FRONT_RAD = math.radians(0.1)
 
 NEUTRAL_HEAD: npt.NDArray[np.float64] = np.array(INIT_HEAD_POSE, dtype=np.float64)
 NEUTRAL_ANTENNAS: npt.NDArray[np.float64] = np.array(
@@ -632,7 +658,64 @@ def postured(
     return aim
 
 
-type Reachable = Callable[[npt.NDArray[np.float64]], bool]
+def rz(theta: float) -> npt.NDArray[np.float64]:
+    """A rotation of ``theta`` radians about the vertical axis, as a 4x4 pose."""
+    c, s = math.cos(theta), math.sin(theta)
+    frame = np.eye(4, dtype=np.float64)
+    frame[0, 0], frame[0, 1], frame[1, 0], frame[1, 1] = c, -s, s, c
+    return frame
+
+
+def framed(head: npt.NDArray[np.float64], theta: float) -> npt.NDArray[np.float64]:
+    """``head``, written facing the front, played on the body yaw ``theta``
+    (specs/motion/motion.md "The body yaw"): rotated about the base's axis, its
+    translation with it, so a lean leans toward where the base faces."""
+    return rz(theta) @ np.asarray(head, dtype=np.float64)
+
+
+def unframed(head: npt.NDArray[np.float64], theta: float) -> npt.NDArray[np.float64]:
+    """A world-frame ``head`` brought back into the move frame of body yaw ``theta``:
+    the inverse of :func:`framed`."""
+    return rz(-theta) @ np.asarray(head, dtype=np.float64)
+
+
+def yaw_of(pose: npt.NDArray[np.float64]) -> float:
+    """The yaw of a pose about the vertical axis, in radians, positive to the left: the
+    direction its forward axis points in, projected on the horizontal plane."""
+    return math.atan2(float(pose[1, 0]), float(pose[0, 0]))
+
+
+def _wrap(angle: float) -> float:
+    """``angle`` wrapped to ``[-pi, pi]``."""
+    return (angle + math.pi) % (2.0 * math.pi) - math.pi
+
+
+def _filter_gain(dt: float, tau: float) -> float:
+    """How far a first-order filter of time constant ``tau`` moves toward its target
+    over ``dt``."""
+    return 1.0 - math.exp(-dt / tau)
+
+
+def body_yaw_ease(
+    value: float, mid: float, goal: float, dt: float
+) -> tuple[float, float]:
+    """One step of the body yaw's ease (specs/motion/motion.md "The ease"): two
+    first-order stages of ``BODY_YAW_EASE_TAU_S`` in cascade — ``mid`` the first
+    stage's output, ``value`` the second's — stepped by ``dt`` toward ``goal``. At rest
+    at the start of a turn (the first stage has to move before the second does),
+    continuous when the goal moves during one, about 90 % of a step in 2.3 s. Returns
+    the new ``(value, mid)``."""
+    gain = _filter_gain(dt, BODY_YAW_EASE_TAU_S)
+    mid += (goal - mid) * gain
+    value += (mid - value) * gain
+    return value, mid
+
+
+# Whether the robot can take a head pose with its base at a body yaw
+# (specs/motion/motion.md "Within reach").
+type Reachable = Callable[[npt.NDArray[np.float64], float], bool]
+# The same check with the body yaw bound, as the reach search takes it.
+type PoseCheck = Callable[[npt.NDArray[np.float64]], bool]
 # The four shares the reach search gives up, in that order: the idle move's gaze motion,
 # the posture's offset, its roll, the direction.
 type Shares = tuple[float, float, float, float]
@@ -642,7 +725,7 @@ FULL_SHARES: Shares = (1.0, 1.0, 1.0, 1.0)
 def within_reach(
     compose: Callable[[Shares], npt.NDArray[np.float64]],
     caps: Shares,
-    reachable: Reachable,
+    reachable: PoseCheck,
 ) -> tuple[Shares, npt.NDArray[np.float64]]:
     """The largest shares, at most ``caps``, whose composed pose ``reachable`` accepts
     (specs/motion/motion.md "Within reach"): the caps when they fit; else each share in
@@ -668,16 +751,18 @@ def within_reach(
 @functools.cache
 def analytical_reach() -> Reachable:
     """Whether upstream's analytical kinematics — the daemon's default engine, with its
-    automatic body yaw — solve a head pose at body yaw 0, the loop's. A solution with no
-    ``NaN`` is reachable. Built once; about 3 µs a call. There is no collision model in
-    it, as in the daemon's own call."""
+    automatic body yaw — solve a head pose with the base at ``body_yaw``, the one the
+    tick sends. A solution with no ``NaN`` is reachable. Built once; about 3 µs a call.
+    There is no collision model in it, as in the daemon's own call."""
     from reachy_mini.kinematics.analytical_kinematics import AnalyticalKinematics
 
     kinematics = AnalyticalKinematics()
 
-    def reachable(pose: npt.NDArray[np.float64]) -> bool:
+    def reachable(pose: npt.NDArray[np.float64], body_yaw: float) -> bool:
         try:
-            joints = kinematics.ik(np.asarray(pose, dtype=np.float64), body_yaw=0.0)
+            joints = kinematics.ik(
+                np.asarray(pose, dtype=np.float64), body_yaw=float(body_yaw)
+            )
         except Exception:  # noqa: BLE001 - a solver failure is a pose out of reach
             return False
         return joints is not None and not bool(np.any(np.isnan(joints)))
@@ -748,10 +833,29 @@ class MotionSession:
         start_sound: Callable[[Path], object] | None = None,
         stop_sound: Callable[[object], None] | None = None,
         reachable: Reachable | None = None,
+        base_following: BaseFollowingSettings | None = None,
     ) -> None:
         if idle_move is not None:
             check_idle_move_factory(idle_move)
         self._robot = robot
+        # The body yaw (specs/motion/motion.md "The body yaw"): whether and how the base
+        # follows the person — None: not at all, body yaw 0 as it always was.
+        self._base_following = base_following or BaseFollowingSettings(enabled=False)
+        # The body yaw the loop plays every move on, its goal, the first stage of its
+        # ease, whether a turn is in progress, when it last stepped, and the last tick
+        # that held an aim (the hold's clock). Thread-owned, `_body_yaw` read by anyone.
+        self._body_yaw = 0.0
+        self._body_yaw_mid = 0.0
+        self._body_yaw_goal = 0.0
+        self._body_yaw_turning = False
+        self._body_yaw_at: float | None = None
+        self._aim_seen_at: float | None = None
+        # When the person's direction first went past the deadband: the turn begins
+        # the settings' lag later, the head leading (None: inside it, or a turn under way).
+        self._beyond_since: float | None = None
+        # The body yaw the last target was framed with: a blend's source is that target
+        # brought back into the move frame by it.
+        self._last_frame = 0.0
         # Whether the robot can take a head pose (specs/motion/motion.md "Within reach");
         # None: upstream's analytical kinematics, built at the first check.
         self._reachable = reachable
@@ -946,6 +1050,25 @@ class MotionSession:
                     BridgeError("the motors left 'enabled': the motion loop paused")
                 )
 
+    def set_base_following(self, settings: BaseFollowingSettings) -> None:
+        """Apply the base-following settings (specs/motion/motion.md "The body yaw"): at
+        the next idle tick, never as a step — switched off, the base eases back to the
+        front; during a primary the body yaw waits for the idle entry after it."""
+        self._commands.put(lambda: self._on_set_base_following(settings))
+
+    def _on_set_base_following(self, settings: BaseFollowingSettings) -> None:
+        self._base_following = settings
+
+    @property
+    def base_following(self) -> BaseFollowingSettings:
+        return self._base_following
+
+    @property
+    def body_yaw(self) -> float:
+        """The body yaw the loop plays every move on, in radians — one tick stale at
+        most, read from any thread."""
+        return self._body_yaw
+
     def set_gaze(self, aim: GazeAim | None, *, focus: bool = False) -> None:
         """Hand the gaze layer an aim — the pose that looks at the tracked face and the
         posture toward them; ``aim=None`` withdraws it (specs/motion/motion.md "The gaze
@@ -1000,7 +1123,7 @@ class MotionSession:
         """Blocking: stop the thread, easing to neutral first if it is commanding and
         presence is on. Run under ``asyncio.to_thread`` — never on the event loop."""
         self._commands.put(self._on_close)
-        self._thread.join(timeout=BLEND_S + 2.0)
+        self._thread.join(timeout=BODY_YAW_EXIT_S + 2.0)
 
     def _on_close(self) -> None:
         for primary in self._queue:
@@ -1014,10 +1137,15 @@ class MotionSession:
             primary.dropped.set()
         if self._presence and self._commanding and not self._paused:
             idle = self._playing_idle()
+            # Off the front, the stage lasts while the base eases back to it
+            # (specs/motion/motion.md "The body yaw": "Session exit").
+            seconds = (
+                BODY_YAW_EXIT_S if abs(self._body_yaw) > math.radians(0.5) else BLEND_S
+            )
             exit_stage: Move = (
-                _IdleFadeOut(idle[0], t_offset=idle[1])
+                _IdleFadeOut(idle[0], t_offset=idle[1], duration=seconds)
                 if idle is not None
-                else blend_into(self._last_target, HoldMove())
+                else blend_into(self._blend_source(), HoldMove(), seconds=seconds)
             )
             self._playing = _Playing(
                 stages=[exit_stage],
@@ -1176,7 +1304,9 @@ class MotionSession:
             # any other error fails it at once; the loop re-selects on its next tick.
             try:
                 source = (
-                    self._last_target if self._commanding else self._read_present_pose()
+                    self._blend_source()
+                    if self._commanding
+                    else self._anchor_present_pose()
                 )
                 entry = blend_into(source, move)
             except _LOST_CONNECTION_ERRORS:
@@ -1201,7 +1331,26 @@ class MotionSession:
             t if math.isinf(stage.duration) else min(t, max(stage.duration - 1e-3, 0.0))
         )
         head, antennas, body_yaw = stage.evaluate(eval_t)
-        head, antennas = self._compose_gaze(now, playing, eval_t, head, antennas)
+        # The body yaw (specs/motion/motion.md "The body yaw"): stepped on idle and exit
+        # ticks, frozen through a primary; then the frame every move plays in.
+        if self._gaze_target is not None:
+            self._aim_seen_at = now
+        if playing.primary is None:
+            self._step_body_yaw(now, exit=playing.exit_blend)
+        else:
+            self._body_yaw_at = now  # frozen, the clocks running: no catch-up after
+        theta = self._body_yaw
+        last_head, last_antennas, last_yaw = self._last_target
+        if head is not None:
+            head = framed(head, theta)
+        final_yaw = (
+            last_yaw - self._last_frame + theta
+            if body_yaw is None
+            else theta + float(body_yaw)
+        )
+        head, antennas = self._compose_gaze(
+            now, playing, eval_t, head, antennas, theta, final_yaw
+        )
         if (
             playing.stage == 1
             and playing.primary is not None
@@ -1215,19 +1364,106 @@ class MotionSession:
                 playing.sound_token = self._start_sound(sound_path)
             playing.sound_started = True
 
-        last_head, last_antennas, last_yaw = self._last_target
         final_head = last_head if head is None else np.asarray(head, dtype=np.float64)
         final_antennas = (
             last_antennas
             if antennas is None
             else np.asarray(antennas, dtype=np.float64)
         )
-        final_yaw = last_yaw if body_yaw is None else float(body_yaw)
         self._robot.set_target(
             head=final_head, antennas=final_antennas, body_yaw=final_yaw
         )
         self._last_target = (final_head, final_antennas, final_yaw)
+        self._last_frame = theta
         self._commanding = True
+
+    def _step_body_yaw(self, now: float, *, exit: bool) -> None:
+        """Where the base goes (specs/motion/motion.md "The body yaw": "Where the body yaw
+        goes", "The ease"): the goal — the aim's yaw once it has been past the deadband
+        for the settings' ``lag_s`` (the head leads) and until the turn has settled, held for
+        ``hold_s`` once nobody is followed, the front after that, on the exit stage and
+        with base following off — and one step of the ease toward it."""
+        settings = self._base_following
+        dt = (
+            0.0
+            if self._body_yaw_at is None
+            else min(max(0.0, now - self._body_yaw_at), _BODY_YAW_MAX_STEP_S)
+        )
+        self._body_yaw_at = now
+        theta = self._body_yaw
+        if exit or not settings.enabled:
+            goal = 0.0
+            self._body_yaw_turning = False
+            self._beyond_since = None
+        else:
+            target = self._gaze_target
+            if target is not None:
+                aim = self._gaze_aim if self._gaze_aim is not None else target.look
+                limit = math.radians(BODY_YAW_MAX_DEG)
+                psi = max(-limit, min(limit, yaw_of(aim)))
+                beyond = abs(_wrap(psi - theta)) > math.radians(settings.deadband_deg)
+                if not self._body_yaw_turning and beyond:
+                    if self._beyond_since is None:
+                        self._beyond_since = now
+                    if now - self._beyond_since >= settings.lag_s:
+                        self._body_yaw_turning = True  # the head is on them: now
+                elif not beyond:
+                    self._beyond_since = None
+                if self._body_yaw_turning:
+                    self._beyond_since = None
+                    goal = psi
+                else:
+                    goal = self._body_yaw_goal
+            else:
+                self._body_yaw_turning = False
+                self._beyond_since = None
+                seen = self._aim_seen_at
+                goal = (
+                    0.0
+                    if seen is None or now - seen >= settings.hold_s
+                    else self._body_yaw_goal
+                )
+            if self._body_yaw_turning and abs(_wrap(goal - theta)) < math.radians(
+                BODY_YAW_SETTLED_DEG
+            ):
+                self._body_yaw_turning = False
+        self._body_yaw_goal = goal
+        self._body_yaw, self._body_yaw_mid = body_yaw_ease(
+            theta, self._body_yaw_mid, goal, dt
+        )
+        if (
+            goal == 0.0
+            and abs(self._body_yaw) < _BODY_YAW_FRONT_RAD
+            and abs(self._body_yaw_mid) < _BODY_YAW_FRONT_RAD
+        ):
+            self._body_yaw = self._body_yaw_mid = 0.0  # on the front: pinned there
+
+    def _set_body_yaw(self, theta: float) -> None:
+        """Adopt ``theta`` as the body yaw, at rest: a re-anchor on the robot's base."""
+        limit = math.radians(BODY_YAW_MAX_DEG)
+        theta = max(-limit, min(limit, theta))
+        self._body_yaw = self._body_yaw_mid = self._body_yaw_goal = theta
+        self._body_yaw_turning = False
+        self._beyond_since = None
+        self._body_yaw_at = None
+
+    def _blend_source(self) -> Pose:
+        """The last commanded target brought into the move frame by the body yaw it was
+        framed with, so the first tick of a blend emits exactly that target."""
+        head, antennas, yaw = self._last_target
+        theta = self._last_frame
+        return unframed(head, theta), antennas, yaw - theta
+
+    def _anchor_present_pose(self) -> Pose:
+        """The pose read from the robot as a blend's source (specs/motion/motion.md "The
+        loop"), in the move frame: with base following on, the body yaw first adopts the
+        robot's present one — the base is wherever the robot has it, a base moved by
+        upstream's own override included."""
+        head, antennas, yaw = self._read_present_pose()
+        if self._base_following.enabled:
+            self._set_body_yaw(yaw)
+        theta = self._body_yaw
+        return unframed(head, theta), antennas, yaw - theta
 
     def _compose_gaze(
         self,
@@ -1236,11 +1472,14 @@ class MotionSession:
         t: float,
         head: npt.NDArray[np.float64] | None,
         antennas: npt.NDArray[np.float64] | None,
+        theta: float,
+        body_yaw: float,
     ) -> tuple[npt.NDArray[np.float64] | None, npt.NDArray[np.float64] | None]:
         """The gaze layer (specs/motion/motion.md "The gaze layer"): ease the aim, fade the
-        effective weight, and compose the aim into an idle stage's pose. A primary
-        leaves the layer out and its weight at zero, so the idle re-entry after it fades
-        back in from nothing."""
+        effective weight, and compose the aim into an idle stage's pose — on the body
+        yaw ``theta``, the pose checked within reach with the base at ``body_yaw``. A
+        primary leaves the layer out and its weight at zero, so the idle re-entry after
+        it fades back in from nothing."""
         if playing.primary is not None:
             self._reset_gaze_fade()
             return head, antennas
@@ -1279,12 +1518,13 @@ class MotionSession:
             gaze_head = linear_pose_interpolation(gaze_head, NEUTRAL_HEAD, focus)
         look, roll, offset = self._gaze_aim, self._gaze_roll, self._gaze_offset
         idle_head = np.asarray(head)
+        rest = rz(theta)  # the direction gives way toward the body yaw's rest pose
 
         def compose(shares: Shares) -> npt.NDArray[np.float64]:
             idle_share, offset_share, roll_share, direction = shares
             aim = postured(look, roll * roll_share, offset * offset_share)
             if direction < 1.0:
-                aim = linear_pose_interpolation(NEUTRAL_HEAD, aim, direction)
+                aim = linear_pose_interpolation(rest, aim, direction)
             motion = (
                 gaze_head
                 if idle_share >= 1.0
@@ -1294,25 +1534,32 @@ class MotionSession:
                 idle_head, compose_world_offset(aim, motion), w
             )
 
-        composed_head = self._within_reach(now, compose)
+        composed_head = self._within_reach(now, compose, body_yaw)
         composed_antennas = np.asarray(antennas) + w * (
             gaze_antennas - np.asarray(antennas)
         )
         return composed_head, composed_antennas
 
     def _within_reach(
-        self, now: float, compose: Callable[[Shares], npt.NDArray[np.float64]]
+        self,
+        now: float,
+        compose: Callable[[Shares], npt.NDArray[np.float64]],
+        body_yaw: float,
     ) -> npt.NDArray[np.float64]:
-        """The composed head pose the robot can reach (specs/motion/motion.md "Within
-        reach"): the shares of the last tick, each recovered by ``REACH_RECOVER_PER_S``
-        since, when that fits; else the last tick's shares; else those cut by
-        :func:`within_reach` as far as the kinematics need."""
+        """The composed head pose the robot can reach with its base at ``body_yaw``
+        (specs/motion/motion.md "Within reach"): the shares of the last tick, each
+        recovered by ``REACH_RECOVER_PER_S`` since, when that fits; else the last tick's
+        shares; else those cut by :func:`within_reach` as far as the kinematics need."""
         dt = 0.0 if self._reach_at is None else max(0.0, now - self._reach_at)
         self._reach_at = now
         caps: Shares = tuple(  # type: ignore[assignment]
             min(1.0, share + REACH_RECOVER_PER_S * dt) for share in self._reach_shares
         )
-        reachable = self._reachable or analytical_reach()
+        check = self._reachable or analytical_reach()
+
+        def reachable(pose: npt.NDArray[np.float64]) -> bool:
+            return check(pose, body_yaw)
+
         previous = self._reach_shares
         pose = compose(caps)
         if reachable(pose):
@@ -1369,6 +1616,7 @@ class MotionSession:
         self._reset_gaze_fade()
         self._gaze_aim = None
         self._reach_shares, self._reach_at = FULL_SHARES, None
+        self._body_yaw_at = None  # the body yaw holds; its next step starts afresh
 
     def _read_present_pose(self) -> Pose:
         head = self._robot.get_current_head_pose()

@@ -18,6 +18,7 @@ from .bridge import ReachyMiniBridge
 from .camera import CameraFrame
 from .config import (
     ApproachSettings,
+    BaseFollowingSettings,
     MirroringSettings,
     PersonalSpaceSettings,
     ReachyMiniConfig,
@@ -40,6 +41,7 @@ from .observable import Observable
 
 __all__ = [
     "ApproachSettings",
+    "BaseFollowingSettings",
     "BridgeError",
     "CameraFrame",
     "ConfigError",

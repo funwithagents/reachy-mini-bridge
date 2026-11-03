@@ -44,6 +44,20 @@ await bridge.set_tracking(replace(settings, approach=replace(settings.approach, 
 
 `bridge.attention` is the derived state: `"engaged"` while a face is followed, `"watching"` while tracking is on and nobody is, `None` when tracking is off.
 
+## The base toward the person
+
+While the head follows someone well to one side, the base turns toward them too (`motion.base_following`, on by default — fields: [../reference/configuration.md](../reference/configuration.md#motion--what-the-robot-does-at-rest)). The body yaw the loop chooses is a frame every move plays in: the idle move breathes around it, an emotion played meanwhile is performed toward the person rather than toward the front, and once the person leaves the base keeps facing where they were for `hold_s` (45 s) before easing back to the front. Two reasons: a robot that only turns its head at 60° reads as distracted, and the head's workspace is the body's — with the base turned onto the person the whole posture stays within reach at the far sides, where a front-facing base loses it.
+
+The base turns only for a turn worth making: once the person's direction is more than `deadband_deg` (20°) from where the base points, it waits `lag_s` (0.8 s), by when the head is on them, then eases onto them and catches up fully, so they move another 20° before the next turn: the head leads, the body follows. Every turn is eased, never stepped, and an emotion never swings the base back to the front. Switch it off at run time the same way as a posture behaviour:
+
+```python
+from dataclasses import replace
+
+await bridge.set_base_following(replace(bridge.base_following, enabled=False))
+```
+
+`bridge.body_yaw_deg` reads where the base points, in degrees, positive to the left.
+
 ## The two reports
 
 **`bridge.faces`** — a `FaceReport`: every face the detector reports, in `track_id` order (oldest track first), each with its normalised position (`x`, `y` in [-1, 1], the nose when known), its `size` (box height as a fraction of the frame), its `distance_m` from the camera, its pixel `bbox`, its head angles in **radians** (`roll`; `pitch` and `yaw` from a detector that fits a head), and its `track_id`; plus `active` (a detector is looking), `source` (`"yunet"` / `"custom"`), `ts`, and `frame` — the `CameraFrame` the faces were found in. The report is about detection: it singles nobody out.
