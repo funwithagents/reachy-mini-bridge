@@ -21,6 +21,9 @@ from examples.voice_tour.app import (
 )
 from reachy_mini_bridge import ReachyMiniConfig
 
+# Windows' default timer granularity: asyncio's sleeps there end up to one tick early.
+WINDOWS_TIMER_TICK_S = 0.0156
+
 FAKE = ReachyMiniConfig.from_dict({"backend": "fake"})
 # The test signal, a file player, and the adapter to a server of your own: no voice of theirs.
 NOT_SPEECH_VOICES = {"tone", "audiofile", "openai-compatible"}
@@ -79,7 +82,8 @@ def test_the_pauses_separate_the_voices_and_a_voice_s_lines(voices_dir: Path) ->
     assert first.line_starts_s[0] == first.start_s
     assert first.start_s < first.line_starts_s[1] < first.end_s
     assert second.line_starts_s == (second.start_s,)
-    assert second.gap_before_s >= 0.6
+    # the pause, less one tick of Windows' 15.6 ms timer: a sleep there can end early
+    assert second.gap_before_s >= 0.6 - WINDOWS_TIMER_TICK_S
     tight_first, tight_second = asyncio.run(timed(0.0, 0.0))
     assert tight_second.gap_before_s < second.gap_before_s
     line_gap = first.line_starts_s[1] - first.line_starts_s[0]
