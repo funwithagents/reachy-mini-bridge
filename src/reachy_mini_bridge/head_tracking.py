@@ -35,7 +35,7 @@ from reachy_mini.vision.look_at import (
     look_at_image_pose,
 )
 
-from .config import TrackingSettings
+from .config import PERSONAL_SPACE_EXIT_SHARE, TrackingSettings
 from .motion import GazeAim, nearest_index
 
 if TYPE_CHECKING:
@@ -57,7 +57,6 @@ __all__ = [
     "DELAY_STEP_S",
     "DELAY_WINDOW_S",
     "OFFSET_SMOOTHING_S",
-    "PERSONAL_SPACE_MARGIN_M",
     "ROLL_DEADBAND_DEG",
     "ROLL_SMOOTHING_S",
     "SIM_CAMERA_SIZE",
@@ -114,10 +113,6 @@ ROLL_DEADBAND_DEG = 3.0
 ROLL_SMOOTHING_S = 0.3
 OFFSET_SMOOTHING_S = 0.6
 _POSTURE_MAX_STEP_S = 0.2
-# The personal space event (specs/motion/head_tracking.md "The personal space event"): a
-# person who entered it leaves only this much beyond its boundary, so one standing at the
-# boundary never flickers the event with the distance's frame-to-frame noise (±5 %).
-PERSONAL_SPACE_MARGIN_M = 0.05
 
 # The sim's eye camera (the MJCF's `eye_camera`): MuJoCo's fovy is vertical, rendered at
 # the stream's 1280x720 — about 112° horizontally. Pinned against the MJCF by a test.
@@ -433,14 +428,21 @@ class HeadTracker:
     def _note_personal_space(self, face: Face) -> None:
         """Whether the followed person is inside the personal space
         (specs/motion/head_tracking.md "The personal space event"): entered nearer than
-        ``personal_space.distance_m``, left beyond it by ``PERSONAL_SPACE_MARGIN_M``, so a
-        person standing at the boundary never flickers it; unknown distance, outside."""
+        ``personal_space.distance_m``, left beyond it by ``exit_margin_m`` (by default
+        ``PERSONAL_SPACE_EXIT_SHARE`` of the distance), so a person standing at the
+        boundary never flickers it; unknown distance, outside."""
         distance = face.distance_m
-        boundary = self.settings.personal_space.distance_m
+        space = self.settings.personal_space
+        boundary = space.distance_m
+        margin = (
+            space.exit_margin_m
+            if space.exit_margin_m is not None
+            else PERSONAL_SPACE_EXIT_SHARE * boundary
+        )
         if distance is None:
             self._in_space = False
         elif self._in_space:
-            self._in_space = distance <= boundary + PERSONAL_SPACE_MARGIN_M
+            self._in_space = distance <= boundary + margin
         else:
             self._in_space = distance < boundary
 

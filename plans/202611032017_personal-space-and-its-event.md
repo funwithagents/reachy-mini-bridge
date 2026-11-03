@@ -6,8 +6,8 @@ Implements `specs/motion/head_tracking.md` ("The posture": the personal space; "
 
 ## Scope
 
-- `src/reachy_mini_bridge/config.py` — `PersonalSpaceSettings`, `TrackingSettings.personal_space`; a `personal_distance` key a `ConfigError` naming the new one
-- `src/reachy_mini_bridge/head_tracking.py` — `PERSONAL_SPACE_MARGIN_M = 0.05`; the followed person's state judged on every observation that shows them, reset on loss and on a switch; `HeadTrackingReport.in_personal_space`, in the published state
+- `src/reachy_mini_bridge/config.py` — `PersonalSpaceSettings`, `TrackingSettings.personal_space`; a `personal_distance` key a `ConfigError` naming the new one; `exit_margin_m` (null: `PERSONAL_SPACE_EXIT_SHARE = 0.125` of `distance_m`)
+- `src/reachy_mini_bridge/head_tracking.py` — the exit margin, configured or a share of the distance; the followed person's state judged on every observation that shows them, reset on loss and on a switch; `HeadTrackingReport.in_personal_space`, in the published state
 - `src/reachy_mini_bridge/__init__.py`, `bridge.py` — the renamed class
 - `examples/control_panel/` — the renamed checkbox, `in personal space` in the posture readout
 - `config.example.json`, `docs/reference/configuration.md`, `docs/reference/api.md`, `docs/guides/perception-and-tracking.md` — the new name, the field, a subscription recipe
@@ -16,7 +16,7 @@ Implements `specs/motion/head_tracking.md` ("The posture": the personal space; "
 ## Steps
 
 1. Rename across code, tests, specs and docs (the merged plans keep their wording).
-2. The event in the tracker and the report; the old key's error.
+2. The event in the tracker and the report; the old key's error. The exit margin first a constant (5 cm), then a config field defaulting to a share of the distance: the distance's noise grows with it (±5 %), so a fixed 5 cm would flicker at a wider zone.
 3. The panel's readout; tests; docs.
 
 ## Verification

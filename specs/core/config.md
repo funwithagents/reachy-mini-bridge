@@ -257,6 +257,7 @@ The head tracker ([head_tracking.md](../motion/head_tracking.md)): whether it ru
 | `personal_space.distance_m` | number > 0 | `0.40` | The distance from the robot's camera inside which the head retreats (`Face.distance_m`, [user_perception.md](../vision/user_perception.md) "The face report"). |
 | `personal_space.max_back_mm` | number ≥ 0, ≤ 30 | `25.0` | The largest retreat. |
 | `personal_space.span_m` | number > 0 | `0.10` | The intrusion over which the retreat grows from nothing to `max_back_mm`. |
+| `personal_space.exit_margin_m` | number > 0 \| null | `null` | How far beyond `distance_m` a person who entered must go to have left: the hysteresis of the personal space event ([head_tracking.md](../motion/head_tracking.md) "The personal space event"). `null`: `PERSONAL_SPACE_EXIT_SHARE = 0.125` of `distance_m`, since the distance estimate wanders by about ±5 % of itself. |
 
 ```python
 @dataclass(frozen=True)
@@ -276,6 +277,7 @@ class PersonalSpaceSettings:
     distance_m: float = 0.40
     max_back_mm: float = 25.0
     span_m: float = 0.10
+    exit_margin_m: float | None = None  # None: 12.5 % of distance_m
 
 @dataclass(frozen=True)
 class TrackingSettings:

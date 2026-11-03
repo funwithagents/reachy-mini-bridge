@@ -81,7 +81,7 @@ async for state in bridge.head_tracking.changes():
     print(state.attention, state.track_id)
 ```
 
-**Be told when the person comes close** — `in_personal_space` flips, a published change on the same report, when the followed person enters the personal space (nearer than `motion.tracking.personal_space.distance_m`) and when they leave it (5 cm beyond, so standing at the boundary never flickers it). It is reported whether or not the head's retreat is enabled:
+**Be told when the person comes close** — `in_personal_space` flips, a published change on the same report, when the followed person enters the personal space (nearer than `motion.tracking.personal_space.distance_m`) and when they leave it (`exit_margin_m` beyond, 5 cm by default at 0.40 m, so standing at the boundary never flickers it). It is reported whether or not the head's retreat is enabled:
 
 ```python
 close = False

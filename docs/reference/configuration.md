@@ -44,7 +44,7 @@ Every field of the bridge's declarative config: its default, what it does, and t
       "focus": false,
       "mirroring": { "enabled": true, "gain": 1.0, "max_deg": 12.0 },
       "approach": { "enabled": true, "lean_mm": 12.0 },
-      "personal_space": { "enabled": true, "distance_m": 0.4, "max_back_mm": 25.0, "span_m": 0.1 }
+      "personal_space": { "enabled": true, "distance_m": 0.4, "max_back_mm": 25.0, "span_m": 0.1, "exit_margin_m": null }
     }
   }
 }
@@ -222,6 +222,7 @@ Omit the block and `say` raises unless you pass your own `SpeechSynthesizer`. A 
 | `distance_m` | `0.40` | The distance from the robot's camera inside which the head retreats |
 | `max_back_mm` | `25.0` | The largest retreat, at most 30 mm |
 | `span_m` | `0.10` | The intrusion over which the retreat grows from nothing to `max_back_mm` |
+| `exit_margin_m` | `null` | How far beyond `distance_m` a person who entered must go before they count as having left — the personal space event's hysteresis, so someone standing at the boundary never flickers it. `null`: 12.5 % of `distance_m` (5 cm at 0.40 m), since the distance estimate's noise grows with the distance; set it wider for a detector with a jumpier box |
 
 ## Validation
 

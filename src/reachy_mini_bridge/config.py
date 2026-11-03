@@ -66,6 +66,10 @@ DAEMON_INFO_ROUTE = "/api/bridge/daemon"
 DEFAULT_WEBCAM_HFOV_DEG = 70.0
 # The shipped detector's default working width (specs/core/config.md `face_detection.width`).
 DEFAULT_DETECT_WIDTH = 640
+# The personal space's exit margin when the config names none (specs/core/config.md
+# "`motion.tracking`"): this share of distance_m, the distance estimate wandering by about
+# ±5 % of itself from frame to frame — 5 cm at the default 0.40 m.
+PERSONAL_SPACE_EXIT_SHARE = 0.125
 # The head's own range on the posture's axes (specs/core/config.md "`motion.tracking`"): what
 # the emotions library's recordings span, so no setting asks for more than the repertoire.
 POSTURE_MAX_MM = 30.0
@@ -545,14 +549,20 @@ class PersonalSpaceSettings:
     max_back_mm: float = 25.0
     # the intrusion over which the retreat grows from nothing to max_back_mm, in metres
     span_m: float = 0.10
+    # how far beyond distance_m a person who entered must go to have left, in metres;
+    # None: PERSONAL_SPACE_EXIT_SHARE of distance_m, as the distance's noise grows with it
+    exit_margin_m: float | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> PersonalSpaceSettings:
         name = "motion.tracking.personal_space"
         block = _require_object(data, name)
         _reject_unknown_keys(
-            block, name, {"enabled", "distance_m", "max_back_mm", "span_m"}
+            block,
+            name,
+            {"enabled", "distance_m", "max_back_mm", "span_m", "exit_margin_m"},
         )
+        exit_margin = block.get("exit_margin_m")
         return cls(
             enabled=_bool_field(block, name, "enabled", True),
             distance_m=_number_field(
@@ -563,6 +573,11 @@ class PersonalSpaceSettings:
             ),
             span_m=_number_field(
                 block, name, "span_m", 0.10, low=0.0, low_inclusive=False
+            ),
+            exit_margin_m=None
+            if exit_margin is None
+            else _number_field(
+                block, name, "exit_margin_m", 0.0, low=0.0, low_inclusive=False
             ),
         )
 

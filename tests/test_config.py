@@ -536,6 +536,18 @@ def test_tracking_is_an_object_and_a_boolean_points_at_it() -> None:
         ReachyMiniConfig.from_dict({"motion": {"tracking": False}})
 
 
+def test_the_exit_margin_is_null_by_default_and_a_number_when_set() -> None:
+    assert ReachyMiniConfig().motion.tracking.personal_space.exit_margin_m is None
+    cfg = ReachyMiniConfig.from_dict(
+        {"motion": {"tracking": {"personal_space": {"exit_margin_m": 0.08}}}}
+    )
+    assert cfg.motion.tracking.personal_space.exit_margin_m == 0.08
+    explicit_null = ReachyMiniConfig.from_dict(
+        {"motion": {"tracking": {"personal_space": {"exit_margin_m": None}}}}
+    )
+    assert explicit_null.motion.tracking.personal_space.exit_margin_m is None
+
+
 def test_the_old_personal_distance_key_names_its_new_name() -> None:
     with pytest.raises(ConfigError, match=r"motion\.tracking\.personal_space"):
         ReachyMiniConfig.from_dict(
@@ -572,6 +584,9 @@ def test_tracking_settings_are_frozen() -> None:
         ({"personal_space": {"span_m": 0}}, r"personal_space\.span_m"),
         ({"personal_space": {"span_m": float("inf")}}, r"span_m"),
         ({"personal_space": {"radius_m": 0.3}}, "radius_m"),
+        ({"personal_space": {"exit_margin_m": 0}}, r"personal_space\.exit_margin_m"),
+        ({"personal_space": {"exit_margin_m": -0.01}}, r"exit_margin_m"),
+        ({"personal_space": {"exit_margin_m": "5cm"}}, r"exit_margin_m"),
     ],
 )
 def test_tracking_rejects_bad_values(tracking: dict[str, object], field: str) -> None:

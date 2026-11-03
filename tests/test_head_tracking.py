@@ -978,3 +978,32 @@ def test_the_personal_space_resets_with_the_person(
     # a face without a distance is not reported inside
     posture.see(1.0, distance_m=None)
     assert not posture.state.in_personal_space
+
+
+@pytest.mark.parametrize(
+    ("space", "inside", "still_in", "out"),
+    [
+        # the default: an eighth of the distance, so 10 cm at 0.80 m
+        (PersonalSpaceSettings(distance_m=0.8), 0.79, 0.89, 0.91),
+        # a configured margin, in metres
+        (PersonalSpaceSettings(distance_m=0.4, exit_margin_m=0.02), 0.39, 0.415, 0.425),
+    ],
+)
+def test_the_exit_margin_is_a_share_of_the_distance_unless_configured(
+    monkeypatch: pytest.MonkeyPatch,
+    space: PersonalSpaceSettings,
+    inside: float,
+    still_in: float,
+    out: float,
+) -> None:
+    posture = _Posture(
+        monkeypatch, TrackingSettings(enabled=True, personal_space=space)
+    )
+    posture.see(0.5, distance_m=space.distance_m + 0.05)
+    assert not posture.state.in_personal_space
+    posture.see(0.5, distance_m=inside)
+    assert posture.state.in_personal_space
+    posture.see(0.5, distance_m=still_in)
+    assert posture.state.in_personal_space
+    posture.see(0.5, distance_m=out)
+    assert not posture.state.in_personal_space
