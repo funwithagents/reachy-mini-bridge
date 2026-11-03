@@ -1598,7 +1598,9 @@ def test_set_face_detection_off_without_tracking_stops_the_loop(
             await asyncio.sleep(0.3)
             idle_calls = scene.calls - calls  # the detector no longer runs
             await bridge.set_face_detection(True)
-            await _until(lambda: scene.calls > calls)  # the run's first observation
+            # the run's first observation, published: the detector is called before the
+            # report it produces reaches `faces`
+            await _until(lambda: scene.calls > calls and bridge.faces.value.active)
             return *off, idle_calls, bridge.faces.value.active, scene.calls - calls
 
     switch, active, idle_calls, active_again, calls_again = asyncio.run(run())

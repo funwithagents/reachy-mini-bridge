@@ -106,11 +106,12 @@ ANTENNA_FLICK_MAX_RAD = math.radians(45.0)
 # the head had when its frame was taken, and to estimate that delay from them.
 GAZE_HISTORY_S = 4.0
 # Each tick the eased aim moves this fraction of the way to the latest aim — a time
-# constant of about 75 ms at 60 Hz, so the head keeps up with a moving person while an aim
-# arriving ten times a second never steps it (specs/motion/motion.md "The gaze layer"; above
-# upstream's daemon-side 0.15 at 50 Hz, which made the head lag a person by a beat;
-# faster overshoots the face while the frame-delay estimate is still learning).
-GAZE_ALPHA = 0.2
+# constant of about 0.1 s at 60 Hz, so the head keeps up with a moving person while an aim
+# arriving ten times a second never steps it (specs/motion/motion.md "The gaze layer").
+# Above upstream's daemon-side 0.15 at 50 Hz (0.12 at 60 Hz), which left the head a beat
+# behind a person; 0.2 made it hunt on a slower CI runner while the frame-delay
+# estimate was still learning.
+GAZE_ALPHA = 0.15
 # The gaze layer's weight and its focus fade in and out over this (minjerk): shorter than
 # BLEND_S, the blend into a move, so acquiring a face reads as attention, not a slow turn.
 GAZE_FADE_S = 0.35

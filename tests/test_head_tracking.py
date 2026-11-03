@@ -44,6 +44,7 @@ from reachy_mini_bridge.head_tracking import (
     sim_hfov_deg,
 )
 from reachy_mini_bridge.motion import MotionSession
+from reachy_mini_bridge.testing.gaze import OVERSHOOT_MAX_DEG, YAW_TOLERANCE_DEG
 from reachy_mini_bridge.testing.sim_scene import DEFAULT_FACE_POS
 
 if TYPE_CHECKING:
@@ -147,12 +148,7 @@ def _expected_yaw(lateral: float) -> float:
 
 
 def _assert_converged(
-    yaws: list[float],
-    centre: tuple[float, float],
-    lateral: float,
-    *,
-    max_past: float = 10.0,
-    max_back: float = 3.0,
+    yaws: list[float], centre: tuple[float, float], lateral: float
 ) -> None:
     expected = _expected_yaw(lateral)
     assert yaws[-1] == pytest.approx(expected, abs=3.0)
@@ -161,8 +157,10 @@ def _assert_converged(
         direction = math.copysign(1.0, expected)
         past = [(y - expected) * direction for y in yaws]
         peak = past.index(max(past))
-        assert past[peak] <= max_past  # past the face once, by a bounded amount…
-        assert min(past[peak:]) >= -max_back  # …and never swinging back far short of it
+        # past the face once, by a bounded amount, and never swinging back far short of
+        # it: the live convergence kit's thresholds, one acceptance for both tiers
+        assert past[peak] <= OVERSHOOT_MAX_DEG
+        assert min(past[peak:]) >= -YAW_TOLERANCE_DEG
 
 
 def test_the_head_converges_on_the_face_ahead_and_to_either_side() -> None:
@@ -186,12 +184,7 @@ def test_an_unreported_frame_delay_is_learned_and_the_head_still_settles() -> No
     face = _face_at(0.15)
     yaws, centre, delay = asyncio.run(_closed_loop(face, 5.0, frame_delay_s=0.3))
     assert delay == pytest.approx(0.3, abs=0.1)
-    # The first turn is aimed against the 0.2 s prior while the true delay is 0.3 s —
-    # the top of what a live daemon measures (0.05-0.45 s, mostly 0.1-0.25) — so it
-    # carries the head past the face further than a reported pose does: about 10° and a
-    # 3-4° swing back at the gaze layer's easing (motion.GAZE_ALPHA, GAZE_FADE_S), where
-    # the viewer sim's tracking measures at most 3.5° and 2.7°.
-    _assert_converged(yaws, centre, 0.15, max_past=12.0, max_back=5.0)
+    _assert_converged(yaws, centre, 0.15)
 
 
 def _jumping_face_while_turning() -> float:
