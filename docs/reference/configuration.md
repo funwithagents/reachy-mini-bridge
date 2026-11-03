@@ -31,7 +31,7 @@ Every field of the bridge's declarative config: its default, what it does, and t
   "face_detection": {
     "detector": "yunet",
     "enabled": true,
-    "width": 640,
+    "width": 1280,
     "target_fps": null
   },
 
@@ -42,9 +42,9 @@ Every field of the bridge's declarative config: its default, what it does, and t
     "tracking": {
       "enabled": true,
       "focus": false,
-      "mirroring": { "enabled": true, "gain": 1.0, "max_deg": 12.0 },
-      "approach": { "enabled": true, "lean_mm": 12.0 },
-      "personal_space": { "enabled": true, "distance_m": 0.4, "max_back_mm": 25.0, "span_m": 0.1, "exit_margin_m": null }
+      "mirroring": { "enabled": true, "gain": 1.0, "max_deg": 20.0 },
+      "approach": { "enabled": true, "lean_mm": 15.0 },
+      "personal_space": { "enabled": true, "distance_m": 0.4, "max_back_mm": 20.0, "span_m": 0.2, "exit_margin_m": 0.2 }
     }
   }
 }

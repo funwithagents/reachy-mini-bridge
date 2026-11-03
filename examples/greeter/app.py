@@ -4,7 +4,8 @@
 - a face appears: the head starts following it and, ``HELLO_DELAY_S`` later so the gaze
   has settled on the face, the robot plays a welcoming emotion and says "Hello there";
 - the person comes too close (enters the personal space, ``in_personal_space``): the
-  robot is startled and says so, as its head steps back; they step back out: relieved;
+  robot says so, its head stepping back through the tracker's own retreat — no emotion
+  over it, so the retreat is what shows; they step back out: a relieved emotion;
 - the face is gone (the tracker hands the head back after its loss timeout): the robot
   says "Good bye" with a short farewell move, and the head eases back into breathing.
 
@@ -31,8 +32,9 @@ DEFAULT_CONFIG = CONFIGS / "sim-webcam.json"
 # The first name of each list the library has (the fake lists `happy` and `sad`).
 HELLO_EMOTIONS = ("welcoming1", "welcoming2", "cheerful1", "happy")
 GOODBYE_EMOTIONS = ("downcast1", "sad1", "sad")
-TOO_CLOSE_EMOTIONS = ("surprised1", "fear1")
-RELIEVED_EMOTIONS = ("relief1", "relief2")
+# A "thank you for stepping back" after the retreat: gratitude, short enough to end
+# before the head is back on the person.
+RELIEVED_EMOTIONS = ("grateful1", "cheerful1")
 HELLO_DELAY_S = 1.0  # the head turns onto the face before the greeting starts
 
 
@@ -86,7 +88,6 @@ async def run(bridge: ReachyMiniBridge) -> None:
         emotions = await bridge.list_emotions()
         hello = pick(HELLO_EMOTIONS, emotions)
         goodbye = pick(GOODBYE_EMOTIONS, emotions)
-        too_close = pick(TOO_CLOSE_EMOTIONS, emotions)
         relieved = pick(RELIEVED_EMOTIONS, emotions)
         log.info("waiting for a face (hello: %s, goodbye: %s)", hello, goodbye)
 
@@ -113,7 +114,9 @@ async def run(bridge: ReachyMiniBridge) -> None:
                 close = now_close
                 if close:
                     log.info("too close")
-                    await react(bridge, "Whoa, you're a bit close!", too_close)
+                    # Speech only: an emotion would take the head over, and the
+                    # tracker's retreat — the head stepping back — is the reaction.
+                    await react(bridge, "Whoa, you're a bit close!", None)
                 else:
                     log.info("back at a comfortable distance")
                     await react(bridge, "Ah, that's better.", relieved)

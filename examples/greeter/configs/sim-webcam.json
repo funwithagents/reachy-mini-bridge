@@ -18,9 +18,34 @@
     }
   },
   "face_detection": {
-    "detector": "yunet"
+    "detector": "yunet",
+    "enabled": true,
+    "width": 1280,
+    "target_fps": null
   },
   "motion": {
-    "tracking": { "enabled": true }
+    "presence": true,
+    "idle": "breathing",
+    "wobbling": true,
+    "tracking": {
+      "enabled": true,
+      "focus": false,
+      "mirroring": {
+        "enabled": true,
+        "gain": 1.0,
+        "max_deg": 20.0
+      },
+      "approach": {
+        "enabled": true,
+        "lean_mm": 15.0
+      },
+      "personal_space": {
+        "enabled": true,
+        "distance_m": 0.4,
+        "max_back_mm": 20.0,
+        "span_m": 0.2,
+        "exit_margin_m": 0.2
+      }
+    }
   }
 }
