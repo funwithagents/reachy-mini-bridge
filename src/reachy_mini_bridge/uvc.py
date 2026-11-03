@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol, TypeVar
+from typing import Any, Literal, Protocol
 
 __all__ = [
     "AePriorityOutcome",
@@ -196,10 +196,7 @@ class LibusbControl:
         usb.util.dispose_resources(self._device)
 
 
-_T = TypeVar("_T")
-
-
-def pick_camera(cameras: Sequence[tuple[str, _T]], names: Sequence[str]) -> _T | None:
+def pick_camera[T](cameras: Sequence[tuple[str, T]], names: Sequence[str]) -> T | None:
     """The camera upstream's detection would pick among ``cameras`` (product name,
     camera): the first whose name contains a wanted name, ``names`` tried in priority
     order — the first name that any camera matches wins, as upstream's
@@ -242,7 +239,8 @@ def robot_camera(names: Sequence[str]) -> tuple[LibusbControl, CameraTerminal] |
             if video_control is None:
                 continue
             name = str(device.product or "")
-        except Exception:  # noqa: BLE001 - a device this process cannot read
+        except Exception as e:  # noqa: BLE001 - a device this process cannot read
+            _logger.debug("USB device %s skipped: %s", device, e)
             continue
         cameras.append((name, (device, *video_control)))
     picked = pick_camera(cameras, names)
