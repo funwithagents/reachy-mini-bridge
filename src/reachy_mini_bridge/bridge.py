@@ -552,6 +552,7 @@ class ReachyMiniBridge:
                 start_sound=media.start_sound,
                 stop_sound=stop_emotion_sound,
                 base_following=self._base_following,
+                max_tilt_deg=cfg.motion.max_tilt_deg,
             )
             # The camera feed (specs/vision/camera.md "Lifecycle"): the one reader of the
             # camera, started right after the media session and stopped right before it

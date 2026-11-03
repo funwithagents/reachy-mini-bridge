@@ -69,6 +69,7 @@
       "deadband_deg": 20.0,
       "hold_s": 45.0,
       "lag_s": 0.8
-    }
+    },
+    "max_tilt_deg": 25.0
   }
 }

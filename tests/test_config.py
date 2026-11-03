@@ -56,6 +56,8 @@ def test_defaults() -> None:
     assert cfg.motion.base_following == BaseFollowingSettings(
         enabled=True, deadband_deg=20.0, hold_s=45.0, lag_s=0.8
     )
+    # the head's tilt limit, measured on a Lite (specs/motion/motion.md "The tilt limit")
+    assert cfg.motion.max_tilt_deg == 25.0
 
 
 def test_the_repo_example_parses() -> None:
@@ -674,3 +676,16 @@ def test_idle_modes_match_the_motion_loops_type() -> None:
     from reachy_mini_bridge.motion import IdleMode
 
     assert get_args(IdleMode.__value__) == IDLE_MODES
+
+
+@pytest.mark.parametrize("value", [0, -5, 35.5, "25", True, float("nan")])
+def test_max_tilt_is_a_positive_number_up_to_upstream_s_cone(value: object) -> None:
+    with pytest.raises(ConfigError, match=r"motion\.max_tilt_deg"):
+        ReachyMiniConfig.from_dict({"motion": {"max_tilt_deg": value}})
+
+
+def test_max_tilt_parses_up_to_upstream_s_cone() -> None:
+    assert (
+        ReachyMiniConfig.from_dict({"motion": {"max_tilt_deg": 35}}).motion.max_tilt_deg
+        == 35.0
+    )

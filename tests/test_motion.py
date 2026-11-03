@@ -66,8 +66,10 @@ from reachy_mini_bridge.motion import (
     blend_into,
     body_yaw_ease,
     rz,
+    tilt_of,
     unframed,
     within_reach,
+    within_tilt,
     yaw_of,
 )
 
@@ -1980,3 +1982,90 @@ def test_the_base_turned_keeps_the_posture_whole_at_the_far_side() -> None:
     assert math.degrees(body_yaw) == pytest.approx(60.0, abs=1.0)
     assert _roll_of(settled_head) == pytest.approx(25.0, abs=1.0)
     assert _along_look_mm(settled_head, 60.0) == pytest.approx(-25.0, abs=0.5)
+
+
+# --- the tilt limit (specs/motion/motion.md "The tilt limit") ---------------------------
+
+
+def _raised(
+    yaw_deg: float, pitch_up_deg: float, roll_deg: float = 0.0
+) -> npt.NDArray[np.float64]:
+    """A head pose turned ``yaw_deg``, looking ``pitch_up_deg`` up, rolled ``roll_deg``,
+    with a translation to see it kept."""
+    pose = IdleOffsets(
+        yaw_deg=yaw_deg, pitch_deg=-pitch_up_deg, roll_deg=roll_deg, z_mm=4.0
+    ).pose()[0]
+    pose[:2, 3] = (0.01, -0.005)
+    return pose
+
+
+@pytest.mark.parametrize(
+    ("yaw", "up", "roll"),
+    [(0.0, 40.0, 0.0), (30.0, 40.0, 0.0), (-45.0, 32.0, 10.0), (20.0, 0.0, 30.0)],
+)
+def test_the_tilt_limit_brings_the_head_to_it_and_keeps_where_it_faces(
+    yaw: float, up: float, roll: float
+) -> None:
+    """Past the limit the head comes back to it exactly, facing the same way about the
+    vertical, its translation untouched, and turned by little more than the excess."""
+    pose = _raised(yaw, up, roll)
+    held = within_tilt(pose, math.radians(25.0))
+    assert math.degrees(tilt_of(held)) == pytest.approx(25.0, abs=1e-6)
+    assert math.degrees(yaw_of(held)) == pytest.approx(
+        math.degrees(yaw_of(pose)), abs=1e-6
+    )
+    assert np.allclose(held[:3, 3], pose[:3, 3])
+    turned = math.degrees(
+        math.acos(np.clip((np.trace(held[:3, :3].T @ pose[:3, :3]) - 1) / 2, -1, 1))
+    )
+    excess = math.degrees(tilt_of(pose)) - 25.0
+    assert excess - 1e-6 <= turned <= excess + 2.0
+
+
+def test_a_pose_within_the_tilt_limit_is_left_alone() -> None:
+    pose = _raised(30.0, 20.0, 3.0)
+    assert np.array_equal(within_tilt(pose, math.radians(25.0)), pose)
+
+
+def test_the_gaze_layer_holds_a_raised_aim_at_the_tilt_limit_and_follows_its_yaw() -> (
+    None
+):
+    """A person well above the head: every target the loop sends tilts no more than the
+    limit, the head settles on the person's yaw at the limit, and a smaller limit holds
+    the head lower."""
+
+    async def run(limit: float) -> list[npt.NDArray[np.float64]]:
+        robot = FakeReachyMini()
+        async with _running(
+            MotionSession(
+                robot,
+                presence=True,
+                idle="breathing",
+                base_following=BaseFollowingSettings(enabled=False),
+                max_tilt_deg=limit,
+            )
+        ) as session:
+            session.resume()
+            await asyncio.sleep(BLEND_S + 0.1)
+            before = len(robot.targets)
+            session.set_gaze(GazeAim(_look(20.0, 42.0)))
+            await asyncio.sleep(1.5)
+            return [h for h, _, _ in robot.targets[before:] if h is not None]
+
+    for limit in (25.0, 18.0):
+        heads = asyncio.run(run(limit))
+        assert max(math.degrees(tilt_of(h)) for h in heads) <= limit + 1e-6
+        settled = heads[-1]
+        assert math.degrees(tilt_of(settled)) == pytest.approx(limit, abs=1.5)
+        assert math.degrees(yaw_of(settled)) == pytest.approx(20.0, abs=1.5)
+
+
+def _look(yaw_deg: float, up_deg: float) -> npt.NDArray[np.float64]:
+    """The look-at pose toward a direction ``up_deg`` above the horizon at ``yaw_deg``,
+    upstream's shortest rotation, as the tracker builds it."""
+    from reachy_mini.vision.look_at import look_at_world_pose
+
+    a, e = math.radians(yaw_deg), math.radians(up_deg)
+    return look_at_world_pose(
+        math.cos(e) * math.cos(a), math.cos(e) * math.sin(a), math.sin(e)
+    )

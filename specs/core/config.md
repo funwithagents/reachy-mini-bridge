@@ -223,6 +223,7 @@ The initial values of everything that shapes the robot's behaviour at rest: the 
 | `idle_move` | a zero-argument callable returning an `IdleMove`, or `None` — **Python only** | `None` | The factory of the custom idle move, stored whatever `idle` is and played whenever `idle` is `"custom"`. It is code, so it is set on the dataclass (`MotionSettings(idle="custom", idle_move=SlowNod)`); a JSON file names the mode and code supplies the move. Checked when the session starts ([motion.md](../motion/motion.md) "Custom idle moves"). |
 | `wobbling` | bool | `true` | A robot that talks sways its head while it talks: `ReachyMiniBridge` enables upstream's audio-reactive head wobbling on entry and switches it off again on exit whenever it is still on ([bridge.md](bridge.md) "Audio-reactive motion (head wobbling)"; mechanism in [audio.md](../audio/audio.md) "Head wobbling"). `false` keeps the head still while audio plays (a caller driving the head precisely, or a quiet demo). |
 | `tracking` | object → `TrackingSettings` | off, the posture on | The bridge's head tracker and the posture it gives the head ([head_tracking.md](../motion/head_tracking.md)); the fields below. A JSON boolean is a `ConfigError` pointing at `{"enabled": …}`. |
+| `max_tilt_deg` | number > 0, ≤ 35 | `25.0` | The most the head tilts from upright — pitch and roll together — in every pose the gaze layer composes, its yaw kept ([motion.md](../motion/motion.md) "The gaze layer": "The tilt limit"). A Lite's head stops tilting near 27°–33° while upstream's analytical kinematics accept any tilt, and a head commanded past its ceiling stalls in yaw too; 25° is what it reached reliably (2026-11-04). At most upstream's Placo cone, 35°. Read at session start; no runtime verb. |
 | `base_following` | object → `BaseFollowingSettings` | on | The base turned toward the person the head follows, every move played around that body yaw ([motion.md](../motion/motion.md) "The body yaw"); the fields below. A JSON boolean is a `ConfigError` pointing at `{"enabled": …}`. |
 
 ```python
@@ -236,6 +237,7 @@ class MotionSettings:
     wobbling: bool = True
     tracking: TrackingSettings = field(default_factory=TrackingSettings)
     base_following: BaseFollowingSettings = field(default_factory=BaseFollowingSettings)
+    max_tilt_deg: float = 25.0
 ```
 
 `IdleMove` is [motion.md](../motion/motion.md)'s base class, imported for type checking only, so the config module still loads without `reachy_mini`. The valid modes are the module constant `IDLE_MODES = ("breathing", "hold", "custom")`.

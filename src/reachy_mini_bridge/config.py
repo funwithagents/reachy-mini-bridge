@@ -694,6 +694,11 @@ class BaseFollowingSettings:
         return cls.from_dict(_load_file(path))
 
 
+# The head's tilt limit (specs/motion/motion.md "The tilt limit"): upstream's Placo engine
+# holds the head inside a 35° cone; no config asks for more.
+MAX_TILT_CEILING_DEG = 35.0
+
+
 # --- `motion` block -----------------------------------------------------------------
 
 
@@ -720,6 +725,10 @@ class MotionSettings:
     # The base turned toward the person the head follows, every move played around it
     # (specs/motion/motion.md "The body yaw"); a mode like presence, on by default.
     base_following: BaseFollowingSettings = field(default_factory=BaseFollowingSettings)
+    # The most the head tilts from upright, in degrees — pitch and roll together — in
+    # every pose the gaze layer composes (specs/motion/motion.md "The tilt limit"): the
+    # mechanism stops short of what the analytical kinematics accept, measured on a Lite.
+    max_tilt_deg: float = 25.0
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> MotionSettings:
@@ -732,7 +741,14 @@ class MotionSettings:
         _reject_unknown_keys(
             block,
             "motion",
-            {"presence", "idle", "wobbling", "tracking", "base_following"},
+            {
+                "presence",
+                "idle",
+                "wobbling",
+                "tracking",
+                "base_following",
+                "max_tilt_deg",
+            },
         )
         presence = block.get("presence", True)
         idle = block.get("idle", "breathing")
@@ -740,6 +756,15 @@ class MotionSettings:
         tracking = TrackingSettings.from_dict(block.get("tracking", {}))
         base_following = BaseFollowingSettings.from_dict(
             block.get("base_following", {})
+        )
+        max_tilt_deg = _number_field(
+            block,
+            "motion",
+            "max_tilt_deg",
+            25.0,
+            low=0.0,
+            low_inclusive=False,
+            high=MAX_TILT_CEILING_DEG,
         )
         if not isinstance(presence, bool):
             raise ConfigError("'motion.presence' must be a boolean")
@@ -755,6 +780,7 @@ class MotionSettings:
             wobbling=wobbling,
             tracking=tracking,
             base_following=base_following,
+            max_tilt_deg=max_tilt_deg,
         )
 
     @classmethod
