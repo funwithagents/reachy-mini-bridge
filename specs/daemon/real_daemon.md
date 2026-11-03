@@ -1,9 +1,11 @@
 ---
 code:
   - src/reachy_mini_bridge/real_daemon.py
+  - src/reachy_mini_bridge/uvc.py
   - src/reachy_mini_bridge/daemon.py
 tests:
   - tests/test_real_daemon.py
+  - tests/test_uvc.py
   - tests/test_daemon.py
 ---
 
@@ -48,11 +50,11 @@ Round-robin rather than a retry on the same index: a retry alone is enough for a
 
 ### The camera exposure
 
-After the check, on the same macOS starts, the wrapped start sets the Lite camera's UVC auto-exposure priority to 1 — one USB control request to the camera, beside the pipeline rather than through it, since GStreamer's `avfvideosrc` exposes no camera control. The request goes over the device's endpoint zero and needs no claim on the camera's USB interface, which macOS's camera driver holds while it streams: that is what makes the request possible from the daemon process with the camera open.
+After the check, on the same macOS starts, the wrapped start sets the Lite camera's UVC auto-exposure priority to 1 — one USB control request to the camera, beside the pipeline rather than through it, since GStreamer's `avfvideosrc` exposes no camera control. The USB side lives in its own module, `uvc.py` — the camera's identity, the descriptor parse, the control protocol, the decision and the libusb glue — of which the launcher is the one caller: its exposure step (`_lite_ae_priority`) finds the camera, runs the decision and closes the device. The request goes over the device's endpoint zero and needs no claim on the camera's USB interface, which macOS's camera driver holds while it streams: that is what makes the request possible from the daemon process with the camera open.
 
 - **The camera, by its USB identity.** The Lite camera is found by its vendor and product ids (`LITE_CAMERA_USB_ID` = `(0x38FB, 0x1002)`, upstream's `ReachyMiniLiteCamSpecs.vid` / `.pid` — a test pins the parity), through pyusb on the libusb that `libusb_package` bundles, both dependencies of upstream's own (its audio control utilities drive the sound card the same way): no dependency of the bridge's. A Mac with no Lite camera attached — nothing happens. The correction is therefore the Lite's alone by construction, and macOS's by the platform guard it shares with the check.
 - **The terminal, by its descriptors.** `camera_terminal(descriptors)` is the pure parse of the camera's VideoControl interface's class-specific descriptors: the camera input terminal (`CS_INTERFACE` / `VC_INPUT_TERMINAL` of type `ITT_CAMERA`) gives its id, which addresses the request, and its `bmControls` bitmap whether it advertises the priority control (`CameraTerminal(terminal_id, ae_priority)`); a malformed block, or no camera terminal, is `None`.
-- **The decision.** `enable_ae_priority(control, terminal)` reads the control (`GET_CUR`) and acts on what it finds, with one log line each — tested with a scripted control: a terminal that does not advertise the control is left alone, a warning naming the dark default (`unsupported`); a flag already at 1 — a camera kept from an earlier daemon, or set by hand — is one `DEBUG` line and no write (`already`); a flag at 0 is set to 1 (`SET_CUR`) and read back, an `INFO` line saying the camera may now lower its frame rate to expose longer (`enabled`); a request the camera or the bus refuses, or a read-back that is not 1, is a warning and the daemon runs on with the image as upstream leaves it (`refused`).
+- **The decision.** `enable_ae_priority(control, terminal)` (`uvc.py`) reads the control (`GET_CUR`) and acts on what it finds, with one log line each — tested with a scripted control: a terminal that does not advertise the control is left alone, a warning naming the dark default (`unsupported`); a flag already at 1 — a camera kept from an earlier daemon, or set by hand — is one `DEBUG` line and no write (`already`); a flag at 0 is set to 1 (`SET_CUR`) and read back, an `INFO` line saying the camera may now lower its frame rate to expose longer (`enabled`); a request the camera or the bus refuses, or a read-back that is not 1, is a warning and the daemon runs on with the image as upstream leaves it (`refused`).
 - **Nothing stops the daemon.** A missing USB backend, a camera that cannot be opened over USB, any error on the way is one warning and the dark image: video, audio, the IPC socket all work as before. The flag is not restored when the daemon stops — it is the camera's auto-exposure doing what every other application lets it do, and the next daemon reads it as `already`.
 - **What it changes for clients.** Nothing in shape: the stream stays 1920×1080 in the 60 fps mode upstream chose, so the frame size, the IPC branch, the calibration the bridge's tracker scales from the default resolution ([head_tracking.md](../motion/head_tracking.md)) are all untouched. The frame rate may ease below 60 when the light asks for it, down to the 5 fps interval the camera advertises for its 1080p mode in a dark room; the IPC branch every local client reads is capped at 10 fps anyway, so the bridge's camera feed and detector see the difference only in a room that dark. A WebRTC viewer sees a variable rate.
 
@@ -72,9 +74,9 @@ Nor does it choose the camera's mode. Capturing a 30 fps mode and scaling it int
 
 The deterministic `tests/` tier pins, with no robot, no USB and no pipeline:
 
-- **The parse.** `camera_terminal` on hand-built descriptor bytes: a camera terminal advertising the control, one not advertising it, a VideoControl interface whose only input terminal is not a camera, a block of zero length — and the USB ids equal to upstream's Lite specs.
-- **The decision.** `enable_ae_priority` with a scripted control: each outcome, the requests made (none for `unsupported` and `already`, a `SET_CUR` of one byte 1 then a `GET_CUR` for `enabled`), the levels logged, and a refusal — a raised `OSError`, a read-back that stays 0 — ending in a warning with the control left as it is.
-- **The wiring.** The wrapped start runs the exposure step after the selection on a macOS start that opened a camera by index, with the camera the finder returns; not at all off macOS or for a non-numeric path; and a finder that raises, or finds no Lite camera, leaves one warning or nothing and the start complete.
+- **The parse** (`tests/test_uvc.py`). `camera_terminal` on hand-built descriptor bytes: a camera terminal advertising the control, one not advertising it, a VideoControl interface whose only input terminal is not a camera, a block of zero length — and the USB ids equal to upstream's Lite specs.
+- **The decision** (`tests/test_uvc.py`). `enable_ae_priority` with a scripted control: each outcome, the requests made (none for `unsupported` and `already`, a `SET_CUR` of one byte 1 then a `GET_CUR` for `enabled`), the levels logged, and a refusal — a raised `OSError`, a read-back that stays 0 — ending in a warning with the control left as it is.
+- **The wiring** (`tests/test_real_daemon.py`). The wrapped start runs the exposure step after the selection on a macOS start that opened a camera by index, with the camera the finder returns; not at all off macOS or for a non-numeric path; and a finder that raises, or finds no Lite camera, leaves one warning or nothing and the start complete.
 
 ## Relationship to the other specs
 
