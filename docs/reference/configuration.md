@@ -199,7 +199,7 @@ Omit the block and `say` raises unless you pass your own `SpeechSynthesizer`. A 
 | `approach` | on | The head leans toward the person it follows; below |
 | `personal_distance` | on | The head pulls back from someone too close; below |
 
-**`motion.tracking.mirroring`** — the person's head roll, mirrored: both heads lean toward the same side of the room. A tilt under 3° reads as upright (the landmarks' jitter), and the roll eases in over about a second. It is as good as the detector's roll: YuNet at the default width reads about two thirds of the roll of a face 0.45 m from the Lite, more nearer, little beyond 0.6 m.
+**`motion.tracking.mirroring`** — the person's head roll, mirrored: both heads lean toward the same side of the room. A tilt under 3° reads as upright (the landmarks' jitter), and the roll eases in within about a second. It is as good as the detector's roll: YuNet at the default width reads about two thirds of the roll of a face 0.45 m from the Lite, more nearer, little beyond 0.6 m.
 
 | Field | Default | What it does |
 |---|---|---|
@@ -207,7 +207,7 @@ Omit the block and `say` raises unless you pass your own `SpeechSynthesizer`. A 
 | `gain` | `1.0` | Degrees of mirrored roll per degree of the person's, past the deadband. Above `1` corrects a detector that under-reads |
 | `max_deg` | `12.0` | The largest mirrored roll either way, at most 30 |
 
-**`motion.tracking.approach`** — the head sits a little forward while it follows someone, along the direction it looks, easing in over about a second and a half.
+**`motion.tracking.approach`** — the head sits a little forward while it follows someone, along the direction it looks, easing in over about half a second.
 
 | Field | Default | What it does |
 |---|---|---|

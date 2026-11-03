@@ -147,7 +147,12 @@ def _expected_yaw(lateral: float) -> float:
 
 
 def _assert_converged(
-    yaws: list[float], centre: tuple[float, float], lateral: float
+    yaws: list[float],
+    centre: tuple[float, float],
+    lateral: float,
+    *,
+    max_past: float = 10.0,
+    max_back: float = 3.0,
 ) -> None:
     expected = _expected_yaw(lateral)
     assert yaws[-1] == pytest.approx(expected, abs=3.0)
@@ -156,8 +161,8 @@ def _assert_converged(
         direction = math.copysign(1.0, expected)
         past = [(y - expected) * direction for y in yaws]
         peak = past.index(max(past))
-        assert past[peak] <= 10.0  # past the face once, by a bounded amount…
-        assert min(past[peak:]) >= -3.0  # …and never swinging back short of it
+        assert past[peak] <= max_past  # past the face once, by a bounded amount…
+        assert min(past[peak:]) >= -max_back  # …and never swinging back far short of it
 
 
 def test_the_head_converges_on_the_face_ahead_and_to_either_side() -> None:
@@ -181,7 +186,12 @@ def test_an_unreported_frame_delay_is_learned_and_the_head_still_settles() -> No
     face = _face_at(0.15)
     yaws, centre, delay = asyncio.run(_closed_loop(face, 5.0, frame_delay_s=0.3))
     assert delay == pytest.approx(0.3, abs=0.1)
-    _assert_converged(yaws, centre, 0.15)
+    # The first turn is aimed against the 0.2 s prior while the true delay is 0.3 s —
+    # the top of what a live daemon measures (0.05-0.45 s, mostly 0.1-0.25) — so it
+    # carries the head past the face further than a reported pose does: about 10° and a
+    # 3-4° swing back at the gaze layer's easing (motion.GAZE_ALPHA, GAZE_FADE_S), where
+    # the viewer sim's tracking measures at most 3.5° and 2.7°.
+    _assert_converged(yaws, centre, 0.15, max_past=12.0, max_back=5.0)
 
 
 def _jumping_face_while_turning() -> float:
@@ -738,7 +748,10 @@ def test_the_head_mirrors_a_tilt_past_the_deadband_and_never_steps(
     assert posture.aims[-1][1, 2] < 0.0  # the head's top toward world -y: its right
     assert posture.state.roll_deg == pytest.approx(rolls[-1], abs=1e-3)
     assert rolls[0] == pytest.approx(0.0, abs=1e-3)  # grown in from the look-at alone
-    assert max(abs(b - a) for a, b in itertools.pairwise(rolls)) < 0.6
+    # each 0.1 s observation moves the filter at most its first step toward the target:
+    # an aim at 10 Hz that the loop's easing then spreads over its ticks
+    first_step = 5.0 * (1 - math.exp(-0.1 / head_tracking.ROLL_SMOOTHING_S))
+    assert max(abs(b - a) for a, b in itertools.pairwise(rolls)) < first_step + 0.05
 
 
 def test_the_mirrored_roll_is_clamped_and_scaled_by_the_gain(
@@ -802,7 +815,8 @@ def test_the_head_leans_toward_a_person_along_the_look_direction(
     assert aim[1, 3] < -0.003
     assert aim[2, 3] == pytest.approx(0.0)  # horizontal
     # and at the filter's pace: about 1 - 1/e of the way after its time constant
-    first = [_forward_mm(a) for a in posture.aims[: 1 + round(10 * 1.5)]]
+    tau = head_tracking.OFFSET_SMOOTHING_S
+    first = [_forward_mm(a) for a in posture.aims[: 1 + round(10 * tau)]]
     assert first[0] == 0.0
     assert first[-1] == pytest.approx(12.0 * (1 - math.exp(-1)), abs=0.5)
 
@@ -860,9 +874,15 @@ def test_a_behaviour_switched_off_eases_out_without_a_step(
     )
     posture.see(0.1, roll_deg=10.0, distance_m=1.0)
     after = posture.aims[-1]
-    assert 0.0 < _roll_deg(after) < _roll_deg(before)
-    assert _roll_deg(before) - _roll_deg(after) < 1.0
-    assert 0.0 < _forward_mm(after) < _forward_mm(before)
+    # one observation's step of each filter toward zero, never a jump to it
+    roll_step = 1 - math.exp(-0.1 / head_tracking.ROLL_SMOOTHING_S)
+    offset_step = 1 - math.exp(-0.1 / head_tracking.OFFSET_SMOOTHING_S)
+    assert _roll_deg(after) == pytest.approx(
+        _roll_deg(before) * (1 - roll_step), abs=0.05
+    )
+    assert _forward_mm(after) == pytest.approx(
+        _forward_mm(before) * (1 - offset_step), abs=0.05
+    )
     posture.see(10.0, roll_deg=10.0, distance_m=1.0)
     assert _roll_deg(posture.aims[-1]) == pytest.approx(0.0, abs=0.01)
     assert _forward_mm(posture.aims[-1]) == pytest.approx(0.0, abs=0.05)

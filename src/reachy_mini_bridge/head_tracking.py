@@ -110,8 +110,8 @@ _DELAY_MIN_DETECTIONS = 8  # a fit needs a few detections across the turn
 # stepped on every aimed observation by the time since the previous one, at most
 # _POSTURE_MAX_STEP_S so a face back from a gap never steps the posture.
 ROLL_DEADBAND_DEG = 3.0
-ROLL_SMOOTHING_S = 1.0
-OFFSET_SMOOTHING_S = 1.5
+ROLL_SMOOTHING_S = 0.3
+OFFSET_SMOOTHING_S = 0.6
 _POSTURE_MAX_STEP_S = 0.2
 
 # The sim's eye camera (the MJCF's `eye_camera`): MuJoCo's fovy is vertical, rendered at

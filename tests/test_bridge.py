@@ -1494,7 +1494,13 @@ def test_the_head_turns_toward_a_face_and_back_once_it_is_gone(
             await bridge.set_motors_state("enabled")
             robot = _fake(bridge)
             await asyncio.sleep(1.5)
-            turned = _yaw_deg(robot.last_target[0])
+            # The stub's face never moves in the image, so the head keeps turning toward
+            # it: the first clear turn says the direction, before it runs on.
+            turned = next(
+                yaw
+                for head, _, _ in robot.targets
+                if head is not None and abs(yaw := _yaw_deg(head)) > 5.0
+            )
             tracker = bridge._tracker
             assert tracker is not None
             delay = tracker.delay_s

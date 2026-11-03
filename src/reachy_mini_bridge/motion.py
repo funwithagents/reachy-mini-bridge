@@ -105,9 +105,15 @@ ANTENNA_FLICK_MAX_RAD = math.radians(45.0)
 # robot reported over this window, for the head tracker to aim a face against the pose
 # the head had when its frame was taken, and to estimate that delay from them.
 GAZE_HISTORY_S = 4.0
-# Each tick the eased aim moves this fraction of the way to the latest aim: upstream's
-# daemon-side 0.15 per tick at 50 Hz, scaled to 60 Hz.
-GAZE_ALPHA = 0.12
+# Each tick the eased aim moves this fraction of the way to the latest aim — a time
+# constant of about 75 ms at 60 Hz, so the head keeps up with a moving person while an aim
+# arriving ten times a second never steps it (specs/motion/motion.md "The gaze layer"; above
+# upstream's daemon-side 0.15 at 50 Hz, which made the head lag a person by a beat;
+# faster overshoots the face while the frame-delay estimate is still learning).
+GAZE_ALPHA = 0.2
+# The gaze layer's weight and its focus fade in and out over this (minjerk): shorter than
+# BLEND_S, the blend into a move, so acquiring a face reads as attention, not a slow turn.
+GAZE_FADE_S = 0.35
 # While the head holds a face, breathing keeps its breath and antennas in full and tones
 # its head roaming down to this fraction — ±8° of yaw would carry it off the person.
 BREATHING_GAZE_ROTATION_SCALE = 0.25
@@ -576,7 +582,7 @@ def blend_into(source: Pose, move: Move, seconds: float = BLEND_S) -> GotoMove:
 
 @dataclass
 class _Fade:
-    """A scalar that follows its target through a minjerk ramp of ``BLEND_S``,
+    """A scalar that follows its target through a minjerk ramp of ``GAZE_FADE_S``,
     restarted from where it is whenever the target changes."""
 
     current: float = 0.0
@@ -587,7 +593,7 @@ class _Fade:
     def value(self, now: float, target: float) -> float:
         if target != self.target:
             self.start_value, self.target, self.start = self.current, target, now
-        ramp = _fade_in(now - self.start)
+        ramp = _fade_in(now - self.start, GAZE_FADE_S)
         self.current = self.start_value + (self.target - self.start_value) * ramp
         return self.current
 
@@ -1123,7 +1129,7 @@ class MotionSession:
         if w_target != self._gaze_w_to:
             self._gaze_w_from, self._gaze_w_to = self._gaze_w_eff, w_target
             self._gaze_w_start = now
-        fade = _fade_in(now - self._gaze_w_start)
+        fade = _fade_in(now - self._gaze_w_start, GAZE_FADE_S)
         self._gaze_w_eff = (
             self._gaze_w_from + (self._gaze_w_to - self._gaze_w_from) * fade
         )
