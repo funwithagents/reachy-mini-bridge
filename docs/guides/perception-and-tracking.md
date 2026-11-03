@@ -31,7 +31,7 @@ While the head follows someone it also stands toward them, three behaviours each
 - **Approach.** The head sits `lean_mm` (12 mm) forward along the direction it looks: the robot comes a little toward the person.
 - **Personal distance.** Someone nearer than `distance_m` (0.40 m) pushes the head back, up to `max_back_mm` (25 mm) over `span_m` (0.10 m) of intrusion — a recoil, since the head's travel is a few centimetres. The distance is each face's `distance_m`, from its size in the image against an adult face's height, good to a few centimetres at desk range.
 
-The posture gives way to what the robot can reach: when a retreat and a roll far to one side would ask the head for a pose its kinematics cannot solve, the tracker drops the offset first, then the roll, and if need be turns the head only part of the way — the head keeps looking at you rather than freezing on its last pose. Each eases in within a second and freezes while the followed face is missing; the aim withdrawn, the posture resets and grows in again with the next person. Switched off at run time, a behaviour eases out instead of stepping:
+The posture gives way to what the robot can reach: when a retreat and a roll far to one side would ask the head for a pose its kinematics cannot solve, the motion loop drops the idle move's motion first, then the offset, then the roll, and if need be turns the head only part of the way — the head keeps looking at you rather than freezing on its last pose. Each eases in within a second and freezes while the followed face is missing; the aim withdrawn, the posture resets and grows in again with the next person. Switched off at run time, a behaviour eases out instead of stepping:
 
 ```python
 from dataclasses import replace

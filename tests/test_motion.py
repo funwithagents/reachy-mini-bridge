@@ -40,6 +40,7 @@ from reachy_mini_bridge.motion import (
     BREATH_Z_M,
     BREATHING_GAZE_ROTATION_SCALE,
     CONTROL_HZ,
+    FULL_SHARES,
     GAZE_HISTORY_S,
     HEAD_PITCH_RAD,
     HEAD_ROLL_RAD,
@@ -48,15 +49,19 @@ from reachy_mini_bridge.motion import (
     NEUTRAL_ANTENNAS,
     NEUTRAL_BODY_YAW,
     NEUTRAL_HEAD,
+    REACH_RECOVER_PER_S,
     ROAM_MIN_TRAVEL_FRACTION,
     BreathingMove,
+    GazeAim,
     HoldMove,
     IdleMove,
     IdleOffsets,
     MotionSession,
     _IdleFadeOut,
     _roam_target,
+    analytical_reach,
     blend_into,
+    within_reach,
 )
 
 if TYPE_CHECKING:
@@ -477,7 +482,7 @@ def test_presence_off_goes_quiet_when_idle() -> None:
             MotionSession(robot, presence=False, idle="breathing")
         ) as session:
             session.resume()
-            session.set_gaze(_yaw_pose(AIM_YAW_DEG))
+            session.set_gaze(GazeAim(_yaw_pose(AIM_YAW_DEG)))
             await asyncio.sleep(0.3)
             idle_count = len(robot.targets)
             future = session.submit(_TestPrimary(0.15, 0.01), None).done
@@ -1042,7 +1047,7 @@ def test_an_aim_eases_the_head_onto_it_and_withdrawing_it_eases_it_back() -> Non
             session.resume()
             await asyncio.sleep(BLEND_S + 0.1)  # holding neutral
             before = len(robot.targets)
-            session.set_gaze(_yaw_pose(AIM_YAW_DEG))
+            session.set_gaze(GazeAim(_yaw_pose(AIM_YAW_DEG)))
             await asyncio.sleep(1.5)
             onto = _yaws(robot, before)
             pitches = [
@@ -1073,7 +1078,7 @@ def test_breathing_keeps_breathing_on_the_aim_with_its_roaming_toned_down() -> N
         async with _running(
             MotionSession(robot, presence=True, idle="custom", idle_move=seeded)
         ) as session:
-            session.set_gaze(_yaw_pose(AIM_YAW_DEG))  # before the loop runs
+            session.set_gaze(GazeAim(_yaw_pose(AIM_YAW_DEG)))  # before the loop runs
             session.resume()
             await asyncio.sleep(BLEND_S + 0.5)  # entered, faded in, eased on
             before = len(robot.targets)
@@ -1098,7 +1103,7 @@ def test_focus_holds_the_head_on_the_aim_and_keeps_the_antennas_alive() -> None:
         async with _running(
             MotionSession(robot, presence=True, idle="custom", idle_move=seeded)
         ) as session:
-            session.set_gaze(_yaw_pose(AIM_YAW_DEG), focus=True)
+            session.set_gaze(GazeAim(_yaw_pose(AIM_YAW_DEG)), focus=True)
             session.resume()
             await asyncio.sleep(BLEND_S + 0.5)
             before = len(robot.targets)
@@ -1135,7 +1140,7 @@ def test_a_custom_idle_move_sits_still_on_the_aim_unless_it_says_otherwise() -> 
         async with _running(
             MotionSession(robot, presence=True, idle="custom", idle_move=factory)
         ) as session:
-            session.set_gaze(_yaw_pose(AIM_YAW_DEG))
+            session.set_gaze(GazeAim(_yaw_pose(AIM_YAW_DEG)))
             session.resume()
             await asyncio.sleep(BLEND_S + 0.8)
             before = len(robot.targets)
@@ -1222,7 +1227,7 @@ def test_a_gaze_offsets_raising_while_playing_falls_back_to_the_hold(
                 robot, presence=True, idle="custom", idle_move=_GazeBreaksAfter
             )
         ) as session:
-            session.set_gaze(_yaw_pose(AIM_YAW_DEG))
+            session.set_gaze(GazeAim(_yaw_pose(AIM_YAW_DEG)))
             session.resume()
             await asyncio.sleep(2 * BLEND_S + 1.0)  # breaks, then holds on the aim
             return _yaws(robot)
@@ -1241,7 +1246,7 @@ def test_a_primary_plays_as_recorded_under_an_aim_then_the_head_returns_to_it() 
         async with _running(
             MotionSession(robot, presence=True, idle="hold")
         ) as session:
-            session.set_gaze(_yaw_pose(AIM_YAW_DEG))
+            session.set_gaze(GazeAim(_yaw_pose(AIM_YAW_DEG)))
             session.resume()
             await asyncio.sleep(BLEND_S + 0.8)
             future = session.submit(_TestPrimary(duration=0.6, z=0.01), None).done
@@ -1472,3 +1477,157 @@ def test_a_lost_connection_at_a_primary_entry_fails_it_with_the_queue(
         exc = future.exception(timeout=1)
         assert isinstance(exc, BridgeError) and exc.__cause__ is error
     assert sent == 0
+
+
+# --- within reach (specs/motion/motion.md "Within reach") --------------------------------
+
+
+def _shares_pose(shares: tuple[float, float, float, float]) -> npt.NDArray[np.float64]:
+    """A stand-in pose that carries the shares it was composed with."""
+    pose = np.eye(4)
+    pose[0, :4] = shares
+    return pose
+
+
+def _shares_of(pose: npt.NDArray[np.float64]) -> tuple[float, ...]:
+    return tuple(float(v) for v in pose[0, :4])
+
+
+@pytest.mark.parametrize(
+    ("fits", "expected"),
+    [
+        (lambda s: True, (1.0, 1.0, 1.0, 1.0)),
+        (
+            lambda s: s[0] <= 0.5 + 1e-9,
+            (0.5, 1.0, 1.0, 1.0),
+        ),  # the idle motion goes first
+        (
+            lambda s: s[0] == 0.0 and s[1] <= 0.3 + 1e-9,
+            (0.0, 0.3, 1.0, 1.0),
+        ),  # then the offset
+        (
+            lambda s: s[:2] == (0.0, 0.0) and s[2] <= 0.5 + 1e-9,
+            (0.0, 0.0, 0.5, 1.0),
+        ),  # the roll
+        (
+            lambda s: s[:3] == (0.0, 0.0, 0.0) and s[3] <= 0.2 + 1e-9,
+            (0.0, 0.0, 0.0, 0.2),
+        ),
+        (lambda s: False, (0.0, 0.0, 0.0, 0.0)),  # nothing fits: the rest pose
+    ],
+)
+def test_the_reach_search_gives_up_the_idle_motion_then_the_offset_then_the_roll(
+    fits: Any, expected: tuple[float, ...]
+) -> None:
+    shares, pose = within_reach(
+        _shares_pose, FULL_SHARES, lambda p: fits(_shares_of(p))
+    )
+    assert shares == pytest.approx(expected)
+    assert _shares_of(pose) == pytest.approx(expected)
+
+
+def _turned_aim(yaw_deg: float, roll_deg: float, offset_m: float) -> GazeAim:
+    return GazeAim(_yaw_pose(yaw_deg), math.radians(roll_deg), offset_m)
+
+
+def _along_look_mm(head: npt.NDArray[np.float64], yaw_deg: float) -> float:
+    forward = np.array(
+        [math.cos(math.radians(yaw_deg)), math.sin(math.radians(yaw_deg))]
+    )
+    return float(head[:2, 3] @ forward) * 1000.0
+
+
+def _roll_of(head: npt.NDArray[np.float64]) -> float:
+    return float(Rotation.from_matrix(head[:3, :3]).as_euler("ZYX", degrees=True)[2])
+
+
+def test_upstream_kinematics_solve_every_pose_the_gaze_layer_sends() -> None:
+    """A full retreat with a 25° roll at 45° of yaw has no solution (measured 2026-11-03:
+    upstream's analytical IK refuses that pair from 38° of yaw), breathing on top: the
+    loop sends what does, the roll kept and the retreat cut, every tick."""
+    reachable = analytical_reach()
+    assert not reachable(_turned_aim(45.0, 25.0, -0.025).pose())
+
+    async def run() -> list[npt.NDArray[np.float64]]:
+        robot = FakeReachyMini()
+        async with _running(
+            MotionSession(robot, presence=True, idle="breathing")
+        ) as session:
+            session.resume()
+            await asyncio.sleep(BLEND_S + 0.1)
+            before = len(robot.targets)
+            session.set_gaze(_turned_aim(45.0, 25.0, -0.025), focus=True)
+            await asyncio.sleep(1.5)
+            return [h for h, _, _ in robot.targets[before:] if h is not None]
+
+    heads = asyncio.run(run())
+    assert all(reachable(h) for h in heads)
+    settled = heads[-1]
+    assert _roll_of(settled) == pytest.approx(25.0, abs=1.0)  # the mirror kept
+    assert -25.0 < _along_look_mm(settled, 45.0) < 0.0  # the retreat cut, not dropped
+
+
+def test_a_share_given_up_returns_gradually_once_it_fits() -> None:
+    """The offset out of reach for the first second, then within it: the lean comes
+    back over about a second (REACH_RECOVER_PER_S), never in a step."""
+    opened_at: list[float] = []
+
+    def reachable(pose: npt.NDArray[np.float64]) -> bool:
+        if opened_at and time.perf_counter() >= opened_at[0]:
+            return True
+        return float(np.linalg.norm(pose[:2, 3])) < 1e-6
+
+    async def run() -> list[float]:
+        robot = FakeReachyMini()
+        async with _running(
+            MotionSession(robot, presence=True, idle="hold", reachable=reachable)
+        ) as session:
+            session.resume()
+            await asyncio.sleep(BLEND_S + 0.1)
+            session.set_gaze(_turned_aim(0.0, 0.0, 0.012), focus=True)
+            await asyncio.sleep(1.0)  # eased onto the aim, the lean held back
+            before = len(robot.targets)
+            opened_at.append(time.perf_counter())
+            await asyncio.sleep(1.6)
+            return [
+                _along_look_mm(h, 0.0)
+                for h, _, _ in robot.targets[before:]
+                if h is not None
+            ]
+
+    leans = asyncio.run(run())
+    # held back until it fit: the first tick after carries one tick of recovery
+    assert leans[0] <= 12.0 * REACH_RECOVER_PER_S / CONTROL_HZ * 1.5
+    assert leans[-1] == pytest.approx(12.0, abs=0.3)
+    # 12 mm over about a second at 60 Hz: a fraction of a millimetre per tick
+    assert max(b - a for a, b in itertools.pairwise(leans)) < 0.5
+
+
+def test_at_the_edge_of_reach_the_head_holds_still() -> None:
+    """An offset reachable to 10 mm of the 25 asked: the loop settles at the edge and
+    stays there — it never recovers, fails and cuts again tick after tick."""
+
+    def reachable(pose: npt.NDArray[np.float64]) -> bool:
+        return float(np.linalg.norm(pose[:2, 3])) <= 0.010
+
+    async def run() -> list[float]:
+        robot = FakeReachyMini()
+        async with _running(
+            MotionSession(robot, presence=True, idle="hold", reachable=reachable)
+        ) as session:
+            session.resume()
+            await asyncio.sleep(BLEND_S + 0.1)
+            session.set_gaze(_turned_aim(0.0, 0.0, 0.025), focus=True)
+            await asyncio.sleep(2.0)
+            before = len(robot.targets)
+            await asyncio.sleep(1.0)
+            return [
+                _along_look_mm(h, 0.0)
+                for h, _, _ in robot.targets[before:]
+                if h is not None
+            ]
+
+    leans = asyncio.run(run())
+    assert all(lean <= 10.0 + 1e-6 for lean in leans)
+    assert max(leans) - min(leans) < 0.05  # still
+    assert min(leans) > 7.0  # near the edge, not far inside it

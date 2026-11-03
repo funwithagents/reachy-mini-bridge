@@ -189,7 +189,7 @@ Omit the block and `say` raises unless you pass your own `SpeechSynthesizer`. A 
 
 `idle_move` is a Python-only field (`MotionSettings(idle="custom", idle_move=SlowNod)`), as `face_detector` is; the key in a file is a `ConfigError`. Writing one: [../guides/custom-idle-move.md](../guides/custom-idle-move.md).
 
-**`motion.tracking`** — the head tracker: whether it runs, whether it holds the head exactly on the face, and the posture it takes toward the person it follows. The posture yields to the robot's reach: an aim the kinematics cannot solve — a retreat and a roll far to one side add up fast — loses its offset first, then its roll, so the head always looks at the person. The same object, `TrackingSettings`, is the runtime API: `bridge.tracking` reads it, `set_tracking(settings)` applies one ([api.md](api.md)). Every key is optional; a part given in part keeps the defaults of the rest. Guide: [../guides/perception-and-tracking.md](../guides/perception-and-tracking.md).
+**`motion.tracking`** — the head tracker: whether it runs, whether it holds the head exactly on the face, and the posture it takes toward the person it follows. The posture yields to the robot's reach: a pose the kinematics cannot solve — a retreat and a roll far to one side add up fast — loses the idle motion first, then the offset, then the roll, so the head always looks at the person. The same object, `TrackingSettings`, is the runtime API: `bridge.tracking` reads it, `set_tracking(settings)` applies one ([api.md](api.md)). Every key is optional; a part given in part keeps the defaults of the rest. Guide: [../guides/perception-and-tracking.md](../guides/perception-and-tracking.md).
 
 | Field | Default | What it does |
 |---|---|---|

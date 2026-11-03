@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import bisect
 import concurrent.futures
+import functools
 import logging
 import math
 import queue
@@ -49,13 +50,20 @@ if TYPE_CHECKING:
     from .robot import AnyReachyMini
 
 __all__ = [
+    "FULL_SHARES",
+    "REACH_RECOVER_PER_S",
+    "REACH_STEPS",
     "BreathingMove",
+    "GazeAim",
     "HoldMove",
     "IdleMode",
     "IdleMove",
     "IdleMoveFactory",
     "IdleOffsets",
     "MotionSession",
+    "analytical_reach",
+    "postured",
+    "within_reach",
 ]
 
 _logger = logging.getLogger(__name__)
@@ -115,6 +123,14 @@ GAZE_ALPHA = 0.15
 # The gaze layer's weight and its focus fade in and out over this (minjerk): shorter than
 # BLEND_S, the blend into a move, so acquiring a face reads as attention, not a slow turn.
 GAZE_FADE_S = 0.35
+# The reach search (specs/motion/motion.md "Within reach"): what the gaze layer composes
+# is checked with the kinematics every tick, and the parts the robot cannot reach are
+# given up in REACH_STEPS-ths — the idle move's gaze motion first, then the posture's
+# offset, then its roll, then part of the direction. A share given up returns at
+# REACH_RECOVER_PER_S (a full share in a second), so the edge of the workspace never
+# makes the head buzz; a share is cut at once, the daemon refusing a pose otherwise.
+REACH_STEPS = 10
+REACH_RECOVER_PER_S = 1.0
 # While the head holds a face, breathing keeps its breath and antennas in full and tones
 # its head roaming down to this fraction — ±8° of yaw would carry it off the person.
 BREATHING_GAZE_ROTATION_SCALE = 0.25
@@ -581,6 +597,94 @@ def blend_into(source: Pose, move: Move, seconds: float = BLEND_S) -> GotoMove:
     )
 
 
+@dataclass(frozen=True)
+class GazeAim:
+    """What the head tracker hands the gaze layer (specs/motion/motion.md "The gaze
+    layer"): the pose that looks at the person, and the posture toward them — a roll
+    about the viewing axis (radians) and an offset along the horizontal projection of
+    the viewing direction (metres, + toward the person). The loop composes the parts,
+    so it can give some up when the robot cannot reach them ("Within reach")."""
+
+    look: npt.NDArray[np.float64]
+    roll: float = 0.0
+    offset: float = 0.0
+
+    def pose(self) -> npt.NDArray[np.float64]:
+        """The parts composed: ``look`` rolled and moved (:func:`postured`)."""
+        return postured(self.look, self.roll, self.offset)
+
+
+def postured(
+    look: npt.NDArray[np.float64], roll: float, offset: float
+) -> npt.NDArray[np.float64]:
+    """``look`` rolled by ``roll`` about its own viewing axis and moved ``offset``
+    metres along the horizontal projection of its viewing direction."""
+    aim = np.array(look, dtype=np.float64)
+    if roll:
+        c, s = math.cos(roll), math.sin(roll)
+        about_x = np.array([[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]])
+        aim[:3, :3] = aim[:3, :3] @ about_x
+    if offset:
+        forward = np.array([look[0, 0], look[1, 0], 0.0])
+        norm = float(np.linalg.norm(forward))
+        if norm > 1e-6:
+            aim[:3, 3] = aim[:3, 3] + offset * forward / norm
+    return aim
+
+
+type Reachable = Callable[[npt.NDArray[np.float64]], bool]
+# The four shares the reach search gives up, in that order: the idle move's gaze motion,
+# the posture's offset, its roll, the direction.
+type Shares = tuple[float, float, float, float]
+FULL_SHARES: Shares = (1.0, 1.0, 1.0, 1.0)
+
+
+def within_reach(
+    compose: Callable[[Shares], npt.NDArray[np.float64]],
+    caps: Shares,
+    reachable: Reachable,
+) -> tuple[Shares, npt.NDArray[np.float64]]:
+    """The largest shares, at most ``caps``, whose composed pose ``reachable`` accepts
+    (specs/motion/motion.md "Within reach"): the caps when they fit; else each share in
+    turn — idle motion, offset, roll, direction — scaled down in tenths of its cap with
+    the ones after it whole and the ones before it gone. With every share at zero the
+    pose is the rest pose, which is always reachable."""
+    pose = compose(caps)
+    if reachable(pose):
+        return caps, pose
+    for i in range(4):
+        for k in range(1, REACH_STEPS + 1):
+            share = caps[i] * (1.0 - k / REACH_STEPS)
+            shares = tuple(
+                0.0 if j < i else (share if j == i else caps[j]) for j in range(4)
+            )
+            pose = compose(shares)  # type: ignore[arg-type]
+            if reachable(pose):
+                return shares, pose  # type: ignore[return-value]
+    rest = (0.0, 0.0, 0.0, 0.0)
+    return rest, compose(rest)
+
+
+@functools.cache
+def analytical_reach() -> Reachable:
+    """Whether upstream's analytical kinematics — the daemon's default engine, with its
+    automatic body yaw — solve a head pose at body yaw 0, the loop's. A solution with no
+    ``NaN`` is reachable. Built once; about 3 µs a call. There is no collision model in
+    it, as in the daemon's own call."""
+    from reachy_mini.kinematics.analytical_kinematics import AnalyticalKinematics
+
+    kinematics = AnalyticalKinematics()
+
+    def reachable(pose: npt.NDArray[np.float64]) -> bool:
+        try:
+            joints = kinematics.ik(np.asarray(pose, dtype=np.float64), body_yaw=0.0)
+        except Exception:  # noqa: BLE001 - a solver failure is a pose out of reach
+            return False
+        return joints is not None and not bool(np.any(np.isnan(joints)))
+
+    return reachable
+
+
 @dataclass
 class _Fade:
     """A scalar that follows its target through a minjerk ramp of ``GAZE_FADE_S``,
@@ -643,10 +747,14 @@ class MotionSession:
         idle_move: IdleMoveFactory | None = None,
         start_sound: Callable[[Path], object] | None = None,
         stop_sound: Callable[[object], None] | None = None,
+        reachable: Reachable | None = None,
     ) -> None:
         if idle_move is not None:
             check_idle_move_factory(idle_move)
         self._robot = robot
+        # Whether the robot can take a head pose (specs/motion/motion.md "Within reach");
+        # None: upstream's analytical kinematics, built at the first check.
+        self._reachable = reachable
         # Start and stop the sound file of a primary through the bridge's file player
         # (MediaSession.start_sound / stop_sound): start returns a token, and the stop
         # with that token ends the file only while it still plays — the loop is the one
@@ -679,10 +787,18 @@ class MotionSession:
         # the tracker handed over, the eased aim the loop composes, the effective
         # weight's minjerk fade from `_gaze_w_from` to `_gaze_w_to`, begun at
         # `_gaze_w_start`, and focus's own fade (the head's gaze motion faded out).
-        self._gaze_target: npt.NDArray[np.float64] | None = None
+        self._gaze_target: GazeAim | None = None
         self._gaze_focus = False
         self._focus_fade = _Fade()
+        # The eased aim, by parts: the look-at pose and the posture's roll and offset.
         self._gaze_aim: npt.NDArray[np.float64] | None = None
+        self._gaze_roll = 0.0
+        self._gaze_offset = 0.0
+        # What the reach search let through on the last tick (specs/motion/motion.md
+        # "Within reach"), and when, for the shares' recovery.
+        self._reach_shares: Shares = FULL_SHARES
+        self._reach_at: float | None = None
+        self._reach_limited = False
         self._gaze_w_eff = 0.0
         self._gaze_w_from = 0.0
         self._gaze_w_to = 0.0
@@ -830,19 +946,23 @@ class MotionSession:
                     BridgeError("the motors left 'enabled': the motion loop paused")
                 )
 
-    def set_gaze(
-        self, aim: npt.NDArray[np.float64] | None, *, focus: bool = False
-    ) -> None:
-        """Hand the gaze layer an aim — a 4x4 head pose that looks at the tracked face;
-        ``aim=None`` withdraws it (specs/motion/motion.md "The gaze layer"). With ``focus`` the
-        head holds exactly on the aim: the idle move's head motion is left out, its
-        antennas kept. Accepted whether or not the loop runs: sent before ``start`` it
-        waits in the command queue for the first tick, sent after ``close`` it is
-        dropped."""
-        target = None if aim is None else np.array(aim, dtype=np.float64)
+    def set_gaze(self, aim: GazeAim | None, *, focus: bool = False) -> None:
+        """Hand the gaze layer an aim — the pose that looks at the tracked face and the
+        posture toward them; ``aim=None`` withdraws it (specs/motion/motion.md "The gaze
+        layer"). With ``focus`` the head holds exactly on the aim: the idle move's head
+        motion is left out, its antennas kept. Accepted whether or not the loop runs:
+        sent before ``start`` it waits in the command queue for the first tick, sent
+        after ``close`` it is dropped."""
+        target = (
+            None
+            if aim is None
+            else GazeAim(
+                np.array(aim.look, dtype=np.float64), float(aim.roll), float(aim.offset)
+            )
+        )
         self._commands.put(lambda: self._on_set_gaze(target, focus))
 
-    def _on_set_gaze(self, aim: npt.NDArray[np.float64] | None, focus: bool) -> None:
+    def _on_set_gaze(self, aim: GazeAim | None, focus: bool) -> None:
         self._gaze_target = aim
         self._gaze_focus = focus
 
@@ -1138,14 +1258,18 @@ class MotionSession:
             if self._gaze_aim is None:
                 # From the present head, so the first aim never steps it.
                 self._gaze_aim = (
-                    self._last_target[0].copy() if self._commanding else target
+                    self._last_target[0].copy() if self._commanding else target.look
                 )
+                self._gaze_roll, self._gaze_offset = target.roll, target.offset
             else:
                 self._gaze_aim = linear_pose_interpolation(
-                    self._gaze_aim, target, GAZE_ALPHA
+                    self._gaze_aim, target.look, GAZE_ALPHA
                 )
+                self._gaze_roll += (target.roll - self._gaze_roll) * GAZE_ALPHA
+                self._gaze_offset += (target.offset - self._gaze_offset) * GAZE_ALPHA
         elif self._gaze_w_eff <= 0.0:
             self._gaze_aim = None  # withdrawn and faded out
+            self._reach_shares, self._reach_at = FULL_SHARES, None
         w = self._gaze_w_eff
         if w <= 0.0 or self._gaze_aim is None or head is None or antennas is None:
             return head, antennas
@@ -1153,12 +1277,70 @@ class MotionSession:
         focus = self._focus_fade.value(now, 1.0 if self._gaze_focus else 0.0)
         if focus > 0.0:  # the head's gaze motion faded out: the head on the aim
             gaze_head = linear_pose_interpolation(gaze_head, NEUTRAL_HEAD, focus)
-        aimed = compose_world_offset(self._gaze_aim, gaze_head)
-        composed_head = linear_pose_interpolation(np.asarray(head), aimed, w)
+        look, roll, offset = self._gaze_aim, self._gaze_roll, self._gaze_offset
+        idle_head = np.asarray(head)
+
+        def compose(shares: Shares) -> npt.NDArray[np.float64]:
+            idle_share, offset_share, roll_share, direction = shares
+            aim = postured(look, roll * roll_share, offset * offset_share)
+            if direction < 1.0:
+                aim = linear_pose_interpolation(NEUTRAL_HEAD, aim, direction)
+            motion = (
+                gaze_head
+                if idle_share >= 1.0
+                else linear_pose_interpolation(NEUTRAL_HEAD, gaze_head, idle_share)
+            )
+            return linear_pose_interpolation(
+                idle_head, compose_world_offset(aim, motion), w
+            )
+
+        composed_head = self._within_reach(now, compose)
         composed_antennas = np.asarray(antennas) + w * (
             gaze_antennas - np.asarray(antennas)
         )
         return composed_head, composed_antennas
+
+    def _within_reach(
+        self, now: float, compose: Callable[[Shares], npt.NDArray[np.float64]]
+    ) -> npt.NDArray[np.float64]:
+        """The composed head pose the robot can reach (specs/motion/motion.md "Within
+        reach"): the shares of the last tick, each recovered by ``REACH_RECOVER_PER_S``
+        since, when that fits; else the last tick's shares; else those cut by
+        :func:`within_reach` as far as the kinematics need."""
+        dt = 0.0 if self._reach_at is None else max(0.0, now - self._reach_at)
+        self._reach_at = now
+        caps: Shares = tuple(  # type: ignore[assignment]
+            min(1.0, share + REACH_RECOVER_PER_S * dt) for share in self._reach_shares
+        )
+        reachable = self._reachable or analytical_reach()
+        previous = self._reach_shares
+        pose = compose(caps)
+        if reachable(pose):
+            shares = caps
+        else:
+            # At the edge of the workspace: hold what fitted on the last tick rather than
+            # recover, fail and cut again — a saw-tooth that would buzz at 60 Hz. Search
+            # down only when that too has gone out of reach.
+            pose = compose(previous)
+            if caps != previous and reachable(pose):
+                shares = previous
+            else:
+                shares, pose = within_reach(compose, previous, reachable)
+        self._reach_shares = shares
+        limited = shares[1:] != (1.0, 1.0, 1.0)
+        if limited != self._reach_limited:
+            self._reach_limited = limited
+            if limited:
+                _offset, _roll, _direction = (round(100 * x) for x in shares[1:])
+                _logger.debug(
+                    "gaze layer out of reach: offset %d%%, roll %d%%, direction %d%%",
+                    _offset,
+                    _roll,
+                    _direction,
+                )
+            else:
+                _logger.debug("gaze layer: the whole aim is within reach again")
+        return pose
 
     @staticmethod
     def _gaze_pose(playing: _Playing, t: float) -> Pose:
@@ -1186,6 +1368,7 @@ class MotionSession:
         self._commanding = False
         self._reset_gaze_fade()
         self._gaze_aim = None
+        self._reach_shares, self._reach_at = FULL_SHARES, None
 
     def _read_present_pose(self) -> Pose:
         head = self._robot.get_current_head_pose()
