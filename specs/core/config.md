@@ -253,10 +253,10 @@ The head tracker ([head_tracking.md](../motion/head_tracking.md)): whether it ru
 | `mirroring.max_deg` | number > 0, ≤ 30 | `12.0` | The largest mirrored roll, either way. |
 | `approach.enabled` | bool | `true` | Lean the head toward the person while following them. |
 | `approach.lean_mm` | number ≥ 0, ≤ 30 | `12.0` | How far forward of the look-at pose, along the look direction. |
-| `personal_distance.enabled` | bool | `true` | Pull the head back from a person nearer than `distance_m`. |
-| `personal_distance.distance_m` | number > 0 | `0.40` | The distance from the robot's camera inside which the head retreats (`Face.distance_m`, [user_perception.md](../vision/user_perception.md) "The face report"). |
-| `personal_distance.max_back_mm` | number ≥ 0, ≤ 30 | `25.0` | The largest retreat. |
-| `personal_distance.span_m` | number > 0 | `0.10` | The intrusion over which the retreat grows from nothing to `max_back_mm`. |
+| `personal_space.enabled` | bool | `true` | Pull the head back from a person nearer than `distance_m`. |
+| `personal_space.distance_m` | number > 0 | `0.40` | The distance from the robot's camera inside which the head retreats (`Face.distance_m`, [user_perception.md](../vision/user_perception.md) "The face report"). |
+| `personal_space.max_back_mm` | number ≥ 0, ≤ 30 | `25.0` | The largest retreat. |
+| `personal_space.span_m` | number > 0 | `0.10` | The intrusion over which the retreat grows from nothing to `max_back_mm`. |
 
 ```python
 @dataclass(frozen=True)
@@ -271,7 +271,7 @@ class ApproachSettings:
     lean_mm: float = 12.0
 
 @dataclass(frozen=True)
-class PersonalDistanceSettings:
+class PersonalSpaceSettings:
     enabled: bool = True
     distance_m: float = 0.40
     max_back_mm: float = 25.0
@@ -283,7 +283,7 @@ class TrackingSettings:
     focus: bool = False
     mirroring: MirroringSettings = field(default_factory=MirroringSettings)
     approach: ApproachSettings = field(default_factory=ApproachSettings)
-    personal_distance: PersonalDistanceSettings = field(default_factory=PersonalDistanceSettings)
+    personal_space: PersonalSpaceSettings = field(default_factory=PersonalSpaceSettings)
 ```
 
 Frozen, unlike the other blocks, because the object is handed across the runtime API: a caller changes a field with `dataclasses.replace` and applies the result, so the settings in force are never mutated behind the tracker's back. The bounds of 30 mm and 30° are the head's own range for these axes — what the emotions library's recordings span ([head_tracking.md](../motion/head_tracking.md) "The posture") — so no setting can ask for more than the robot's own repertoire. Every key is optional; a sub-object given in part keeps the defaults of the rest.
@@ -309,7 +309,7 @@ All enforced by `ReachyMiniConfig.from_dict` (delegating to `DaemonConfig.from_d
 - `tts`, when not `null`, is an object with a `module` object whose `type` is a non-empty string.
 - `audio.xvf3800`, when not `null`, is a list of two-item lists with a string first item.
 - `motion.presence` and `motion.wobbling` are booleans; `motion.idle` ∈ {`breathing`, `hold`, `custom`}.
-- `motion.tracking` is an object (a boolean is a `ConfigError` showing the object form); its `enabled` / `focus` and each sub-object's `enabled` are booleans; its sub-objects are objects; every number is a finite number other than `bool`, within the table's bounds.
+- `motion.tracking` is an object (a boolean is a `ConfigError` showing the object form; a `personal_distance` key, the sub-object's former name, a `ConfigError` naming `personal_space`); its `enabled` / `focus` and each sub-object's `enabled` are booleans; its sub-objects are objects; every number is a finite number other than `bool`, within the table's bounds.
 - `motion.idle_move` in a dict / JSON config is a `ConfigError` whose message points at `MotionSettings(idle_move=...)`: the field is set from code. The factory itself is checked when the session starts, not by the config layer.
 
 ## Relationship to the other specs

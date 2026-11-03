@@ -1033,7 +1033,7 @@ class ReachyMiniBridge:
         specs/motion/head_tracking.md "Configuration and verbs"): ``enabled`` starts or
         stops the tracker — and the detection loop with it — as
         :meth:`start_head_tracking` / :meth:`stop_head_tracking` do; ``focus`` and the
-        posture's ``mirroring`` / ``approach`` / ``personal_distance`` take effect on the
+        posture's ``mirroring`` / ``approach`` / ``personal_space`` take effect on the
         next aim, eased in or out by the tracker's filters, never a step. Change one
         field with ``dataclasses.replace(bridge.tracking, ...)``.
 

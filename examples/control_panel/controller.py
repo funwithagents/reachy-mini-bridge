@@ -82,9 +82,9 @@ class PanelState:
     idle: str
     wobbling: bool
     tracking: bool
-    # the posture the head takes toward the followed face (head_tracking's roll_deg and
-    # offset_mm); None while it follows nobody
-    posture: tuple[float, float] | None
+    # the posture the head takes toward the followed face (head_tracking's roll_deg,
+    # offset_mm and in_personal_space); None while it follows nobody
+    posture: tuple[float, float, bool] | None
     attention: str | None
     face_detection: bool
     # the number of faces the detection loop reports; -1 while no detector is looking
@@ -416,7 +416,7 @@ class ControlPanelController:
         positions = [(f.x, f.y) for f in report.faces] if report.active else []
         tracked = bridge.head_tracking.value
         posture = (
-            (tracked.roll_deg, tracked.offset_mm)
+            (tracked.roll_deg, tracked.offset_mm, tracked.in_personal_space)
             if tracked.attention == "engaged"
             else None
         )
@@ -503,7 +503,7 @@ class ControlPanelController:
         self._call(self._bridge.stop_head_tracking())
 
     def set_posture(
-        self, mirroring: bool, approach: bool, personal_distance: bool
+        self, mirroring: bool, approach: bool, personal_space: bool
     ) -> None:
         """The posture checkboxes: each behaviour of the tracker's posture on or off,
         the rest of the tracking settings kept (``bridge.set_tracking``)."""
@@ -514,8 +514,8 @@ class ControlPanelController:
                     settings,
                     mirroring=replace(settings.mirroring, enabled=mirroring),
                     approach=replace(settings.approach, enabled=approach),
-                    personal_distance=replace(
-                        settings.personal_distance, enabled=personal_distance
+                    personal_space=replace(
+                        settings.personal_space, enabled=personal_space
                     ),
                 )
             )

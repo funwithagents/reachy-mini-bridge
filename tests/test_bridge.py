@@ -206,7 +206,7 @@ def test_package_front_door_drives_the_fake() -> None:
         "SpeechSynthesizer",
         "TTSEngineSynthesizer",
         "MirroringSettings",
-        "PersonalDistanceSettings",
+        "PersonalSpaceSettings",
         "TrackingSettings",
     }
     assert all(hasattr(rmb, name) for name in rmb.__all__)

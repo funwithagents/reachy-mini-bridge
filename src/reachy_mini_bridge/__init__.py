@@ -19,7 +19,7 @@ from .camera import CameraFrame
 from .config import (
     ApproachSettings,
     MirroringSettings,
-    PersonalDistanceSettings,
+    PersonalSpaceSettings,
     ReachyMiniConfig,
     TrackingSettings,
 )
@@ -55,7 +55,7 @@ __all__ = [
     "MirroringSettings",
     "MotorsNotEnabledError",
     "Observable",
-    "PersonalDistanceSettings",
+    "PersonalSpaceSettings",
     "PixelFace",
     "ReachyMiniBridge",
     "ReachyMiniConfig",

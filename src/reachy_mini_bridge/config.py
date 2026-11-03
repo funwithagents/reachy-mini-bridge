@@ -37,7 +37,7 @@ __all__ = [
     "FaceDetectionSettings",
     "MirroringSettings",
     "MotionSettings",
-    "PersonalDistanceSettings",
+    "PersonalSpaceSettings",
     "ReachyMiniConfig",
     "SimCameraSettings",
     "SimDisplaySettings",
@@ -534,7 +534,7 @@ class ApproachSettings:
 
 
 @dataclass(frozen=True)
-class PersonalDistanceSettings:
+class PersonalSpaceSettings:
     """The head pulls back from a person nearer than ``distance_m``
     (specs/motion/head_tracking.md "The posture")."""
 
@@ -547,8 +547,8 @@ class PersonalDistanceSettings:
     span_m: float = 0.10
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> PersonalDistanceSettings:
-        name = "motion.tracking.personal_distance"
+    def from_dict(cls, data: dict[str, Any]) -> PersonalSpaceSettings:
+        name = "motion.tracking.personal_space"
         block = _require_object(data, name)
         _reject_unknown_keys(
             block, name, {"enabled", "distance_m", "max_back_mm", "span_m"}
@@ -579,9 +579,7 @@ class TrackingSettings:
     focus: bool = False
     mirroring: MirroringSettings = field(default_factory=MirroringSettings)
     approach: ApproachSettings = field(default_factory=ApproachSettings)
-    personal_distance: PersonalDistanceSettings = field(
-        default_factory=PersonalDistanceSettings
-    )
+    personal_space: PersonalSpaceSettings = field(default_factory=PersonalSpaceSettings)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> TrackingSettings:
@@ -592,18 +590,23 @@ class TrackingSettings:
                 f'{{"enabled": {"true" if data else "false"}}}'
             )
         block = _require_object(data, name)
+        if "personal_distance" in block:
+            raise ConfigError(
+                f"'{name}.personal_distance' is now '{name}.personal_space', the same "
+                "fields under the new name"
+            )
         _reject_unknown_keys(
             block,
             name,
-            {"enabled", "focus", "mirroring", "approach", "personal_distance"},
+            {"enabled", "focus", "mirroring", "approach", "personal_space"},
         )
         return cls(
             enabled=_bool_field(block, name, "enabled", False),
             focus=_bool_field(block, name, "focus", False),
             mirroring=MirroringSettings.from_dict(block.get("mirroring", {})),
             approach=ApproachSettings.from_dict(block.get("approach", {})),
-            personal_distance=PersonalDistanceSettings.from_dict(
-                block.get("personal_distance", {})
+            personal_space=PersonalSpaceSettings.from_dict(
+                block.get("personal_space", {})
             ),
         )
 

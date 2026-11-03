@@ -57,6 +57,7 @@ __all__ = [
     "DELAY_STEP_S",
     "DELAY_WINDOW_S",
     "OFFSET_SMOOTHING_S",
+    "PERSONAL_SPACE_MARGIN_M",
     "ROLL_DEADBAND_DEG",
     "ROLL_SMOOTHING_S",
     "SIM_CAMERA_SIZE",
@@ -113,6 +114,10 @@ ROLL_DEADBAND_DEG = 3.0
 ROLL_SMOOTHING_S = 0.3
 OFFSET_SMOOTHING_S = 0.6
 _POSTURE_MAX_STEP_S = 0.2
+# The personal space event (specs/motion/head_tracking.md "The personal space event"): a
+# person who entered it leaves only this much beyond its boundary, so one standing at the
+# boundary never flickers the event with the distance's frame-to-frame noise (±5 %).
+PERSONAL_SPACE_MARGIN_M = 0.05
 
 # The sim's eye camera (the MJCF's `eye_camera`): MuJoCo's fovy is vertical, rendered at
 # the stream's 1280x720 — about 112° horizontally. Pinned against the MJCF by a test.
@@ -248,6 +253,8 @@ class HeadTrackingReport:
     # the posture in the last aim (specs/motion/head_tracking.md "The posture"), filtered:
     roll_deg: float = 0.0  # the mirrored roll
     offset_mm: float = 0.0  # along the look direction: + toward the person, - back
+    # the followed person is inside the personal space ("The personal space event")
+    in_personal_space: bool = False
 
     @classmethod
     def inactive(cls) -> HeadTrackingReport:
@@ -256,11 +263,18 @@ class HeadTrackingReport:
 
     def same_state(self, other: HeadTrackingReport) -> bool:
         """Equal but for ``ts``: what a published change compares."""
-        return (self.active, self.focus, self.attention, self.track_id) == (
+        return (
+            self.active,
+            self.focus,
+            self.attention,
+            self.track_id,
+            self.in_personal_space,
+        ) == (
             other.active,
             other.focus,
             other.attention,
             other.track_id,
+            other.in_personal_space,
         )
 
 
@@ -298,6 +312,8 @@ class HeadTracker:
     _roll: float = field(default=0.0, init=False)  # radians
     _offset: float = field(default=0.0, init=False)  # metres
     _posture_at: float | None = field(default=None, init=False)
+    # the followed person inside the personal space, with its hysteresis
+    _in_space: bool = field(default=False, init=False)
 
     @property
     def focus(self) -> bool:
@@ -368,8 +384,11 @@ class HeadTracker:
             face = self._biggest(report)
             if face is None:
                 return
+        if face.track_id != self._following:
+            self._in_space = False  # a new person: their own entry, not the last one's
         self._following = face.track_id
         self._seen_at = now
+        self._note_personal_space(face)
         aim = self._aim(face, report, now)
         if aim is not None:
             self._aimed_ts = report.ts
@@ -411,7 +430,22 @@ class HeadTracker:
         self.set_gaze(None, focus=self.focus)
         self._publish()
 
+    def _note_personal_space(self, face: Face) -> None:
+        """Whether the followed person is inside the personal space
+        (specs/motion/head_tracking.md "The personal space event"): entered nearer than
+        ``personal_space.distance_m``, left beyond it by ``PERSONAL_SPACE_MARGIN_M``, so a
+        person standing at the boundary never flickers it; unknown distance, outside."""
+        distance = face.distance_m
+        boundary = self.settings.personal_space.distance_m
+        if distance is None:
+            self._in_space = False
+        elif self._in_space:
+            self._in_space = distance <= boundary + PERSONAL_SPACE_MARGIN_M
+        else:
+            self._in_space = distance < boundary
+
     def _reset_posture(self) -> None:
+        self._in_space = False
         self._roll = self._offset = 0.0
         self._posture_at = None
 
@@ -432,6 +466,7 @@ class HeadTracker:
             ts=self._aimed_ts,
             roll_deg=math.degrees(self._roll) if self._following is not None else 0.0,
             offset_mm=self._offset * 1000.0 if self._following is not None else 0.0,
+            in_personal_space=self._in_space and self._following is not None,
         )
 
     def _publish(self) -> None:
@@ -489,8 +524,8 @@ class HeadTracker:
         if settings.approach.enabled:
             offset_target += settings.approach.lean_mm / 1000.0
         distance = face.distance_m
-        if settings.personal_distance.enabled and distance is not None:
-            pd = settings.personal_distance
+        if settings.personal_space.enabled and distance is not None:
+            pd = settings.personal_space
             intrusion = max(0.0, pd.distance_m - distance) / pd.span_m
             offset_target -= pd.max_back_mm / 1000.0 * min(1.0, intrusion)
         if self._posture_at is not None:

@@ -22,7 +22,7 @@ from reachy_mini_bridge.config import (
     FaceDetectionSettings,
     MirroringSettings,
     MotionSettings,
-    PersonalDistanceSettings,
+    PersonalSpaceSettings,
     ReachyMiniConfig,
     SimCameraSettings,
     SimDisplaySettings,
@@ -45,7 +45,7 @@ def test_defaults() -> None:
     assert tracking.enabled is False and tracking.focus is False
     assert tracking.mirroring == MirroringSettings(enabled=True, gain=1.0, max_deg=12.0)
     assert tracking.approach == ApproachSettings(enabled=True, lean_mm=12.0)
-    assert tracking.personal_distance == PersonalDistanceSettings(
+    assert tracking.personal_space == PersonalSpaceSettings(
         enabled=True, distance_m=0.40, max_back_mm=25.0, span_m=0.10
     )
     # the shipped detector's default width, twice upstream's 320; null is the full frame
@@ -510,7 +510,7 @@ def test_motion_block_sets_the_switches() -> None:
                     "focus": True,
                     "mirroring": {"gain": 1.5},
                     "approach": {"enabled": False},
-                    "personal_distance": {"distance_m": 0.5, "span_m": 0.2},
+                    "personal_space": {"distance_m": 0.5, "span_m": 0.2},
                 }
             },
         }
@@ -522,7 +522,7 @@ def test_motion_block_sets_the_switches() -> None:
             focus=True,
             mirroring=MirroringSettings(gain=1.5),
             approach=ApproachSettings(enabled=False),
-            personal_distance=PersonalDistanceSettings(distance_m=0.5, span_m=0.2),
+            personal_space=PersonalSpaceSettings(distance_m=0.5, span_m=0.2),
         )
     )
 
@@ -534,6 +534,13 @@ def test_tracking_is_an_object_and_a_boolean_points_at_it() -> None:
         ReachyMiniConfig.from_dict({"motion": {"tracking": True}})
     with pytest.raises(ConfigError, match=r'\{"enabled": false\}'):
         ReachyMiniConfig.from_dict({"motion": {"tracking": False}})
+
+
+def test_the_old_personal_distance_key_names_its_new_name() -> None:
+    with pytest.raises(ConfigError, match=r"motion\.tracking\.personal_space"):
+        ReachyMiniConfig.from_dict(
+            {"motion": {"tracking": {"personal_distance": {"distance_m": 0.4}}}}
+        )
 
 
 def test_tracking_settings_are_frozen() -> None:
@@ -560,11 +567,11 @@ def test_tracking_settings_are_frozen() -> None:
         ({"approach": {"lean_mm": -1}}, r"approach\.lean_mm"),
         ({"approach": {"lean_mm": 40}}, r"approach\.lean_mm"),
         ({"approach": {"lean_mm": float("nan")}}, r"approach\.lean_mm"),
-        ({"personal_distance": {"distance_m": 0}}, r"personal_distance\.distance_m"),
-        ({"personal_distance": {"max_back_mm": 31}}, r"max_back_mm"),
-        ({"personal_distance": {"span_m": 0}}, r"personal_distance\.span_m"),
-        ({"personal_distance": {"span_m": float("inf")}}, r"span_m"),
-        ({"personal_distance": {"radius_m": 0.3}}, "radius_m"),
+        ({"personal_space": {"distance_m": 0}}, r"personal_space\.distance_m"),
+        ({"personal_space": {"max_back_mm": 31}}, r"max_back_mm"),
+        ({"personal_space": {"span_m": 0}}, r"personal_space\.span_m"),
+        ({"personal_space": {"span_m": float("inf")}}, r"span_m"),
+        ({"personal_space": {"radius_m": 0.3}}, "radius_m"),
     ],
 )
 def test_tracking_rejects_bad_values(tracking: dict[str, object], field: str) -> None:

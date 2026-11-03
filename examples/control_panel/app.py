@@ -77,13 +77,14 @@ def state_table(state: PanelState) -> str:
     return "\n".join(lines)
 
 
-def _posture(posture: tuple[float, float] | None) -> str:
-    """The head's posture toward the followed face: its mirrored roll and its lean
-    (+ toward the person, - back)."""
+def _posture(posture: tuple[float, float, bool] | None) -> str:
+    """The head's posture toward the followed face: its mirrored roll, its lean
+    (+ toward the person, - back), and whether that person is in the personal space."""
     if posture is None:
         return "—"
-    roll_deg, offset_mm = posture
-    return f"roll {roll_deg:+.0f}°, lean {offset_mm:+.0f} mm"
+    roll_deg, offset_mm, inside = posture
+    text = f"roll {roll_deg:+.0f}°, lean {offset_mm:+.0f} mm"
+    return f"{text}, in personal space" if inside else text
 
 
 def faces_line(
@@ -221,11 +222,11 @@ def build_app(controller: ControlPanelController) -> gr.Blocks:
             )
             approach = gr.Checkbox(tracking_config.approach.enabled, label="Approach")
             personal = gr.Checkbox(
-                tracking_config.personal_distance.enabled, label="Personal distance"
+                tracking_config.personal_space.enabled, label="Personal space"
             )
         gr.Markdown(
             "*Focus: while tracking, the head is held on the face, no idle motion. "
-            "Mirroring, approach, personal distance: the posture the head takes toward "
+            "Mirroring, approach, personal space: the posture the head takes toward "
             "the person it follows — their head roll mirrored, a lean toward them, a "
             "step back from someone too close.*"
         )

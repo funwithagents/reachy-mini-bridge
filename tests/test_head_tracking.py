@@ -28,7 +28,7 @@ from reachy_mini_bridge import head_tracking
 from reachy_mini_bridge.config import (
     ApproachSettings,
     MirroringSettings,
-    PersonalDistanceSettings,
+    PersonalSpaceSettings,
     SimCameraSettings,
     TrackingSettings,
 )
@@ -55,7 +55,7 @@ DETECT_HZ = 10.0  # upstream's detector sees the camera feed at 10 fps
 NO_POSTURE = TrackingSettings(
     mirroring=MirroringSettings(enabled=False),
     approach=ApproachSettings(enabled=False),
-    personal_distance=PersonalDistanceSettings(enabled=False),
+    personal_space=PersonalSpaceSettings(enabled=False),
 )
 POLL_HZ = 30.0  # the detection loop's poll rate
 
@@ -822,7 +822,7 @@ def test_the_head_leans_toward_a_person_along_the_look_direction(
 @pytest.mark.parametrize(
     ("distance_m", "expected_mm"),
     [
-        (0.50, 12.0),  # outside the personal distance: the lean alone
+        (0.50, 12.0),  # outside the personal space: the lean alone
         (0.40, 12.0),  # at it: no retreat, no threshold to pump across
         (0.35, 12.0 - 25.0 * 0.5),  # half the span inside: half the retreat
         (0.20, 12.0 - 25.0),  # past the span: the full retreat, capped
@@ -923,3 +923,58 @@ def test_face_camera_point_is_the_pinhole_depth_of_the_box() -> None:
     assert (
         head_tracking.face_camera_point(replace(face, size=0.0), camera, 0.18) is None
     )
+
+
+# --- the personal space event (specs/motion/head_tracking.md "The personal space event") --
+
+
+def test_entering_and_leaving_the_personal_space_are_published_once_each(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Entered nearer than `distance_m` (0.40), left only beyond it by the margin: a person
+    hovering at the boundary changes nothing, and each crossing wakes a subscriber once."""
+    posture = _Posture(monkeypatch)
+    posture.see(1.0, distance_m=0.45)
+    assert not posture.state.in_personal_space
+    sets_before = len(posture.report.sets)
+    posture.see(1.0, distance_m=0.38)  # in
+    assert posture.state.in_personal_space
+    posture.see(1.0, distance_m=0.42)  # past the boundary, within the margin: still in
+    posture.see(0.5, distance_m=0.39)
+    posture.see(1.0, distance_m=0.44)
+    assert posture.state.in_personal_space
+    posture.see(1.0, distance_m=0.46)  # beyond the margin: out
+    assert not posture.state.in_personal_space
+    flips = [r.in_personal_space for r in posture.report.sets[sets_before:]]
+    assert flips == [True, False]
+
+
+def test_the_personal_space_is_reported_with_the_retreat_switched_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = TrackingSettings(
+        enabled=True,
+        personal_space=PersonalSpaceSettings(enabled=False, distance_m=0.6),
+    )
+    posture = _Posture(monkeypatch, settings)
+    posture.see(5.0, distance_m=0.5)
+    assert posture.state.in_personal_space  # the zone is the settings' distance_m
+    assert posture.state.offset_mm == pytest.approx(12.0, abs=0.5)  # but no retreat
+
+
+def test_the_personal_space_resets_with_the_person(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Out once the head hands back after the loss; and a new person is judged on their
+    own distance, not the margin earned by the one before."""
+    posture = _Posture(monkeypatch)
+    posture.see(1.0, distance_m=0.3)
+    assert posture.state.in_personal_space
+    posture.nobody(head_tracking.TRACKING_LOST_S + 0.2)
+    assert not posture.state.in_personal_space
+    assert posture.report.sets[-1].attention == "watching"
+    posture.see(1.0, distance_m=0.42)  # someone new, inside the old margin
+    assert not posture.state.in_personal_space
+    # a face without a distance is not reported inside
+    posture.see(1.0, distance_m=None)
+    assert not posture.state.in_personal_space

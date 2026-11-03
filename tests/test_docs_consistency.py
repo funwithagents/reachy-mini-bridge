@@ -24,7 +24,7 @@ from reachy_mini_bridge.config import (
     FaceDetectionSettings,
     MirroringSettings,
     MotionSettings,
-    PersonalDistanceSettings,
+    PersonalSpaceSettings,
     ReachyMiniConfig,
     SimCameraSettings,
     SimDisplaySettings,
@@ -206,7 +206,7 @@ _BLOCKS: dict[str, type] = {
     "motion.tracking": TrackingSettings,
     "motion.tracking.mirroring": MirroringSettings,
     "motion.tracking.approach": ApproachSettings,
-    "motion.tracking.personal_distance": PersonalDistanceSettings,
+    "motion.tracking.personal_space": PersonalSpaceSettings,
 }
 
 

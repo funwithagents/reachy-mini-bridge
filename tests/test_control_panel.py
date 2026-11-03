@@ -411,6 +411,15 @@ def test_the_faces_line_shows_each_faces_roll_in_degrees() -> None:
     assert "(+0.25, -0.10, 0.46 m), (+0.00, +0.00)" in away
 
 
+def test_the_posture_readout_says_when_the_person_is_in_the_personal_space() -> None:
+    pytest.importorskip("gradio")
+    from examples.control_panel.app import _posture
+
+    assert _posture(None) == "—"
+    assert _posture((4.6, 12.0, False)) == "roll +5°, lean +12 mm"
+    assert _posture((0.0, -13.0, True)) == "roll +0°, lean -13 mm, in personal space"
+
+
 def test_the_posture_boxes_switch_each_behaviour_and_the_state_shows_it() -> None:
     """The panel's posture checkboxes go through `set_tracking`, keeping the rest of the
     settings; the state table reads the posture while the head follows someone."""
@@ -419,13 +428,13 @@ def test_the_posture_boxes_switch_each_behaviour_and_the_state_shows_it() -> Non
 
     scene = _Scene()
     with ControlPanelController(_faces_config(scene)) as controller:
-        controller.set_posture(mirroring=False, approach=True, personal_distance=False)
+        controller.set_posture(mirroring=False, approach=True, personal_space=False)
         settings = controller.bridge.tracking
         assert settings.enabled  # still tracking
         assert (
             settings.mirroring.enabled,
             settings.approach.enabled,
-            settings.personal_distance.enabled,
+            settings.personal_space.enabled,
         ) == (False, True, False)
         assert controller.snapshot().posture is None  # nobody followed yet
         scene.show()
