@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from reachy_mini_bridge import real_daemon
+from reachy_mini_bridge import real_daemon, uvc
 
 _LOGGER = "reachy_mini_bridge.real_daemon"
 
@@ -90,6 +90,32 @@ def test_select_camera_gives_up_after_the_attempts_and_leaves_the_last_build(
 # --- the media-server wiring ------------------------------------------------------------
 
 
+class _Control:
+    """Scripts what each read of the control returns, records every request, and can
+    refuse the write the way the bus does."""
+
+    def __init__(self, reads: list[bytes], *, refuse: bool = False) -> None:
+        self._reads = iter(reads)
+        self._refuse = refuse
+        self.requests: list[tuple[Any, ...]] = []
+        self.closed = False
+
+    def get(self, selector: int, request: int, length: int) -> bytes:
+        self.requests.append(("get", selector, request, length))
+        return next(self._reads)
+
+    def set(self, selector: int, data: bytes) -> None:
+        self.requests.append(("set", selector, data))
+        if self._refuse:
+            raise OSError(32, "Pipe error")
+
+    def close(self) -> None:
+        self.closed = True
+
+
+_SUPPORTED = uvc.CameraTerminal(terminal_id=1, ae_priority=True)
+
+
 class _FakePipeline:
     def __init__(self) -> None:
         self.states: list[Any] = []
@@ -99,8 +125,14 @@ class _FakePipeline:
 
 
 def _macos(
-    monkeypatch: pytest.MonkeyPatch, names: list[str | None], count: int
+    monkeypatch: pytest.MonkeyPatch,
+    names: list[str | None],
+    count: int,
+    camera: Any = None,
 ) -> None:
+    """A macOS start: the device names each build opens, the device count — and the
+    robot camera the exposure step finds on USB (``None``: no camera, so no test
+    reaches the real bus; a callable: the finder itself, given the names)."""
     opened = iter(names)
     monkeypatch.setattr(real_daemon.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(real_daemon, "_video_device_count", lambda: count)
@@ -108,6 +140,57 @@ def _macos(
     monkeypatch.setattr(
         real_daemon, "_opened_device_name", lambda pipeline: next(opened)
     )
+    finder = camera if callable(camera) else (lambda names: camera)
+    monkeypatch.setattr(real_daemon, "robot_camera", finder)
+
+
+def test_checked_start_enables_the_exposure_priority_after_the_selection(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    control = _Control([b"\x00", b"\x01"])
+    starts: list[str] = []
+
+    def finder(names: Any) -> tuple[_Control, uvc.CameraTerminal]:
+        assert starts == ["1", "0"]  # the camera is settled before the exposure step
+        assert (
+            tuple(names) == real_daemon.ROBOT_CAMERA_NAMES
+        )  # found as upstream finds it
+        return control, _SUPPORTED
+
+    _macos(monkeypatch, ["Caméra du MacBook Pro", "Reachy Mini Camera"], 2, finder)
+    server = SimpleNamespace(_cam_path="1", _pipeline_sender=_FakePipeline())
+    # the decision's own line comes from uvc.py: capture the package
+    with caplog.at_level(logging.INFO, logger="reachy_mini_bridge"):
+        real_daemon._checked_start(server, lambda s: starts.append(s._cam_path))
+    assert [r[0] for r in control.requests] == ["get", "set", "get"]
+    assert control.closed
+    assert "auto-exposure priority enabled" in caplog.records[-1].getMessage()
+
+
+def test_checked_start_runs_on_when_the_camera_cannot_be_reached_over_usb(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def finder(names: Any) -> None:
+        raise RuntimeError("No backend available")
+
+    _macos(monkeypatch, ["Reachy Mini Camera"], 1, finder)
+    server = SimpleNamespace(_cam_path="0", _pipeline_sender=_FakePipeline())
+    starts: list[str] = []
+    with caplog.at_level(logging.DEBUG, logger=_LOGGER):
+        real_daemon._checked_start(server, lambda s: starts.append(s._cam_path))
+    assert starts == ["0"]
+    assert [r.levelno for r in caplog.records] == [logging.WARNING]
+    assert "No backend available" in caplog.records[0].getMessage()
+
+
+def test_checked_start_says_nothing_without_a_robot_camera_on_usb(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    _macos(monkeypatch, ["Reachy Mini Camera"], 1, camera=None)
+    server = SimpleNamespace(_cam_path="0", _pipeline_sender=_FakePipeline())
+    with caplog.at_level(logging.INFO, logger=_LOGGER):
+        real_daemon._checked_start(server, lambda s: None)
+    assert caplog.records == []
 
 
 def test_checked_start_rebuilds_the_media_server_on_the_next_index(
@@ -144,6 +227,7 @@ def test_checked_start_leaves_other_platforms_and_sources_alone(
     monkeypatch.setattr(
         real_daemon, "_opened_device_name", lambda pipeline: pytest.fail("probed")
     )
+    monkeypatch.setattr(real_daemon, "robot_camera", lambda names: pytest.fail("USB"))
     server = SimpleNamespace(_cam_path=cam_path, _pipeline_sender=_FakePipeline())
     starts: list[str] = []
     real_daemon._checked_start(server, lambda s: starts.append(s._cam_path))

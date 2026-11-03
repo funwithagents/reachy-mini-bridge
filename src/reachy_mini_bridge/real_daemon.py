@@ -2,17 +2,24 @@
 
 ``python -m reachy_mini_bridge.real_daemon [--[no-]preload-datasets] [upstream flags...]``
 runs upstream's ``reachy-mini-daemon`` for a robot on this machine's USB, in this
-interpreter, with one correction. On macOS the daemon opens its camera through
-``avfvideosrc device-index=N``, and the device order that index reads — AVFoundation's —
-is not stable: it moves between two opens in one process. Every build of the media
-pipeline is therefore a draw between the robot's camera and the computer's own, and the
-wrong pick fails the robot camera's caps (``not-negotiated``), leaving the daemon
-without video: audio keeps working, the IPC socket exists, no frame ever comes. The
-launcher reads which device each build actually opened (``avfvideosrc``'s read-only
+interpreter, with two macOS corrections of the camera. On macOS the daemon opens its
+camera through ``avfvideosrc device-index=N``, and the device order that index reads —
+AVFoundation's — is not stable: it moves between two opens in one process. Every build
+of the media pipeline is therefore a draw between the robot's camera and the computer's
+own, and the wrong pick fails the robot camera's caps (``not-negotiated``), leaving the
+daemon without video: audio keeps working, the IPC socket exists, no frame ever comes.
+The launcher reads which device each build actually opened (``avfvideosrc``'s read-only
 ``device-name``) and rebuilds on the next index until it is the robot's camera.
 
-Importing this module pulls in neither the daemon nor GStreamer; the daemon-side pieces
-import them when they run.
+And the camera it opens is dark: upstream pins the Lite camera to its 1920x1080@60 mode,
+where the camera holds the frame rate and caps its exposure at 1/60 s, three to four
+times too dark in room light. The launcher sets the camera's UVC auto-exposure priority
+over USB (``uvc.py``: one control request beside the pipeline, through upstream's own
+pyusb and libusb) so the camera may ease its frame rate to expose longer: upstream's
+documented cure, applied by the daemon itself.
+
+Importing this module pulls in neither the daemon, GStreamer nor pyusb; the daemon-side
+pieces import them when they run.
 """
 
 from __future__ import annotations
@@ -26,6 +33,7 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from .config import DAEMON_INFO_ROUTE
+from .uvc import enable_ae_priority, robot_camera
 
 __all__ = [
     "install_macos_camera_check",
@@ -105,6 +113,35 @@ def select_camera(
     return False  # pragma: no cover - the loop returns
 
 
+# --- the camera exposure (specs/daemon/real_daemon.md "The camera exposure") -----------
+
+
+def _camera_ae_priority() -> None:
+    """The exposure step of a macOS start: find the robot's camera on USB by the names
+    upstream's detection matches and enable its auto-exposure priority; whatever goes
+    wrong is one line and the daemon runs on."""
+    try:
+        found = robot_camera(ROBOT_CAMERA_NAMES)
+    except Exception as e:  # noqa: BLE001 - no USB backend, a bus that cannot be read
+        _logger.warning(
+            "robot camera: cannot reach the camera over USB to enable its auto-exposure "
+            "priority (%s); the image stays as upstream leaves it",
+            e,
+        )
+        return
+    if found is None:
+        _logger.debug(
+            "robot camera: no camera named %s on USB; auto-exposure left alone",
+            " / ".join(ROBOT_CAMERA_NAMES),
+        )
+        return
+    control, terminal = found
+    try:
+        enable_ae_priority(control, terminal)
+    finally:
+        control.close()
+
+
 # --- the GStreamer glue (runs in the daemon process) ----------------------------------
 
 
@@ -164,8 +201,9 @@ def _gst_null() -> Any:
 
 
 def _checked_start(server: Any, original_start: Callable[[Any], None]) -> None:
-    """``GstMediaServer.start`` with the camera check: start, then keep rebuilding on the
-    next index while the device that opened is not the robot's camera."""
+    """``GstMediaServer.start`` with both corrections: start, keep rebuilding on the next
+    index while the device that opened is not the robot's camera, then enable the Lite
+    camera's auto-exposure priority."""
     original_start(server)
     if platform.system() != "Darwin" or not str(server._cam_path).isdigit():
         return  # avfvideosrc is macOS-only; a non-numeric path is the sim or a webcam
@@ -182,10 +220,12 @@ def _checked_start(server: Any, original_start: Callable[[Any], None]) -> None:
     select_camera(
         opened, restart, first=first, count=max(_video_device_count(), first + 1)
     )
+    _camera_ae_priority()
 
 
 def install_macos_camera_check() -> None:
-    """Wrap upstream's ``GstMediaServer.start`` with the camera check (idempotent)."""
+    """Wrap upstream's ``GstMediaServer.start`` with the macOS camera corrections — the
+    check and the exposure (idempotent)."""
     from reachy_mini.media import media_server as upstream
 
     original_start = upstream.GstMediaServer.start
