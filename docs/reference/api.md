@@ -19,7 +19,7 @@ From `reachy_mini_bridge`:
 | `MicChunk` | A mic capture chunk: `seq`, `ts`, `samples` |
 | `Face`, `FaceReport`, `PixelFace`, `FaceDetector` | The perception values, and the two types a custom detector works with |
 | `HeadTrackingReport` | The head tracker's state |
-| `TrackingSettings`, `MirroringSettings`, `ApproachSettings`, `PersonalDistanceSettings` | The tracking behaviour: `bridge.tracking`, `set_tracking`, the config's `motion.tracking` |
+| `TrackingSettings`, `MirroringSettings`, `ApproachSettings`, `PersonalSpaceSettings` | The tracking behaviour: `bridge.tracking`, `set_tracking`, the config's `motion.tracking` |
 | `Observable` | The type of `bridge.faces` and `bridge.head_tracking` |
 | `IdleMove`, `IdleOffsets` | The base class and the value type of a custom idle move |
 | `BridgeError`, `MotorsNotEnabledError`, `GravityCompensationUnsupportedError`, `SpeechInterruptedError`, `SoundInterruptedError`, `ConfigError` | The errors a caller catches |
@@ -97,7 +97,7 @@ async with ReachyMiniBridge.from_json_file("robot.json") as bridge:
 
 **Mic in.** Every `audio_input()` call is a subscriber of its own over the session's mic feed, the one reader of the capture: any number run at once — a recognizer, a wake-word detector, a level meter — each receiving every chunk in order at its own pace. Iterate to consume, `break` to stop; it ends on its own when the session closes. The feed keeps the last 2 s: `preroll_s` starts a subscriber up to that far in the past (a recognizer started by a wake word hears the sentence that woke it), and a subscriber that falls further behind loses the chunks it missed, logged as a warning, without slowing anyone else. Routing both directions through the bridge is what keeps the robot's echo cancellation working while it speaks and listens at once. The bridge does no speech recognition.
 
-**Gaze.** The tracker chooses whom to follow — the biggest face of a minimum size, kept while it is seen; a face that vanishes is waited for a second, the head holding toward where it was, before the head turns to the biggest other face; after two seconds with nobody the head eases back into the idle move. `focus=False` composes the aim into the idle move (the head looks at the person and breathes); `focus=True` holds the head exactly on the face, the antennas keeping their motion. While it follows a face the head also takes a **posture** toward the person: it mirrors their head roll, leans toward them, and pulls back from someone nearer than the personal distance — each switched in `TrackingSettings` ([configuration.md](configuration.md#motion--what-the-robot-does-at-rest) "`motion.tracking`"), each eased in and out so it reads as a stance, never a jerk. `set_tracking(settings)` applies a whole settings object while the session runs (`enabled` starts or stops the tracker); `start_head_tracking()` and `stop_head_tracking()` are its two common cases and keep the rest of the settings, `focus` included unless given. Change one behaviour with `dataclasses.replace`:
+**Gaze.** The tracker chooses whom to follow — the biggest face of a minimum size, kept while it is seen; a face that vanishes is waited for a second, the head holding toward where it was, before the head turns to the biggest other face; after two seconds with nobody the head eases back into the idle move. `focus=False` composes the aim into the idle move (the head looks at the person and breathes); `focus=True` holds the head exactly on the face, the antennas keeping their motion. While it follows a face the head also takes a **posture** toward the person: it mirrors their head roll, leans toward them, and pulls back from someone nearer than the personal space — each switched in `TrackingSettings` ([configuration.md](configuration.md#motion--what-the-robot-does-at-rest) "`motion.tracking`"), each eased in and out so it reads as a stance, never a jerk. `set_tracking(settings)` applies a whole settings object while the session runs (`enabled` starts or stops the tracker); `start_head_tracking()` and `stop_head_tracking()` are its two common cases and keep the rest of the settings, `focus` included unless given. Change one behaviour with `dataclasses.replace`:
 
 ```python
 from dataclasses import replace
@@ -173,6 +173,7 @@ class HeadTrackingReport:
     ts: float                      # the time of the face report behind the last aim; 0.0 before any
     roll_deg: float                # the posture in the last aim: the mirrored roll
     offset_mm: float               #   and the lean along the look direction (+ toward the person, - back)
+    in_personal_space: bool        # the followed person is inside the personal space (a published change)
 ```
 
 ### Reading and subscribing

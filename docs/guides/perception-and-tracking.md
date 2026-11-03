@@ -28,8 +28,8 @@ The tracker follows **one** face by its `track_id` and holds on to it: the bigge
 While the head follows someone it also stands toward them, three behaviours each switched in `motion.tracking` (fields: [../reference/configuration.md](../reference/configuration.md#motion--what-the-robot-does-at-rest)), all on by default:
 
 - **Mirroring.** The head rolls with the person's head roll, as a mirror does: both lean toward the same side of the room. A tilt under 3° reads as upright, and the roll is read against the head's own pose when the frame was taken, so the robot's own breathing or mirroring is never taken for the person's. It is as good as the detector's roll: YuNet at the default width (640) reads about two thirds of a tilt at 0.45 m from the Lite, more nearer, little beyond 0.6 m; raise `face_detection.width`, set `mirroring.gain` above 1, or register a detector that fits a head for more.
-- **Approach.** The head sits `lean_mm` (12 mm) forward along the direction it looks: the robot comes a little toward the person.
-- **Personal distance.** Someone nearer than `distance_m` (0.40 m) pushes the head back, up to `max_back_mm` (25 mm) over `span_m` (0.10 m) of intrusion — a recoil, since the head's travel is a few centimetres. The distance is each face's `distance_m`, from its size in the image against an adult face's height, good to a few centimetres at desk range.
+- **Approach.** The head sits `lean_mm` (15 mm) forward along the direction it looks: the robot comes a little toward the person.
+- **Personal space.** Someone nearer than `distance_m` (0.40 m) pushes the head back, up to `max_back_mm` (20 mm) over `span_m` (0.20 m) of intrusion — a recoil, since the head's travel is a few centimetres. The distance is each face's `distance_m`, from its size in the image against an adult face's height, good to a few centimetres at desk range.
 
 The posture gives way to what the robot can reach: when a retreat and a roll far to one side would ask the head for a pose its kinematics cannot solve, the motion loop drops the idle move's motion first, then the offset, then the roll, and if need be turns the head only part of the way — the head keeps looking at you rather than freezing on its last pose. Each eases in within a second and freezes while the followed face is missing; the aim withdrawn, the posture resets and grows in again with the next person. Switched off at run time, a behaviour eases out instead of stepping:
 
@@ -79,6 +79,16 @@ async for report in bridge.faces.changes():
 ```python
 async for state in bridge.head_tracking.changes():
     print(state.attention, state.track_id)
+```
+
+**Be told when the person comes close** — `in_personal_space` flips, a published change on the same report, when the followed person enters the personal space (nearer than `motion.tracking.personal_space.distance_m`) and when they leave it (`exit_margin_m` beyond, 5 cm by default at 0.40 m, so standing at the boundary never flickers it). It is reported whether or not the head's retreat is enabled:
+
+```python
+close = False
+async for state in bridge.head_tracking.changes():
+    if state.in_personal_space != close:
+        close = state.in_personal_space
+        print("too close" if close else "back at a comfortable distance")
 ```
 
 **Wait until somebody is there** — reacts to publications, a count change, not a refresh:

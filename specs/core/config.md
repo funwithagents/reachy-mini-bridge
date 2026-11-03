@@ -33,7 +33,7 @@ The shape and the constructor trio mirror [`tts-engine`'s configuration](https:/
 }
 ```
 
-Every block is optional: `ReachyMiniConfig()` is a valid config — the `real` backend, upstream's connection defaults, no daemon management, no default synthesizer, firmware audio defaults, the `face_detection` defaults (no detector, detection off, a 640 px detection width, no rate ceiling) and the `motion` defaults (presence and wobbling on, tracking off — it needs a detector — with its posture behaviours on for when it runs, the idle mode `"breathing"`). `config.example.json` in the repo root documents every field with placeholder values and is kept in sync with this spec. It describes the **sim viewer seeing through the host webcam** (`backend: "sim"`, `daemon.spawn: "auto"`, `daemon.headless: false`, `daemon.camera.source: "webcam"`): the configuration that shows the most — the robot moving in the MuJoCo window, and its camera on the person in front of the computer, whom it follows (`face_detection.detector: "yunet"`, detection and tracking on — every tracking field spelled out — detecting at the default `width: 640`) — so it is what the README and the [control panel](../examples/control_panel.md) start from — with every sim display on (`daemon.sim_displays`: `camera_overlay`, `robot_gaze`, `face_markers`), so the viewer window also shows what the camera sees, where the robot looks and where the bridge places each face. Set `source` to `"sim"` for the rendered eye camera instead.
+Every block is optional: `ReachyMiniConfig()` is a valid config — the `real` backend, upstream's connection defaults, no daemon management, no default synthesizer, firmware audio defaults, the `face_detection` defaults (no detector, detection off, a 640 px detection width, no rate ceiling) and the `motion` defaults (presence and wobbling on, tracking off — it needs a detector — with its posture behaviours on for when it runs, the idle mode `"breathing"`). `config.example.json` in the repo root documents every field with placeholder values and is kept in sync with this spec. It describes the **sim viewer seeing through the host webcam** (`backend: "sim"`, `daemon.spawn: "auto"`, `daemon.headless: false`, `daemon.camera.source: "webcam"`): the configuration that shows the most — the robot moving in the MuJoCo window, and its camera on the person in front of the computer, whom it follows (`face_detection.detector: "yunet"`, detection and tracking on — every tracking field spelled out with values tuned on a Lite with a person in front of it (a 20° roll cap, a 15 mm lean, a 20 mm retreat over 0.2 m, leaving the personal space 0.2 m beyond it) — detecting at `width: 1280`, the full frame of the sim's camera and the finer roll the mirror reads, at about four times the default's cost) — so it is what the README and the [control panel](../examples/control_panel.md) start from — with every sim display on (`daemon.sim_displays`: `camera_overlay`, `robot_gaze`, `face_markers`), so the viewer window also shows what the camera sees, where the robot looks and where the bridge places each face. Set `source` to `"sim"` for the rendered eye camera instead.
 
 ```python
 @dataclass
@@ -250,32 +250,34 @@ The head tracker ([head_tracking.md](../motion/head_tracking.md)): whether it ru
 | `focus` | bool | `false` | Hold the head exactly on the aim, the idle move's own head motion left out (its antennas kept); the posture is part of the aim and stays. |
 | `mirroring.enabled` | bool | `true` | Roll the head with the person's head roll, as a mirror does. |
 | `mirroring.gain` | number ≥ 0 | `1.0` | The mirrored roll per degree of the person's roll, after the deadband: `1` mirrors a detector that reads the true roll; above `1` corrects one that under-reads (YuNet at 640 reads about two thirds of the roll of a face 0.45 m from the Lite, less farther, [user_perception.md](../vision/user_perception.md) "The shipped detector — `yunet.py`"). |
-| `mirroring.max_deg` | number > 0, ≤ 30 | `12.0` | The largest mirrored roll, either way. |
+| `mirroring.max_deg` | number > 0, ≤ 30 | `20.0` | The largest mirrored roll, either way. |
 | `approach.enabled` | bool | `true` | Lean the head toward the person while following them. |
-| `approach.lean_mm` | number ≥ 0, ≤ 30 | `12.0` | How far forward of the look-at pose, along the look direction. |
-| `personal_distance.enabled` | bool | `true` | Pull the head back from a person nearer than `distance_m`. |
-| `personal_distance.distance_m` | number > 0 | `0.40` | The distance from the robot's camera inside which the head retreats (`Face.distance_m`, [user_perception.md](../vision/user_perception.md) "The face report"). |
-| `personal_distance.max_back_mm` | number ≥ 0, ≤ 30 | `25.0` | The largest retreat. |
-| `personal_distance.span_m` | number > 0 | `0.10` | The intrusion over which the retreat grows from nothing to `max_back_mm`. |
+| `approach.lean_mm` | number ≥ 0, ≤ 30 | `15.0` | How far forward of the look-at pose, along the look direction. |
+| `personal_space.enabled` | bool | `true` | Pull the head back from a person nearer than `distance_m`. |
+| `personal_space.distance_m` | number > 0 | `0.40` | The distance from the robot's camera inside which the head retreats (`Face.distance_m`, [user_perception.md](../vision/user_perception.md) "The face report"). |
+| `personal_space.max_back_mm` | number ≥ 0, ≤ 30 | `20.0` | The largest retreat. |
+| `personal_space.span_m` | number > 0 | `0.20` | The intrusion over which the retreat grows from nothing to `max_back_mm`. |
+| `personal_space.exit_margin_m` | number > 0 \| null | `null` | How far beyond `distance_m` a person who entered must go to have left: the hysteresis of the personal space event ([head_tracking.md](../motion/head_tracking.md) "The personal space event"). `null`: `PERSONAL_SPACE_EXIT_SHARE = 0.125` of `distance_m`, since the distance estimate wanders by about ±5 % of itself. |
 
 ```python
 @dataclass(frozen=True)
 class MirroringSettings:
     enabled: bool = True
     gain: float = 1.0
-    max_deg: float = 12.0
+    max_deg: float = 20.0
 
 @dataclass(frozen=True)
 class ApproachSettings:
     enabled: bool = True
-    lean_mm: float = 12.0
+    lean_mm: float = 15.0
 
 @dataclass(frozen=True)
-class PersonalDistanceSettings:
+class PersonalSpaceSettings:
     enabled: bool = True
     distance_m: float = 0.40
-    max_back_mm: float = 25.0
-    span_m: float = 0.10
+    max_back_mm: float = 20.0
+    span_m: float = 0.20
+    exit_margin_m: float | None = None  # None: 12.5 % of distance_m
 
 @dataclass(frozen=True)
 class TrackingSettings:
@@ -283,7 +285,7 @@ class TrackingSettings:
     focus: bool = False
     mirroring: MirroringSettings = field(default_factory=MirroringSettings)
     approach: ApproachSettings = field(default_factory=ApproachSettings)
-    personal_distance: PersonalDistanceSettings = field(default_factory=PersonalDistanceSettings)
+    personal_space: PersonalSpaceSettings = field(default_factory=PersonalSpaceSettings)
 ```
 
 Frozen, unlike the other blocks, because the object is handed across the runtime API: a caller changes a field with `dataclasses.replace` and applies the result, so the settings in force are never mutated behind the tracker's back. The bounds of 30 mm and 30° are the head's own range for these axes — what the emotions library's recordings span ([head_tracking.md](../motion/head_tracking.md) "The posture") — so no setting can ask for more than the robot's own repertoire. Every key is optional; a sub-object given in part keeps the defaults of the rest.
@@ -309,7 +311,7 @@ All enforced by `ReachyMiniConfig.from_dict` (delegating to `DaemonConfig.from_d
 - `tts`, when not `null`, is an object with a `module` object whose `type` is a non-empty string.
 - `audio.xvf3800`, when not `null`, is a list of two-item lists with a string first item.
 - `motion.presence` and `motion.wobbling` are booleans; `motion.idle` ∈ {`breathing`, `hold`, `custom`}.
-- `motion.tracking` is an object (a boolean is a `ConfigError` showing the object form); its `enabled` / `focus` and each sub-object's `enabled` are booleans; its sub-objects are objects; every number is a finite number other than `bool`, within the table's bounds.
+- `motion.tracking` is an object (a boolean is a `ConfigError` showing the object form; a `personal_distance` key, the sub-object's former name, a `ConfigError` naming `personal_space`); its `enabled` / `focus` and each sub-object's `enabled` are booleans; its sub-objects are objects; every number is a finite number other than `bool`, within the table's bounds.
 - `motion.idle_move` in a dict / JSON config is a `ConfigError` whose message points at `MotionSettings(idle_move=...)`: the field is set from code. The factory itself is checked when the session starts, not by the config layer.
 
 ## Relationship to the other specs

@@ -28,7 +28,7 @@ from reachy_mini_bridge import head_tracking
 from reachy_mini_bridge.config import (
     ApproachSettings,
     MirroringSettings,
-    PersonalDistanceSettings,
+    PersonalSpaceSettings,
     SimCameraSettings,
     TrackingSettings,
 )
@@ -51,11 +51,17 @@ if TYPE_CHECKING:
     import numpy.typing as npt
 
 DETECT_HZ = 10.0  # upstream's detector sees the camera feed at 10 fps
+# The posture's defaults, which the posture tests expect (specs/core/config.md "`motion.tracking`").
+DEFAULTS = TrackingSettings()
+LEAN_MM = DEFAULTS.approach.lean_mm
+BACK_MM = DEFAULTS.personal_space.max_back_mm
+SPACE = DEFAULTS.personal_space
+ROLL_CAP_DEG = DEFAULTS.mirroring.max_deg
 # The look-at alone: what the tests of whom the head follows compare aims against.
 NO_POSTURE = TrackingSettings(
     mirroring=MirroringSettings(enabled=False),
     approach=ApproachSettings(enabled=False),
-    personal_distance=PersonalDistanceSettings(enabled=False),
+    personal_space=PersonalSpaceSettings(enabled=False),
 )
 POLL_HZ = 30.0  # the detection loop's poll rate
 
@@ -757,7 +763,7 @@ def test_the_mirrored_roll_is_clamped_and_scaled_by_the_gain(
 ) -> None:
     clamped = _Posture(monkeypatch)
     clamped.see(8.0, roll_deg=-30.0)
-    assert _roll_deg(clamped.aims[-1]) == pytest.approx(-12.0, abs=0.1)
+    assert _roll_deg(clamped.aims[-1]) == pytest.approx(-ROLL_CAP_DEG, abs=0.1)
     settings = TrackingSettings(enabled=True, mirroring=MirroringSettings(gain=2.0))
     doubled = _Posture(monkeypatch, settings)
     doubled.see(8.0, roll_deg=6.0)
@@ -807,8 +813,8 @@ def test_the_head_leans_toward_a_person_along_the_look_direction(
     posture = _Posture(monkeypatch)
     posture.see(10.0, x=0.6, distance_m=1.0)
     aim = posture.aims[-1]
-    assert _forward_mm(aim) == pytest.approx(12.0, abs=0.1)
-    assert posture.state.offset_mm == pytest.approx(12.0, abs=0.1)
+    assert _forward_mm(aim) == pytest.approx(LEAN_MM, abs=0.1)
+    assert posture.state.offset_mm == pytest.approx(LEAN_MM, abs=0.1)
     # toward the person at the image's right (world -y), not the front of the robot
     assert aim[1, 3] < -0.003
     assert aim[2, 3] == pytest.approx(0.0)  # horizontal
@@ -816,22 +822,26 @@ def test_the_head_leans_toward_a_person_along_the_look_direction(
     tau = head_tracking.OFFSET_SMOOTHING_S
     first = [_forward_mm(a) for a in posture.aims[: 1 + round(10 * tau)]]
     assert first[0] == 0.0
-    assert first[-1] == pytest.approx(12.0 * (1 - math.exp(-1)), abs=0.5)
+    assert first[-1] == pytest.approx(LEAN_MM * (1 - math.exp(-1)), abs=0.5)
 
 
 @pytest.mark.parametrize(
-    ("distance_m", "expected_mm"),
+    ("distance_m", "retreat_share"),
     [
-        (0.50, 12.0),  # outside the personal distance: the lean alone
-        (0.40, 12.0),  # at it: no retreat, no threshold to pump across
-        (0.35, 12.0 - 25.0 * 0.5),  # half the span inside: half the retreat
-        (0.20, 12.0 - 25.0),  # past the span: the full retreat, capped
-        (None, 12.0),  # no distance: the lean alone
+        (SPACE.distance_m + 0.1, 0.0),  # outside the personal space: the lean alone
+        (SPACE.distance_m, 0.0),  # at it: no retreat, no threshold to pump across
+        (
+            SPACE.distance_m - SPACE.span_m / 2,
+            0.5,
+        ),  # half the span in: half the retreat
+        (SPACE.distance_m - SPACE.span_m - 0.05, 1.0),  # past the span: capped
+        (None, 0.0),  # no distance: the lean alone
     ],
 )
 def test_a_person_too_close_pushes_the_head_back(
-    monkeypatch: pytest.MonkeyPatch, distance_m: float | None, expected_mm: float
+    monkeypatch: pytest.MonkeyPatch, distance_m: float | None, retreat_share: float
 ) -> None:
+    expected_mm = LEAN_MM - BACK_MM * retreat_share
     posture = _Posture(monkeypatch)
     posture.see(14.0, distance_m=distance_m)
     assert _forward_mm(posture.aims[-1]) == pytest.approx(expected_mm, abs=0.1)
@@ -893,7 +903,7 @@ def test_focus_goes_with_an_aim_that_keeps_its_posture(
     posture.see(8.0, roll_deg=10.0, distance_m=1.0)
     assert all(posture.focus)
     assert _roll_deg(posture.aims[-1]) == pytest.approx(7.0, abs=0.1)
-    assert _forward_mm(posture.aims[-1]) == pytest.approx(12.0, abs=0.1)
+    assert _forward_mm(posture.aims[-1]) == pytest.approx(LEAN_MM, abs=0.1)
     # the posture's easing is published silently: only the engagement woke a subscriber
     assert [r.attention for r in posture.report.sets] == ["watching", "engaged"]
 
@@ -923,3 +933,87 @@ def test_face_camera_point_is_the_pinhole_depth_of_the_box() -> None:
     assert (
         head_tracking.face_camera_point(replace(face, size=0.0), camera, 0.18) is None
     )
+
+
+# --- the personal space event (specs/motion/head_tracking.md "The personal space event") --
+
+
+def test_entering_and_leaving_the_personal_space_are_published_once_each(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Entered nearer than `distance_m` (0.40), left only beyond it by the margin: a person
+    hovering at the boundary changes nothing, and each crossing wakes a subscriber once."""
+    posture = _Posture(monkeypatch)
+    posture.see(1.0, distance_m=0.45)
+    assert not posture.state.in_personal_space
+    sets_before = len(posture.report.sets)
+    posture.see(1.0, distance_m=0.38)  # in
+    assert posture.state.in_personal_space
+    posture.see(1.0, distance_m=0.42)  # past the boundary, within the margin: still in
+    posture.see(0.5, distance_m=0.39)
+    posture.see(1.0, distance_m=0.44)
+    assert posture.state.in_personal_space
+    posture.see(1.0, distance_m=0.46)  # beyond the margin: out
+    assert not posture.state.in_personal_space
+    flips = [r.in_personal_space for r in posture.report.sets[sets_before:]]
+    assert flips == [True, False]
+
+
+def test_the_personal_space_is_reported_with_the_retreat_switched_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = TrackingSettings(
+        enabled=True,
+        personal_space=PersonalSpaceSettings(enabled=False, distance_m=0.6),
+    )
+    posture = _Posture(monkeypatch, settings)
+    posture.see(5.0, distance_m=0.5)
+    assert posture.state.in_personal_space  # the zone is the settings' distance_m
+    assert posture.state.offset_mm == pytest.approx(LEAN_MM, abs=0.5)  # no retreat
+
+
+def test_the_personal_space_resets_with_the_person(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Out once the head hands back after the loss; and a new person is judged on their
+    own distance, not the margin earned by the one before."""
+    posture = _Posture(monkeypatch)
+    posture.see(1.0, distance_m=0.3)
+    assert posture.state.in_personal_space
+    posture.nobody(head_tracking.TRACKING_LOST_S + 0.2)
+    assert not posture.state.in_personal_space
+    assert posture.report.sets[-1].attention == "watching"
+    posture.see(1.0, distance_m=0.42)  # someone new, inside the old margin
+    assert not posture.state.in_personal_space
+    # a face without a distance is not reported inside
+    posture.see(1.0, distance_m=None)
+    assert not posture.state.in_personal_space
+
+
+@pytest.mark.parametrize(
+    ("space", "inside", "still_in", "out"),
+    [
+        # the default: an eighth of the distance, so 10 cm at 0.80 m
+        (PersonalSpaceSettings(distance_m=0.8), 0.79, 0.89, 0.91),
+        # a configured margin, in metres
+        (PersonalSpaceSettings(distance_m=0.4, exit_margin_m=0.02), 0.39, 0.415, 0.425),
+    ],
+)
+def test_the_exit_margin_is_a_share_of_the_distance_unless_configured(
+    monkeypatch: pytest.MonkeyPatch,
+    space: PersonalSpaceSettings,
+    inside: float,
+    still_in: float,
+    out: float,
+) -> None:
+    posture = _Posture(
+        monkeypatch, TrackingSettings(enabled=True, personal_space=space)
+    )
+    posture.see(0.5, distance_m=space.distance_m + 0.05)
+    assert not posture.state.in_personal_space
+    posture.see(0.5, distance_m=inside)
+    assert posture.state.in_personal_space
+    posture.see(0.5, distance_m=still_in)
+    assert posture.state.in_personal_space
+    posture.see(0.5, distance_m=out)
+    assert not posture.state.in_personal_space

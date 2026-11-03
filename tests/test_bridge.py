@@ -206,7 +206,7 @@ def test_package_front_door_drives_the_fake() -> None:
         "SpeechSynthesizer",
         "TTSEngineSynthesizer",
         "MirroringSettings",
-        "PersonalDistanceSettings",
+        "PersonalSpaceSettings",
         "TrackingSettings",
     }
     assert all(hasattr(rmb, name) for name in rmb.__all__)
@@ -3819,8 +3819,10 @@ def test_a_person_too_close_pushes_the_head_back_and_a_far_one_draws_it_in() -> 
 
     near_x, near_offset = asyncio.run(run(40.0))  # 40 px of 48: about 0.19 m away
     far_x, far_offset = asyncio.run(run(12.0))  # about 0.6 m away
-    assert near_offset == pytest.approx(12.0 - 25.0, abs=1.0)  # the full retreat
-    assert far_offset == pytest.approx(12.0, abs=1.0)  # the lean alone
+    defaults = TrackingSettings()
+    lean, back = defaults.approach.lean_mm, defaults.personal_space.max_back_mm
+    assert near_offset == pytest.approx(lean - back, abs=1.0)  # the full retreat
+    assert far_offset == pytest.approx(lean, abs=1.0)  # the lean alone
     assert near_x == pytest.approx(near_offset, abs=1.5)  # straight ahead: along x
     assert far_x == pytest.approx(far_offset, abs=1.5)
 

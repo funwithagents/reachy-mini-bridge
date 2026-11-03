@@ -37,7 +37,7 @@ __all__ = [
     "FaceDetectionSettings",
     "MirroringSettings",
     "MotionSettings",
-    "PersonalDistanceSettings",
+    "PersonalSpaceSettings",
     "ReachyMiniConfig",
     "SimCameraSettings",
     "SimDisplaySettings",
@@ -66,6 +66,10 @@ DAEMON_INFO_ROUTE = "/api/bridge/daemon"
 DEFAULT_WEBCAM_HFOV_DEG = 70.0
 # The shipped detector's default working width (specs/core/config.md `face_detection.width`).
 DEFAULT_DETECT_WIDTH = 640
+# The personal space's exit margin when the config names none (specs/core/config.md
+# "`motion.tracking`"): this share of distance_m, the distance estimate wandering by about
+# ±5 % of itself from frame to frame — 5 cm at the default 0.40 m.
+PERSONAL_SPACE_EXIT_SHARE = 0.125
 # The head's own range on the posture's axes (specs/core/config.md "`motion.tracking`"): what
 # the emotions library's recordings span, so no setting asks for more than the repertoire.
 POSTURE_MAX_MM = 30.0
@@ -489,7 +493,7 @@ class MirroringSettings:
     # mirrored roll per degree of the person's roll, after the deadband
     gain: float = 1.0
     # the largest mirrored roll, either way, in degrees
-    max_deg: float = 12.0
+    max_deg: float = 20.0
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> MirroringSettings:
@@ -503,7 +507,7 @@ class MirroringSettings:
                 block,
                 name,
                 "max_deg",
-                12.0,
+                20.0,
                 low=0.0,
                 high=POSTURE_MAX_DEG,
                 low_inclusive=False,
@@ -518,7 +522,7 @@ class ApproachSettings:
 
     enabled: bool = True
     # how far forward of the look-at pose, along the look direction, in millimetres
-    lean_mm: float = 12.0
+    lean_mm: float = 15.0
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ApproachSettings:
@@ -528,13 +532,13 @@ class ApproachSettings:
         return cls(
             enabled=_bool_field(block, name, "enabled", True),
             lean_mm=_number_field(
-                block, name, "lean_mm", 12.0, low=0.0, high=POSTURE_MAX_MM
+                block, name, "lean_mm", 15.0, low=0.0, high=POSTURE_MAX_MM
             ),
         )
 
 
 @dataclass(frozen=True)
-class PersonalDistanceSettings:
+class PersonalSpaceSettings:
     """The head pulls back from a person nearer than ``distance_m``
     (specs/motion/head_tracking.md "The posture")."""
 
@@ -542,27 +546,38 @@ class PersonalDistanceSettings:
     # the distance from the robot's camera inside which the head retreats, in metres
     distance_m: float = 0.40
     # the largest retreat, in millimetres
-    max_back_mm: float = 25.0
+    max_back_mm: float = 20.0
     # the intrusion over which the retreat grows from nothing to max_back_mm, in metres
-    span_m: float = 0.10
+    span_m: float = 0.20
+    # how far beyond distance_m a person who entered must go to have left, in metres;
+    # None: PERSONAL_SPACE_EXIT_SHARE of distance_m, as the distance's noise grows with it
+    exit_margin_m: float | None = None
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> PersonalDistanceSettings:
-        name = "motion.tracking.personal_distance"
+    def from_dict(cls, data: dict[str, Any]) -> PersonalSpaceSettings:
+        name = "motion.tracking.personal_space"
         block = _require_object(data, name)
         _reject_unknown_keys(
-            block, name, {"enabled", "distance_m", "max_back_mm", "span_m"}
+            block,
+            name,
+            {"enabled", "distance_m", "max_back_mm", "span_m", "exit_margin_m"},
         )
+        exit_margin = block.get("exit_margin_m")
         return cls(
             enabled=_bool_field(block, name, "enabled", True),
             distance_m=_number_field(
                 block, name, "distance_m", 0.40, low=0.0, low_inclusive=False
             ),
             max_back_mm=_number_field(
-                block, name, "max_back_mm", 25.0, low=0.0, high=POSTURE_MAX_MM
+                block, name, "max_back_mm", 20.0, low=0.0, high=POSTURE_MAX_MM
             ),
             span_m=_number_field(
-                block, name, "span_m", 0.10, low=0.0, low_inclusive=False
+                block, name, "span_m", 0.20, low=0.0, low_inclusive=False
+            ),
+            exit_margin_m=None
+            if exit_margin is None
+            else _number_field(
+                block, name, "exit_margin_m", 0.0, low=0.0, low_inclusive=False
             ),
         )
 
@@ -579,9 +594,7 @@ class TrackingSettings:
     focus: bool = False
     mirroring: MirroringSettings = field(default_factory=MirroringSettings)
     approach: ApproachSettings = field(default_factory=ApproachSettings)
-    personal_distance: PersonalDistanceSettings = field(
-        default_factory=PersonalDistanceSettings
-    )
+    personal_space: PersonalSpaceSettings = field(default_factory=PersonalSpaceSettings)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> TrackingSettings:
@@ -592,18 +605,23 @@ class TrackingSettings:
                 f'{{"enabled": {"true" if data else "false"}}}'
             )
         block = _require_object(data, name)
+        if "personal_distance" in block:
+            raise ConfigError(
+                f"'{name}.personal_distance' is now '{name}.personal_space', the same "
+                "fields under the new name"
+            )
         _reject_unknown_keys(
             block,
             name,
-            {"enabled", "focus", "mirroring", "approach", "personal_distance"},
+            {"enabled", "focus", "mirroring", "approach", "personal_space"},
         )
         return cls(
             enabled=_bool_field(block, name, "enabled", False),
             focus=_bool_field(block, name, "focus", False),
             mirroring=MirroringSettings.from_dict(block.get("mirroring", {})),
             approach=ApproachSettings.from_dict(block.get("approach", {})),
-            personal_distance=PersonalDistanceSettings.from_dict(
-                block.get("personal_distance", {})
+            personal_space=PersonalSpaceSettings.from_dict(
+                block.get("personal_space", {})
             ),
         )
 

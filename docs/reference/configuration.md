@@ -31,7 +31,7 @@ Every field of the bridge's declarative config: its default, what it does, and t
   "face_detection": {
     "detector": "yunet",
     "enabled": true,
-    "width": 640,
+    "width": 1280,
     "target_fps": null
   },
 
@@ -42,9 +42,9 @@ Every field of the bridge's declarative config: its default, what it does, and t
     "tracking": {
       "enabled": true,
       "focus": false,
-      "mirroring": { "enabled": true, "gain": 1.0, "max_deg": 12.0 },
-      "approach": { "enabled": true, "lean_mm": 12.0 },
-      "personal_distance": { "enabled": true, "distance_m": 0.4, "max_back_mm": 25.0, "span_m": 0.1 }
+      "mirroring": { "enabled": true, "gain": 1.0, "max_deg": 20.0 },
+      "approach": { "enabled": true, "lean_mm": 15.0 },
+      "personal_space": { "enabled": true, "distance_m": 0.4, "max_back_mm": 20.0, "span_m": 0.2, "exit_margin_m": 0.2 }
     }
   }
 }
@@ -197,7 +197,7 @@ Omit the block and `say` raises unless you pass your own `SpeechSynthesizer`. A 
 | `focus` | `false` | Holds the head exactly on the face, the idle move's own head motion left out (its antennas kept). The posture stays |
 | `mirroring` | on | The head rolls with the person's head roll, as a mirror does; below |
 | `approach` | on | The head leans toward the person it follows; below |
-| `personal_distance` | on | The head pulls back from someone too close; below |
+| `personal_space` | on | The head pulls back from someone too close; below |
 
 **`motion.tracking.mirroring`** — the person's head roll, mirrored: both heads lean toward the same side of the room. A tilt under 3° reads as upright (the landmarks' jitter), and the roll eases in within about a second. It is as good as the detector's roll: YuNet at the default width reads about two thirds of the roll of a face 0.45 m from the Lite, more nearer, little beyond 0.6 m.
 
@@ -205,23 +205,24 @@ Omit the block and `say` raises unless you pass your own `SpeechSynthesizer`. A 
 |---|---|---|
 | `enabled` | `true` | Mirror the person's roll |
 | `gain` | `1.0` | Degrees of mirrored roll per degree of the person's, past the deadband. Above `1` corrects a detector that under-reads |
-| `max_deg` | `12.0` | The largest mirrored roll either way, at most 30 |
+| `max_deg` | `20.0` | The largest mirrored roll either way, at most 30 |
 
 **`motion.tracking.approach`** — the head sits a little forward while it follows someone, along the direction it looks, easing in over about half a second.
 
 | Field | Default | What it does |
 |---|---|---|
 | `enabled` | `true` | Lean toward the person |
-| `lean_mm` | `12.0` | How far forward, at most 30 mm |
+| `lean_mm` | `15.0` | How far forward, at most 30 mm |
 
-**`motion.tracking.personal_distance`** — a person nearer than `distance_m` pushes the head back, the retreat growing over `span_m` up to `max_back_mm`: a recoil that reads as "you are close" (the head's travel is a few centimetres, it cannot keep a distance). The distance is the face's `distance_m`, from its size in the image.
+**`motion.tracking.personal_space`** — a person nearer than `distance_m` pushes the head back, the retreat growing over `span_m` up to `max_back_mm`: a recoil that reads as "you are close" (the head's travel is a few centimetres, it cannot keep a distance). The distance is the face's `distance_m`, from its size in the image.
 
 | Field | Default | What it does |
 |---|---|---|
 | `enabled` | `true` | Pull back from someone too close |
 | `distance_m` | `0.40` | The distance from the robot's camera inside which the head retreats |
-| `max_back_mm` | `25.0` | The largest retreat, at most 30 mm |
-| `span_m` | `0.10` | The intrusion over which the retreat grows from nothing to `max_back_mm` |
+| `max_back_mm` | `20.0` | The largest retreat, at most 30 mm |
+| `span_m` | `0.20` | The intrusion over which the retreat grows from nothing to `max_back_mm` |
+| `exit_margin_m` | `null` | How far beyond `distance_m` a person who entered must go before they count as having left — the personal space event's hysteresis, so someone standing at the boundary never flickers it. `null`: 12.5 % of `distance_m` (5 cm at 0.40 m), since the distance estimate's noise grows with the distance; set it wider for a detector with a jumpier box |
 
 ## Validation
 
