@@ -7,18 +7,18 @@ Implements the settled behavior in `specs/daemon/real_daemon.md` ("The camera ex
 ## Scope
 
 - `specs/daemon/real_daemon.md` — the purpose and the new "The camera exposure" section, "What it is not", the testable list, the relationships, open questions 3 and 4; `specs/_index.md` row
-- `src/reachy_mini_bridge/uvc.py` — new: `LITE_CAMERA_USB_ID`, `CameraTerminal` / `camera_terminal` (the descriptor parse), `enable_ae_priority` (the decision over a `UvcControl`), the libusb glue (`LibusbControl`, `lite_camera`)
-- `src/reachy_mini_bridge/real_daemon.py` — the exposure step (`_lite_ae_priority`) run by `_checked_start` after the selection
-- `tests/test_uvc.py` — the parse, the USB-id parity, the decision with a scripted control; `tests/test_real_daemon.py` — the wiring in `_checked_start`
+- `src/reachy_mini_bridge/uvc.py` — new: `CameraTerminal` / `camera_terminal` (the descriptor parse), `pick_camera` (upstream's choice by name), `enable_ae_priority` (the decision over a `UvcControl`), the libusb glue (`LibusbControl`, `robot_camera`)
+- `src/reachy_mini_bridge/real_daemon.py` — the exposure step (`_camera_ae_priority`) run by `_checked_start` after the selection
+- `tests/test_uvc.py` — the parse, the choice by name, the decision with a scripted control; `tests/test_real_daemon.py` — the wiring in `_checked_start`
 - `docs/internals/upstream-sdk-notes.md` — the measured facts of the Lite camera's 1080p60 mode and of the priority control
 - `docs/guides/troubleshooting.md` — a "dark image" entry; `docs/guides/running-daemons.md` and `AGENTS.md` — the launcher's one-line descriptions naming both corrections
 
 ## Steps
 
-1. **The parse.** `camera_terminal(descriptors: bytes) -> CameraTerminal | None` walks the class-specific descriptors (`bLength`, `bDescriptorType`) of a VideoControl interface and returns the camera input terminal's id and whether its `bmControls` has the auto-exposure priority bit (bit 2); `None` for no camera terminal or a zero-length block. `LITE_CAMERA_USB_ID = (0x38FB, 0x1002)`.
+1. **The parse.** `camera_terminal(descriptors: bytes) -> CameraTerminal | None` walks the class-specific descriptors (`bLength`, `bDescriptorType`) of a VideoControl interface and returns the camera input terminal's id and whether its `bmControls` has the auto-exposure priority bit (bit 2); `None` for no camera terminal or a zero-length block. `pick_camera(cameras, names)` is upstream's choice: the first name in priority order that any camera's product name contains.
 2. **The decision.** `enable_ae_priority(control, terminal) -> Literal["enabled", "already", "unsupported", "refused"]` over the `UvcControl` protocol (`get(selector, request, length) -> bytes`, `set(selector, data)`): the four outcomes and their log lines as the spec lists them; `OSError` (pyusb's `USBError` is one) is the refusal.
-3. **The glue** (`uvc.py` with steps 1–2). `lite_camera()` finds the device by its ids through `usb.core.find` on `libusb_package.get_libusb1_backend()`, picks the VideoControl interface (class `0x0E`, subclass `0x01`), parses its `extra_descriptors`, and returns a `LibusbControl` bound to the device, the interface number and the terminal id. The control sends the class requests through pyusb's backend directly (`ctrl_transfer` on the opened handle), never through `Device.ctrl_transfer`, which claims the interface macOS's driver holds; `close()` disposes the device's resources.
-4. **The wiring.** `_checked_start` runs `_lite_ae_priority()` after `select_camera` on a macOS start whose camera path is an index: the finder's exceptions and a `None` are a warning or a `DEBUG` line, the control closed after the decision.
+3. **The glue** (`uvc.py` with steps 1–2). `robot_camera(names)` walks the bus through `usb.core.find(find_all=True)` on `libusb_package.get_libusb1_backend()`, keeps the devices with a VideoControl interface (class `0x0E`, subclass `0x01`) whose product name it can read, picks one with `pick_camera`, parses its `extra_descriptors`, and returns a `LibusbControl` bound to the device, the interface number and the terminal id. The control sends the class requests through pyusb's backend directly (`ctrl_transfer` on the opened handle), never through `Device.ctrl_transfer`, which claims the interface macOS's driver holds; `close()` disposes the device's resources.
+4. **The wiring.** `_checked_start` runs `_camera_ae_priority()` — `robot_camera(ROBOT_CAMERA_NAMES)`, the decision, the close — after `select_camera` on a macOS start whose camera path is an index: the finder's exceptions and a `None` are a warning or a `DEBUG` line, the control closed after the decision.
 5. **Tests** as the spec's "Testable without a daemon" lists; the existing `_macos` helper gives `_checked_start` a finder returning `None`, so no test reaches the real USB bus.
 6. **Docs**: the upstream note, the troubleshooting entry, the two one-liners.
 

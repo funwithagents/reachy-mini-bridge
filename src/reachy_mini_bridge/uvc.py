@@ -1,7 +1,8 @@
-"""The Lite camera's UVC controls over USB (specs/daemon/real_daemon.md "The camera exposure").
+"""The robot camera's UVC controls over USB (specs/daemon/real_daemon.md "The camera exposure").
 
-The camera found by its USB ids, its camera input terminal parsed from the VideoControl
-descriptors (``camera_terminal``), and one control acted on: the auto-exposure priority
+The camera found by its product name, the way upstream's detection finds it
+(``robot_camera``), its camera input terminal parsed from the VideoControl descriptors
+(``camera_terminal``), and one control acted on: the auto-exposure priority
 (``enable_ae_priority``), which lets the camera lower its frame rate to expose longer —
 upstream's documented cure for the dark image its 1920x1080@60 mode gives. The requests
 go through pyusb on the libusb that ``libusb_package`` bundles, both upstream
@@ -13,25 +14,23 @@ work beside a pipeline that has the camera open. The real daemon launcher
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, TypeVar
 
 __all__ = [
-    "LITE_CAMERA_USB_ID",
     "AePriorityOutcome",
     "CameraTerminal",
     "LibusbControl",
     "UvcControl",
     "camera_terminal",
     "enable_ae_priority",
-    "lite_camera",
+    "pick_camera",
+    "robot_camera",
 ]
 
 _logger = logging.getLogger(__name__)
 
-# The Lite camera on USB: upstream's `ReachyMiniLiteCamSpecs.vid` / `.pid` (a test pins
-# the parity).
-LITE_CAMERA_USB_ID = (0x38FB, 0x1002)
 # UVC 1.5 (the USB Video Class specification): the class-specific requests, the camera
 # terminal's auto-exposure priority control, and the descriptor bytes naming the terminal
 # — a VideoControl interface (video class, VideoControl subclass) carries one camera
@@ -197,28 +196,64 @@ class LibusbControl:
         usb.util.dispose_resources(self._device)
 
 
-def lite_camera() -> tuple[LibusbControl, CameraTerminal] | None:
-    """The Lite camera on USB with its camera terminal — ``None`` without one attached,
-    or when its VideoControl interface names no camera terminal."""
-    import usb.core
-    from libusb_package import get_libusb1_backend
+_T = TypeVar("_T")
 
-    vid, pid = LITE_CAMERA_USB_ID
-    device: Any = usb.core.find(
-        idVendor=vid, idProduct=pid, backend=get_libusb1_backend()
-    )
-    if device is None:
-        return None
+
+def pick_camera(cameras: Sequence[tuple[str, _T]], names: Sequence[str]) -> _T | None:
+    """The camera upstream's detection would pick among ``cameras`` (product name,
+    camera): the first whose name contains a wanted name, ``names`` tried in priority
+    order — the first name that any camera matches wins, as upstream's
+    ``find_video_device`` does. ``None`` when no name matches."""
+    for wanted in names:
+        for name, camera in cameras:
+            if wanted in name:
+                return camera
+    return None
+
+
+def _video_control(device: Any) -> tuple[int, bytes] | None:
+    """The VideoControl interface of ``device`` — its number and class-specific
+    descriptors — or ``None`` for a device that is not a UVC camera."""
     for interface in device.get_active_configuration():
         if (
             interface.bInterfaceClass == _UVC_VIDEO_CLASS
             and interface.bInterfaceSubClass == _UVC_VIDEOCONTROL_SUBCLASS
         ):
-            terminal = camera_terminal(bytes(interface.extra_descriptors))
-            if terminal is None:
-                return None
-            control = LibusbControl(
-                device, interface.bInterfaceNumber, terminal.terminal_id
-            )
-            return control, terminal
+            return int(interface.bInterfaceNumber), bytes(interface.extra_descriptors)
     return None
+
+
+def robot_camera(names: Sequence[str]) -> tuple[LibusbControl, CameraTerminal] | None:
+    """The robot's camera on USB with its camera terminal, found the way upstream's
+    detection finds it: among the UVC devices on the bus — those with a VideoControl
+    interface — the first whose product name contains one of ``names``, tried in
+    priority order (``pick_camera``). ``None`` without one, or when the camera's
+    VideoControl interface names no camera terminal. A device whose descriptors or
+    name cannot be read — one the system will not open — is skipped."""
+    import usb.core
+    import usb.util
+    from libusb_package import get_libusb1_backend
+
+    devices: Any = usb.core.find(find_all=True, backend=get_libusb1_backend())
+    cameras: list[tuple[str, tuple[Any, int, bytes]]] = []
+    for device in devices or ():
+        try:
+            video_control = _video_control(device)
+            if video_control is None:
+                continue
+            name = str(device.product or "")
+        except Exception:  # noqa: BLE001 - a device this process cannot read
+            continue
+        cameras.append((name, (device, *video_control)))
+    picked = pick_camera(cameras, names)
+    for _name, (device, _interface, _descriptors) in cameras:
+        if picked is None or device is not picked[0]:
+            usb.util.dispose_resources(device)
+    if picked is None:
+        return None
+    device, interface, descriptors = picked
+    terminal = camera_terminal(descriptors)
+    if terminal is None:
+        usb.util.dispose_resources(device)
+        return None
+    return LibusbControl(device, interface, terminal.terminal_id), terminal

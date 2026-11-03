@@ -131,8 +131,8 @@ def _macos(
     camera: Any = None,
 ) -> None:
     """A macOS start: the device names each build opens, the device count — and the
-    Lite camera the exposure step finds on USB (``None``: no Lite camera, so no test
-    reaches the real bus; a callable: the finder itself)."""
+    robot camera the exposure step finds on USB (``None``: no camera, so no test
+    reaches the real bus; a callable: the finder itself, given the names)."""
     opened = iter(names)
     monkeypatch.setattr(real_daemon.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(real_daemon, "_video_device_count", lambda: count)
@@ -140,8 +140,8 @@ def _macos(
     monkeypatch.setattr(
         real_daemon, "_opened_device_name", lambda pipeline: next(opened)
     )
-    finder = camera if callable(camera) else (lambda: camera)
-    monkeypatch.setattr(real_daemon, "lite_camera", finder)
+    finder = camera if callable(camera) else (lambda names: camera)
+    monkeypatch.setattr(real_daemon, "robot_camera", finder)
 
 
 def test_checked_start_enables_the_exposure_priority_after_the_selection(
@@ -150,8 +150,11 @@ def test_checked_start_enables_the_exposure_priority_after_the_selection(
     control = _Control([b"\x00", b"\x01"])
     starts: list[str] = []
 
-    def finder() -> tuple[_Control, uvc.CameraTerminal]:
+    def finder(names: Any) -> tuple[_Control, uvc.CameraTerminal]:
         assert starts == ["1", "0"]  # the camera is settled before the exposure step
+        assert (
+            tuple(names) == real_daemon.ROBOT_CAMERA_NAMES
+        )  # found as upstream finds it
         return control, _SUPPORTED
 
     _macos(monkeypatch, ["Caméra du MacBook Pro", "Reachy Mini Camera"], 2, finder)
@@ -167,7 +170,7 @@ def test_checked_start_enables_the_exposure_priority_after_the_selection(
 def test_checked_start_runs_on_when_the_camera_cannot_be_reached_over_usb(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    def finder() -> None:
+    def finder(names: Any) -> None:
         raise RuntimeError("No backend available")
 
     _macos(monkeypatch, ["Reachy Mini Camera"], 1, finder)
@@ -180,7 +183,7 @@ def test_checked_start_runs_on_when_the_camera_cannot_be_reached_over_usb(
     assert "No backend available" in caplog.records[0].getMessage()
 
 
-def test_checked_start_says_nothing_without_alite_camera_on_usb(
+def test_checked_start_says_nothing_without_a_robot_camera_on_usb(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     _macos(monkeypatch, ["Reachy Mini Camera"], 1, camera=None)
@@ -224,7 +227,7 @@ def test_checked_start_leaves_other_platforms_and_sources_alone(
     monkeypatch.setattr(
         real_daemon, "_opened_device_name", lambda pipeline: pytest.fail("probed")
     )
-    monkeypatch.setattr(real_daemon, "lite_camera", lambda: pytest.fail("USB"))
+    monkeypatch.setattr(real_daemon, "robot_camera", lambda names: pytest.fail("USB"))
     server = SimpleNamespace(_cam_path=cam_path, _pipeline_sender=_FakePipeline())
     starts: list[str] = []
     real_daemon._checked_start(server, lambda s: starts.append(s._cam_path))

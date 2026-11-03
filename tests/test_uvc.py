@@ -72,10 +72,21 @@ def test_camera_terminal_is_none_without_a_camera_terminal(descriptors: bytes) -
     assert uvc.camera_terminal(descriptors) is None
 
 
-def test_lite_camera_usb_id_is_upstreams() -> None:
-    constants = pytest.importorskip("reachy_mini.media.camera_constants")
-    specs = constants.ReachyMiniLiteCamSpecs
-    assert (specs.vid, specs.pid) == uvc.LITE_CAMERA_USB_ID
+@pytest.mark.parametrize(
+    ("cameras", "picked"),
+    [
+        ([("Caméra du MacBook Pro", 0), ("Reachy Mini Camera", 1)], 1),
+        ([("Arducam_12MP Camera", 0), ("Reachy Mini Camera", 1)], 1),
+        ([("Arducam_12MP Camera", 0), ("Caméra du MacBook Pro", 1)], 0),
+        ([("Caméra du MacBook Pro", 0), ("", 1)], None),
+        ([], None),
+    ],
+    ids=["the robot's", "Reachy before Arducam", "Arducam", "none named", "no camera"],
+)
+def test_pick_camera_matches_names_in_upstreams_priority_order(
+    cameras: list[tuple[str, int]], picked: int | None
+) -> None:
+    assert uvc.pick_camera(cameras, ("Reachy", "Arducam_12MP", "imx708")) == picked
 
 
 # --- the camera exposure: the decision --------------------------------------------------

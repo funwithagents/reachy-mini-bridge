@@ -33,7 +33,7 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from .config import DAEMON_INFO_ROUTE
-from .uvc import enable_ae_priority, lite_camera
+from .uvc import enable_ae_priority, robot_camera
 
 __all__ = [
     "install_macos_camera_check",
@@ -116,12 +116,13 @@ def select_camera(
 # --- the camera exposure (specs/daemon/real_daemon.md "The camera exposure") -----------
 
 
-def _lite_ae_priority() -> None:
-    """The exposure step of a macOS start: find the Lite camera and enable its
-    auto-exposure priority; whatever goes wrong is one line and the daemon runs on."""
+def _camera_ae_priority() -> None:
+    """The exposure step of a macOS start: find the robot's camera on USB by the names
+    upstream's detection matches and enable its auto-exposure priority; whatever goes
+    wrong is one line and the daemon runs on."""
     try:
-        found = lite_camera()
-    except Exception as e:  # noqa: BLE001 - no USB backend, a device that cannot open
+        found = robot_camera(ROBOT_CAMERA_NAMES)
+    except Exception as e:  # noqa: BLE001 - no USB backend, a bus that cannot be read
         _logger.warning(
             "robot camera: cannot reach the camera over USB to enable its auto-exposure "
             "priority (%s); the image stays as upstream leaves it",
@@ -129,7 +130,10 @@ def _lite_ae_priority() -> None:
         )
         return
     if found is None:
-        _logger.debug("robot camera: no Lite camera on USB; auto-exposure left alone")
+        _logger.debug(
+            "robot camera: no camera named %s on USB; auto-exposure left alone",
+            " / ".join(ROBOT_CAMERA_NAMES),
+        )
         return
     control, terminal = found
     try:
@@ -216,7 +220,7 @@ def _checked_start(server: Any, original_start: Callable[[Any], None]) -> None:
     select_camera(
         opened, restart, first=first, count=max(_video_device_count(), first + 1)
     )
-    _lite_ae_priority()
+    _camera_ae_priority()
 
 
 def install_macos_camera_check() -> None:
