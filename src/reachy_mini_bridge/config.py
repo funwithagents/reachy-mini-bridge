@@ -493,7 +493,7 @@ class MirroringSettings:
     # mirrored roll per degree of the person's roll, after the deadband
     gain: float = 1.0
     # the largest mirrored roll, either way, in degrees
-    max_deg: float = 12.0
+    max_deg: float = 20.0
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> MirroringSettings:
@@ -507,7 +507,7 @@ class MirroringSettings:
                 block,
                 name,
                 "max_deg",
-                12.0,
+                20.0,
                 low=0.0,
                 high=POSTURE_MAX_DEG,
                 low_inclusive=False,
@@ -522,7 +522,7 @@ class ApproachSettings:
 
     enabled: bool = True
     # how far forward of the look-at pose, along the look direction, in millimetres
-    lean_mm: float = 12.0
+    lean_mm: float = 15.0
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ApproachSettings:
@@ -532,7 +532,7 @@ class ApproachSettings:
         return cls(
             enabled=_bool_field(block, name, "enabled", True),
             lean_mm=_number_field(
-                block, name, "lean_mm", 12.0, low=0.0, high=POSTURE_MAX_MM
+                block, name, "lean_mm", 15.0, low=0.0, high=POSTURE_MAX_MM
             ),
         )
 
@@ -546,9 +546,9 @@ class PersonalSpaceSettings:
     # the distance from the robot's camera inside which the head retreats, in metres
     distance_m: float = 0.40
     # the largest retreat, in millimetres
-    max_back_mm: float = 25.0
+    max_back_mm: float = 20.0
     # the intrusion over which the retreat grows from nothing to max_back_mm, in metres
-    span_m: float = 0.10
+    span_m: float = 0.20
     # how far beyond distance_m a person who entered must go to have left, in metres;
     # None: PERSONAL_SPACE_EXIT_SHARE of distance_m, as the distance's noise grows with it
     exit_margin_m: float | None = None
@@ -569,10 +569,10 @@ class PersonalSpaceSettings:
                 block, name, "distance_m", 0.40, low=0.0, low_inclusive=False
             ),
             max_back_mm=_number_field(
-                block, name, "max_back_mm", 25.0, low=0.0, high=POSTURE_MAX_MM
+                block, name, "max_back_mm", 20.0, low=0.0, high=POSTURE_MAX_MM
             ),
             span_m=_number_field(
-                block, name, "span_m", 0.10, low=0.0, low_inclusive=False
+                block, name, "span_m", 0.20, low=0.0, low_inclusive=False
             ),
             exit_margin_m=None
             if exit_margin is None

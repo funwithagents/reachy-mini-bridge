@@ -250,13 +250,13 @@ The head tracker ([head_tracking.md](../motion/head_tracking.md)): whether it ru
 | `focus` | bool | `false` | Hold the head exactly on the aim, the idle move's own head motion left out (its antennas kept); the posture is part of the aim and stays. |
 | `mirroring.enabled` | bool | `true` | Roll the head with the person's head roll, as a mirror does. |
 | `mirroring.gain` | number ≥ 0 | `1.0` | The mirrored roll per degree of the person's roll, after the deadband: `1` mirrors a detector that reads the true roll; above `1` corrects one that under-reads (YuNet at 640 reads about two thirds of the roll of a face 0.45 m from the Lite, less farther, [user_perception.md](../vision/user_perception.md) "The shipped detector — `yunet.py`"). |
-| `mirroring.max_deg` | number > 0, ≤ 30 | `12.0` | The largest mirrored roll, either way. |
+| `mirroring.max_deg` | number > 0, ≤ 30 | `20.0` | The largest mirrored roll, either way. |
 | `approach.enabled` | bool | `true` | Lean the head toward the person while following them. |
-| `approach.lean_mm` | number ≥ 0, ≤ 30 | `12.0` | How far forward of the look-at pose, along the look direction. |
+| `approach.lean_mm` | number ≥ 0, ≤ 30 | `15.0` | How far forward of the look-at pose, along the look direction. |
 | `personal_space.enabled` | bool | `true` | Pull the head back from a person nearer than `distance_m`. |
 | `personal_space.distance_m` | number > 0 | `0.40` | The distance from the robot's camera inside which the head retreats (`Face.distance_m`, [user_perception.md](../vision/user_perception.md) "The face report"). |
-| `personal_space.max_back_mm` | number ≥ 0, ≤ 30 | `25.0` | The largest retreat. |
-| `personal_space.span_m` | number > 0 | `0.10` | The intrusion over which the retreat grows from nothing to `max_back_mm`. |
+| `personal_space.max_back_mm` | number ≥ 0, ≤ 30 | `20.0` | The largest retreat. |
+| `personal_space.span_m` | number > 0 | `0.20` | The intrusion over which the retreat grows from nothing to `max_back_mm`. |
 | `personal_space.exit_margin_m` | number > 0 \| null | `null` | How far beyond `distance_m` a person who entered must go to have left: the hysteresis of the personal space event ([head_tracking.md](../motion/head_tracking.md) "The personal space event"). `null`: `PERSONAL_SPACE_EXIT_SHARE = 0.125` of `distance_m`, since the distance estimate wanders by about ±5 % of itself. |
 
 ```python
@@ -264,19 +264,19 @@ The head tracker ([head_tracking.md](../motion/head_tracking.md)): whether it ru
 class MirroringSettings:
     enabled: bool = True
     gain: float = 1.0
-    max_deg: float = 12.0
+    max_deg: float = 20.0
 
 @dataclass(frozen=True)
 class ApproachSettings:
     enabled: bool = True
-    lean_mm: float = 12.0
+    lean_mm: float = 15.0
 
 @dataclass(frozen=True)
 class PersonalSpaceSettings:
     enabled: bool = True
     distance_m: float = 0.40
-    max_back_mm: float = 25.0
-    span_m: float = 0.10
+    max_back_mm: float = 20.0
+    span_m: float = 0.20
     exit_margin_m: float | None = None  # None: 12.5 % of distance_m
 
 @dataclass(frozen=True)

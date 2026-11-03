@@ -51,6 +51,12 @@ if TYPE_CHECKING:
     import numpy.typing as npt
 
 DETECT_HZ = 10.0  # upstream's detector sees the camera feed at 10 fps
+# The posture's defaults, which the posture tests expect (specs/core/config.md "`motion.tracking`").
+DEFAULTS = TrackingSettings()
+LEAN_MM = DEFAULTS.approach.lean_mm
+BACK_MM = DEFAULTS.personal_space.max_back_mm
+SPACE = DEFAULTS.personal_space
+ROLL_CAP_DEG = DEFAULTS.mirroring.max_deg
 # The look-at alone: what the tests of whom the head follows compare aims against.
 NO_POSTURE = TrackingSettings(
     mirroring=MirroringSettings(enabled=False),
@@ -757,7 +763,7 @@ def test_the_mirrored_roll_is_clamped_and_scaled_by_the_gain(
 ) -> None:
     clamped = _Posture(monkeypatch)
     clamped.see(8.0, roll_deg=-30.0)
-    assert _roll_deg(clamped.aims[-1]) == pytest.approx(-12.0, abs=0.1)
+    assert _roll_deg(clamped.aims[-1]) == pytest.approx(-ROLL_CAP_DEG, abs=0.1)
     settings = TrackingSettings(enabled=True, mirroring=MirroringSettings(gain=2.0))
     doubled = _Posture(monkeypatch, settings)
     doubled.see(8.0, roll_deg=6.0)
@@ -807,8 +813,8 @@ def test_the_head_leans_toward_a_person_along_the_look_direction(
     posture = _Posture(monkeypatch)
     posture.see(10.0, x=0.6, distance_m=1.0)
     aim = posture.aims[-1]
-    assert _forward_mm(aim) == pytest.approx(12.0, abs=0.1)
-    assert posture.state.offset_mm == pytest.approx(12.0, abs=0.1)
+    assert _forward_mm(aim) == pytest.approx(LEAN_MM, abs=0.1)
+    assert posture.state.offset_mm == pytest.approx(LEAN_MM, abs=0.1)
     # toward the person at the image's right (world -y), not the front of the robot
     assert aim[1, 3] < -0.003
     assert aim[2, 3] == pytest.approx(0.0)  # horizontal
@@ -816,22 +822,26 @@ def test_the_head_leans_toward_a_person_along_the_look_direction(
     tau = head_tracking.OFFSET_SMOOTHING_S
     first = [_forward_mm(a) for a in posture.aims[: 1 + round(10 * tau)]]
     assert first[0] == 0.0
-    assert first[-1] == pytest.approx(12.0 * (1 - math.exp(-1)), abs=0.5)
+    assert first[-1] == pytest.approx(LEAN_MM * (1 - math.exp(-1)), abs=0.5)
 
 
 @pytest.mark.parametrize(
-    ("distance_m", "expected_mm"),
+    ("distance_m", "retreat_share"),
     [
-        (0.50, 12.0),  # outside the personal space: the lean alone
-        (0.40, 12.0),  # at it: no retreat, no threshold to pump across
-        (0.35, 12.0 - 25.0 * 0.5),  # half the span inside: half the retreat
-        (0.20, 12.0 - 25.0),  # past the span: the full retreat, capped
-        (None, 12.0),  # no distance: the lean alone
+        (SPACE.distance_m + 0.1, 0.0),  # outside the personal space: the lean alone
+        (SPACE.distance_m, 0.0),  # at it: no retreat, no threshold to pump across
+        (
+            SPACE.distance_m - SPACE.span_m / 2,
+            0.5,
+        ),  # half the span in: half the retreat
+        (SPACE.distance_m - SPACE.span_m - 0.05, 1.0),  # past the span: capped
+        (None, 0.0),  # no distance: the lean alone
     ],
 )
 def test_a_person_too_close_pushes_the_head_back(
-    monkeypatch: pytest.MonkeyPatch, distance_m: float | None, expected_mm: float
+    monkeypatch: pytest.MonkeyPatch, distance_m: float | None, retreat_share: float
 ) -> None:
+    expected_mm = LEAN_MM - BACK_MM * retreat_share
     posture = _Posture(monkeypatch)
     posture.see(14.0, distance_m=distance_m)
     assert _forward_mm(posture.aims[-1]) == pytest.approx(expected_mm, abs=0.1)
@@ -893,7 +903,7 @@ def test_focus_goes_with_an_aim_that_keeps_its_posture(
     posture.see(8.0, roll_deg=10.0, distance_m=1.0)
     assert all(posture.focus)
     assert _roll_deg(posture.aims[-1]) == pytest.approx(7.0, abs=0.1)
-    assert _forward_mm(posture.aims[-1]) == pytest.approx(12.0, abs=0.1)
+    assert _forward_mm(posture.aims[-1]) == pytest.approx(LEAN_MM, abs=0.1)
     # the posture's easing is published silently: only the engagement woke a subscriber
     assert [r.attention for r in posture.report.sets] == ["watching", "engaged"]
 
@@ -959,7 +969,7 @@ def test_the_personal_space_is_reported_with_the_retreat_switched_off(
     posture = _Posture(monkeypatch, settings)
     posture.see(5.0, distance_m=0.5)
     assert posture.state.in_personal_space  # the zone is the settings' distance_m
-    assert posture.state.offset_mm == pytest.approx(12.0, abs=0.5)  # but no retreat
+    assert posture.state.offset_mm == pytest.approx(LEAN_MM, abs=0.5)  # no retreat
 
 
 def test_the_personal_space_resets_with_the_person(

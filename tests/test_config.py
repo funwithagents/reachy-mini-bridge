@@ -43,10 +43,11 @@ def test_defaults() -> None:
     # tracking off, its posture on for when it runs (specs/core/config.md "`motion.tracking`")
     tracking = cfg.motion.tracking
     assert tracking.enabled is False and tracking.focus is False
-    assert tracking.mirroring == MirroringSettings(enabled=True, gain=1.0, max_deg=12.0)
-    assert tracking.approach == ApproachSettings(enabled=True, lean_mm=12.0)
+    # tuned with a person in front of a Lite (2026-11-03)
+    assert tracking.mirroring == MirroringSettings(enabled=True, gain=1.0, max_deg=20.0)
+    assert tracking.approach == ApproachSettings(enabled=True, lean_mm=15.0)
     assert tracking.personal_space == PersonalSpaceSettings(
-        enabled=True, distance_m=0.40, max_back_mm=25.0, span_m=0.10
+        enabled=True, distance_m=0.40, max_back_mm=20.0, span_m=0.20, exit_margin_m=None
     )
     # the shipped detector's default width, twice upstream's 320; null is the full frame
     assert cfg.face_detection.width == DETECT_WIDTH == 640

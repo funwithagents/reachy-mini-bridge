@@ -2,7 +2,7 @@
 
 **Status:** Done
 
-Implements `specs/motion/head_tracking.md` ("The posture": the personal space; "The personal space event"; "The head tracking report"), `specs/core/config.md` (`motion.tracking.personal_space`, the old key refused), `specs/core/bridge.md` ("Attention / gaze") and `specs/examples/control_panel.md`: the `personal_distance` behaviour renamed `personal_space`, the proxemics term for the zone it defends, and the tracker publishing when the followed person enters and leaves it. Leaves out an event for anyone else in view (their distance is on `bridge.faces`).
+Implements `specs/motion/head_tracking.md` ("The posture": the personal space; "The personal space event"; "The head tracking report"), `specs/core/config.md` (`motion.tracking.personal_space`, the old key refused), `specs/core/bridge.md` ("Attention / gaze") and `specs/examples/control_panel.md`: the `personal_distance` behaviour renamed `personal_space`, the proxemics term for the zone it defends, and the tracker publishing when the followed person enters and leaves it. Leaves out an event for anyone else in view (their distance is on `bridge.faces`) and the detection width's default (640: 1280 runs YuNet on the Lite's full 1920 frame, about 68 ms, too heavy for onboard compute).
 
 ## Scope
 
@@ -19,6 +19,7 @@ Implements `specs/motion/head_tracking.md` ("The posture": the personal space; "
 1. Rename across code, tests, specs and docs (the merged plans keep their wording).
 2. The event in the tracker and the report; the old key's error. The exit margin first a constant (5 cm), then a config field defaulting to a share of the distance: the distance's noise grows with it (±5 %), so a fixed 5 cm would flicker at a wider zone.
 3. The panel's readout; the greeter's reaction; tests; docs.
+4. The posture's defaults from the values tuned on the Lite: `mirroring.max_deg` 12 → 20°, `approach.lean_mm` 12 → 15 mm, `personal_space.max_back_mm` 25 → 20 mm over `span_m` 0.10 → 0.20 m (a gradual give-way); the exit margin stays relative (12.5 % of the distance), the greeter's configs and `config.example.json` keeping their 0.2 m; the posture tests reading their expectations from `TrackingSettings()`, the live retreat test expecting the share its measured distance gives.
 
 ## Verification
 

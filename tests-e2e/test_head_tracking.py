@@ -651,16 +651,16 @@ def test_the_head_leans_toward_a_face_and_steps_back_from_one_too_close(
     live_bridge: LiveBridge, face_scene: SimSceneClient
 ) -> None:
     """specs/motion/head_tracking.md "The offset": a face beyond the personal space
-    draws the head `lean_mm` forward; brought inside it by more than the span, it pushes
-    the head back by `max_back_mm` less the lean. Tracks with focus, so the head's x reads
-    the posture alone."""
+    draws the head `lean_mm` forward; brought inside it, it pushes the head back by the
+    share of `max_back_mm` its intrusion into the span gives, read from the distance the
+    bridge reports. Tracks with focus, so the head's x reads the posture alone."""
     bridge, _caps = live_bridge
     robot = bridge.robot
     tracking = bridge.tracking
     lean = tracking.approach.lean_mm
-    back = tracking.personal_space.max_back_mm
+    space = tracking.personal_space
 
-    async def scenario() -> tuple[float, float, float, float, float, bool, bool]:
+    async def scenario() -> tuple[float, float, float, float, float, bool, bool, float]:
         await bridge.set_motors_state("enabled")
         await bridge.set_idle("hold")
         neutral = await asyncio.to_thread(_head_x_mm, robot)
@@ -676,22 +676,38 @@ def test_the_head_leans_toward_a_face_and_steps_back_from_one_too_close(
         near = await asyncio.to_thread(_head_x_mm, robot)
         near_offset = bridge.head_tracking.value.offset_mm
         near_inside = bridge.head_tracking.value.in_personal_space
+        followed = bridge.head_tracking.value.track_id
+        seen = [f for f in bridge.faces.value.faces if f.track_id == followed]
+        assert seen and seen[0].distance_m is not None
         await bridge.set_idle("breathing")
-        return neutral, far, far_offset, near, near_offset, far_inside, near_inside
+        return (
+            neutral,
+            far,
+            far_offset,
+            near,
+            near_offset,
+            far_inside,
+            near_inside,
+            seen[0].distance_m,
+        )
 
-    neutral, far, far_offset, near, near_offset, far_inside, near_inside = (
+    neutral, far, far_offset, near, near_offset, far_inside, near_inside, distance = (
         live_bridge.run(scenario())
     )
+    intrusion = min(1.0, max(0.0, space.distance_m - distance) / space.span_m)
+    expected_near = lean - space.max_back_mm * intrusion
     # the personal space event (specs/motion/head_tracking.md): out far, in near
     assert (far_inside, near_inside) == (False, True)
     print(
         f"head x: neutral {neutral:+.1f} mm, far {far:+.1f} mm (offset "
-        f"{far_offset:+.1f}), near {near:+.1f} mm (offset {near_offset:+.1f})"
+        f"{far_offset:+.1f}), near {near:+.1f} mm (offset {near_offset:+.1f}, "
+        f"{distance:.3f} m away, expected {expected_near:+.1f})"
     )
     assert far_offset == pytest.approx(lean, abs=1.0)
-    assert near_offset == pytest.approx(lean - back, abs=2.0)
+    assert intrusion > 0.5  # well inside: the retreat outweighs the lean
+    assert near_offset == pytest.approx(expected_near, abs=2.0)
     assert far - neutral == pytest.approx(lean, abs=4.0)
-    assert near - neutral == pytest.approx(lean - back, abs=4.0)
+    assert near - neutral == pytest.approx(expected_near, abs=4.0)
 
 
 def test_the_head_mirrors_a_tilted_portrait(

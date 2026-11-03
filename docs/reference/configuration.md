@@ -205,14 +205,14 @@ Omit the block and `say` raises unless you pass your own `SpeechSynthesizer`. A 
 |---|---|---|
 | `enabled` | `true` | Mirror the person's roll |
 | `gain` | `1.0` | Degrees of mirrored roll per degree of the person's, past the deadband. Above `1` corrects a detector that under-reads |
-| `max_deg` | `12.0` | The largest mirrored roll either way, at most 30 |
+| `max_deg` | `20.0` | The largest mirrored roll either way, at most 30 |
 
 **`motion.tracking.approach`** — the head sits a little forward while it follows someone, along the direction it looks, easing in over about half a second.
 
 | Field | Default | What it does |
 |---|---|---|
 | `enabled` | `true` | Lean toward the person |
-| `lean_mm` | `12.0` | How far forward, at most 30 mm |
+| `lean_mm` | `15.0` | How far forward, at most 30 mm |
 
 **`motion.tracking.personal_space`** — a person nearer than `distance_m` pushes the head back, the retreat growing over `span_m` up to `max_back_mm`: a recoil that reads as "you are close" (the head's travel is a few centimetres, it cannot keep a distance). The distance is the face's `distance_m`, from its size in the image.
 
@@ -220,8 +220,8 @@ Omit the block and `say` raises unless you pass your own `SpeechSynthesizer`. A 
 |---|---|---|
 | `enabled` | `true` | Pull back from someone too close |
 | `distance_m` | `0.40` | The distance from the robot's camera inside which the head retreats |
-| `max_back_mm` | `25.0` | The largest retreat, at most 30 mm |
-| `span_m` | `0.10` | The intrusion over which the retreat grows from nothing to `max_back_mm` |
+| `max_back_mm` | `20.0` | The largest retreat, at most 30 mm |
+| `span_m` | `0.20` | The intrusion over which the retreat grows from nothing to `max_back_mm` |
 | `exit_margin_m` | `null` | How far beyond `distance_m` a person who entered must go before they count as having left — the personal space event's hysteresis, so someone standing at the boundary never flickers it. `null`: 12.5 % of `distance_m` (5 cm at 0.40 m), since the distance estimate's noise grows with the distance; set it wider for a detector with a jumpier box |
 
 ## Validation
