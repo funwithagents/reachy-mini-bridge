@@ -1569,7 +1569,8 @@ def test_upstream_kinematics_solve_every_pose_the_gaze_layer_sends() -> None:
 
 def test_a_share_given_up_returns_gradually_once_it_fits() -> None:
     """The offset out of reach for the first second, then within it: the lean comes
-    back over about a second (REACH_RECOVER_PER_S), never in a step."""
+    back at REACH_RECOVER_PER_S of its share a second — bounded by the time since it
+    fit, whatever the tick rate — never in a step."""
     opened_at: list[float] = []
 
     def reachable(pose: npt.NDArray[np.float64]) -> bool:
@@ -1577,7 +1578,7 @@ def test_a_share_given_up_returns_gradually_once_it_fits() -> None:
             return True
         return float(np.linalg.norm(pose[:2, 3])) < 1e-6
 
-    async def run() -> list[float]:
+    async def run() -> tuple[float, list[tuple[float, float]]]:
         robot = FakeReachyMini()
         async with _running(
             MotionSession(robot, presence=True, idle="hold", reachable=reachable)
@@ -1586,21 +1587,22 @@ def test_a_share_given_up_returns_gradually_once_it_fits() -> None:
             await asyncio.sleep(BLEND_S + 0.1)
             session.set_gaze(_turned_aim(0.0, 0.0, 0.012), focus=True)
             await asyncio.sleep(1.0)  # eased onto the aim, the lean held back
-            before = len(robot.targets)
+            held = _along_look_mm(robot.targets[-1][0], 0.0)  # type: ignore[arg-type]
             opened_at.append(time.perf_counter())
-            await asyncio.sleep(1.6)
-            return [
-                _along_look_mm(h, 0.0)
-                for h, _, _ in robot.targets[before:]
-                if h is not None
-            ]
+            samples: list[tuple[float, float]] = []
+            while (t := time.perf_counter() - opened_at[0]) < 1.6:
+                head = robot.targets[-1][0]
+                if head is not None:
+                    samples.append((t, _along_look_mm(head, 0.0)))
+                await asyncio.sleep(0.01)
+            return held, samples
 
-    leans = asyncio.run(run())
-    # held back until it fit: the first tick after carries one tick of recovery
-    assert leans[0] <= 12.0 * REACH_RECOVER_PER_S / CONTROL_HZ * 1.5
-    assert leans[-1] == pytest.approx(12.0, abs=0.3)
-    # 12 mm over about a second at 60 Hz: a fraction of a millimetre per tick
-    assert max(b - a for a, b in itertools.pairwise(leans)) < 0.5
+    held, samples = asyncio.run(run())
+    assert held == pytest.approx(0.0, abs=0.05)
+    assert samples[-1][1] == pytest.approx(12.0, abs=0.3)
+    # never ahead of the recovery rate (a tick of slack for when the lean was read)
+    rate_mm_s = 12.0 * REACH_RECOVER_PER_S
+    assert all(lean <= rate_mm_s * (t + 0.1) + 0.05 for t, lean in samples)
 
 
 def test_at_the_edge_of_reach_the_head_holds_still() -> None:

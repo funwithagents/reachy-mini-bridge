@@ -837,10 +837,18 @@ def test_play_emotion_under_a_tracked_face_plays_as_recorded(
     engaged, poses, names = asyncio.run(run())
     assert engaged == "engaged"
     assert not any(n.endswith("head_tracking") for n in names)
-    # the trajectory itself, after the entry blend: the recorded nod, straight ahead
-    # (the move's exact poses under an aim are test_motion's to pin)
-    played = poses[-int(0.2 * 60) :]
-    assert all(abs(yaw) < 1e-6 for yaw, _ in played)
+    # the trajectory itself, between the entry blend (turning back from the face) and
+    # the idle re-entry (the gaze fading in again, which the loop may already have begun
+    # by the time the verb returns): the recorded nod, straight ahead — the longest run
+    # of straight-ahead targets (the move's exact poses under an aim are test_motion's)
+    runs: list[list[tuple[float, float]]] = [[]]
+    for yaw, z in poses:
+        if abs(yaw) < 1e-6:
+            runs[-1].append((yaw, z))
+        elif runs[-1]:
+            runs.append([])
+    played = max(runs, key=len)
+    assert len(played) >= int(0.2 * 60)
     assert max(z for _, z in played) <= 0.01 + 1e-9
 
 
