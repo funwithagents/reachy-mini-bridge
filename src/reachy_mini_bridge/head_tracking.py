@@ -20,6 +20,7 @@ a ``HeadTrackingReport`` (``bridge.head_tracking``).
 
 from __future__ import annotations
 
+import functools
 import logging
 import math
 import time
@@ -30,13 +31,14 @@ from typing import TYPE_CHECKING, Protocol
 import numpy as np
 from reachy_mini.media.camera_utils import intrinsics_for_size, undistort_points
 from reachy_mini.reachy_mini import INIT_HEAD_POSE
+from reachy_mini.utils.interpolation import linear_pose_interpolation
 from reachy_mini.vision.look_at import (
     default_head_to_camera_transform,
     look_at_image_pose,
 )
 
 from .config import TrackingSettings
-from .motion import nearest_index
+from .motion import BREATH_Z_M, nearest_index
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -57,6 +59,7 @@ __all__ = [
     "DELAY_STEP_S",
     "DELAY_WINDOW_S",
     "OFFSET_SMOOTHING_S",
+    "REACH_STEPS",
     "ROLL_DEADBAND_DEG",
     "ROLL_SMOOTHING_S",
     "SIM_CAMERA_SIZE",
@@ -113,6 +116,10 @@ ROLL_DEADBAND_DEG = 3.0
 ROLL_SMOOTHING_S = 0.3
 OFFSET_SMOOTHING_S = 0.6
 _POSTURE_MAX_STEP_S = 0.2
+# The reach check (specs/motion/head_tracking.md "Within reach"): an aim the kinematics
+# cannot solve loses its offset, then its roll, then part of its direction, in steps of
+# a REACH_STEPS-th, so the head never freezes on the last pose it could reach.
+REACH_STEPS = 10
 
 # The sim's eye camera (the MJCF's `eye_camera`): MuJoCo's fovy is vertical, rendered at
 # the stream's 1280x720 — about 112° horizontally. Pinned against the MJCF by a test.
@@ -286,6 +293,9 @@ class HeadTracker:
     set_gaze: SetGaze
     settings: TrackingSettings = field(default_factory=TrackingSettings)
     report: Observable[HeadTrackingReport] | None = None
+    # whether the robot can reach a head pose; None: upstream's analytical kinematics
+    # (specs/motion/head_tracking.md "Within reach")
+    reachable: Callable[[npt.NDArray[np.float64]], bool] | None = None
     _active: bool = field(default=False, init=False)
     # whom the head follows, by track_id, and when an observation last showed that face
     _following: int | None = field(default=None, init=False)
@@ -300,6 +310,10 @@ class HeadTracker:
     _roll: float = field(default=0.0, init=False)  # radians
     _offset: float = field(default=0.0, init=False)  # metres
     _posture_at: float | None = field(default=None, init=False)
+    # what the last aim carried after the reach check (specs/motion/head_tracking.md
+    # "Within reach"): the published posture
+    _sent_roll: float = field(default=0.0, init=False)
+    _sent_offset: float = field(default=0.0, init=False)
 
     @property
     def focus(self) -> bool:
@@ -415,6 +429,7 @@ class HeadTracker:
 
     def _reset_posture(self) -> None:
         self._roll = self._offset = 0.0
+        self._sent_roll = self._sent_offset = 0.0
         self._posture_at = None
 
     @staticmethod
@@ -432,8 +447,12 @@ class HeadTracker:
             attention="engaged" if self._following is not None else "watching",
             track_id=self._following,
             ts=self._aimed_ts,
-            roll_deg=math.degrees(self._roll) if self._following is not None else 0.0,
-            offset_mm=self._offset * 1000.0 if self._following is not None else 0.0,
+            roll_deg=math.degrees(self._sent_roll)
+            if self._following is not None
+            else 0.0,
+            offset_mm=self._sent_offset * 1000.0
+            if self._following is not None
+            else 0.0,
         )
 
     def _publish(self) -> None:
@@ -506,17 +525,34 @@ class HeadTracker:
                 dt, OFFSET_SMOOTHING_S
             )
         self._posture_at = now
-        aim = look.copy()
-        if self._roll:
-            c, s = math.cos(self._roll), math.sin(self._roll)
-            about_x = np.array([[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]])
-            aim[:3, :3] = look[:3, :3] @ about_x
-        if self._offset:
-            forward = np.array([look[0, 0], look[1, 0], 0.0])
-            norm = float(np.linalg.norm(forward))
-            if norm > 1e-6:
-                aim[:3, 3] = look[:3, 3] + self._offset * forward / norm
-        return aim
+        return self._within_reach(look)
+
+    def _within_reach(self, look: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+        """The aim the robot can reach (specs/motion/head_tracking.md "Within reach"): the
+        filtered posture in full when the kinematics allow it, else the offset scaled
+        down first, then the roll, then the direction itself shrunk toward the rest
+        pose — looking at the person comes first, the stance after. The filters keep
+        their own values; only what is sent (and published) is scaled."""
+        reachable = self.reachable or _analytical_reach()
+        steps = [k / REACH_STEPS for k in range(REACH_STEPS, -1, -1)]  # 1.0 … 0.0
+        candidates = [(1.0, o) for o in steps] + [(r, 0.0) for r in steps[1:]]
+        for roll_share, offset_share in candidates:
+            roll, offset = self._roll * roll_share, self._offset * offset_share
+            aim = _postured(look, roll, offset)
+            if reachable(aim):
+                self._sent_roll, self._sent_offset = roll, offset
+                return aim
+        self._sent_roll = self._sent_offset = 0.0
+        rest = np.asarray(INIT_HEAD_POSE, dtype=np.float64)
+        for share in steps[1:]:
+            aim = linear_pose_interpolation(rest, look, share)
+            if reachable(aim):
+                _logger.debug(
+                    "head tracking: the look-at is out of reach; %.0f%% of it",
+                    share * 100,
+                )
+                return aim
+        return rest
 
     def _note_detection(
         self, report: FaceReport, u: float, v: float, now: float
@@ -557,6 +593,46 @@ class HeadTracker:
             return  # no delay explains the directions: the face itself moved
         best = float(delays[int(np.argmin(spread))])
         self._delay += DELAY_SMOOTHING * (best - self._delay)
+
+
+def _postured(
+    look: npt.NDArray[np.float64], roll: float, offset: float
+) -> npt.NDArray[np.float64]:
+    """``look`` rolled by ``roll`` about its own viewing axis and moved ``offset``
+    metres along the horizontal projection of its viewing direction."""
+    aim = look.copy()
+    if roll:
+        c, s = math.cos(roll), math.sin(roll)
+        about_x = np.array([[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]])
+        aim[:3, :3] = look[:3, :3] @ about_x
+    if offset:
+        forward = np.array([look[0, 0], look[1, 0], 0.0])
+        norm = float(np.linalg.norm(forward))
+        if norm > 1e-6:
+            aim[:3, 3] = look[:3, 3] + offset * forward / norm
+    return aim
+
+
+@functools.cache
+def _analytical_reach() -> Callable[[npt.NDArray[np.float64]], bool]:
+    """Whether upstream's analytical kinematics — the daemon's default engine, with its
+    automatic body yaw — solve a head pose at the loop's body yaw (0), the pose lifted
+    by a breath (``BREATH_Z_M``) so the idle move's rise on top stays in reach. Built
+    once: the solver is pure, about 2 µs a call."""
+    from reachy_mini.kinematics.analytical_kinematics import AnalyticalKinematics
+
+    kinematics = AnalyticalKinematics()
+
+    def reachable(pose: npt.NDArray[np.float64]) -> bool:
+        lifted = np.array(pose, dtype=np.float64)
+        lifted[2, 3] += BREATH_Z_M
+        try:
+            joints = kinematics.ik(lifted, body_yaw=0.0)
+        except Exception:  # noqa: BLE001 - a solver failure is a pose out of reach
+            return False
+        return joints is not None and not bool(np.any(np.isnan(joints)))
+
+    return reachable
 
 
 def _filter_gain(dt: float, tau: float) -> float:

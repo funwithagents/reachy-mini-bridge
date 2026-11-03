@@ -918,3 +918,103 @@ def test_face_camera_point_is_the_pinhole_depth_of_the_box() -> None:
     assert (
         head_tracking.face_camera_point(replace(face, size=0.0), camera, 0.18) is None
     )
+
+
+# --- within reach (specs/motion/head_tracking.md "Within reach") -------------------------
+
+
+def _yaw_of(aim: Any) -> float:
+    return float(Rotation.from_matrix(aim[:3, :3]).as_euler("ZYX", degrees=True)[0])
+
+
+def test_an_unreachable_offset_is_scaled_down_before_the_roll(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A robot that reaches no more than 5 mm of offset: the lean is cut to what fits,
+    the mirrored roll kept whole — the stance gives way before the mirror."""
+
+    def reachable(aim: Any) -> bool:
+        return float(np.linalg.norm(aim[:3, 3])) <= 0.005 + 1e-9
+
+    posture = _Posture(monkeypatch)
+    posture.tracker.reachable = reachable
+    posture.see(8.0, roll_deg=10.0, distance_m=1.0)
+    aim = posture.aims[-1]
+    assert 4.0 <= _forward_mm(aim) <= 5.0  # the largest tenth of the lean that fits
+    assert _roll_deg(aim) == pytest.approx(7.0, abs=0.1)  # 10° less the deadband
+    assert posture.state.offset_mm == pytest.approx(_forward_mm(aim), abs=1e-6)
+    assert posture.state.roll_deg == pytest.approx(_roll_deg(aim), abs=1e-3)
+
+
+def test_an_unreachable_roll_goes_once_the_offset_is_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def reachable(aim: Any) -> bool:
+        return float(np.linalg.norm(aim[:3, 3])) < 1e-9 and abs(_roll_deg(aim)) <= 4.0
+
+    posture = _Posture(monkeypatch)
+    posture.tracker.reachable = reachable
+    posture.see(8.0, roll_deg=10.0, distance_m=1.0)
+    aim = posture.aims[-1]
+    assert _forward_mm(aim) == 0.0
+    assert 3.0 <= _roll_deg(aim) <= 4.0  # the largest tenth of the 7° roll that fits
+    assert posture.state.offset_mm == 0.0
+
+
+def test_a_direction_out_of_reach_turns_the_head_as_far_as_it_goes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Even the bare look-at refused: the head turns part of the way toward the
+    person, on the same side — never back to the last pose it reached."""
+
+    def reachable(aim: Any) -> bool:
+        return abs(_yaw_of(aim)) <= 10.0
+
+    posture = _Posture(monkeypatch)
+    posture.tracker.reachable = reachable
+    posture.see(2.0, x=-0.8, roll_deg=10.0, distance_m=1.0)  # far to the robot's left
+    aim = posture.aims[-1]
+    assert 8.0 <= _yaw_of(aim) <= 10.0
+    assert posture.state.roll_deg == 0.0 and posture.state.offset_mm == 0.0
+
+
+def test_upstream_kinematics_refuse_a_retreat_with_a_roll_far_aside_and_the_aim_fits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The default check is upstream's analytical solver: a full retreat with a 25° roll
+    at 30° of yaw has no solution (measured 2026-11-03: the IK refuses that pair from
+    18° of yaw), so the tracker sends the part of the posture that has one."""
+    from reachy_mini.kinematics.analytical_kinematics import AnalyticalKinematics
+    from reachy_mini.utils import create_head_pose
+
+    kinematics = AnalyticalKinematics()
+
+    def solves(pose: Any) -> bool:
+        lifted = np.array(pose)
+        lifted[2, 3] += 0.005
+        joints = kinematics.ik(lifted, body_yaw=0.0)
+        return joints is not None and not bool(np.any(np.isnan(joints)))
+
+    yaw = math.radians(30.0)
+    refused = create_head_pose(
+        x=-25 * math.cos(yaw), y=-25 * math.sin(yaw), roll=25, yaw=30, mm=True
+    )
+    assert not solves(refused)
+    settings = TrackingSettings(
+        enabled=True,
+        mirroring=MirroringSettings(max_deg=25.0),
+        personal_distance=PersonalDistanceSettings(max_back_mm=25.0, span_m=0.05),
+        approach=ApproachSettings(enabled=False),
+    )
+    posture = _Posture(monkeypatch, settings)
+    # the fixed camera's ray to the left at about 29°, a person tilted and too close
+    posture.see(6.0, x=-0.8, roll_deg=-40.0, distance_m=0.2)
+    aim = posture.aims[-1]
+    assert _yaw_of(aim) > 25.0
+    full = (math.degrees(posture.tracker._roll), posture.tracker._offset * 1000.0)
+    assert full == pytest.approx((-25.0, -25.0), abs=0.1)  # what the filters hold
+    assert solves(aim)
+    # the retreat gave way first and the mirror was kept whole
+    assert -25.0 < _forward_mm(aim) <= 0.0
+    assert _roll_deg(aim) == pytest.approx(-25.0, abs=0.1)
+    assert posture.state.offset_mm == pytest.approx(_forward_mm(aim), abs=1e-6)
