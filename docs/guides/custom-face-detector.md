@@ -8,7 +8,7 @@ You need this only when the shipped detector is not what you want. `"face_detect
 {"detector": "yunet"}` names upstream's own YuNet model, wrapped by the bridge — nothing to
 install, the weights downloaded into the Hugging Face cache on first use. The name alone
 starts nothing: `"enabled": true` beside it runs the detector so `bridge.faces` reports who
-is there, and `"motion": {"tracking": true}` makes the robot look at the person in front of
+is there, and `"motion": {"tracking": {"enabled": true}}` makes the robot look at the person in front of
 it (the head moves once its motors are `enabled`) — the [configuration
 reference](../reference/configuration.md#face_detection--who-is-in-front-of-the-robot) has the fields. The
 bridge ships that one detector
@@ -102,7 +102,7 @@ from reachy_mini_bridge import ReachyMiniBridge, ReachyMiniConfig
 async def main() -> None:
     config = ReachyMiniConfig.from_json_file("robot.json")
     # robot.json: "face_detection": {"detector": "custom", "enabled": true},
-    #             "motion": {"tracking": true}
+    #             "motion": {"tracking": {"enabled": true}}
     config.face_detection.face_detector = MyDetector  # Python only: a JSON file cannot carry code
     async with ReachyMiniBridge(config) as bridge:
         await bridge.set_motors_state("enabled")
@@ -156,7 +156,7 @@ detector over a model and `"fake"` for a config, and it is your application:
 import asyncio
 
 from reachy_mini_bridge import PixelFace, ReachyMiniBridge, ReachyMiniConfig
-from reachy_mini_bridge.config import FaceDetectionSettings, MotionSettings
+from reachy_mini_bridge.config import FaceDetectionSettings, MotionSettings, TrackingSettings
 
 
 class OneFace:
@@ -171,7 +171,7 @@ async def main() -> None:
     config = ReachyMiniConfig(
         backend="fake",
         face_detection=FaceDetectionSettings(detector="custom", face_detector=OneFace),
-        motion=MotionSettings(tracking=True),
+        motion=MotionSettings(tracking=TrackingSettings(enabled=True)),
     )
     async with ReachyMiniBridge(config) as bridge:
         report = await bridge.faces.wait_for(lambda r: r.active and len(r.faces) > 0)

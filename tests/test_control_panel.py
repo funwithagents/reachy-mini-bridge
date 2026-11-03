@@ -31,7 +31,11 @@ from reachy_mini_bridge import (
     PixelFace,
     ReachyMiniConfig,
 )
-from reachy_mini_bridge.config import FaceDetectionSettings, MotionSettings
+from reachy_mini_bridge.config import (
+    FaceDetectionSettings,
+    MotionSettings,
+    TrackingSettings,
+)
 from reachy_mini_bridge.fake_reachy_mini import FakeReachyMini
 
 
@@ -75,7 +79,7 @@ def _faces_config(scene: _Scene, *, tracking: bool = True) -> ReachyMiniConfig:
         face_detection=FaceDetectionSettings(
             detector="custom", enabled=True, face_detector=scene.detector
         ),
-        motion=MotionSettings(tracking=tracking),
+        motion=MotionSettings(tracking=TrackingSettings(enabled=tracking)),
     )
 
 
@@ -351,7 +355,8 @@ def test_build_app_constructs_the_blocks_and_refresh_reads_the_state() -> None:
         assert mic_level == 0.0
         assert log_text == ""
         frame, faces_text = refresh_camera(controller, [])
-        assert "1 at (+0.50, -0.50)" in faces_text and "updates" in faces_text
+        assert "1 at (+0.50, -0.50, " in faces_text and "updates" in faces_text
+        assert " m)" in faces_text  # the face's distance, from the fake's camera model
         assert frame is not None and frame.shape == (48, 64, 3)
         # Mirrored for display: the fake's left-to-right ramp (RGB channel 2) now falls,
         # and the face on the right of the image (x=+0.5) is marked on the left.
@@ -401,6 +406,34 @@ def test_the_faces_line_shows_each_faces_roll_in_degrees() -> None:
     assert faces_line([(0.25, -0.1)], None) == (
         "**Faces:** 1 at (+0.25, -0.10) · **updates:** —"
     )
+    # each face's distance, when the report gives one
+    away = faces_line([(0.25, -0.1), (0.0, 0.0)], None, [None, None], [0.456, None])
+    assert "(+0.25, -0.10, 0.46 m), (+0.00, +0.00)" in away
+
+
+def test_the_posture_boxes_switch_each_behaviour_and_the_state_shows_it() -> None:
+    """The panel's posture checkboxes go through `set_tracking`, keeping the rest of the
+    settings; the state table reads the posture while the head follows someone."""
+    pytest.importorskip("gradio")
+    from examples.control_panel.app import state_table
+
+    scene = _Scene()
+    with ControlPanelController(_faces_config(scene)) as controller:
+        controller.set_posture(mirroring=False, approach=True, personal_distance=False)
+        settings = controller.bridge.tracking
+        assert settings.enabled  # still tracking
+        assert (
+            settings.mirroring.enabled,
+            settings.approach.enabled,
+            settings.personal_distance.enabled,
+        ) == (False, True, False)
+        assert controller.snapshot().posture is None  # nobody followed yet
+        scene.show()
+        _wait_until(lambda: controller.snapshot().attention == "engaged")
+        _wait_until(lambda: (controller.snapshot().posture or (0, 0))[1] > 5.0)
+        state = controller.snapshot()
+        assert state.posture is not None and state.posture[0] == 0.0  # no mirror
+        assert "lean +" in state_table(state)
 
 
 def test_draw_faces_tilts_the_square_with_the_faces_roll() -> None:

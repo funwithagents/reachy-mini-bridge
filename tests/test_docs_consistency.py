@@ -18,13 +18,17 @@ from pathlib import Path
 import pytest
 
 from reachy_mini_bridge.config import (
+    ApproachSettings,
     AudioSettings,
     DaemonConfig,
     FaceDetectionSettings,
+    MirroringSettings,
     MotionSettings,
+    PersonalDistanceSettings,
     ReachyMiniConfig,
     SimCameraSettings,
     SimDisplaySettings,
+    TrackingSettings,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -199,6 +203,10 @@ _BLOCKS: dict[str, type] = {
     "audio": AudioSettings,
     "face_detection": FaceDetectionSettings,
     "motion": MotionSettings,
+    "motion.tracking": TrackingSettings,
+    "motion.tracking.mirroring": MirroringSettings,
+    "motion.tracking.approach": ApproachSettings,
+    "motion.tracking.personal_distance": PersonalDistanceSettings,
 }
 
 

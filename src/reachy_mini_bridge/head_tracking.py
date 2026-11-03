@@ -12,7 +12,10 @@ source knows it; otherwise the robot's reported pose at the observation's time m
 delay the tracker estimates online, from how the face's world direction holds still
 while the head turns. It never touches the robot; after ``TRACKING_LOST_S`` without the
 followed face and nobody to switch to, it withdraws the aim and the robot idles in full.
-Its state is published as a ``HeadTrackingReport`` (``bridge.head_tracking``).
+While it follows a face the aim also carries a posture toward the person — the head's
+roll mirroring theirs, a lean toward them, a retreat from someone too close — filtered
+on the tracker's clock so it reads as a stance, not a motion. Its state is published as
+a ``HeadTrackingReport`` (``bridge.head_tracking``).
 """
 
 from __future__ import annotations
@@ -21,7 +24,7 @@ import logging
 import math
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
@@ -32,7 +35,8 @@ from reachy_mini.vision.look_at import (
     look_at_image_pose,
 )
 
-from .motion import nearest_index
+from .config import TrackingSettings
+from .motion import GazeAim, nearest_index
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -52,6 +56,9 @@ __all__ = [
     "DELAY_SMOOTHING",
     "DELAY_STEP_S",
     "DELAY_WINDOW_S",
+    "OFFSET_SMOOTHING_S",
+    "ROLL_DEADBAND_DEG",
+    "ROLL_SMOOTHING_S",
     "SIM_CAMERA_SIZE",
     "SIM_EYE_CAMERA_FOVY_DEG",
     "TRACKING_LOST_S",
@@ -60,6 +67,7 @@ __all__ = [
     "CameraModel",
     "HeadTracker",
     "HeadTrackingReport",
+    "face_camera_point",
     "frame_head_pose",
     "pinhole_intrinsics",
     "sim_hfov_deg",
@@ -95,6 +103,16 @@ DELAY_MAX_CONTRAST = 0.5
 DELAY_SMOOTHING = 0.3
 DELAY_PRIOR_S = 0.2
 _DELAY_MIN_DETECTIONS = 8  # a fit needs a few detections across the turn
+
+# The posture (specs/motion/head_tracking.md "The posture"): the person's roll under this
+# soft deadband reads as upright (landmark jitter, not a tilt); the mirrored roll and the
+# offset each follow their target through a first-order filter of this time constant,
+# stepped on every aimed observation by the time since the previous one, at most
+# _POSTURE_MAX_STEP_S so a face back from a gap never steps the posture.
+ROLL_DEADBAND_DEG = 3.0
+ROLL_SMOOTHING_S = 0.3
+OFFSET_SMOOTHING_S = 0.6
+_POSTURE_MAX_STEP_S = 0.2
 
 # The sim's eye camera (the MJCF's `eye_camera`): MuJoCo's fovy is vertical, rendered at
 # the stream's 1280x720 — about 112° horizontally. Pinned against the MJCF by a test.
@@ -161,6 +179,25 @@ class CameraModel:
         )
 
 
+def face_camera_point(
+    face: Face, camera: CameraModel, box_height_m: float
+) -> npt.NDArray[np.float64] | None:
+    """Where ``face`` is in the camera's frame (x right, y down, z forward), in metres
+    (specs/vision/user_perception.md "The face report"): its pixel undistorted into a ray
+    of ``camera``, at the depth the pinhole's similar triangles give a box
+    ``box_height_m`` tall that spans the face's ``size`` of the model's frame height.
+    ``None`` for a face without a size. The face's ``distance_m`` is this point's norm;
+    the sim's face markers place a face at it."""
+    width, height = camera.size
+    if face.size <= 0.0:
+        return None
+    u = (face.x + 1.0) / 2.0 * (width - 1)
+    v = (face.y + 1.0) / 2.0 * (height - 1)
+    x_n, y_n = undistort_points(u, v, camera.K, camera.D)
+    depth = float(camera.K[1, 1]) * box_height_m / (face.size * height)
+    return depth * np.array([x_n, y_n, 1.0])
+
+
 type PoseHistory = Callable[[], tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]]
 
 
@@ -189,9 +226,7 @@ def frame_head_pose(
 class SetGaze(Protocol):
     """The motion loop's gaze command (``MotionSession.set_gaze``)."""
 
-    def __call__(
-        self, aim: npt.NDArray[np.float64] | None, *, focus: bool = False
-    ) -> None: ...
+    def __call__(self, aim: GazeAim | None, *, focus: bool = False) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -210,6 +245,9 @@ class HeadTrackingReport:
     attention: str | None  # "engaged" | "watching" | None
     track_id: int | None  # the track of the face the head follows; None unless engaged
     ts: float  # the time of the face report behind the last aim; 0.0 before any
+    # the posture in the last aim (specs/motion/head_tracking.md "The posture"), filtered:
+    roll_deg: float = 0.0  # the mirrored roll
+    offset_mm: float = 0.0  # along the look direction: + toward the person, - back
 
     @classmethod
     def inactive(cls) -> HeadTrackingReport:
@@ -244,7 +282,7 @@ class HeadTracker:
     camera: CameraModel
     history: PoseHistory
     set_gaze: SetGaze
-    focus: bool = False
+    settings: TrackingSettings = field(default_factory=TrackingSettings)
     report: Observable[HeadTrackingReport] | None = None
     _active: bool = field(default=False, init=False)
     # whom the head follows, by track_id, and when an observation last showed that face
@@ -255,6 +293,20 @@ class HeadTracker:
     _detections: deque[_Detection] = field(default_factory=deque, init=False)
     _last_ts: float | None = field(default=None, init=False)
     _last_t_obs: float = field(default=0.0, init=False)
+    # the posture's filtered values, and when they were last stepped (None: grow in
+    # afresh from the look-at alone)
+    _roll: float = field(default=0.0, init=False)  # radians
+    _offset: float = field(default=0.0, init=False)  # metres
+    _posture_at: float | None = field(default=None, init=False)
+
+    @property
+    def focus(self) -> bool:
+        """Whether the head holds exactly on the aim (the settings' ``focus``)."""
+        return self.settings.focus
+
+    @focus.setter
+    def focus(self, value: bool) -> None:
+        self.settings = replace(self.settings, focus=value)
 
     @property
     def engaged(self) -> bool:
@@ -272,11 +324,24 @@ class HeadTracker:
         pose its frame was taken from."""
         return self._delay
 
-    def start(self, *, focus: bool = False) -> None:
-        """Run (or keep running with a new ``focus``): reports are observed from now on,
-        and the state published."""
-        self.focus = focus
+    def start(
+        self, settings: TrackingSettings | None = None, *, focus: bool | None = None
+    ) -> None:
+        """Run (or keep running with new settings, or a new ``focus``): reports are
+        observed from now on, and the state published."""
+        if settings is not None:
+            self.settings = settings
+        if focus is not None:
+            self.focus = focus
         self._active = True
+        self._publish()
+
+    def configure(self, settings: TrackingSettings) -> None:
+        """Take new settings while running (specs/motion/head_tracking.md "The posture"):
+        the posture's filters move toward the new targets from where they stand, so a
+        behaviour switched on or off eases in or out, never steps; a change of focus is
+        published and handed over with the next aim."""
+        self.settings = settings
         self._publish()
 
     def observe(self, report: FaceReport) -> None:
@@ -332,6 +397,7 @@ class HeadTracker:
         """Follow nobody and withdraw the aim (the gaze layer fades out); published."""
         self._following = None
         self._seen_at = None
+        self._reset_posture()
         self.set_gaze(None, focus=self.focus)
         self._publish()
 
@@ -341,8 +407,13 @@ class HeadTracker:
         self._active = False
         self._following = None
         self._seen_at = None
+        self._reset_posture()
         self.set_gaze(None, focus=self.focus)
         self._publish()
+
+    def _reset_posture(self) -> None:
+        self._roll = self._offset = 0.0
+        self._posture_at = None
 
     @staticmethod
     def _biggest(report: FaceReport) -> Face | None:
@@ -359,6 +430,8 @@ class HeadTracker:
             attention="engaged" if self._following is not None else "watching",
             track_id=self._following,
             ts=self._aimed_ts,
+            roll_deg=math.degrees(self._roll) if self._following is not None else 0.0,
+            offset_mm=self._offset * 1000.0 if self._following is not None else 0.0,
         )
 
     def _publish(self) -> None:
@@ -373,9 +446,7 @@ class HeadTracker:
         else:
             observable.set(state)
 
-    def _aim(
-        self, face: Face, report: FaceReport, now: float
-    ) -> npt.NDArray[np.float64] | None:
+    def _aim(self, face: Face, report: FaceReport, now: float) -> GazeAim | None:
         camera = self.camera
         width, height = camera.size
         u = (face.x + 1.0) / 2.0 * (width - 1)
@@ -386,12 +457,52 @@ class HeadTracker:
             head = frame_head_pose(
                 report, camera, self.history, self._delay, self._last_t_obs
             )
-            return look_at_image_pose(
+            look = look_at_image_pose(
                 u, v, camera.K, camera.D, head, default_head_to_camera_transform()
             )
+            return self._posture(face, look, head, now)
         except Exception as e:  # noqa: BLE001 - one bad pixel keeps the previous aim
             _logger.debug("head tracking: no aim for the face at (%s, %s): %s", u, v, e)
             return None
+
+    def _posture(
+        self,
+        face: Face,
+        look: npt.NDArray[np.float64],
+        head: npt.NDArray[np.float64],
+        now: float,
+    ) -> GazeAim:
+        """The aim's parts (specs/motion/head_tracking.md "The posture"): the look-at pose,
+        the mirrored roll about its viewing axis and the offset along its horizontal
+        viewing direction — both stepped through their filters toward this
+        observation's targets first. The motion loop composes them, within reach."""
+        settings = self.settings
+        roll_target = 0.0
+        if settings.mirroring.enabled:
+            person = _person_roll(face, look, head)
+            if person is not None:
+                deadband = math.radians(ROLL_DEADBAND_DEG)
+                excess = math.copysign(max(0.0, abs(person) - deadband), person)
+                limit = math.radians(settings.mirroring.max_deg)
+                roll_target = max(-limit, min(limit, settings.mirroring.gain * excess))
+        offset_target = 0.0
+        if settings.approach.enabled:
+            offset_target += settings.approach.lean_mm / 1000.0
+        distance = face.distance_m
+        if settings.personal_distance.enabled and distance is not None:
+            pd = settings.personal_distance
+            intrusion = max(0.0, pd.distance_m - distance) / pd.span_m
+            offset_target -= pd.max_back_mm / 1000.0 * min(1.0, intrusion)
+        if self._posture_at is not None:
+            dt = min(max(0.0, now - self._posture_at), _POSTURE_MAX_STEP_S)
+            self._roll += (roll_target - self._roll) * _filter_gain(
+                dt, ROLL_SMOOTHING_S
+            )
+            self._offset += (offset_target - self._offset) * _filter_gain(
+                dt, OFFSET_SMOOTHING_S
+            )
+        self._posture_at = now
+        return GazeAim(look, self._roll, self._offset)
 
     def _note_detection(
         self, report: FaceReport, u: float, v: float, now: float
@@ -432,6 +543,37 @@ class HeadTracker:
             return  # no delay explains the directions: the face itself moved
         best = float(delays[int(np.argmin(spread))])
         self._delay += DELAY_SMOOTHING * (best - self._delay)
+
+
+def _filter_gain(dt: float, tau: float) -> float:
+    """How far a first-order filter of time constant ``tau`` moves toward its target
+    over ``dt``."""
+    return 1.0 - math.exp(-dt / tau)
+
+
+def _person_roll(
+    face: Face, look: npt.NDArray[np.float64], head: npt.NDArray[np.float64]
+) -> float | None:
+    """The person's head roll as seen from where ``look`` points, in radians, positive
+    when their head leans toward the robot's right (specs/motion/head_tracking.md "The
+    mirrored roll"): the face's eye line — the image direction at ``face.roll``, y down —
+    lifted into the camera frame, carried into the world by ``head`` (the pose the frame
+    was taken from, so the robot's own roll is not read as the person's), projected
+    across ``look``'s viewing axis and measured from ``look``'s level eye line about it.
+    Rolling ``look`` by that angle about its own x axis sets the robot's eye line
+    parallel to the person's: the mirror. ``None`` for a face without a roll."""
+    if face.roll is None:
+        return None
+    to_world = (np.asarray(head) @ default_head_to_camera_transform())[:3, :3]
+    eye_line = to_world @ np.array([math.cos(face.roll), math.sin(face.roll), 0.0])
+    axis = look[:3, 0]
+    eye_line = eye_line - float(eye_line @ axis) * axis
+    norm = float(np.linalg.norm(eye_line))
+    if norm < 1e-6:
+        return None
+    eye_line /= norm
+    level = -look[:3, 1]  # toward the robot's right: where image right looks
+    return math.atan2(float(np.cross(level, eye_line) @ axis), float(level @ eye_line))
 
 
 def _span_deg(forwards: npt.NDArray[np.float64]) -> float:

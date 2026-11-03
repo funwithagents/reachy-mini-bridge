@@ -23,6 +23,6 @@
     "presence": true,
     "idle": "breathing",
     "wobbling": true,
-    "tracking": true
+    "tracking": { "enabled": true }
   }
 }

@@ -34,6 +34,7 @@ from reachy_mini_bridge.config import (
     FaceDetectionSettings,
     MotionSettings,
     ReachyMiniConfig,
+    TrackingSettings,
 )
 from reachy_mini_bridge.errors import DaemonError, SimSceneError
 from reachy_mini_bridge.face_detection import PixelFace
@@ -911,7 +912,7 @@ def _tracking_fake() -> ReachyMiniBridge:
             face_detection=FaceDetectionSettings(
                 detector="custom", enabled=True, face_detector=_Blinking
             ),
-            motion=MotionSettings(tracking=True),
+            motion=MotionSettings(tracking=TrackingSettings(enabled=True)),
         )
     )
 

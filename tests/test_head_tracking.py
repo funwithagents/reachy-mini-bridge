@@ -10,6 +10,7 @@ into what the tracker sees, as on the viewer sim.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import math
 import time
 from collections.abc import AsyncIterator
@@ -24,7 +25,13 @@ from reachy_mini.vision.look_at import default_head_to_camera_transform
 from scipy.spatial.transform import Rotation
 
 from reachy_mini_bridge import head_tracking
-from reachy_mini_bridge.config import SimCameraSettings
+from reachy_mini_bridge.config import (
+    ApproachSettings,
+    MirroringSettings,
+    PersonalDistanceSettings,
+    SimCameraSettings,
+    TrackingSettings,
+)
 from reachy_mini_bridge.face_detection import Face, FaceReport
 from reachy_mini_bridge.fake_reachy_mini import FakeReachyMini
 from reachy_mini_bridge.head_tracking import (
@@ -36,13 +43,20 @@ from reachy_mini_bridge.head_tracking import (
     pinhole_intrinsics,
     sim_hfov_deg,
 )
-from reachy_mini_bridge.motion import MotionSession
+from reachy_mini_bridge.motion import GazeAim, MotionSession
+from reachy_mini_bridge.testing.gaze import OVERSHOOT_MAX_DEG, YAW_TOLERANCE_DEG
 from reachy_mini_bridge.testing.sim_scene import DEFAULT_FACE_POS
 
 if TYPE_CHECKING:
     import numpy.typing as npt
 
 DETECT_HZ = 10.0  # upstream's detector sees the camera feed at 10 fps
+# The look-at alone: what the tests of whom the head follows compare aims against.
+NO_POSTURE = TrackingSettings(
+    mirroring=MirroringSettings(enabled=False),
+    approach=ApproachSettings(enabled=False),
+    personal_distance=PersonalDistanceSettings(enabled=False),
+)
 POLL_HZ = 30.0  # the detection loop's poll rate
 
 
@@ -54,6 +68,11 @@ async def _running(session: MotionSession) -> AsyncIterator[MotionSession]:
         yield session
     finally:
         await session.stop()
+
+
+def _pose(aim: GazeAim | None) -> npt.NDArray[np.float64] | None:
+    """The pose an aim's parts compose to (``None`` for a withdrawn aim)."""
+    return None if aim is None else aim.pose()
 
 
 def _yaw_deg(head: npt.NDArray[np.float64]) -> float:
@@ -143,8 +162,10 @@ def _assert_converged(
         direction = math.copysign(1.0, expected)
         past = [(y - expected) * direction for y in yaws]
         peak = past.index(max(past))
-        assert past[peak] <= 10.0  # past the face once, by a bounded amount…
-        assert min(past[peak:]) >= -3.0  # …and never swinging back short of it
+        # past the face once, by a bounded amount, and never swinging back far short of
+        # it: the live convergence kit's thresholds, one acceptance for both tiers
+        assert past[peak] <= OVERSHOOT_MAX_DEG
+        assert min(past[peak:]) >= -YAW_TOLERANCE_DEG
 
 
 def test_the_head_converges_on_the_face_ahead_and_to_either_side() -> None:
@@ -225,7 +246,7 @@ def test_a_report_carrying_its_frame_pose_is_aimed_against_it() -> None:
     tracker = HeadTracker(
         CameraModel.for_sim(SimCameraSettings()),
         history=lambda: (np.array([time.perf_counter()]), np.eye(4)[np.newaxis]),
-        set_gaze=lambda aim, *, focus=False: sent.append(aim),
+        set_gaze=lambda aim, *, focus=False: sent.append(_pose(aim)),
     )
     turned = Rotation.from_euler("z", 20.0, degrees=True).as_matrix()
     pose = np.eye(4)
@@ -317,7 +338,7 @@ def test_focus_goes_with_every_aim_and_stop_withdraws_it() -> None:
     tracker = HeadTracker(
         CameraModel.for_sim(SimCameraSettings()),
         history=lambda: (np.array([time.perf_counter()]), np.eye(4)[np.newaxis]),
-        set_gaze=lambda aim, *, focus=False: sent.append((aim, focus)),
+        set_gaze=lambda aim, *, focus=False: sent.append((_pose(aim), focus)),
     )
     tracker.observe(_report(0.0, 0.0, ts=time.perf_counter()))
     tracker.focus = True
@@ -371,7 +392,8 @@ class _Chooser:
         self.tracker = HeadTracker(
             CameraModel.for_sim(SimCameraSettings(source="webcam")),
             history=lambda: (np.zeros(0), np.zeros((0, 4, 4))),
-            set_gaze=lambda aim, *, focus=False: self.aims.append(aim),
+            set_gaze=lambda aim, *, focus=False: self.aims.append(_pose(aim)),
+            settings=NO_POSTURE,
             report=self.report,  # type: ignore[arg-type]
         )
         self.tracker.start()
@@ -395,7 +417,8 @@ class _Chooser:
         HeadTracker(
             self.tracker.camera,
             history=lambda: (np.zeros(0), np.zeros((0, 4, 4))),
-            set_gaze=lambda aim, *, focus=False: aims.append(aim),
+            set_gaze=lambda aim, *, focus=False: aims.append(_pose(aim)),
+            settings=NO_POSTURE,
         ).observe(
             # the aim depends on the position alone; sized so a fresh tracker acquires it
             FaceReport(
@@ -619,3 +642,284 @@ def test_the_sim_eye_camera_fovy_matches_the_scene() -> None:
     backend = MujocoBackend(scene="empty", headless=True, use_audio=False)
     cam = mujoco.mj_name2id(backend.model, mujoco.mjtObj.mjOBJ_CAMERA, "eye_camera")
     assert float(backend.model.cam_fovy[cam]) == pytest.approx(SIM_EYE_CAMERA_FOVY_DEG)
+
+
+# --- the posture (specs/motion/head_tracking.md "The posture") ---------------------------
+#
+# Driven on the test clock like the choice: observations at 10 Hz of one face, the aims and
+# the published report recorded. With the fixed (webcam) camera the frame's head pose is
+# the rest pose, so a face's image roll is the person's roll as the robot sees it.
+
+
+class _Posture:
+    """A running tracker with the posture on, observing one face on the test clock."""
+
+    def __init__(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        settings: TrackingSettings | None = None,
+        camera: CameraModel | None = None,
+    ) -> None:
+        self.clock = _Clock()
+        monkeypatch.setattr(
+            head_tracking, "time", SimpleNamespace(perf_counter=self.clock.perf_counter)
+        )
+        self.aims: list[Any] = []
+        self.focus: list[bool] = []
+        self.report = _Published()
+
+        def set_gaze(aim: Any, *, focus: bool = False) -> None:
+            self.aims.append(_pose(aim))
+            self.focus.append(focus)
+
+        self.tracker = HeadTracker(
+            camera or CameraModel.for_sim(SimCameraSettings(source="webcam")),
+            history=lambda: (np.zeros(0), np.zeros((0, 4, 4))),
+            set_gaze=set_gaze,
+            settings=settings or TrackingSettings(enabled=True),
+            report=self.report,  # type: ignore[arg-type]
+        )
+        self.tracker.start()
+
+    def see(
+        self,
+        seconds: float,
+        *,
+        roll_deg: float | None = 0.0,
+        x: float = 0.0,
+        distance_m: float | None = 1.0,
+        head_pose: Any = None,
+    ) -> None:
+        face = Face(
+            x=x,
+            y=0.0,
+            roll=None if roll_deg is None else math.radians(roll_deg),
+            size=0.3,
+            track_id=1,
+            distance_m=distance_m,
+        )
+        for _ in range(round(seconds * 10)):
+            self.clock.now += 0.1
+            self.tracker.observe(
+                FaceReport(
+                    faces=(face,),
+                    ts=self.clock.now,
+                    source="custom",
+                    active=True,
+                    head_pose=head_pose,
+                )
+            )
+
+    def nobody(self, seconds: float) -> None:
+        for _ in range(round(seconds * 10)):
+            self.clock.now += 0.1
+            self.tracker.observe(
+                FaceReport(faces=(), ts=self.clock.now, source="custom", active=True)
+            )
+
+    @property
+    def state(self) -> HeadTrackingReport:
+        return self.report.value
+
+
+def _roll_deg(aim: Any) -> float:
+    """The aim's roll about its own forward axis, positive leaning toward the robot's
+    right (its top toward world -y)."""
+    return float(Rotation.from_matrix(aim[:3, :3]).as_euler("ZYX", degrees=True)[2])
+
+
+def _rolled(roll_deg: float) -> npt.NDArray[np.float64]:
+    pose = np.eye(4)
+    pose[:3, :3] = Rotation.from_euler("x", roll_deg, degrees=True).as_matrix()
+    return pose
+
+
+def test_the_head_mirrors_a_tilt_past_the_deadband_and_never_steps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    posture = _Posture(monkeypatch)
+    # the face's top tilted toward the image's right: toward the robot's right
+    posture.see(6.0, roll_deg=8.0)
+    rolls = [_roll_deg(aim) for aim in posture.aims]
+    # the person's 8° less the 3° deadband, at gain 1, toward the same side of the room
+    assert rolls[-1] == pytest.approx(8.0 - head_tracking.ROLL_DEADBAND_DEG, abs=0.1)
+    assert posture.aims[-1][1, 2] < 0.0  # the head's top toward world -y: its right
+    assert posture.state.roll_deg == pytest.approx(rolls[-1], abs=1e-3)
+    assert rolls[0] == pytest.approx(0.0, abs=1e-3)  # grown in from the look-at alone
+    # each 0.1 s observation moves the filter at most its first step toward the target:
+    # an aim at 10 Hz that the loop's easing then spreads over its ticks
+    first_step = 5.0 * (1 - math.exp(-0.1 / head_tracking.ROLL_SMOOTHING_S))
+    assert max(abs(b - a) for a, b in itertools.pairwise(rolls)) < first_step + 0.05
+
+
+def test_the_mirrored_roll_is_clamped_and_scaled_by_the_gain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clamped = _Posture(monkeypatch)
+    clamped.see(8.0, roll_deg=-30.0)
+    assert _roll_deg(clamped.aims[-1]) == pytest.approx(-12.0, abs=0.1)
+    settings = TrackingSettings(enabled=True, mirroring=MirroringSettings(gain=2.0))
+    doubled = _Posture(monkeypatch, settings)
+    doubled.see(8.0, roll_deg=6.0)
+    assert _roll_deg(doubled.aims[-1]) == pytest.approx(2 * (6.0 - 3.0), abs=0.1)
+
+
+def test_an_upright_person_s_jitter_reads_exactly_level(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    posture = _Posture(monkeypatch)
+    for roll in (2.5, -2.0, 1.0, -2.8, 2.9, 0.0) * 5:
+        posture.see(0.1, roll_deg=roll)
+    # (the look-at itself carries a roll of ~1e-5° from upstream's minimal rotation)
+    assert all(_roll_deg(aim) == pytest.approx(0.0, abs=1e-3) for aim in posture.aims)
+    assert posture.state.roll_deg == 0.0
+    # a face without a roll is not mirrored either
+    blank = _Posture(monkeypatch)
+    blank.see(3.0, roll_deg=None)
+    assert _roll_deg(blank.aims[-1]) == pytest.approx(0.0, abs=1e-3)
+
+
+def test_the_robot_s_own_roll_is_not_read_as_the_person_s(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The head-mounted camera: a frame taken with the head rolled 6° shows an upright
+    person rolled -6°; the tracker carries the eye line into the world with that frame's
+    pose, so the person reads upright and the mirror never feeds back on itself."""
+    camera = CameraModel.for_sim(SimCameraSettings(source="sim"))
+    upright = _Posture(monkeypatch, camera=camera)
+    upright.see(6.0, roll_deg=-6.0, head_pose=_rolled(6.0))
+    assert _roll_deg(upright.aims[-1]) == pytest.approx(0.0, abs=0.1)
+    # the same image from a level head is a person rolled -6°: mirrored past the deadband
+    level = _Posture(monkeypatch, camera=camera)
+    level.see(6.0, roll_deg=-6.0, head_pose=np.eye(4))
+    assert _roll_deg(level.aims[-1]) == pytest.approx(-3.0, abs=0.1)
+
+
+def _forward_mm(aim: Any) -> float:
+    """The aim's translation along its own horizontal look direction, in millimetres."""
+    forward = np.array([aim[0, 0], aim[1, 0], 0.0])
+    return float(aim[:3, 3] @ forward / np.linalg.norm(forward)) * 1000.0
+
+
+def test_the_head_leans_toward_a_person_along_the_look_direction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    posture = _Posture(monkeypatch)
+    posture.see(10.0, x=0.6, distance_m=1.0)
+    aim = posture.aims[-1]
+    assert _forward_mm(aim) == pytest.approx(12.0, abs=0.1)
+    assert posture.state.offset_mm == pytest.approx(12.0, abs=0.1)
+    # toward the person at the image's right (world -y), not the front of the robot
+    assert aim[1, 3] < -0.003
+    assert aim[2, 3] == pytest.approx(0.0)  # horizontal
+    # and at the filter's pace: about 1 - 1/e of the way after its time constant
+    tau = head_tracking.OFFSET_SMOOTHING_S
+    first = [_forward_mm(a) for a in posture.aims[: 1 + round(10 * tau)]]
+    assert first[0] == 0.0
+    assert first[-1] == pytest.approx(12.0 * (1 - math.exp(-1)), abs=0.5)
+
+
+@pytest.mark.parametrize(
+    ("distance_m", "expected_mm"),
+    [
+        (0.50, 12.0),  # outside the personal distance: the lean alone
+        (0.40, 12.0),  # at it: no retreat, no threshold to pump across
+        (0.35, 12.0 - 25.0 * 0.5),  # half the span inside: half the retreat
+        (0.20, 12.0 - 25.0),  # past the span: the full retreat, capped
+        (None, 12.0),  # no distance: the lean alone
+    ],
+)
+def test_a_person_too_close_pushes_the_head_back(
+    monkeypatch: pytest.MonkeyPatch, distance_m: float | None, expected_mm: float
+) -> None:
+    posture = _Posture(monkeypatch)
+    posture.see(14.0, distance_m=distance_m)
+    assert _forward_mm(posture.aims[-1]) == pytest.approx(expected_mm, abs=0.1)
+
+
+def test_the_posture_holds_while_the_face_is_missing_and_resets_after_the_loss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    posture = _Posture(monkeypatch)
+    posture.see(8.0, roll_deg=10.0, distance_m=1.0)
+    held = posture.aims[-1]
+    posture.nobody(0.5)  # within the switch time: the aim stands, nothing re-sent
+    assert posture.aims[-1] is held
+    posture.see(0.1, roll_deg=10.0, distance_m=1.0)  # back: continues, no step
+    assert _forward_mm(posture.aims[-1]) == pytest.approx(_forward_mm(held), abs=0.5)
+    posture.nobody(head_tracking.TRACKING_LOST_S + 0.2)
+    assert posture.aims[-1] is None
+    assert (posture.state.roll_deg, posture.state.offset_mm) == (0.0, 0.0)
+    posture.see(0.1, roll_deg=10.0, distance_m=1.0)  # acquired afresh: look-at alone
+    assert _roll_deg(posture.aims[-1]) == pytest.approx(0.0, abs=1e-3)
+    assert posture.state.roll_deg == 0.0
+    assert _forward_mm(posture.aims[-1]) == 0.0
+
+
+def test_a_behaviour_switched_off_eases_out_without_a_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    posture = _Posture(monkeypatch)
+    posture.see(10.0, roll_deg=10.0, distance_m=1.0)
+    before = posture.aims[-1]
+    settings = posture.tracker.settings
+    posture.tracker.configure(
+        replace(
+            settings,
+            mirroring=replace(settings.mirroring, enabled=False),
+            approach=replace(settings.approach, enabled=False),
+        )
+    )
+    posture.see(0.1, roll_deg=10.0, distance_m=1.0)
+    after = posture.aims[-1]
+    # one observation's step of each filter toward zero, never a jump to it
+    roll_step = 1 - math.exp(-0.1 / head_tracking.ROLL_SMOOTHING_S)
+    offset_step = 1 - math.exp(-0.1 / head_tracking.OFFSET_SMOOTHING_S)
+    assert _roll_deg(after) == pytest.approx(
+        _roll_deg(before) * (1 - roll_step), abs=0.05
+    )
+    assert _forward_mm(after) == pytest.approx(
+        _forward_mm(before) * (1 - offset_step), abs=0.05
+    )
+    posture.see(10.0, roll_deg=10.0, distance_m=1.0)
+    assert _roll_deg(posture.aims[-1]) == pytest.approx(0.0, abs=0.01)
+    assert _forward_mm(posture.aims[-1]) == pytest.approx(0.0, abs=0.05)
+
+
+def test_focus_goes_with_an_aim_that_keeps_its_posture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    posture = _Posture(monkeypatch, TrackingSettings(enabled=True, focus=True))
+    posture.see(8.0, roll_deg=10.0, distance_m=1.0)
+    assert all(posture.focus)
+    assert _roll_deg(posture.aims[-1]) == pytest.approx(7.0, abs=0.1)
+    assert _forward_mm(posture.aims[-1]) == pytest.approx(12.0, abs=0.1)
+    # the posture's easing is published silently: only the engagement woke a subscriber
+    assert [r.attention for r in posture.report.sets] == ["watching", "engaged"]
+
+
+def test_face_camera_point_is_the_pinhole_depth_of_the_box() -> None:
+    """A face whose box is `box_height_m` tall at depth z spans f·h/z of the model's
+    frame: the point comes back at that depth, on the face's ray."""
+    camera = CameraModel.for_sim(SimCameraSettings(source="sim"))
+    width, height = camera.size
+    f = camera.K[1, 1]
+    point = np.array([0.1, -0.05, 0.6])
+    u = f * point[0] / point[2] + camera.K[0, 2]
+    v = f * point[1] / point[2] + camera.K[1, 2]
+    face = Face(
+        x=u / (width - 1) * 2 - 1,
+        y=v / (height - 1) * 2 - 1,
+        roll=None,
+        size=f * 0.18 / point[2] / height,
+    )
+    found = head_tracking.face_camera_point(face, camera, 0.18)
+    assert found is not None
+    np.testing.assert_allclose(found, point, atol=2e-3)
+    # half the box height: the same ray at half the depth
+    half = head_tracking.face_camera_point(face, camera, 0.09)
+    assert half is not None
+    np.testing.assert_allclose(half, found / 2, atol=1e-9)
+    assert (
+        head_tracking.face_camera_point(replace(face, size=0.0), camera, 0.18) is None
+    )

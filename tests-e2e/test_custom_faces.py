@@ -29,7 +29,11 @@ import pytest
 
 from reachy_mini_bridge import ReachyMiniConfig
 from reachy_mini_bridge.bridge import ReachyMiniBridge
-from reachy_mini_bridge.config import FaceDetectionSettings, MotionSettings
+from reachy_mini_bridge.config import (
+    FaceDetectionSettings,
+    MotionSettings,
+    TrackingSettings,
+)
 from reachy_mini_bridge.testing import BridgeLoop, LiveBridge, _daemon, requires_caps
 from reachy_mini_bridge.testing.fixtures import (
     check_required_capabilities,
@@ -66,7 +70,7 @@ def live_bridge_custom_faces(
             face_detection=FaceDetectionSettings(
                 detector="custom", enabled=True, face_detector=YuNetDetector
             ),
-            motion=MotionSettings(tracking=True),
+            motion=MotionSettings(tracking=TrackingSettings(enabled=True)),
         )
     )
     with BridgeLoop() as loop:

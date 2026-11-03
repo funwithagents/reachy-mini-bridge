@@ -42,6 +42,8 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 import numpy as np
 
+from .face_detection import FACE_BOX_HEIGHT_M
+
 if TYPE_CHECKING:
     import numpy.typing as npt
 
@@ -110,13 +112,10 @@ FACE_MARKER_THICKNESS_M = 0.01
 FOLLOWED_RGBA = (0.2, 0.9, 0.3, 0.6)
 FACE_RGBA = (1.0, 0.85, 0.2, 0.6)
 FACE_MARKERS_STALE_S = 0.5
-# The physical height a detected face's box is taken to have: the one ratio that turns a
-# face's apparent size into a distance, whatever the camera (specs/daemon/sim_displays.md
-# "From a face to a marker"). A heuristic for a debug view, calibrated on the test
-# scene's portrait: its box measured 0.124, 0.124 and 0.129 m at 0.35, 0.45 and 0.60 m
-# on the viewer sim (2026-10-01). A person's face is bigger, so a person in front of a
-# webcam is drawn nearer than they stand.
-FACE_BOX_HEIGHT_M = 0.125
+# The physical height a detected face's box is taken to have is user perception's
+# (FACE_BOX_HEIGHT_M, re-exported here): the same ratio that gives Face.distance_m, so a
+# marker sits where the report says the face is (specs/daemon/sim_displays.md "From a face
+# to a marker"). The test scene's portraits are life size against it.
 # A marker is always the same object: this wide for its height, whatever the detector's
 # box looks like (an upright box grows and squares up around a tilted face).
 FACE_MARKER_ASPECT = 0.8
@@ -516,17 +515,13 @@ def face_marker(
     is always the same size, only placed and turned — and ``head_pose``
     — the pose its frame was taken from — to carry it into the head-pose frame.
     ``None`` for a face without a size, which has no distance."""
-    from reachy_mini.media.camera_utils import undistort_points
     from reachy_mini.vision.look_at import default_head_to_camera_transform
 
-    width, height = camera.size
-    if face.size <= 0.0:
+    from .head_tracking import face_camera_point
+
+    point = face_camera_point(face, camera, box_height_m)
+    if point is None:
         return None
-    u = (face.x + 1.0) / 2.0 * (width - 1)
-    v = (face.y + 1.0) / 2.0 * (height - 1)
-    x_n, y_n = undistort_points(u, v, camera.K, camera.D)
-    depth = float(camera.K[1, 1]) * box_height_m / (face.size * height)
-    point = depth * np.array([x_n, y_n, 1.0])
 
     # The face's frame in the camera's (x right, y down, z forward): its normal back to
     # the camera centre, its up the camera's up made orthogonal to it, its right

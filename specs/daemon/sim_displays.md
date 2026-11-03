@@ -111,7 +111,7 @@ The daemon draws it as an `mjGEOM_ELLIPSOID` with semi-axes `(width/2, height/2,
 4. **The orientation, in the camera frame.** The face's normal points from the face back to the camera centre. Its up is the camera's up (−y) made orthogonal to the normal, and its right completes a right-handed frame. That frame is then turned in its own axes: `yaw` about its up, `pitch` about its right, then `roll` about the line of sight, with signs such that projecting the marker back through the pinhole reproduces the report's convention ([user_perception.md](../vision/user_perception.md) "The face report"). The tilt of the marker's width axis in the image equals `roll`. A positive `yaw` turns the normal toward the image's right. A positive `pitch` tilts the face down. A `None` angle is zero. With the shipped `yunet`, which gives roll only, a marker faces the camera and leans with the eye line. A detector that fits a head also turns it.
 5. **Into the head-pose frame.** Camera frame → head frame through `default_head_to_camera_transform()` (the tracker's), → the head-pose frame through `head_pose`.
 
-`FACE_BOX_HEIGHT_M = 0.125` is the one ratio that turns a face's size into a distance, for every camera. It is a heuristic for a debug view, calibrated on the test scene's portrait, whose distance is known: YuNet's box measured 0.124, 0.124 and 0.129 m tall at 0.35, 0.45 and 0.60 m on the viewer sim (2026-10-01). The portrait is smaller than life (its face fills half of a 0.25 m plane), so a person in front of a webcam, whose face is bigger, is drawn nearer than they stand, by about a third. The direction stays right.
+`FACE_BOX_HEIGHT_M = 0.18` is the one ratio that turns a face's size into a distance, for every camera: the physical height of YuNet's brow-to-chin box on an adult, owned by user perception, which reports the same distance as `Face.distance_m` ([user_perception.md](../vision/user_perception.md) "The face report"), so the marker and the report agree. The test scene's portraits are life size against it ([sim_scene.md](../testing/sim_scene.md) "Geometry"), so a marker lands on its portrait, and a person in front of a webcam is drawn where they stand, to the precision of a population value. The direction is exact up to the camera model.
 
 #### The head pose of a frame
 
@@ -189,7 +189,7 @@ The sim daemon launcher keeps what feeds the overlay, because it is camera-sourc
 - **[head_tracking.md](../motion/head_tracking.md):** `frame_head_pose` and the tracker's `delay_s`, the camera model, `default_head_to_camera_transform`; the axis `robot_gaze` draws is the one its aim aligns.
 - **[user_perception.md](../vision/user_perception.md):** the `Face` a marker is built from and its orientation convention; `bridge.faces`, polled.
 - **[bridge.md](../core/bridge.md):** the face marker publisher's place in the session's lifecycle.
-- **[sim_scene.md](../testing/sim_scene.md):** the portraits the e2e checks land the markers on, and the calibration of `FACE_BOX_HEIGHT_M`; its props are injected under `/api/sim/inject/bodies`, beside the displays route.
+- **[sim_scene.md](../testing/sim_scene.md):** the portraits the e2e checks land the markers on, life size against `FACE_BOX_HEIGHT_M`; its props are injected under `/api/sim/inject/bodies`, beside the displays route.
 - **[project.md](../project.md):** the `sim` extra's MuJoCo 3.3.x, which `set_images` needs.
 
 ## Open questions

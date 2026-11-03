@@ -16,7 +16,13 @@ See specs/_overview.md for the architecture and specs/_index.md for each concept
 from .audio import SpeechSynthesizer, TTSEngineSynthesizer
 from .bridge import ReachyMiniBridge
 from .camera import CameraFrame
-from .config import ReachyMiniConfig
+from .config import (
+    ApproachSettings,
+    MirroringSettings,
+    PersonalDistanceSettings,
+    ReachyMiniConfig,
+    TrackingSettings,
+)
 from .daemon import DaemonInfo
 from .errors import (
     BridgeError,
@@ -33,6 +39,7 @@ from .motion import IdleMove, IdleOffsets
 from .observable import Observable
 
 __all__ = [
+    "ApproachSettings",
     "BridgeError",
     "CameraFrame",
     "ConfigError",
@@ -45,8 +52,10 @@ __all__ = [
     "IdleMove",
     "IdleOffsets",
     "MicChunk",
+    "MirroringSettings",
     "MotorsNotEnabledError",
     "Observable",
+    "PersonalDistanceSettings",
     "PixelFace",
     "ReachyMiniBridge",
     "ReachyMiniConfig",
@@ -54,4 +63,5 @@ __all__ = [
     "SpeechInterruptedError",
     "SpeechSynthesizer",
     "TTSEngineSynthesizer",
+    "TrackingSettings",
 ]

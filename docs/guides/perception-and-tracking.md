@@ -10,12 +10,12 @@ The bridge's **camera feed** (`bridge.camera`) is the one reader of the robot's 
 
 ```json
 {
-  "face_detection": {"detector": "yunet", "enabled": true, "width": 320, "target_fps": null},
-  "motion": {"tracking": true}
+  "face_detection": {"detector": "yunet", "enabled": true, "width": 640, "target_fps": null},
+  "motion": {"tracking": {"enabled": true}}
 }
 ```
 
-Two things, and both are needed: a **detector** and a **switch**. `face_detection.detector` names what runs on the camera feed's frames — `"yunet"`, the shipped one (upstream's model run by the bridge: nothing to install, the weights download into the Hugging Face cache on first use), or `"custom"`, one you register from code ([custom-face-detector.md](custom-face-detector.md)); by default it is `null` and nothing is detected or tracked. The name alone starts nothing: `face_detection.enabled` runs the detector from session entry so `bridge.faces` reports who is there, `motion.tracking` makes the head follow the face the tracker chooses (and implies detection) — either switch on with no detector is a `ConfigError`. Neither needs motors: the head moves once they are `enabled`. At run time the same two switches are `set_face_detection(enabled)` and `start_head_tracking(focus=False)` / `stop_head_tracking()`. The two cost knobs, `face_detection.width` (the shipped detector's working width) and `face_detection.target_fps` (a ceiling on detections per second, for any detector — the lever on a wireless robot's 30 fps stream), are documented with their defaults in [../reference/configuration.md](../reference/configuration.md#face_detection--who-is-in-front-of-the-robot); ten seconds into a run the loop logs the detector's mean time and the rate it achieved, the numbers to tune them against.
+Two things, and both are needed: a **detector** and a **switch**. `face_detection.detector` names what runs on the camera feed's frames — `"yunet"`, the shipped one (upstream's model run by the bridge: nothing to install, the weights download into the Hugging Face cache on first use), or `"custom"`, one you register from code ([custom-face-detector.md](custom-face-detector.md)); by default it is `null` and nothing is detected or tracked. The name alone starts nothing: `face_detection.enabled` runs the detector from session entry so `bridge.faces` reports who is there, `motion.tracking.enabled` makes the head follow the face the tracker chooses (and implies detection) — either switch on with no detector is a `ConfigError`. Neither needs motors: the head moves once they are `enabled`. At run time the same two switches are `set_face_detection(enabled)` and `start_head_tracking()` / `stop_head_tracking()`, or `set_tracking(settings)` for the whole tracking object. The two cost knobs, `face_detection.width` (the shipped detector's working width) and `face_detection.target_fps` (a ceiling on detections per second, for any detector — the lever on a wireless robot's 30 fps stream), are documented with their defaults in [../reference/configuration.md](../reference/configuration.md#face_detection--who-is-in-front-of-the-robot); ten seconds into a run the loop logs the detector's mean time and the rate it achieved, the numbers to tune them against.
 
 **Where the camera comes from.** On a robot, its eye camera (the wireless robot's over WebRTC at 30 fps). On the sim, `daemon.camera.source`: `"sim"` renders the scene from the eye camera — under the viewer anywhere, headless on Linux only — and `"webcam"` relays your computer's camera, so the simulated robot sees and follows **you**, headless or not ([running-daemons.md](running-daemons.md) "You in front of the sim"). The sim's rendered scene has nothing to look at unless the test scene's portrait is shown ([testing.md](testing.md) "Testing tracking without a person").
 
@@ -23,13 +23,32 @@ Two things, and both are needed: a **detector** and a **switch**. `face_detectio
 
 The tracker follows **one** face by its `track_id` and holds on to it: the biggest face in view, of at least a minimum size, taken when nobody is followed; kept while it is seen, whatever other faces appear. A followed face that disappears is waited for one second, the head holding toward where it was, and if it is not back the head turns to the biggest other face. After two seconds with no face at all the aim is withdrawn: the head eases back into the idle move, and the next face is acquired at once. `focus=False` (the default) composes the aim into the idle move — the head breathes and the antennas flick while it looks; `focus=True` holds the head exactly on the face, antennas still moving. Emotions play as recorded over all of it; the gaze fades back in afterwards.
 
+## The posture toward the person
+
+While the head follows someone it also stands toward them, three behaviours each switched in `motion.tracking` (fields: [../reference/configuration.md](../reference/configuration.md#motion--what-the-robot-does-at-rest)), all on by default:
+
+- **Mirroring.** The head rolls with the person's head roll, as a mirror does: both lean toward the same side of the room. A tilt under 3° reads as upright, and the roll is read against the head's own pose when the frame was taken, so the robot's own breathing or mirroring is never taken for the person's. It is as good as the detector's roll: YuNet at the default width (640) reads about two thirds of a tilt at 0.45 m from the Lite, more nearer, little beyond 0.6 m; raise `face_detection.width`, set `mirroring.gain` above 1, or register a detector that fits a head for more.
+- **Approach.** The head sits `lean_mm` (12 mm) forward along the direction it looks: the robot comes a little toward the person.
+- **Personal distance.** Someone nearer than `distance_m` (0.40 m) pushes the head back, up to `max_back_mm` (25 mm) over `span_m` (0.10 m) of intrusion — a recoil, since the head's travel is a few centimetres. The distance is each face's `distance_m`, from its size in the image against an adult face's height, good to a few centimetres at desk range.
+
+The posture gives way to what the robot can reach: when a retreat and a roll far to one side would ask the head for a pose its kinematics cannot solve, the motion loop drops the idle move's motion first, then the offset, then the roll, and if need be turns the head only part of the way — the head keeps looking at you rather than freezing on its last pose. Each eases in within a second and freezes while the followed face is missing; the aim withdrawn, the posture resets and grows in again with the next person. Switched off at run time, a behaviour eases out instead of stepping:
+
+```python
+from dataclasses import replace
+
+settings = bridge.tracking
+await bridge.set_tracking(replace(settings, approach=replace(settings.approach, enabled=False)))
+```
+
+`bridge.head_tracking.value.roll_deg` and `offset_mm` read the posture the head holds.
+
 `bridge.attention` is the derived state: `"engaged"` while a face is followed, `"watching"` while tracking is on and nobody is, `None` when tracking is off.
 
 ## The two reports
 
-**`bridge.faces`** — a `FaceReport`: every face the detector reports, in `track_id` order (oldest track first), each with its normalised position (`x`, `y` in [-1, 1], the nose when known), its `size` (box height as a fraction of the frame), its pixel `bbox`, its head angles in **radians** (`roll`; `pitch` and `yaw` from a detector that fits a head), and its `track_id`; plus `active` (a detector is looking), `source` (`"yunet"` / `"custom"`), `ts`, and `frame` — the `CameraFrame` the faces were found in. The report is about detection: it singles nobody out.
+**`bridge.faces`** — a `FaceReport`: every face the detector reports, in `track_id` order (oldest track first), each with its normalised position (`x`, `y` in [-1, 1], the nose when known), its `size` (box height as a fraction of the frame), its `distance_m` from the camera, its pixel `bbox`, its head angles in **radians** (`roll`; `pitch` and `yaw` from a detector that fits a head), and its `track_id`; plus `active` (a detector is looking), `source` (`"yunet"` / `"custom"`), `ts`, and `frame` — the `CameraFrame` the faces were found in. The report is about detection: it singles nobody out.
 
-**`bridge.head_tracking`** — a `HeadTrackingReport`: `active`, `focus`, `attention` and the `track_id` of the face the head follows (`None` unless engaged).
+**`bridge.head_tracking`** — a `HeadTrackingReport`: `active`, `focus`, `attention`, the `track_id` of the face the head follows (`None` unless engaged), and the posture it holds (`roll_deg`, `offset_mm`).
 
 Both are `Observable`s, readable at any time and outliving the session — their inactive values before it starts and after it ends ([../reference/api.md](../reference/api.md) "Reading and subscribing").
 
