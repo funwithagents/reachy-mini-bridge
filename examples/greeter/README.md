@@ -28,4 +28,4 @@ The two profiles under [configs/](configs/) are the project's [examples/configs/
 | [sim-webcam.json](configs/sim-webcam.json) (default) | the `sim` extra, a webcam with camera permission for the terminal, an unlocked GUI session for the viewer |
 | [lite-usb.json](configs/lite-usb.json) | the robot on USB; camera and microphone permission for the terminal (macOS) |
 
-Any `ReachyMiniConfig` works through `--config` as long as it names a `face_detection.detector`, sets `motion.tracking` on and carries a `tts` block ([docs/reference/configuration.md](../../docs/reference/configuration.md)) — the greeter refuses a config without tracking, and runs without a voice (logging what it could not say) when the voice fails to build.
+Any `ReachyMiniConfig` works through `--config` as long as it names a `face_detection.detector`, sets `motion.tracking.enabled` on and carries a `tts` block ([docs/reference/configuration.md](../../docs/reference/configuration.md)) — the greeter refuses a config without tracking, and runs without a voice (logging what it could not say) when the voice fails to build.

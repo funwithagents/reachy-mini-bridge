@@ -12,6 +12,6 @@
     "target_fps": 10
   },
   "motion": {
-    "tracking": true
+    "tracking": { "enabled": true }
   }
 }

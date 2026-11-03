@@ -7,6 +7,7 @@ through the `robot` key check (no daemon).
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 from typing import Any
@@ -16,12 +17,16 @@ import pytest
 from reachy_mini_bridge.config import (
     KINEMATICS_ENGINES,
     UPSTREAM_KINEMATICS_ENGINES,
+    ApproachSettings,
     DaemonConfig,
     FaceDetectionSettings,
+    MirroringSettings,
     MotionSettings,
+    PersonalDistanceSettings,
     ReachyMiniConfig,
     SimCameraSettings,
     SimDisplaySettings,
+    TrackingSettings,
 )
 from reachy_mini_bridge.errors import ConfigError
 from reachy_mini_bridge.face_detection import DETECT_WIDTH
@@ -35,9 +40,16 @@ def test_defaults() -> None:
     # Detection is opt-in (specs/vision/user_perception.md): no detector, no detection, and
     # tracking off since it needs a detector.
     assert cfg.face_detection == FaceDetectionSettings(detector=None, enabled=False)
-    assert cfg.motion.tracking is False
-    # the shipped detector's own width, spelled out; null would be the full frame
-    assert cfg.face_detection.width == DETECT_WIDTH
+    # tracking off, its posture on for when it runs (specs/core/config.md "`motion.tracking`")
+    tracking = cfg.motion.tracking
+    assert tracking.enabled is False and tracking.focus is False
+    assert tracking.mirroring == MirroringSettings(enabled=True, gain=1.0, max_deg=12.0)
+    assert tracking.approach == ApproachSettings(enabled=True, lean_mm=12.0)
+    assert tracking.personal_distance == PersonalDistanceSettings(
+        enabled=True, distance_m=0.40, max_back_mm=25.0, span_m=0.10
+    )
+    # the shipped detector's default width, twice upstream's 320; null is the full frame
+    assert cfg.face_detection.width == DETECT_WIDTH == 640
 
 
 def test_the_repo_example_parses() -> None:
@@ -417,8 +429,11 @@ def test_face_detection_block_sets_the_detector_the_switch_and_the_knobs() -> No
     "data",
     [
         {"face_detection": {"enabled": True}},
-        {"motion": {"tracking": True}},
-        {"face_detection": {"enabled": True}, "motion": {"tracking": True}},
+        {"motion": {"tracking": {"enabled": True}}},
+        {
+            "face_detection": {"enabled": True},
+            "motion": {"tracking": {"enabled": True}},
+        },
         {"face_detection": {"detector": None, "enabled": True}},
     ],
 )
@@ -429,8 +444,8 @@ def test_a_switch_on_without_a_detector_is_a_config_error(data: dict[str, Any]) 
     message = str(info.value)
     if data.get("face_detection", {}).get("enabled"):
         assert "face_detection.enabled" in message
-    if data.get("motion", {}).get("tracking"):
-        assert "motion.tracking" in message
+    if data.get("motion", {}).get("tracking", {}).get("enabled"):
+        assert "motion.tracking.enabled" in message
     assert "yunet" in message  # the message points at the shipped detector
     # The same switches with a detector named are valid.
     block = {**data.get("face_detection", {}), "detector": "yunet"}
@@ -477,21 +492,84 @@ def test_motion_block_sets_the_switches() -> None:
                 "presence": False,
                 "idle": "hold",
                 "wobbling": False,
-                "tracking": False,
+                "tracking": {"enabled": False},
             }
         }
     )
-    assert cfg.motion == MotionSettings(
-        presence=False, idle="hold", wobbling=False, tracking=False
-    )
+    assert cfg.motion == MotionSettings(presence=False, idle="hold", wobbling=False)
     cfg = ReachyMiniConfig.from_dict({"motion": {"idle": "custom"}})
     assert cfg.motion == MotionSettings(presence=True, idle="custom", idle_move=None)
     cfg = ReachyMiniConfig.from_json('{"motion": {"wobbling": false}}')
     assert cfg.motion == MotionSettings(wobbling=False)
     cfg = ReachyMiniConfig.from_dict(
-        {"face_detection": {"detector": "custom"}, "motion": {"tracking": True}}
+        {
+            "face_detection": {"detector": "custom"},
+            "motion": {
+                "tracking": {
+                    "enabled": True,
+                    "focus": True,
+                    "mirroring": {"gain": 1.5},
+                    "approach": {"enabled": False},
+                    "personal_distance": {"distance_m": 0.5, "span_m": 0.2},
+                }
+            },
+        }
     )
-    assert cfg.motion == MotionSettings(tracking=True)
+    # a sub-object given in part keeps the defaults of the rest
+    assert cfg.motion == MotionSettings(
+        tracking=TrackingSettings(
+            enabled=True,
+            focus=True,
+            mirroring=MirroringSettings(gain=1.5),
+            approach=ApproachSettings(enabled=False),
+            personal_distance=PersonalDistanceSettings(distance_m=0.5, span_m=0.2),
+        )
+    )
+
+
+def test_tracking_is_an_object_and_a_boolean_points_at_it() -> None:
+    """The clean break (specs/core/config.md "`motion.tracking`"): the boolean the block
+    used to take is refused with the object it now means."""
+    with pytest.raises(ConfigError, match=r'\{"enabled": true\}'):
+        ReachyMiniConfig.from_dict({"motion": {"tracking": True}})
+    with pytest.raises(ConfigError, match=r'\{"enabled": false\}'):
+        ReachyMiniConfig.from_dict({"motion": {"tracking": False}})
+
+
+def test_tracking_settings_are_frozen() -> None:
+    """The runtime API's object: changed with `replace`, never mutated in place."""
+    settings = TrackingSettings()
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        settings.enabled = True  # type: ignore[misc]
+    assert dataclasses.replace(settings, enabled=True).enabled
+
+
+@pytest.mark.parametrize(
+    ("tracking", "field"),
+    [
+        ({"enabled": 1}, r"motion\.tracking\.enabled"),
+        ({"focus": "yes"}, r"motion\.tracking\.focus"),
+        ({"mirror": {}}, "mirror"),
+        ({"mirroring": True}, r"motion\.tracking\.mirroring"),
+        ({"mirroring": {"enabled": "on"}}, r"mirroring\.enabled"),
+        ({"mirroring": {"gain": -0.1}}, r"mirroring\.gain"),
+        ({"mirroring": {"gain": True}}, r"mirroring\.gain"),
+        ({"mirroring": {"max_deg": 0}}, r"mirroring\.max_deg"),
+        ({"mirroring": {"max_deg": 31}}, r"mirroring\.max_deg"),
+        ({"mirroring": {"deadband_deg": 3}}, "deadband_deg"),
+        ({"approach": {"lean_mm": -1}}, r"approach\.lean_mm"),
+        ({"approach": {"lean_mm": 40}}, r"approach\.lean_mm"),
+        ({"approach": {"lean_mm": float("nan")}}, r"approach\.lean_mm"),
+        ({"personal_distance": {"distance_m": 0}}, r"personal_distance\.distance_m"),
+        ({"personal_distance": {"max_back_mm": 31}}, r"max_back_mm"),
+        ({"personal_distance": {"span_m": 0}}, r"personal_distance\.span_m"),
+        ({"personal_distance": {"span_m": float("inf")}}, r"span_m"),
+        ({"personal_distance": {"radius_m": 0.3}}, "radius_m"),
+    ],
+)
+def test_tracking_rejects_bad_values(tracking: dict[str, object], field: str) -> None:
+    with pytest.raises(ConfigError, match=field):
+        ReachyMiniConfig.from_dict({"motion": {"tracking": tracking}})
 
 
 @pytest.mark.parametrize(
@@ -500,6 +578,7 @@ def test_motion_block_sets_the_switches() -> None:
         ({"presence": "yes"}, r"motion\.presence"),
         ({"wobbling": "yes"}, r"motion\.wobbling"),
         ({"tracking": 1}, r"motion\.tracking"),
+        ({"tracking": "on"}, r"motion\.tracking"),
         ({"idle": True}, r"motion\.idle"),
         ({"idle": "breathe"}, r"motion\.idle"),
         ({"idle": ""}, r"motion\.idle"),

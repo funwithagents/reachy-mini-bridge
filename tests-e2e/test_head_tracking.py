@@ -58,6 +58,7 @@ from reachy_mini_bridge.testing.gaze import (
 from reachy_mini_bridge.testing.sim_scene import (
     DEFAULT_FACE_POS,
     DEFAULT_FACE_SIZE,
+    FACE_QUAT,
     LOOKING_DOWN_FACE,
     TURNED_FACE,
     SimSceneClient,
@@ -104,7 +105,7 @@ def test_head_tracking_turns_onto_a_face_and_follows_it(
     async def scenario() -> list[Track]:
         await bridge.set_motors_state("enabled")
         await arm_tracking(bridge, focus=True)
-        assert bridge.tracking, "tracking is on by default from the config"
+        assert bridge.tracking.enabled, "arm_tracking turned tracking on"
         assert bridge.tracking_focus
         face = face_scene.spawn(DEFAULT_FACE_POS)
         tracks = [await track_onto(bridge, "face ahead", 0.0)]
@@ -574,3 +575,148 @@ def test_a_face_gone_for_good_hands_over_to_the_other_then_the_head_is_released(
     assert states[-1] == ("watching", None)
     assert all(attention == "engaged" for attention, _ in states[:-1])
     assert lost_after >= TRACKING_LOST_S - 0.2
+
+
+# --- the posture (specs/motion/head_tracking.md "The posture") ---------------------------
+#
+# The life-size portraits (specs/testing/sim_scene.md "Geometry") read their true distance,
+# so the personal distance and the lean are measured in the sim as they would be in front
+# of a person. The eye camera sits ~0.044 m forward of the head's centre at neutral, at
+# the portraits' height: a portrait at x metres is ~x - 0.044 m from it.
+
+_EYE_FORWARD_M = 0.044
+
+
+def _head_x_mm(robot: Any) -> float:
+    return float(robot.get_current_head_pose()[0, 3]) * 1000.0
+
+
+def _head_roll_deg(robot: Any) -> float:
+    from scipy.spatial.transform import Rotation
+
+    pose = robot.get_current_head_pose()
+    return float(Rotation.from_matrix(pose[:3, :3]).as_euler("ZYX", degrees=True)[2])
+
+
+def _rolled_face_quat(roll_deg: float) -> tuple[float, float, float, float]:
+    """The portrait's orientation turned ``roll_deg`` about world x, (w, x, y, z): a
+    positive roll leans its top toward world -y, the robot's right."""
+    from scipy.spatial.transform import Rotation
+
+    w, x, y, z = FACE_QUAT
+    turned = Rotation.from_euler("x", roll_deg, degrees=True) * Rotation.from_quat(
+        [x, y, z, w]
+    )
+    qx, qy, qz, qw = turned.as_quat()
+    return (float(qw), float(qx), float(qy), float(qz))
+
+
+def test_the_face_report_reads_a_portrait_s_distance(
+    live_bridge: LiveBridge, face_scene: SimSceneClient
+) -> None:
+    """specs/vision/user_perception.md "The face report": `distance_m`, from the face's
+    size through the sim camera's pinhole against the detector's box height, reads the
+    life-size portrait's distance from the eye camera within a tenth."""
+    bridge, _caps = live_bridge
+
+    async def scenario() -> list[tuple[float, float]]:
+        await bridge.set_idle(
+            "hold"
+        )  # the camera still: the distance is the geometry's
+        await bridge.set_face_detection(True)
+        readings: list[tuple[float, float]] = []
+        face = face_scene.spawn((0.35, 0.0, DEFAULT_FACE_POS[2]))
+        for distance in (0.35, 0.45, 0.60):
+            face_scene.place(face, (distance, 0.0, DEFAULT_FACE_POS[2]))
+            await asyncio.sleep(1.0)
+            seen: list[float] = []
+            deadline = time.perf_counter() + 2.0
+            while time.perf_counter() < deadline:
+                faces = bridge.faces.value.faces
+                if len(faces) == 1 and faces[0].distance_m is not None:
+                    seen.append(faces[0].distance_m)
+                await asyncio.sleep(0.1)
+            assert seen, f"no face reported at {distance} m"
+            readings.append((distance - _EYE_FORWARD_M, sorted(seen)[len(seen) // 2]))
+        await bridge.set_idle("breathing")
+        return readings
+
+    readings = live_bridge.run(scenario())
+    print(f"distance (true, read): {readings}")
+    for true, read in readings:
+        assert read == pytest.approx(true, rel=0.10)
+
+
+def test_the_head_leans_toward_a_face_and_steps_back_from_one_too_close(
+    live_bridge: LiveBridge, face_scene: SimSceneClient
+) -> None:
+    """specs/motion/head_tracking.md "The offset": a face beyond the personal distance
+    draws the head `lean_mm` forward; brought inside it by more than the span, it pushes
+    the head back by `max_back_mm` less the lean. Tracks with focus, so the head's x reads
+    the posture alone."""
+    bridge, _caps = live_bridge
+    robot = bridge.robot
+    tracking = bridge.tracking
+    lean = tracking.approach.lean_mm
+    back = tracking.personal_distance.max_back_mm
+
+    async def scenario() -> tuple[float, float, float, float, float]:
+        await bridge.set_motors_state("enabled")
+        await bridge.set_idle("hold")
+        neutral = await asyncio.to_thread(_head_x_mm, robot)
+        await arm_tracking(bridge, focus=True)
+        face = face_scene.spawn((0.65, 0.0, DEFAULT_FACE_POS[2]))
+        assert await wait_for(lambda: bridge.attention == "engaged", 5.0)
+        await asyncio.sleep(6.0)  # the lean eases in over its time constant
+        far = await asyncio.to_thread(_head_x_mm, robot)
+        far_offset = bridge.head_tracking.value.offset_mm
+        face_scene.place(face, (0.28, 0.0, DEFAULT_FACE_POS[2]), duration=1.0)
+        await asyncio.sleep(8.0)
+        near = await asyncio.to_thread(_head_x_mm, robot)
+        near_offset = bridge.head_tracking.value.offset_mm
+        await bridge.set_idle("breathing")
+        return neutral, far, far_offset, near, near_offset
+
+    neutral, far, far_offset, near, near_offset = live_bridge.run(scenario())
+    print(
+        f"head x: neutral {neutral:+.1f} mm, far {far:+.1f} mm (offset "
+        f"{far_offset:+.1f}), near {near:+.1f} mm (offset {near_offset:+.1f})"
+    )
+    assert far_offset == pytest.approx(lean, abs=1.0)
+    assert near_offset == pytest.approx(lean - back, abs=2.0)
+    assert far - neutral == pytest.approx(lean, abs=4.0)
+    assert near - neutral == pytest.approx(lean - back, abs=4.0)
+
+
+def test_the_head_mirrors_a_tilted_portrait(
+    live_bridge: LiveBridge, face_scene: SimSceneClient
+) -> None:
+    """specs/motion/head_tracking.md "The mirrored roll": a portrait leaning its top
+    toward the robot's right makes the head lean toward its own right too — the eye lines
+    parallel — read in the world against the frame's head pose, so the head's own roll
+    does not cancel the reading. Near the robot, where YuNet reads a third to a half of a
+    rendered portrait's roll at the default width (specs/testing/sim_scene.md "Geometry"),
+    on the near-upright `face_2` (the bundled Armstrong photo carries a tilt of its own,
+    about -4°, which would cancel part of this one)."""
+    bridge, _caps = live_bridge
+    robot = bridge.robot
+
+    async def scenario() -> tuple[float, float, float]:
+        await bridge.set_motors_state("enabled")
+        await bridge.set_idle("hold")
+        await arm_tracking(bridge, focus=True)
+        face_scene.spawn(
+            (0.28, 0.0, DEFAULT_FACE_POS[2]), _rolled_face_quat(25.0), name="face_2"
+        )
+        assert await wait_for(lambda: bridge.attention == "engaged", 5.0)
+        await asyncio.sleep(6.0)
+        read = bridge.faces.value.faces[0].roll if bridge.faces.value.faces else None
+        mirrored = bridge.head_tracking.value.roll_deg
+        actual = await asyncio.to_thread(_head_roll_deg, robot)
+        await bridge.set_idle("breathing")
+        return math.degrees(read or 0.0), mirrored, actual
+
+    read, mirrored, actual = live_bridge.run(scenario())
+    print(f"image roll {read:+.1f}°, mirrored {mirrored:+.1f}°, head {actual:+.1f}°")
+    assert mirrored > 4.0  # toward the robot's right, past the deadband
+    assert actual == pytest.approx(mirrored, abs=3.0)

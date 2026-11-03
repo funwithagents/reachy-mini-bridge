@@ -31,13 +31,17 @@ if TYPE_CHECKING:
     from .motion import IdleMove
 
 __all__ = [
+    "ApproachSettings",
     "AudioSettings",
     "DaemonConfig",
     "FaceDetectionSettings",
+    "MirroringSettings",
     "MotionSettings",
+    "PersonalDistanceSettings",
     "ReachyMiniConfig",
     "SimCameraSettings",
     "SimDisplaySettings",
+    "TrackingSettings",
 ]
 
 BACKENDS = ("real", "sim", "fake")
@@ -60,6 +64,12 @@ CAMERA_SOURCES = ("sim", "webcam")
 # Where a bridge launcher reports how it runs (specs/daemon/daemon.md "What the daemon reports").
 DAEMON_INFO_ROUTE = "/api/bridge/daemon"
 DEFAULT_WEBCAM_HFOV_DEG = 70.0
+# The shipped detector's default working width (specs/core/config.md `face_detection.width`).
+DEFAULT_DETECT_WIDTH = 640
+# The head's own range on the posture's axes (specs/core/config.md "`motion.tracking`"): what
+# the emotions library's recordings span, so no setting asks for more than the repertoire.
+POSTURE_MAX_MM = 30.0
+POSTURE_MAX_DEG = 30.0
 # The sim displays (specs/core/config.md `daemon.sim_displays`; specs/daemon/sim_displays.md):
 # each name is a field of SimDisplaySettings and a `--sim-display` value of the sim
 # daemon launcher. Add a display here and as a field, nowhere else.
@@ -371,9 +381,9 @@ class FaceDetectionSettings:
     detector: str | None = None
     # Run the detection loop from session entry, so `bridge.faces` reports who is there.
     enabled: bool = False
-    # The width the shipped detector works at (face_detection.DETECT_WIDTH, upstream's own);
-    # None = the full frame.
-    width: int | None = 320
+    # The width the shipped detector works at (face_detection.DETECT_WIDTH: twice upstream's
+    # 320, where YuNet's roll becomes usable for the tracker's mirror); None = the full frame.
+    width: int | None = DEFAULT_DETECT_WIDTH
     # A ceiling on detections per second; None = once per new camera frame.
     target_fps: float | None = None
     # Python only: the custom detector's factory, used when detector is "custom".
@@ -393,7 +403,7 @@ class FaceDetectionSettings:
         )
         detector = block.get("detector")
         enabled = block.get("enabled", False)
-        width = block.get("width", 320)
+        width = block.get("width", DEFAULT_DETECT_WIDTH)
         target_fps = block.get("target_fps")
         if detector is not None and detector not in FACE_DETECTORS:
             raise ConfigError(
@@ -435,6 +445,177 @@ class FaceDetectionSettings:
         return cls.from_dict(_load_file(path))
 
 
+# --- `motion.tracking` --------------------------------------------------------------
+
+
+def _bool_field(block: dict[str, Any], name: str, key: str, default: bool) -> bool:
+    value = block.get(key, default)
+    if not isinstance(value, bool):
+        raise ConfigError(f"'{name}.{key}' must be a boolean")
+    return value
+
+
+def _number_field(
+    block: dict[str, Any],
+    name: str,
+    key: str,
+    default: float,
+    *,
+    low: float,
+    high: float = math.inf,
+    low_inclusive: bool = True,
+) -> float:
+    """A finite number other than ``bool`` in ``[low, high]`` (``(low, high]`` when
+    ``low_inclusive`` is off)."""
+    value = block.get(key, default)
+    bound = f"{'[' if low_inclusive else '('}{low:g}, {high:g}]"
+    if (
+        not _is_number(value)
+        or not math.isfinite(value)
+        or value > high
+        or value < low
+        or (not low_inclusive and value == low)
+    ):
+        raise ConfigError(f"'{name}.{key}' must be a number in {bound}, got {value!r}")
+    return float(value)
+
+
+@dataclass(frozen=True)
+class MirroringSettings:
+    """The head rolls with the person's head roll, as a mirror does
+    (specs/motion/head_tracking.md "The posture")."""
+
+    enabled: bool = True
+    # mirrored roll per degree of the person's roll, after the deadband
+    gain: float = 1.0
+    # the largest mirrored roll, either way, in degrees
+    max_deg: float = 12.0
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MirroringSettings:
+        name = "motion.tracking.mirroring"
+        block = _require_object(data, name)
+        _reject_unknown_keys(block, name, {"enabled", "gain", "max_deg"})
+        return cls(
+            enabled=_bool_field(block, name, "enabled", True),
+            gain=_number_field(block, name, "gain", 1.0, low=0.0),
+            max_deg=_number_field(
+                block,
+                name,
+                "max_deg",
+                12.0,
+                low=0.0,
+                high=POSTURE_MAX_DEG,
+                low_inclusive=False,
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class ApproachSettings:
+    """The head leans toward the person it follows (specs/motion/head_tracking.md "The
+    posture")."""
+
+    enabled: bool = True
+    # how far forward of the look-at pose, along the look direction, in millimetres
+    lean_mm: float = 12.0
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ApproachSettings:
+        name = "motion.tracking.approach"
+        block = _require_object(data, name)
+        _reject_unknown_keys(block, name, {"enabled", "lean_mm"})
+        return cls(
+            enabled=_bool_field(block, name, "enabled", True),
+            lean_mm=_number_field(
+                block, name, "lean_mm", 12.0, low=0.0, high=POSTURE_MAX_MM
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class PersonalDistanceSettings:
+    """The head pulls back from a person nearer than ``distance_m``
+    (specs/motion/head_tracking.md "The posture")."""
+
+    enabled: bool = True
+    # the distance from the robot's camera inside which the head retreats, in metres
+    distance_m: float = 0.40
+    # the largest retreat, in millimetres
+    max_back_mm: float = 25.0
+    # the intrusion over which the retreat grows from nothing to max_back_mm, in metres
+    span_m: float = 0.10
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> PersonalDistanceSettings:
+        name = "motion.tracking.personal_distance"
+        block = _require_object(data, name)
+        _reject_unknown_keys(
+            block, name, {"enabled", "distance_m", "max_back_mm", "span_m"}
+        )
+        return cls(
+            enabled=_bool_field(block, name, "enabled", True),
+            distance_m=_number_field(
+                block, name, "distance_m", 0.40, low=0.0, low_inclusive=False
+            ),
+            max_back_mm=_number_field(
+                block, name, "max_back_mm", 25.0, low=0.0, high=POSTURE_MAX_MM
+            ),
+            span_m=_number_field(
+                block, name, "span_m", 0.10, low=0.0, low_inclusive=False
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class TrackingSettings:
+    """The head tracker's whole behaviour (specs/core/config.md "`motion.tracking`",
+    specs/motion/head_tracking.md "Configuration and verbs"): whether it runs, whether it
+    holds the head exactly on the aim, and the three behaviours of its posture. Frozen:
+    the same object is the runtime API (``bridge.tracking``, ``set_tracking``), changed
+    with ``dataclasses.replace``."""
+
+    enabled: bool = False
+    focus: bool = False
+    mirroring: MirroringSettings = field(default_factory=MirroringSettings)
+    approach: ApproachSettings = field(default_factory=ApproachSettings)
+    personal_distance: PersonalDistanceSettings = field(
+        default_factory=PersonalDistanceSettings
+    )
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TrackingSettings:
+        name = "motion.tracking"
+        if isinstance(data, bool):
+            raise ConfigError(
+                f"'{name}' is an object, not a boolean: write "
+                f'{{"enabled": {"true" if data else "false"}}}'
+            )
+        block = _require_object(data, name)
+        _reject_unknown_keys(
+            block,
+            name,
+            {"enabled", "focus", "mirroring", "approach", "personal_distance"},
+        )
+        return cls(
+            enabled=_bool_field(block, name, "enabled", False),
+            focus=_bool_field(block, name, "focus", False),
+            mirroring=MirroringSettings.from_dict(block.get("mirroring", {})),
+            approach=ApproachSettings.from_dict(block.get("approach", {})),
+            personal_distance=PersonalDistanceSettings.from_dict(
+                block.get("personal_distance", {})
+            ),
+        )
+
+    @classmethod
+    def from_json(cls, text: str) -> TrackingSettings:
+        return cls.from_dict(_loads(text))
+
+    @classmethod
+    def from_json_file(cls, path: str | Path) -> TrackingSettings:
+        return cls.from_dict(_load_file(path))
+
+
 # --- `motion` block -----------------------------------------------------------------
 
 
@@ -455,9 +636,9 @@ class MotionSettings:
     idle_move: Callable[[], IdleMove] | None = None
     # Audio-reactive head sway, enabled on entry.
     wobbling: bool = True
-    # The bridge's head tracker, on from session entry (a mode: no motors needed, but a
-    # `face_detection.detector`).
-    tracking: bool = False
+    # The bridge's head tracker and its posture; `tracking.enabled` turns it on from
+    # session entry (a mode: no motors needed, but a `face_detection.detector`).
+    tracking: TrackingSettings = field(default_factory=TrackingSettings)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> MotionSettings:
@@ -473,7 +654,7 @@ class MotionSettings:
         presence = block.get("presence", True)
         idle = block.get("idle", "breathing")
         wobbling = block.get("wobbling", True)
-        tracking = block.get("tracking", False)
+        tracking = TrackingSettings.from_dict(block.get("tracking", {}))
         if not isinstance(presence, bool):
             raise ConfigError("'motion.presence' must be a boolean")
         if idle not in IDLE_MODES:
@@ -482,8 +663,6 @@ class MotionSettings:
             )
         if not isinstance(wobbling, bool):
             raise ConfigError("'motion.wobbling' must be a boolean")
-        if not isinstance(tracking, bool):
-            raise ConfigError("'motion.tracking' must be a boolean")
         return cls(presence=presence, idle=idle, wobbling=wobbling, tracking=tracking)
 
     @classmethod
@@ -566,13 +745,13 @@ class ReachyMiniConfig:
 
         motion = MotionSettings.from_dict(top.get("motion", {}))
         if face_detection.detector is None and (
-            face_detection.enabled or motion.tracking
+            face_detection.enabled or motion.tracking.enabled
         ):
             switches = [
                 name
                 for name, on in (
                     ("face_detection.enabled", face_detection.enabled),
-                    ("motion.tracking", motion.tracking),
+                    ("motion.tracking.enabled", motion.tracking.enabled),
                 )
                 if on
             ]

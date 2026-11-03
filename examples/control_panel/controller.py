@@ -21,7 +21,7 @@ import time
 from collections import deque
 from collections.abc import Coroutine, Sequence
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Self
 
 import numpy as np
@@ -62,12 +62,14 @@ class FaceView:
     tilt and the highlighted one belong to the same frame: ``active`` (a detector is
     looking), each face's normalised ``(x, y)`` in the report's order, its roll in radians
     (``None`` when unknown) at the same index, and ``target``, the index of the face the
-    head follows (``None`` while it follows none, or that face is not reported)."""
+    head follows (``None`` while it follows none, or that face is not reported), and each
+    face's ``distance_m`` (``None`` when unknown)."""
 
     active: bool
     positions: list[tuple[float, float]]
     rolls: list[float | None]
     target: int | None
+    distances: list[float | None] = field(default_factory=list)
 
 
 @dataclass
@@ -80,6 +82,9 @@ class PanelState:
     idle: str
     wobbling: bool
     tracking: bool
+    # the posture the head takes toward the followed face (head_tracking's roll_deg and
+    # offset_mm); None while it follows nobody
+    posture: tuple[float, float] | None
     attention: str | None
     face_detection: bool
     # the number of faces the detection loop reports; -1 while no detector is looking
@@ -409,13 +414,20 @@ class ControlPanelController:
             rate = None
         report = bridge.faces.value
         positions = [(f.x, f.y) for f in report.faces] if report.active else []
+        tracked = bridge.head_tracking.value
+        posture = (
+            (tracked.roll_deg, tracked.offset_mm)
+            if tracked.attention == "engaged"
+            else None
+        )
         return PanelState(
             backend=bridge.config.backend,
             motors=motors,
             presence=bridge.presence,
             idle=bridge.idle,
             wobbling=bridge.wobbling,
-            tracking=bridge.tracking,
+            tracking=bridge.tracking.enabled,
+            posture=posture,
             attention=bridge.attention,
             face_detection=bridge.face_detection,
             faces=len(report.faces) if report.active else -1,
@@ -440,12 +452,15 @@ class ControlPanelController:
         so a report published between two reads cannot misalign them."""
         report = self._bridge.faces.value
         if not report.active:
-            return FaceView(active=False, positions=[], rolls=[], target=None)
+            return FaceView(
+                active=False, positions=[], rolls=[], target=None, distances=[]
+            )
         return FaceView(
             active=True,
             positions=[(f.x, f.y) for f in report.faces],
             rolls=[f.roll for f in report.faces],
             target=self._face_target(report),
+            distances=[f.distance_m for f in report.faces],
         )
 
     def _face_target(self, report: FaceReport) -> int | None:
@@ -486,6 +501,25 @@ class ControlPanelController:
 
     def stop_head_tracking(self) -> None:
         self._call(self._bridge.stop_head_tracking())
+
+    def set_posture(
+        self, mirroring: bool, approach: bool, personal_distance: bool
+    ) -> None:
+        """The posture checkboxes: each behaviour of the tracker's posture on or off,
+        the rest of the tracking settings kept (``bridge.set_tracking``)."""
+        settings = self._bridge.tracking
+        self._call(
+            self._bridge.set_tracking(
+                replace(
+                    settings,
+                    mirroring=replace(settings.mirroring, enabled=mirroring),
+                    approach=replace(settings.approach, enabled=approach),
+                    personal_distance=replace(
+                        settings.personal_distance, enabled=personal_distance
+                    ),
+                )
+            )
+        )
 
     def set_wobbling(self, enabled: bool) -> None:
         self._call(self._bridge.set_wobbling(enabled))

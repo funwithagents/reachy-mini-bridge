@@ -53,7 +53,7 @@ pytestmark = pytest.mark.requires("camera", "faces", "face_markers")
 
 # Sideways, the marker is on the portrait; in height it is on the face's nose, a few
 # centimetres under the portrait's centre; in distance it is as good as the assumed
-# height of the detector's box (calibrated on this portrait: FACE_BOX_HEIGHT_M).
+# height of the detector's box (FACE_BOX_HEIGHT_M, the portrait life size against it).
 MARKER_LATERAL_M = 0.03
 MARKER_BELOW_CENTRE_M = (0.0, 0.09)
 MARKER_DISTANCE_RATIO = 0.15

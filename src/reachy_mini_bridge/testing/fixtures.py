@@ -361,8 +361,8 @@ def face_scene(
     pool of portraits cleared before the test and again after it, so a test starts with an
     empty view whatever the previous one left and leaves none behind
     (specs/testing/sim_scene.md "A pool of portraits"). After the test the bridge's
-    detection and tracking are back off, the state ``live_bridge`` starts in, whatever the
-    test turned on. A test on a session of its own (not ``live_bridge``) writes the same
+    detection and tracking are back off and its tracking settings the config's, the state
+    ``live_bridge`` starts in, whatever the test turned on or tuned. A test on a session of its own (not ``live_bridge``) writes the same
     gate and clears against that session."""
     requires_caps(live_bridge, "camera", "faces")
     sim_scene.clear()
@@ -371,7 +371,8 @@ def face_scene(
     finally:
         sim_scene.clear()
         live_bridge.run(_seen_empty(live_bridge.bridge))
-        live_bridge.run(live_bridge.bridge.stop_head_tracking())
+        bridge = live_bridge.bridge
+        live_bridge.run(bridge.set_tracking(bridge.config.motion.tracking))
         live_bridge.run(live_bridge.bridge.set_face_detection(False))
 
 

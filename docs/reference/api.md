@@ -19,6 +19,7 @@ From `reachy_mini_bridge`:
 | `MicChunk` | A mic capture chunk: `seq`, `ts`, `samples` |
 | `Face`, `FaceReport`, `PixelFace`, `FaceDetector` | The perception values, and the two types a custom detector works with |
 | `HeadTrackingReport` | The head tracker's state |
+| `TrackingSettings`, `MirroringSettings`, `ApproachSettings`, `PersonalDistanceSettings` | The tracking behaviour: `bridge.tracking`, `set_tracking`, the config's `motion.tracking` |
 | `Observable` | The type of `bridge.faces` and `bridge.head_tracking` |
 | `IdleMove`, `IdleOffsets` | The base class and the value type of a custom idle move |
 | `BridgeError`, `MotorsNotEnabledError`, `GravityCompensationUnsupportedError`, `SpeechInterruptedError`, `SoundInterruptedError`, `ConfigError` | The errors a caller catches |
@@ -84,7 +85,7 @@ async with ReachyMiniBridge.from_json_file("robot.json") as bridge:
 | Speech out | `say(text, synth=None)` — returns when the robot has finished speaking; `play_sound(file)` — a sound file, returns when it has been heard | no |
 | Mic in | `audio_input(mono=True, preroll_s=0.0)` — an async iterator of int16 LE PCM `bytes`, one per subscriber; `mic_sample_rate`, `mic_channels` | no |
 | Camera | `camera.frames()` — an async iterator of `CameraFrame`s, one per follower, latest-wins; `camera.wait_for(predicate)` — the first frame that matches | no |
-| Gaze | `start_head_tracking(focus=False)`, `stop_head_tracking()` — the head follows the face the tracker chooses | no (a mode: the head moves once motors are `enabled` and `presence` is on) |
+| Gaze | `start_head_tracking(focus=None)`, `stop_head_tracking()`, `set_tracking(settings)` — the head follows the face the tracker chooses, with the posture its settings give | no (a mode: the head moves once motors are `enabled` and `presence` is on) |
 | Perception | `set_face_detection(enabled)` — run the detector so `faces` reports; `set_face_detector(factory)` — register the factory the `"custom"` detector is built from (the detector *name* is config-only) | no |
 | Staying alive | `set_presence(enabled)`, `set_idle("breathing" \| "hold" \| "custom")`, `set_idle_move(factory)`, `set_wobbling(enabled)` | no (modes) |
 
@@ -96,7 +97,18 @@ async with ReachyMiniBridge.from_json_file("robot.json") as bridge:
 
 **Mic in.** Every `audio_input()` call is a subscriber of its own over the session's mic feed, the one reader of the capture: any number run at once — a recognizer, a wake-word detector, a level meter — each receiving every chunk in order at its own pace. Iterate to consume, `break` to stop; it ends on its own when the session closes. The feed keeps the last 2 s: `preroll_s` starts a subscriber up to that far in the past (a recognizer started by a wake word hears the sentence that woke it), and a subscriber that falls further behind loses the chunks it missed, logged as a warning, without slowing anyone else. Routing both directions through the bridge is what keeps the robot's echo cancellation working while it speaks and listens at once. The bridge does no speech recognition.
 
-**Gaze.** The tracker chooses whom to follow — the biggest face of a minimum size, kept while it is seen; a face that vanishes is waited for a second, the head holding toward where it was, before the head turns to the biggest other face; after two seconds with nobody the head eases back into the idle move. `focus=False` composes the aim into the idle move (the head looks at the person and breathes); `focus=True` holds the head exactly on the face, the antennas keeping their motion. Tracking implies detection, and needs a `face_detection.detector` in the config: `start_head_tracking()` with none raises `ValueError`. The head moves on the aim only with motors `"enabled"` **and** `presence` on — `set_presence(False)` has the loop command nothing, the gaze included, while the tracking mode holds.
+**Gaze.** The tracker chooses whom to follow — the biggest face of a minimum size, kept while it is seen; a face that vanishes is waited for a second, the head holding toward where it was, before the head turns to the biggest other face; after two seconds with nobody the head eases back into the idle move. `focus=False` composes the aim into the idle move (the head looks at the person and breathes); `focus=True` holds the head exactly on the face, the antennas keeping their motion. While it follows a face the head also takes a **posture** toward the person: it mirrors their head roll, leans toward them, and pulls back from someone nearer than the personal distance — each switched in `TrackingSettings` ([configuration.md](configuration.md#motion--what-the-robot-does-at-rest) "`motion.tracking`"), each eased in and out so it reads as a stance, never a jerk. `set_tracking(settings)` applies a whole settings object while the session runs (`enabled` starts or stops the tracker); `start_head_tracking()` and `stop_head_tracking()` are its two common cases and keep the rest of the settings, `focus` included unless given. Change one behaviour with `dataclasses.replace`:
+
+```python
+from dataclasses import replace
+
+settings = bridge.tracking
+await bridge.set_tracking(
+    replace(settings, mirroring=replace(settings.mirroring, enabled=False))
+)
+```
+
+Tracking implies detection, and needs a `face_detection.detector` in the config: `start_head_tracking()` (or `set_tracking` with `enabled`) with none raises `ValueError`. The head moves on the aim only with motors `"enabled"` **and** `presence` on — `set_presence(False)` has the loop command nothing, the gaze included, while the tracking mode holds.
 
 ## Properties and reports
 
@@ -106,7 +118,7 @@ async with ReachyMiniBridge.from_json_file("robot.json") as bridge:
 | `mic` | `MicFeed` | The one reader of the robot's microphone. `mic.latest()` is the newest `MicChunk`, or `None` outside a session; `mic.running`, `mic.published_count` |
 | `faces` | `Observable[FaceReport]` | The faces in front of the robot as the detection loop last saw them |
 | `head_tracking` | `Observable[HeadTrackingReport]` | Whom the head follows, and whether it does |
-| `tracking`, `tracking_focus`, `attention` | `bool`, `bool`, `str \| None` | The tracking mode's record; its focus flag; `"engaged"` while a face is followed, `"watching"` while tracking is on and nobody is, `None` when tracking is off |
+| `tracking`, `tracking_focus`, `attention` | `TrackingSettings`, `bool`, `str \| None` | The tracking settings in force (`tracking.enabled`: whether it runs); its focus flag; `"engaged"` while a face is followed, `"watching"` while tracking is on and nobody is, `None` when tracking is off |
 | `face_detection`, `face_detector` | `bool`, factory \| `None` | The caller's detection switch; the registered custom detector's factory |
 | `presence`, `idle`, `idle_move`, `wobbling` | `bool`, `str`, factory \| `None`, `bool` | The idle behaviour's switches |
 | `mic_sample_rate`, `mic_channels` | `int`, `int` | The capture format behind `audio_input` (16 kHz; stereo on the robot and the sim) |
@@ -140,6 +152,7 @@ class Face:
     bbox: tuple[float, float, float, float]   # x, y, width, height in pixels of the report's frame
     pitch: float | None            # head pitch / yaw in radians, from a detector that fits a head; None otherwise
     yaw: float | None
+    distance_m: float | None       # metres from the robot's camera, from the face's size; None without a camera model
 
 @dataclass(frozen=True)
 class FaceReport:
@@ -158,6 +171,8 @@ class HeadTrackingReport:
     attention: str | None          # "engaged" | "watching" | None
     track_id: int | None           # the face the head follows; None unless engaged
     ts: float                      # the time of the face report behind the last aim; 0.0 before any
+    roll_deg: float                # the posture in the last aim: the mirrored roll
+    offset_mm: float               #   and the lean along the look direction (+ toward the person, - back)
 ```
 
 ### Reading and subscribing
@@ -192,7 +207,7 @@ followed = bridge.head_tracking.value.track_id                # whom the head fo
 | `SoundInterruptedError` | `play_sound` | A newer sound file (an emotion's included) replaced this one |
 | `DaemonError` | `start()` | The managed daemon could not be started, found or reached in time (`reachy_mini_bridge.errors`) |
 | `ConfigError` | the `from_*` constructors | An invalid config; a `ValueError`, not a `BridgeError` |
-| `ValueError` | `start_head_tracking`, `set_face_detection(True)`, `set_face_detector`, `set_idle_move`, `set_idle`, `set_motors_state`, `play_emotion`, `play_sound` | A mode that needs a detector with none configured; a factory that is not callable or builds the wrong thing; an unknown idle mode; an unknown motor state; an emotion name the library does not have; a sound file whose duration cannot be read |
+| `ValueError` | `start_head_tracking`, `set_tracking`, `set_face_detection(True)`, `set_face_detector`, `set_idle_move`, `set_idle`, `set_motors_state`, `play_emotion`, `play_sound` | A mode that needs a detector with none configured; a factory that is not callable or builds the wrong thing; an unknown idle mode; an unknown motor state; an emotion name the library does not have; a sound file whose duration cannot be read |
 | `FileNotFoundError` | `play_sound` | The name is neither a file on this machine nor one of the SDK's built-in sounds; nothing played |
 | upstream's own exceptions | `start()`, `bridge.robot` | A connection the SDK could not make — no daemon at `robot.host:port` with nothing to spawn — propagates from `start()` as `reachy_mini` raises it, unwrapped (a managed daemon's failures are the bridge's `DaemonError`); what you call on `bridge.robot` raises what the SDK raises |
 
@@ -203,7 +218,7 @@ Every `BridgeError` subclass carries a message a tool can return to an agent as 
 **Cancelling the awaiting task is how you interrupt a verb** ([specs/core/bridge.md](../../specs/core/bridge.md) "Cancellation"), with three guarantees: the cancel returns promptly; the verb's effect stops with it; and the robot and the session stay usable for the next verb. What "the effect stops" means depends on the verb's class:
 
 - **Spanning verbs** — `say`, `play_sound`, `play_emotion`, the `audio_input` stream, a `camera.frames()` follower — run for as long as their effect, and the cancel ends it: queued speech flushed, a sound file stopped, a trajectory no longer commanded, the wobbler reset. There is no rewind: the head stays where the cancel caught it, and the idle move blends in from there. A cancel owns only its own effect — cancelling a `say` does not stop a `play_sound`, cancelling an emotion waiting in the queue stops nothing that plays.
-- **Instant verbs** — `set_motors_state`, `get_motors_state`, `start_head_tracking` / `stop_head_tracking`, `set_wobbling`, `set_presence` / `set_idle` / `set_idle_move`, `set_face_detection`, `list_emotions` — hand one short command to the SDK or the motion loop. The cancel returns promptly, but **an accepted command completes**: cancelling `set_motors_state("enabled")` once the command is accepted does not keep the motors from enabling, nor the motion loop from resuming with them. Likewise a `set_face_detection(False)` or `stop_head_tracking` that has begun stopping the detector finishes releasing it before the cancel propagates, while a `set_face_detection(True)` cancelled during its detector's build leaves the switch off and discards the build. What outlives the call is a mode, undone by its counterpart verb (`set_motors_state("disabled")`, `stop_head_tracking`, …), not by the cancel.
+- **Instant verbs** — `set_motors_state`, `get_motors_state`, `start_head_tracking` / `stop_head_tracking` / `set_tracking`, `set_wobbling`, `set_presence` / `set_idle` / `set_idle_move`, `set_face_detection`, `list_emotions` — hand one short command to the SDK or the motion loop. The cancel returns promptly, but **an accepted command completes**: cancelling `set_motors_state("enabled")` once the command is accepted does not keep the motors from enabling, nor the motion loop from resuming with them. Likewise a `set_face_detection(False)` or `stop_head_tracking` that has begun stopping the detector finishes releasing it before the cancel propagates, while a `set_face_detection(True)` cancelled during its detector's build leaves the switch off and discards the build. What outlives the call is a mode, undone by its counterpart verb (`set_motors_state("disabled")`, `stop_head_tracking`, …), not by the cancel.
 - **Bring-up, `start()`**, is the one spanning verb whose cancel waits: the step in flight (a daemon spawn, the robot connect, a media start) cannot be interrupted in its thread, so it finishes and is undone before the `CancelledError` propagates — up to `daemon.startup_timeout` for a spawn. An `asyncio.timeout` around the `async with` therefore bounds the *start* of the cleanup, not its end: budget for the step when you set one.
 
 What runs together, and who wins:

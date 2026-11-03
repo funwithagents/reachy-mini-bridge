@@ -7,6 +7,6 @@
     "detector": "yunet"
   },
   "motion": {
-    "tracking": true
+    "tracking": { "enabled": true }
   }
 }

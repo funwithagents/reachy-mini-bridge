@@ -17,7 +17,7 @@ import logging
 import math
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Protocol, cast
 
 if TYPE_CHECKING:
@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     import numpy.typing as npt
 
     from .camera import CameraFeed, CameraFrame
+    from .head_tracking import CameraModel
 
 from .concurrency import owned
 from .errors import BridgeError
@@ -35,6 +36,7 @@ from .observable import Observable
 __all__ = [
     "DETECT_WIDTH",
     "FACE_ABSENT_S",
+    "FACE_BOX_HEIGHT_M",
     "FACE_COST_LOG_S",
     "FACE_DETECTOR_NAMES",
     "FACE_POLL_HZ",
@@ -63,10 +65,15 @@ FACE_POLL_HZ = 30.0
 FACE_ABSENT_S = 0.3  # a drop in the count is published once it has held this long
 FACE_SOURCE_DOWN_S = 5.0  # a detector producing nothing this long reads as not looking
 # The width the shipped detector works at by default (`face_detection.width`): frames are
-# subsampled to about this width before detection — upstream's own tracker detects at
-# 320 px wide — so the detector keeps up with the feed on one CPU thread whatever the
-# camera's resolution (1280 wide → stride 4, the Lite's 1920 → stride 6).
-DETECT_WIDTH = 320
+# subsampled to about this width before detection — twice upstream's own 320, where
+# YuNet's eye-line roll becomes usable for the tracker's mirror (specs/vision/user_perception.md
+# "The shipped detector") — so the detector keeps up with the feed on one CPU thread of a
+# laptop whatever the camera's resolution (1280 wide → stride 2, the Lite's 1920 → stride 3).
+DETECT_WIDTH = 640
+# The physical height a detector's box spans on an adult face — brow to chin for YuNet —
+# for a detector that declares no `box_height_m`: the one ratio that turns a face's size
+# into its distance (specs/vision/user_perception.md "The face report"). A population value.
+FACE_BOX_HEIGHT_M = 0.18
 # The detector's cost (mean detect time, observations per second) is logged once per run,
 # this long after its first observation — the numbers `width` / `target_fps` are tuned by.
 FACE_COST_LOG_S = 10.0
@@ -102,6 +109,9 @@ class Face:
     # from a detector that fits a head; None otherwise
     pitch: float | None = None
     yaw: float | None = None
+    # how far the face is from the robot's camera along its line of sight, in metres
+    # (the face's size against the detector's box height); None without a camera model
+    distance_m: float | None = None
 
 
 @dataclass(frozen=True)
@@ -154,7 +164,9 @@ class FaceDetector(Protocol):
     feed's, shared and read-only (copy before drawing) — and returns the faces it sees,
     in any order, within a frame period (a slower call skips frames, never queues them).
     It never touches the robot or the bridge; its dependencies are its own. A detector
-    may also have a ``close()``, called on a worker thread when the loop lets go of it.
+    may also have a ``close()``, called on a worker thread when the loop lets go of it,
+    and a ``box_height_m``: the physical height its box spans on an adult face, which
+    turns its faces' sizes into ``distance_m`` (``FACE_BOX_HEIGHT_M`` without one).
     """
 
     def detect(
@@ -205,6 +217,15 @@ def _pixel_centre(face: PixelFace) -> tuple[float, float]:
         return face.nose
     x, y, w, h = face.bbox
     return (x + w / 2.0, y + h / 2.0)
+
+
+def _box_height_m(detector: object) -> float:
+    """The detector's declared box height, ``FACE_BOX_HEIGHT_M`` when it declares none
+    (or something unusable)."""
+    value = getattr(detector, "box_height_m", None)
+    if isinstance(value, int | float) and not isinstance(value, bool) and value > 0:
+        return float(value)
+    return FACE_BOX_HEIGHT_M
 
 
 def _dist2(a: tuple[float, float], b: tuple[float, float]) -> float:
@@ -295,12 +316,16 @@ def report_from_pixels(
     track_ids: Sequence[int],
     *,
     source: str = "custom",
+    camera: CameraModel | None = None,
+    box_height_m: float = FACE_BOX_HEIGHT_M,
 ) -> FaceReport:
     """A detector's faces on ``frame`` (``size`` = its width, height) as a report:
     every face normalised into the tracker's coordinates under its ``track_id``, its
     pixel box kept, its roll / pitch / yaw from the detector's ``orientation`` when given
     (else its roll from the eyes), its size as the bbox height over the frame's; the
-    faces in ``track_id`` order; the frame, its ``ts`` and ``head_pose`` carried over."""
+    faces in ``track_id`` order; the frame, its ``ts`` and ``head_pose`` carried over.
+    With a ``camera`` model, each face's ``distance_m`` from its size against
+    ``box_height_m``."""
     _width, height = size
     reported: list[Face] = []
     for face, track_id in sorted(
@@ -330,6 +355,15 @@ def report_from_pixels(
                 yaw=yaw,
             )
         )
+    if camera is not None:
+        from .head_tracking import face_camera_point
+
+        located: list[Face] = []
+        for face in reported:
+            point = face_camera_point(face, camera, box_height_m)
+            distance = None if point is None else math.sqrt(float(point @ point))
+            located.append(replace(face, distance_m=distance))
+        reported = located
     return FaceReport(
         faces=tuple(reported),
         ts=frame.ts,
@@ -377,8 +411,12 @@ class FaceDetection:
         width: int | None = DETECT_WIDTH,
         target_fps: float | None = None,
         new_track_id: Callable[[], int] | None = None,
+        camera: CameraModel | None = None,
     ) -> None:
         self._name = detector
+        # The session's camera model, shared with the head tracker: what turns a face's
+        # size into its distance (specs/vision/user_perception.md "The face report").
+        self._camera = camera
         self._width = width
         self._target_fps = target_fps
         self._faces = faces
@@ -640,7 +678,15 @@ class FaceDetection:
         height, width = frame.image.shape[:2]
         size = (int(width), int(height))
         track_ids = self._tracks.update(faces, size)
-        return report_from_pixels(faces, size, frame, track_ids, source=self._name)
+        return report_from_pixels(
+            faces,
+            size,
+            frame,
+            track_ids,
+            source=self._name,
+            camera=self._camera,
+            box_height_m=_box_height_m(detector),
+        )
 
     async def _run(self) -> None:
         published: FaceReport | None = None  # the last value `set`

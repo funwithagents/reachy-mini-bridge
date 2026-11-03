@@ -28,6 +28,7 @@ import logging
 import math
 import urllib.error
 from contextlib import AsyncExitStack
+from dataclasses import replace
 from http.client import HTTPException
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self, cast
@@ -44,6 +45,7 @@ from .config import (
     IDLE_MODES,
     UPSTREAM_KINEMATICS_ENGINES,
     ReachyMiniConfig,
+    TrackingSettings,
 )
 from .daemon import DaemonInfo, daemon_differences, describe_camera
 from .errors import (
@@ -347,11 +349,11 @@ class ReachyMiniBridge:
         self._presence = self._config.motion.presence
         self._idle: IdleMode = _idle_mode(self._config.motion.idle)
         self._idle_move: IdleMoveFactory | None = self._config.motion.idle_move
-        # Head tracking (specs/motion/head_tracking.md): the caller's switch (the config
-        # default, reset on exit) — a mode like presence, needing no motors — and the
+        # Head tracking (specs/motion/head_tracking.md): the caller's settings (the config's,
+        # reset on exit) — `enabled` a mode like presence, needing no motors — and the
         # tracker while entered, built once per session and fed the detection loop's
-        # reports while the switch is on.
-        self._tracking_wanted = self._config.motion.tracking
+        # reports while the settings say it runs.
+        self._tracking: TrackingSettings = self._config.motion.tracking
         self._tracker: HeadTracker | None = None
         self._daemon_info: DaemonInfo | None = None
         # The tracker's state (specs/motion/head_tracking.md "The head tracking report"):
@@ -483,7 +485,7 @@ class ReachyMiniBridge:
             raise BridgeError("ReachyMiniBridge is already running")
         cfg = self._config
         if cfg.face_detection.detector is None and (
-            self._face_detection_wanted or self._tracking_wanted
+            self._face_detection_wanted or self._tracking.enabled
         ):
             # A config assembled in code can say what `from_dict` refuses
             # (specs/core/config.md "Validation rules"); refused here, before anything starts.
@@ -561,13 +563,19 @@ class ReachyMiniBridge:
                 await self.set_wobbling(True)
             motors_enabled = await self.get_motors_state() == "enabled"
             info = await self._start_daemon_info(robot)
+            # One camera model per session (specs/motion/head_tracking.md "The aim"): the
+            # tracker aims with it, the detection loop turns face sizes into distances
+            # with it (specs/vision/user_perception.md "The face report"), the face
+            # markers place faces with it.
+            camera_model = self._camera_model(robot, info)
             self._tracker = HeadTracker(
-                self._camera_model(robot, info),
+                camera_model,
                 history=motion.head_pose_history,
                 set_gaze=motion.set_gaze,
+                settings=self._tracking,
                 report=self._head_tracking,
             )
-            if self._tracking_wanted:
+            if self._tracking.enabled:
                 self._tracker.start()
             # The detection loop (specs/vision/user_perception.md "Lifecycle"), feeding the
             # tracker while tracking is on: the configured detector (the shipped
@@ -581,6 +589,7 @@ class ReachyMiniBridge:
                 width=cfg.face_detection.width,
                 target_fps=cfg.face_detection.target_fps,
                 new_track_id=self._new_face_track_id,
+                camera=camera_model,
             )
             self._detection = detection
             self._detection_sync = asyncio.Lock()
@@ -588,7 +597,7 @@ class ReachyMiniBridge:
             self._face_detection_sync = asyncio.Lock()
             # Exits after the motion session, before wobbling's cleanup.
             stack.push_async_callback(self._stop_detection)
-            if self._face_detection_wanted or self._tracking_wanted:
+            if self._face_detection_wanted or self._tracking.enabled:
                 await detection.start()
             # The sim's face markers (specs/daemon/sim_displays.md): the faces sent to the
             # daemon's viewer. Exits after the motion session, before the detection loop.
@@ -672,7 +681,7 @@ class ReachyMiniBridge:
             interrupted = await owned(stack.aclose())
         finally:
             self._wobbling_session = None
-            self._tracking_wanted = self._config.motion.tracking
+            self._tracking = self._config.motion.tracking
             self._presence = self._config.motion.presence
             self._idle = _idle_mode(self._config.motion.idle)
             self._idle_move = self._config.motion.idle_move
@@ -753,7 +762,7 @@ class ReachyMiniBridge:
         tracking is on — an observation, or ``None`` for a poll without one, which
         keeps the tracker's loss clock running while the camera is silent."""
         tracker = self._tracker
-        if tracker is None or not self._tracking_wanted:
+        if tracker is None or not self._tracking.enabled:
             return
         if report is None:
             tracker.tick()
@@ -767,7 +776,7 @@ class ReachyMiniBridge:
         if detection is None:
             return
         async with self._detection_sync:
-            wanted = self._face_detection_wanted or self._tracking_wanted
+            wanted = self._face_detection_wanted or self._tracking.enabled
             if wanted and not detection.running:
                 await detection.start()
             elif not wanted and detection.running:
@@ -991,13 +1000,16 @@ class ReachyMiniBridge:
             )
         return self._tracker
 
-    async def start_head_tracking(self, *, focus: bool = False) -> None:
+    async def start_head_tracking(self, *, focus: bool | None = None) -> None:
         """Have the robot autonomously keep the tracked face in view
         (specs/motion/head_tracking.md): the bridge's tracker aims the face the detection loop
         reports, and the motion loop composes that aim into the idle move — the head
-        looks at the face and keeps breathing around it. With ``focus`` the head holds
-        exactly on the face instead, the idle move's head motion left out (its antennas
-        kept); calling it again switches between the two.
+        looks at the face and keeps breathing around it, with the posture its settings
+        give it toward the person (a mirrored roll, a lean, a retreat from someone too
+        close). With ``focus`` the head holds exactly on the aim instead, the idle move's
+        head motion left out (its antennas kept); calling it again switches between the
+        two; ``None`` keeps the settings' value. The settings in force
+        (:attr:`tracking`) with ``enabled`` on: :meth:`set_tracking`'s common case.
 
         A mode, not a move: it holds until changed and needs no motors (the motion loop
         is paused without them, so the aim shows once they are enabled). Starts the
@@ -1005,34 +1017,62 @@ class ReachyMiniBridge:
         (``face_detection.detector``; ``ValueError`` with none), and a detector that cannot be
         built raises ``BridgeError`` and leaves tracking off.
         """
-        tracker = self._require_tracker()
-        self._require_detector()
-        async with self._tracking_sync:
-            was_wanted = self._tracking_wanted
-            self._tracking_wanted = True
-            try:
-                await self._sync_detection()
-            except BaseException:
-                self._tracking_wanted = was_wanted
-                raise
-            tracker.start(focus=focus)
+        settings = replace(self._tracking, enabled=True)
+        if focus is not None:
+            settings = replace(settings, focus=focus)
+        await self.set_tracking(settings)
 
     async def stop_head_tracking(self) -> None:
         """Stop the head tracker: the aim is withdrawn and the head eases back onto the
         idle move. The detection loop keeps running while :attr:`face_detection` is on,
-        and stops otherwise."""
+        and stops otherwise. The settings in force with ``enabled`` off."""
+        await self.set_tracking(replace(self._tracking, enabled=False))
+
+    async def set_tracking(self, settings: TrackingSettings) -> None:
+        """Apply the whole tracking behaviour (specs/core/config.md "`motion.tracking`",
+        specs/motion/head_tracking.md "Configuration and verbs"): ``enabled`` starts or
+        stops the tracker — and the detection loop with it — as
+        :meth:`start_head_tracking` / :meth:`stop_head_tracking` do; ``focus`` and the
+        posture's ``mirroring`` / ``approach`` / ``personal_distance`` take effect on the
+        next aim, eased in or out by the tracker's filters, never a step. Change one
+        field with ``dataclasses.replace(bridge.tracking, ...)``.
+
+        Instant and a mode: needs no motors. ``enabled`` with no configured detector is a
+        ``ValueError``; a detector that cannot be built raises ``BridgeError`` and leaves
+        the settings as they were."""
+        if not isinstance(settings, TrackingSettings):
+            raise ValueError(  # noqa: TRY004 - ValueError is the bridge's bad-input error
+                f"set_tracking takes a TrackingSettings, got {type(settings).__name__}"
+            )
         tracker = self._require_tracker()
+        if settings.enabled:
+            self._require_detector()
         async with self._tracking_sync:
-            self._tracking_wanted = False
-            tracker.stop()
-            await self._sync_detection()
+            previous = self._tracking
+            self._tracking = settings
+            if settings.enabled:
+                try:
+                    await self._sync_detection()
+                except BaseException:
+                    self._tracking = previous
+                    raise
+                if previous.enabled:
+                    tracker.configure(settings)
+                else:
+                    tracker.start(settings)
+            else:
+                tracker.settings = settings
+                if previous.enabled:
+                    tracker.stop()
+                await self._sync_detection()
 
     @property
-    def tracking(self) -> bool:
-        """Whether the bridge's tracker is on — its own record, initially the config's
-        ``motion.tracking`` flag (off by default: it needs a detector); outside a
-        session reads the config's value."""
-        return self._tracking_wanted
+    def tracking(self) -> TrackingSettings:
+        """The tracking behaviour in force (specs/core/config.md "`motion.tracking`"): the
+        bridge's own record, initially the config's ``motion.tracking``, set by
+        :meth:`set_tracking` and the two tracking verbs; ``tracking.enabled`` says whether
+        the tracker is on. Outside a session reads the config's value."""
+        return self._tracking
 
     @property
     def tracking_focus(self) -> bool:

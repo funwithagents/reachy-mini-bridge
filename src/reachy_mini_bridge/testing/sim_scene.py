@@ -103,12 +103,14 @@ DEFAULT_FACE_IMAGE = FACE_IMAGES[0]
 FACE_QUAT = (0.5, 0.5, -0.5, -0.5)
 
 # Where a face sits by default: 0.45 m in front of the robot, at eye-camera height
-# (~0.20 m from the neutral head), a 20 x 25 cm portrait. Rendered from the eye camera
-# (fovy 80°, 1280x720) that is ~250 px tall; after the tracker's downscale to 320 px wide
-# ~60 px — well above the ~40 px where the YuNet detector starts firing reliably
+# (~0.20 m from the neutral head), a life-size 29 x 36 cm portrait: the pool's framing
+# puts the face box at 0.49 of its height, so YuNet's box spans FACE_BOX_HEIGHT_M (0.18 m)
+# and a portrait's distance_m reads its true distance. Rendered from the eye camera
+# (fovy 80°, 1280x720) the plane is ~340 px tall, its face ~170 px; after the detector's
+# stride to 640 px wide ~85 px — well above the ~40 px where YuNet starts firing reliably
 # (specs/testing/sim_scene.md "Geometry").
 DEFAULT_FACE_POS = (0.45, 0.0, 0.20)
-DEFAULT_FACE_SIZE = (0.20, 0.25)
+DEFAULT_FACE_SIZE = (0.29, 0.36)
 
 # The test scene's pool of hidden portraits (specs/testing/sim_scene.md "A pool of
 # portraits"): MuJoCo compiles a scene at load, so the props a test may spawn are written

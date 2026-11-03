@@ -53,6 +53,7 @@ def state_table(state: PanelState) -> str:
         ("backend", state.backend),
         ("motors", state.motors),
         ("attention", state.attention or "—"),
+        ("posture", _posture(state.posture)),
         ("voice", state.voice),
         ("busy", ", ".join(state.busy) or "—"),
         ("mic", f"{state.mic_sample_rate} Hz" if state.mic_sample_rate else "—"),
@@ -76,21 +77,33 @@ def state_table(state: PanelState) -> str:
     return "\n".join(lines)
 
 
+def _posture(posture: tuple[float, float] | None) -> str:
+    """The head's posture toward the followed face: its mirrored roll and its lean
+    (+ toward the person, - back)."""
+    if posture is None:
+        return "—"
+    roll_deg, offset_mm = posture
+    return f"roll {roll_deg:+.0f}°, lean {offset_mm:+.0f} mm"
+
+
 def faces_line(
     positions: list[tuple[float, float]] | None,
     rate: float | None,
     rolls: Sequence[float | None] = (),
+    distances: Sequence[float | None] = (),
 ) -> str:
     """The line under the camera: the faces — their position and, when known, their
-    roll in degrees — and their update rate. ``positions`` is ``None`` while no
-    detector is looking."""
+    roll in degrees and their distance — and their update rate. ``positions`` is
+    ``None`` while no detector is looking."""
     if positions is None:
         return "**Faces:** — (no detector is looking)"
 
     def face(i: int, x: float, y: float) -> str:
         roll = rolls[i] if i < len(rolls) else None
         tilt = "" if roll is None else f", roll {math.degrees(roll):+.0f}°"
-        return f"({x:+.2f}, {y:+.2f}{tilt})"
+        distance = distances[i] if i < len(distances) else None
+        away = "" if distance is None else f", {distance:.2f} m"
+        return f"({x:+.2f}, {y:+.2f}{tilt}{away})"
 
     where = ", ".join(face(i, x, y) for i, (x, y) in enumerate(positions))
     faces = f"{len(positions)} at {where}" if where else "0"
@@ -111,7 +124,10 @@ def refresh_camera(
     ``MIRROR_CAMERA``), and the faces line under it."""
     view = controller.face_view()  # one report: markers, tilts and the target agree
     text = faces_line(
-        view.positions if view.active else None, controller.face_rate, view.rolls
+        view.positions if view.active else None,
+        controller.face_rate,
+        view.rolls,
+        view.distances,
     )
     try:
         frame = controller.camera_frame_rgb()
@@ -192,14 +208,26 @@ def build_app(controller: ControlPanelController) -> gr.Blocks:
 
         gr.Markdown("## Modes")
         with gr.Row(equal_height=True):
-            tracking = gr.Checkbox(config.motion.tracking, label="Tracking")
-            focus = gr.Checkbox(False, label="Focus")
+            tracking_config = config.motion.tracking
+            tracking = gr.Checkbox(tracking_config.enabled, label="Tracking")
+            focus = gr.Checkbox(tracking_config.focus, label="Focus")
             wobbling = gr.Checkbox(config.motion.wobbling, label="Wobbling")
             presence = gr.Checkbox(config.motion.presence, label="Presence")
             detection = gr.Checkbox(config.face_detection.enabled, label="Detection")
             idle = gr.Dropdown(list(IDLE_MODES), value=config.motion.idle, label="Idle")
+        with gr.Row(equal_height=True):
+            mirroring = gr.Checkbox(
+                tracking_config.mirroring.enabled, label="Mirroring"
+            )
+            approach = gr.Checkbox(tracking_config.approach.enabled, label="Approach")
+            personal = gr.Checkbox(
+                tracking_config.personal_distance.enabled, label="Personal distance"
+            )
         gr.Markdown(
-            "*Focus: while tracking, the head is held on the face, no idle motion.*"
+            "*Focus: while tracking, the head is held on the face, no idle motion. "
+            "Mirroring, approach, personal distance: the posture the head takes toward "
+            "the person it follows — their head roll mirrored, a lean toward them, a "
+            "step back from someone too close.*"
         )
 
         gr.Markdown("## Motors")
@@ -265,6 +293,13 @@ def build_app(controller: ControlPanelController) -> gr.Blocks:
                 "set_head_tracking",
                 controller.set_head_tracking,
                 [tracking, focus],
+            )
+        for box in (mirroring, approach, personal):
+            bind(
+                box.input,
+                "set_posture",
+                controller.set_posture,
+                [mirroring, approach, personal],
             )
         bind(wobbling.input, "set_wobbling", controller.set_wobbling, wobbling)
         bind(presence.input, "set_presence", controller.set_presence, presence)

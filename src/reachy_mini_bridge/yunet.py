@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from .face_detection import DETECT_WIDTH, PixelFace
+from .face_detection import DETECT_WIDTH, FACE_BOX_HEIGHT_M, PixelFace
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -44,8 +44,11 @@ class YuNetDetector:
     and ``left_eye`` in pixels; the default builds upstream's ``FaceDetector`` with its
     default thresholds (tests inject a stub so no model loads). ``width`` is the width it
     detects at (``face_detection.width``), ``DETECT_WIDTH`` by default; ``None`` detects on
-    the full frame.
+    the full frame. Its box runs about from the brow to the chin: ``box_height_m`` is
+    ``FACE_BOX_HEIGHT_M``, what turns its faces' sizes into distances.
     """
+
+    box_height_m: float = FACE_BOX_HEIGHT_M
 
     def __init__(
         self,

@@ -19,6 +19,7 @@ import time
 import urllib.error
 import wave
 from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import replace
 from email.message import Message
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -35,12 +36,14 @@ from reachy_mini_bridge import head_tracking as head_tracking_module
 from reachy_mini_bridge import robot as robot_module
 from reachy_mini_bridge.bridge import ReachyMiniBridge
 from reachy_mini_bridge.config import (
+    ApproachSettings,
     DaemonConfig,
     FaceDetectionSettings,
     MotionSettings,
     ReachyMiniConfig,
     SimCameraSettings,
     SimDisplaySettings,
+    TrackingSettings,
 )
 from reachy_mini_bridge.daemon import DaemonInfo
 from reachy_mini_bridge.errors import (
@@ -179,6 +182,7 @@ def test_package_front_door_drives_the_fake() -> None:
     import reachy_mini_bridge as rmb
 
     assert set(rmb.__all__) == {
+        "ApproachSettings",
         "BridgeError",
         "CameraFrame",
         "ConfigError",
@@ -200,6 +204,9 @@ def test_package_front_door_drives_the_fake() -> None:
         "ReachyMiniConfig",
         "SpeechSynthesizer",
         "TTSEngineSynthesizer",
+        "MirroringSettings",
+        "PersonalDistanceSettings",
+        "TrackingSettings",
     }
     assert all(hasattr(rmb, name) for name in rmb.__all__)
     assert isinstance(_ToneSynth(), rmb.SpeechSynthesizer)
@@ -633,7 +640,7 @@ def test_start_head_tracking_needs_no_motors() -> None:
             await _until(lambda: bridge.faces.value.active)  # the first observation
             await asyncio.sleep(0.1)  # a moment more for anything sent to the robot
             return (
-                bridge.tracking,
+                bridge.tracking.enabled,
                 bridge.faces.value.active,
                 _command_names(bridge)[before:],
             )
@@ -1186,7 +1193,7 @@ def test_the_default_config_runs_no_detector_and_the_switches_refuse() -> None:
             return (
                 report,
                 bridge.attention,
-                bridge.tracking,
+                bridge.tracking.enabled,
                 bridge.face_detection,
                 _command_names(bridge),
             )
@@ -1205,7 +1212,7 @@ _NOT_CALLABLE: Any = 42
     [
         pytest.param(
             FaceDetectionSettings(),
-            MotionSettings(tracking=True),
+            MotionSettings(tracking=TrackingSettings(enabled=True)),
             r"face_detection\.detector is null",
             id="tracking-without-a-detector",
         ),
@@ -1328,7 +1335,7 @@ def test_a_detector_that_cannot_be_built_leaves_a_switch_as_it_was(
             with pytest.raises(BridgeError, match="could not be built") as info:
                 await bridge.start_head_tracking(focus=True)
             await bridge.set_motors_state("enabled")  # the session still works
-            switches = (detection, bridge.tracking, bridge.tracking_focus)
+            switches = (detection, bridge.tracking.enabled, bridge.tracking_focus)
             return info.value.__cause__, switches
 
     cause, switches = asyncio.run(run())
@@ -1446,7 +1453,7 @@ def test_the_head_tracking_report_outlives_sessions(fast_attention: None) -> Non
     """The observable is the bridge's: tracking on from the config publishes the active
     report at every entry and the inactive one at every exit, to the same subscriber."""
     bridge = ReachyMiniBridge(_custom_config(_Scene([])))
-    assert bridge.tracking is True  # outside a session: the config's value
+    assert bridge.tracking.enabled is True  # outside a session: the config's value
 
     async def run() -> list[tuple[bool, bool, str | None, int | None]]:
         woken: list[HeadTrackingReport] = []
@@ -1785,7 +1792,8 @@ def test_camera_publishes_the_fakes_frames_while_entered() -> None:
 
 def test_camera_frames_carry_the_head_pose_at_their_time() -> None:
     config = ReachyMiniConfig(
-        backend="fake", motion=MotionSettings(tracking=False, presence=False)
+        backend="fake",
+        motion=MotionSettings(tracking=TrackingSettings(), presence=False),
     )
     turned = np.eye(4)
     turned[:3, :3] = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]  # 90° yaw
@@ -2138,7 +2146,7 @@ def _settled_yaw(config: ReachyMiniConfig, x: float) -> float:
     config.face_detection = FaceDetectionSettings(
         detector="custom", enabled=True, face_detector=scene.detector
     )
-    config.motion = MotionSettings(tracking=True, idle="hold")
+    config.motion = MotionSettings(tracking=TrackingSettings(enabled=True), idle="hold")
 
     async def run() -> list[float]:
         async with ReachyMiniBridge(config) as bridge:
@@ -2222,7 +2230,7 @@ def _sim_with_face_markers(
         face_detection=FaceDetectionSettings(
             detector="custom", enabled=True, face_detector=scene.detector
         ),
-        motion=MotionSettings(tracking=True, idle="hold"),
+        motion=MotionSettings(tracking=TrackingSettings(enabled=True), idle="hold"),
     )
 
 
@@ -2366,7 +2374,10 @@ def _custom_config(
     """A fake with a stub detector registered through the `custom` path — the fake's
     stand-in for a person (specs/vision/user_perception.md "`fake` backend support"); detection
     and tracking on unless told otherwise."""
-    motion.setdefault("tracking", True)
+    tracking = motion.pop("tracking", True)
+    if not isinstance(tracking, TrackingSettings):
+        tracking = TrackingSettings(enabled=tracking)
+    motion["tracking"] = tracking
     return ReachyMiniConfig(
         backend="fake",
         face_detection=FaceDetectionSettings(
@@ -2473,7 +2484,7 @@ async def _set_custom_idle(bridge: ReachyMiniBridge) -> None:
         ),
         pytest.param(
             _custom_config(_Scene([])),
-            lambda b: b.tracking,
+            lambda b: b.tracking.enabled,
             lambda b: b.stop_head_tracking(),
             False,
             id="tracking",
@@ -2634,7 +2645,11 @@ def test_a_factory_result_without_detect_fails_entry_and_the_verbs_alike() -> No
             with pytest.raises(ValueError, match="no callable `detect"):
                 await bridge.set_face_detection(True)
             await bridge.set_motors_state("enabled")  # the session still works
-            return bridge.tracking, bridge.face_detection, bridge.faces.value.active
+            return (
+                bridge.tracking.enabled,
+                bridge.face_detection,
+                bridge.faces.value.active,
+            )
 
     assert asyncio.run(run()) == (False, False, False)
 
@@ -2656,7 +2671,7 @@ def test_clearing_the_custom_detector_while_tracking_is_refused(
             ):
                 await bridge.set_face_detector(None)
             kept = (
-                bridge.tracking,
+                bridge.tracking.enabled,
                 bridge.face_detector is scene.detector,
                 bridge.attention,
                 bridge.faces.value.active,
@@ -2665,7 +2680,7 @@ def test_clearing_the_custom_detector_while_tracking_is_refused(
             await bridge.set_face_detector(None)  # nobody needs faces: cleared
             with pytest.raises(ValueError, match="no face detector is registered"):
                 await bridge.start_head_tracking()
-            return engaged, kept, bridge.face_detector, bridge.tracking
+            return engaged, kept, bridge.face_detector, bridge.tracking.enabled
 
     engaged, kept, cleared, tracking = asyncio.run(run())
     assert engaged == "engaged"
@@ -3237,7 +3252,7 @@ def test_overlapping_detection_starts_build_one_detector_and_stop_leaves_none() 
             release.set()
             await asyncio.wait_for(asyncio.gather(first, second), 3)
             assert len(built) == 1
-            assert bridge.face_detection and bridge.tracking
+            assert bridge.face_detection and bridge.tracking.enabled
             loops = [t for t in asyncio.all_tasks() if t.get_name() == "face-detection"]
             assert len(loops) == 1
             await _wait_until(lambda: bool(bridge.faces.value.faces))
@@ -3280,12 +3295,12 @@ def test_a_stop_during_a_held_tracking_start_leaves_tracking_off() -> None:
             release.set()
             await asyncio.gather(starting, stopping)
             await _wait_until(lambda: not bridge.faces.value.active)
-            assert not bridge.tracking
+            assert not bridge.tracking.enabled
             assert not bridge.head_tracking.value.active
             assert bridge.attention is None
             assert not bridge.faces.value.active
             await bridge.start_head_tracking()
-            assert bridge.tracking and bridge.head_tracking.value.active
+            assert bridge.tracking.enabled and bridge.head_tracking.value.active
             assert bridge.attention == "watching"
             await _wait_until(lambda: bridge.faces.value.active)
 
@@ -3649,3 +3664,177 @@ def test_a_cancelled_disable_completes_and_leaves_the_switch_off() -> None:
     assert switch is False and active is False
     assert closed == 1
     assert x == pytest.approx(0.2, abs=0.03)  # a fresh detector on the next enable
+
+
+# --- the tracking posture (specs/motion/head_tracking.md "The posture") ------------------
+
+
+def _head(head: npt.NDArray[np.float64] | None) -> npt.NDArray[np.float64]:
+    assert head is not None
+    return head
+
+
+def _roll_of(head: npt.NDArray[np.float64]) -> float:
+    """A head pose's roll about its own forward axis, in degrees (+: leaning right)."""
+    from scipy.spatial.transform import Rotation
+
+    return float(Rotation.from_matrix(head[:3, :3]).as_euler("ZYX", degrees=True)[2])
+
+
+class _TiltedPerson:
+    """A stub detector's person tilting their head ``roll_deg`` toward the robot's right,
+    seen by the fake's head-mounted camera: the image roll is the person's less the
+    head's own roll at the time, as a camera that turns with the head sees it."""
+
+    def __init__(self, roll_deg: float, height_px: float = 16.0) -> None:
+        self.roll_deg = roll_deg
+        self.height_px = height_px
+        self.robot: FakeReachyMini | None = None
+
+    def detector(self) -> _TiltedPerson:
+        return self
+
+    def detect(self, frame_bgr: npt.NDArray[np.uint8], ts: float) -> list[PixelFace]:
+        head_roll = 0.0
+        if self.robot is not None and self.robot.last_target[0] is not None:
+            head_roll = _roll_of(np.asarray(self.robot.last_target[0]))
+        seen = math.radians(self.roll_deg - head_roll)
+        u, v, half = 31.5, 23.5, 3.0
+        dx, dy = half * math.cos(seen), half * math.sin(seen)
+        h = self.height_px
+        return [
+            PixelFace(
+                bbox=(u - h / 3, v - h / 2, 2 * h / 3, h),
+                nose=(u, v),
+                eyes=((u - dx, v - dy), (u + dx, v + dy)),
+            )
+        ]
+
+
+def _tilted_config(
+    person: _TiltedPerson, tracking: TrackingSettings
+) -> ReachyMiniConfig:
+    return ReachyMiniConfig(
+        backend="fake",
+        face_detection=FaceDetectionSettings(
+            detector="custom", face_detector=person.detector
+        ),
+        motion=MotionSettings(idle="hold", tracking=tracking),
+    )
+
+
+def test_faces_carry_their_distance_from_the_session_camera_model() -> None:
+    """`Face.distance_m` (specs/vision/user_perception.md "The face report"): the face's
+    size through the session's camera model against the detector's box height."""
+
+    class _HalfBox(_StubDetector):
+        box_height_m = FACE_BOX_HEIGHT_M / 2
+
+    async def run(factory: Callable[[_Scene], Any] | None) -> tuple[Any, CameraModel]:
+        scene = _Scene([_pixel_face(0.0)])
+        if factory is not None:
+            scene.detector = lambda: factory(scene)
+        async with ReachyMiniBridge(_custom_config(scene, tracking=False)) as bridge:
+            report = await asyncio.wait_for(
+                bridge.faces.wait_for(lambda r: bool(r.faces)), timeout=2.0
+            )
+            return report.faces[0], CameraModel.for_robot(bridge.robot)
+
+    face, camera = asyncio.run(run(None))
+    point = head_tracking_module.face_camera_point(face, camera, FACE_BOX_HEIGHT_M)
+    assert point is not None
+    assert face.distance_m == pytest.approx(float(np.linalg.norm(point)))
+    assert face.distance_m is not None
+    assert 0.3 < face.distance_m < 0.6  # 16 px of the fake's 48 is a face at desk range
+    half, _ = asyncio.run(run(_HalfBox))
+    assert half.distance_m == pytest.approx(face.distance_m / 2)
+
+
+def test_the_head_mirrors_a_tilted_person_without_feeding_back_on_itself() -> None:
+    """End to end on the fake: the stub's image roll follows the head's own roll, so a
+    tracker reading the image angle would run to its clamp; the bridge's settles at the
+    person's roll less the deadband."""
+
+    async def run() -> tuple[float, float, float]:
+        person = _TiltedPerson(roll_deg=9.0, height_px=12.0)  # beyond the bubble
+        tracking = TrackingSettings(enabled=True, focus=True)
+        async with ReachyMiniBridge(_tilted_config(person, tracking)) as bridge:
+            person.robot = _fake(bridge)
+            await bridge.set_motors_state("enabled")
+            await asyncio.sleep(5.0)
+            mirrored = _roll_of(_head(_fake(bridge).targets[-1][0]))
+            reported = bridge.head_tracking.value.roll_deg
+            # mirroring switched off mid-track: eased out, never a step
+            await bridge.set_tracking(
+                replace(
+                    bridge.tracking,
+                    mirroring=replace(bridge.tracking.mirroring, enabled=False),
+                )
+            )
+            marker = len(_fake(bridge).targets)
+            await asyncio.sleep(4.0)
+            rolls = [_roll_of(_head(h)) for h, _, _ in _fake(bridge).targets[marker:]]
+            steps = max(abs(b - a) for a, b in itertools.pairwise(rolls))
+            return mirrored, reported, max(abs(rolls[-1]), steps)
+
+    mirrored, reported, after = asyncio.run(run())
+    assert mirrored == pytest.approx(
+        9.0 - head_tracking_module.ROLL_DEADBAND_DEG, abs=1.0
+    )
+    assert reported == pytest.approx(mirrored, abs=1.0)
+    assert after < 0.5  # level again, through steps of a fraction of a degree
+
+
+def test_a_person_too_close_pushes_the_head_back_and_a_far_one_draws_it_in() -> None:
+    async def run(height_px: float) -> tuple[float, float]:
+        person = _TiltedPerson(roll_deg=0.0, height_px=height_px)
+        tracking = TrackingSettings(enabled=True, focus=True)
+        async with ReachyMiniBridge(_tilted_config(person, tracking)) as bridge:
+            await bridge.set_motors_state("enabled")
+            await asyncio.sleep(7.0)
+            head = _head(_fake(bridge).targets[-1][0])
+            return float(head[0, 3]) * 1000.0, bridge.head_tracking.value.offset_mm
+
+    near_x, near_offset = asyncio.run(run(40.0))  # 40 px of 48: about 0.19 m away
+    far_x, far_offset = asyncio.run(run(12.0))  # about 0.6 m away
+    assert near_offset == pytest.approx(12.0 - 25.0, abs=1.0)  # the full retreat
+    assert far_offset == pytest.approx(12.0, abs=1.0)  # the lean alone
+    assert near_x == pytest.approx(near_offset, abs=1.5)  # straight ahead: along x
+    assert far_x == pytest.approx(far_offset, abs=1.5)
+
+
+def test_set_tracking_starts_stops_and_refuses_what_it_cannot_apply() -> None:
+    async def run() -> list[Any]:
+        seen: list[Any] = []
+        bridge = ReachyMiniBridge(_custom_config(_Scene([]), tracking=False))
+        with pytest.raises(BridgeError):  # outside a session
+            await bridge.set_tracking(TrackingSettings(enabled=True))
+        async with bridge:
+            with pytest.raises(ValueError, match="TrackingSettings"):
+                await bridge.set_tracking(True)  # type: ignore[arg-type]
+            wanted = TrackingSettings(
+                enabled=True, focus=True, approach=ApproachSettings(lean_mm=5.0)
+            )
+            await bridge.set_tracking(wanted)
+            seen.append((bridge.tracking, bridge.attention, bridge.tracking_focus))
+            await bridge.start_head_tracking()  # focus kept from the settings
+            seen.append(bridge.tracking_focus)
+            await bridge.stop_head_tracking()  # the posture settings kept
+            seen.append((bridge.tracking, bridge.attention))
+        seen.append(bridge.tracking)  # outside: the config's again
+        async with ReachyMiniBridge("fake") as plain:  # no detector configured
+            with pytest.raises(ValueError, match="detector"):
+                await plain.set_tracking(TrackingSettings(enabled=True))
+            await plain.set_tracking(TrackingSettings(focus=True))  # off: fine
+            seen.append(plain.tracking.focus)
+        return seen
+
+    on, focus_kept, off, outside, recorded = asyncio.run(run())
+    wanted = TrackingSettings(
+        enabled=True, focus=True, approach=ApproachSettings(lean_mm=5.0)
+    )
+    assert on == (wanted, "watching", True)
+    assert focus_kept is True
+    assert off == (replace(wanted, enabled=False), None)
+    assert outside == TrackingSettings()
+    assert recorded is True

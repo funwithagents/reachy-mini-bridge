@@ -53,15 +53,16 @@ def test_a_wide_frame_is_detected_on_a_subsample_and_the_faces_scaled_back() -> 
 
     faces = detector.detect(_frame(1280, 720), ts=1.0)
 
-    # 1280 // 320 = 4: the model saw 320 x 180 and a contiguous array.
+    # 1280 // 640 = 2 (the default width, DETECT_WIDTH): the model saw 640 x 360 and a
+    # contiguous array.
     (seen,) = stub.frames
-    assert seen.shape == (180, 320, 3)
+    assert seen.shape == (360, 640, 3)
     assert seen.flags["C_CONTIGUOUS"]
     assert faces == [
         PixelFace(
-            bbox=(40.0, 80.0, 120.0, 160.0),
-            nose=(100.0, 160.0),
-            eyes=((60.0, 120.0), (140.0, 124.0)),
+            bbox=(20.0, 40.0, 60.0, 80.0),
+            nose=(50.0, 80.0),
+            eyes=((30.0, 60.0), (70.0, 62.0)),
         )
     ]
 

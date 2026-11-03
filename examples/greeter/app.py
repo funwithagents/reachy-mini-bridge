@@ -6,7 +6,7 @@
 - the face is gone (the tracker hands the head back after its loss timeout): the robot
   says "Good bye" with a short farewell move, and the head eases back into breathing.
 
-The config must name a detector, turn tracking on, and carry a ``tts`` block for the voice:
+The config must name a detector, turn tracking on (``motion.tracking.enabled``), and carry a ``tts`` block for the voice:
 the two under ``configs/`` do (the sim seeing through the webcam, the default; a Lite over
 USB), both on the local phonon voice (the ``tts-phonon`` extra, in a plain ``uv sync``).
 """
@@ -110,8 +110,8 @@ def main() -> None:
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
     bridge = ReachyMiniBridge.from_json_file(args.config)
-    if not bridge.config.motion.tracking:
-        parser.error(f"{args.config}: the greeter needs motion.tracking on")
+    if not bridge.config.motion.tracking.enabled:
+        parser.error(f"{args.config}: the greeter needs motion.tracking.enabled on")
     with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(run(bridge))
 

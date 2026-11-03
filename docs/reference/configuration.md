@@ -31,7 +31,7 @@ Every field of the bridge's declarative config: its default, what it does, and t
   "face_detection": {
     "detector": "yunet",
     "enabled": true,
-    "width": 320,
+    "width": 640,
     "target_fps": null
   },
 
@@ -39,7 +39,13 @@ Every field of the bridge's declarative config: its default, what it does, and t
     "presence": true,
     "idle": "breathing",
     "wobbling": true,
-    "tracking": true
+    "tracking": {
+      "enabled": true,
+      "focus": false,
+      "mirroring": { "enabled": true, "gain": 1.0, "max_deg": 12.0 },
+      "approach": { "enabled": true, "lean_mm": 12.0 },
+      "personal_distance": { "enabled": true, "distance_m": 0.4, "max_back_mm": 25.0, "span_m": 0.1 }
+    }
   }
 }
 ```
@@ -163,32 +169,67 @@ Omit the block and `say` raises unless you pass your own `SpeechSynthesizer`. A 
 
 | Field | Default | What it does | Runtime verb |
 |---|---|---|---|
-| `detector` | `null` | Which detector the bridge runs on the camera feed's frames: `null` none (no detection, no tracking — `enabled` or `tracking` on is then a config error); `yunet` the shipped detector, upstream's model run by the bridge (nothing to install; the weights download into the Hugging Face cache on first use); `custom` your own, registered from code with `FaceDetectionSettings(face_detector=...)` or `set_face_detector(...)` (see [../guides/custom-face-detector.md](../guides/custom-face-detector.md)); session entry refuses `custom` with none registered | — the name is config-only; `set_face_detector` registers the `custom` factory |
-| `enabled` | `false` | Runs the detection loop from session entry, so `bridge.faces` reports who is there. Needs no motors, needs a `detector`. The loop also runs whenever `motion.tracking` is on, whatever this says | `set_face_detection` |
-| `width` | `320` | The width the shipped detector works at — its cost per frame against its precision. 320 px is upstream's own; 640 quadruples the cost and halves the landmark error; `null` detects on the full frame. A custom detector's width is its author's | — |
+| `detector` | `null` | Which detector the bridge runs on the camera feed's frames: `null` none (no detection, no tracking — `enabled` or `tracking.enabled` on is then a config error); `yunet` the shipped detector, upstream's model run by the bridge (nothing to install; the weights download into the Hugging Face cache on first use); `custom` your own, registered from code with `FaceDetectionSettings(face_detector=...)` or `set_face_detector(...)` (see [../guides/custom-face-detector.md](../guides/custom-face-detector.md)); session entry refuses `custom` with none registered | — the name is config-only; `set_face_detector` registers the `custom` factory |
+| `enabled` | `false` | Runs the detection loop from session entry, so `bridge.faces` reports who is there. Needs no motors, needs a `detector`. The loop also runs whenever `motion.tracking.enabled` is on, whatever this says | `set_face_detection` |
+| `width` | `640` | The width the shipped detector works at — its cost per frame against its precision. 640 px costs about four times upstream's own 320 and is where YuNet's eye-line roll becomes usable within about half a metre of the Lite, which the tracker's mirroring reads; `320` is the floor for small onboard compute, at the price of the mirror; `null` detects on the full frame. A custom detector's width is its author's | — |
 | `target_fps` | `null` | A ceiling on detections per second, for any detector: the loop skips frames. `null` detects once per new camera frame. The lever for the wireless robot, whose camera streams at 30 fps. The loop logs the detector's mean time and rate once, 10 s in | — |
 
 `face_detector` is a Python-only field (`FaceDetectionSettings(face_detector=MyDetector)`): a JSON file names the mode, code supplies the detector; the key in a file is a `ConfigError`.
 
 ## `motion` — what the robot does at rest
 
-`presence` and `wobbling` default to `true`, `tracking` to `false` (it needs a `face_detection.detector`) and `idle` to `"breathing"`; each has a runtime verb that changes it while the session is entered.
+`presence` and `wobbling` default to `true`, `tracking.enabled` to `false` (it needs a `face_detection.detector`) and `idle` to `"breathing"`; each has a runtime verb that changes it while the session is entered.
 
 | Field | Default | What it does | Runtime verb |
 |---|---|---|---|
 | `presence` | `true` | Fills every idle moment with the idle move, so the robot never looks dead between verbs. `false` commands the head only while a verb runs — for a caller driving the head itself. Emotions play either way | `set_presence` |
 | `idle` | `"breathing"` | Which idle move presence plays: `breathing` (slow breaths with rests, the head roaming, the antennas flicking), `hold` (a still neutral) or `custom` (your own `IdleMove`, registered from code with `MotionSettings(idle_move=...)` or `set_idle_move`; the hold until one is registered). Ignored while `presence` is off | `set_idle` / `set_idle_move` |
 | `wobbling` | `true` | Sways the head with every sound the robot plays. `false` keeps it still while audio plays | `set_wobbling` |
-| `tracking` | `false` | The bridge's tracker keeps the reported face in view from session entry, the head breathing while it looks. Needs no motors (the head moves once they are `enabled`) but a `face_detection.detector` (`true` with none is a config error). `false` leaves it off until you call `start_head_tracking()` | `start_head_tracking` / `stop_head_tracking` |
+| `tracking` | off | The bridge's head tracker and the posture it gives the head: an object, below (a `true` / `false` there is a config error pointing at `{"enabled": …}`) | `set_tracking` / `start_head_tracking` / `stop_head_tracking` |
 
 `idle_move` is a Python-only field (`MotionSettings(idle="custom", idle_move=SlowNod)`), as `face_detector` is; the key in a file is a `ConfigError`. Writing one: [../guides/custom-idle-move.md](../guides/custom-idle-move.md).
+
+**`motion.tracking`** — the head tracker: whether it runs, whether it holds the head exactly on the face, and the posture it takes toward the person it follows. The same object, `TrackingSettings`, is the runtime API: `bridge.tracking` reads it, `set_tracking(settings)` applies one ([api.md](api.md)). Every key is optional; a part given in part keeps the defaults of the rest. Guide: [../guides/perception-and-tracking.md](../guides/perception-and-tracking.md).
+
+| Field | Default | What it does |
+|---|---|---|
+| `enabled` | `false` | The tracker keeps the reported face in view from session entry, the head breathing while it looks. Needs no motors (the head moves once they are `enabled`) but a `face_detection.detector` (`true` with none is a config error) |
+| `focus` | `false` | Holds the head exactly on the face, the idle move's own head motion left out (its antennas kept). The posture stays |
+| `mirroring` | on | The head rolls with the person's head roll, as a mirror does; below |
+| `approach` | on | The head leans toward the person it follows; below |
+| `personal_distance` | on | The head pulls back from someone too close; below |
+
+**`motion.tracking.mirroring`** — the person's head roll, mirrored: both heads lean toward the same side of the room. A tilt under 3° reads as upright (the landmarks' jitter), and the roll eases in over about a second. It is as good as the detector's roll: YuNet at the default width reads about two thirds of the roll of a face 0.45 m from the Lite, more nearer, little beyond 0.6 m.
+
+| Field | Default | What it does |
+|---|---|---|
+| `enabled` | `true` | Mirror the person's roll |
+| `gain` | `1.0` | Degrees of mirrored roll per degree of the person's, past the deadband. Above `1` corrects a detector that under-reads |
+| `max_deg` | `12.0` | The largest mirrored roll either way, at most 30 |
+
+**`motion.tracking.approach`** — the head sits a little forward while it follows someone, along the direction it looks, easing in over about a second and a half.
+
+| Field | Default | What it does |
+|---|---|---|
+| `enabled` | `true` | Lean toward the person |
+| `lean_mm` | `12.0` | How far forward, at most 30 mm |
+
+**`motion.tracking.personal_distance`** — a person nearer than `distance_m` pushes the head back, the retreat growing over `span_m` up to `max_back_mm`: a recoil that reads as "you are close" (the head's travel is a few centimetres, it cannot keep a distance). The distance is the face's `distance_m`, from its size in the image.
+
+| Field | Default | What it does |
+|---|---|---|
+| `enabled` | `true` | Pull back from someone too close |
+| `distance_m` | `0.40` | The distance from the robot's camera inside which the head retreats |
+| `max_back_mm` | `25.0` | The largest retreat, at most 30 mm |
+| `span_m` | `0.10` | The intrusion over which the retreat grows from nothing to `max_back_mm` |
 
 ## Validation
 
 Every `from_*` constructor path validates identically, as it parses — before the bridge is constructed; a failure is a `ConfigError` (a `ValueError`) naming the field. The rules in full are in [specs/core/config.md](../../specs/core/config.md) "Validation rules"; the ones a consumer meets:
 
 - `backend` is `real`, `sim` or `fake`; `daemon.spawn` is `never`, `auto` or `always`, and anything but `never` needs `sim` or `real`; `daemon.kinematics_engine` is `analytical`, `placo` or `nn`.
-- `face_detection.enabled: true` or `motion.tracking: true` with no `face_detection.detector` is an error naming both fields.
+- `face_detection.enabled: true` or `motion.tracking.enabled: true` with no `face_detection.detector` is an error naming both fields.
+- `motion.tracking` is an object; its numbers are finite and within the bounds the tables give.
 - `daemon.sim_displays` entries `true` with `daemon.headless: true` is an error naming both.
 - `robot.host`, when the bridge manages the daemon, must be `127.0.0.1` or `localhost`; `robot.use_sim` and `robot.spawn_daemon` are refused.
 - Numbers are finite: `daemon.startup_timeout` positive, `face_detection.width` a positive integer, `face_detection.target_fps` positive, `daemon.camera.hfov_deg` strictly between 1 and 179.
