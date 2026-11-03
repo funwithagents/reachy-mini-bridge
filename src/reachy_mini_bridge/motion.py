@@ -70,8 +70,10 @@ __all__ = [
     "body_yaw_ease",
     "framed",
     "postured",
+    "tilt_of",
     "unframed",
     "within_reach",
+    "within_tilt",
     "yaw_of",
 ]
 
@@ -679,6 +681,39 @@ def unframed(head: npt.NDArray[np.float64], theta: float) -> npt.NDArray[np.floa
     return rz(-theta) @ np.asarray(head, dtype=np.float64)
 
 
+def tilt_of(pose: npt.NDArray[np.float64]) -> float:
+    """How far a head pose tilts from upright, in radians: the angle of its vertical
+    axis from the world's — pitch and roll together, whatever the yaw or the base's."""
+    return math.acos(max(-1.0, min(1.0, float(pose[2, 2]))))
+
+
+def within_tilt(
+    pose: npt.NDArray[np.float64], max_tilt: float
+) -> npt.NDArray[np.float64]:
+    """``pose`` with its tilt held to ``max_tilt`` radians (specs/motion/motion.md "The
+    tilt limit"): past it, the head is rotated back toward upright about the horizontal
+    axis across its tilt — the least rotation that brings it to the limit, as upstream's
+    Placo cone does — then turned about the vertical back onto the direction it faced,
+    which a rolled pose's least rotation shifts and which tilt does not depend on: the
+    yaw is kept exactly and only the pitch and roll give. Within the limit, and the
+    translation always, unchanged."""
+    z = np.asarray(pose[:3, 2], dtype=np.float64)
+    excess = tilt_of(pose) - max_tilt
+    if excess <= 0.0:
+        return pose
+    axis = np.cross(z, np.array([0.0, 0.0, 1.0]))
+    norm = float(np.linalg.norm(axis))
+    if norm < 1e-9:
+        return pose
+    kx, ky, kz = axis / norm
+    k = np.array([[0.0, -kz, ky], [kz, 0.0, -kx], [-ky, kx, 0.0]])
+    fix = np.eye(3) + math.sin(excess) * k + (1.0 - math.cos(excess)) * (k @ k)
+    held = np.array(pose, dtype=np.float64)
+    held[:3, :3] = fix @ held[:3, :3]
+    held[:3, :3] = rz(_wrap(yaw_of(pose) - yaw_of(held)))[:3, :3] @ held[:3, :3]
+    return held
+
+
 def yaw_of(pose: npt.NDArray[np.float64]) -> float:
     """The yaw of a pose about the vertical axis, in radians, positive to the left: the
     direction its forward axis points in, projected on the horizontal plane."""
@@ -834,10 +869,13 @@ class MotionSession:
         stop_sound: Callable[[object], None] | None = None,
         reachable: Reachable | None = None,
         base_following: BaseFollowingSettings | None = None,
+        max_tilt_deg: float = 25.0,
     ) -> None:
         if idle_move is not None:
             check_idle_move_factory(idle_move)
         self._robot = robot
+        # The most the gaze layer tilts the head (specs/motion/motion.md "The tilt limit").
+        self._max_tilt = math.radians(max_tilt_deg)
         # The body yaw (specs/motion/motion.md "The body yaw"): whether and how the base
         # follows the person — None: not at all, body yaw 0 as it always was.
         self._base_following = base_following or BaseFollowingSettings(enabled=False)
@@ -1530,8 +1568,11 @@ class MotionSession:
                 if idle_share >= 1.0
                 else linear_pose_interpolation(NEUTRAL_HEAD, gaze_head, idle_share)
             )
-            return linear_pose_interpolation(
-                idle_head, compose_world_offset(aim, motion), w
+            return within_tilt(
+                linear_pose_interpolation(
+                    idle_head, compose_world_offset(aim, motion), w
+                ),
+                self._max_tilt,
             )
 
         composed_head = self._within_reach(now, compose, body_yaw)
