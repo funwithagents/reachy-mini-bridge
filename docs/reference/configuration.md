@@ -178,7 +178,7 @@ Omit the block and `say` raises unless you pass your own `SpeechSynthesizer`. A 
 
 ## `motion` — what the robot does at rest
 
-`presence` and `wobbling` default to `true`, `tracking.enabled` to `false` (it needs a `face_detection.detector`) and `idle` to `"breathing"`; each has a runtime verb that changes it while the session is entered.
+`presence`, `wobbling` and `base_following.enabled` default to `true`, `tracking.enabled` to `false` (it needs a `face_detection.detector`) and `idle` to `"breathing"`; each has a runtime verb that changes it while the session is entered.
 
 | Field | Default | What it does | Runtime verb |
 |---|---|---|---|
@@ -186,6 +186,7 @@ Omit the block and `say` raises unless you pass your own `SpeechSynthesizer`. A 
 | `idle` | `"breathing"` | Which idle move presence plays: `breathing` (slow breaths with rests, the head roaming, the antennas flicking), `hold` (a still neutral) or `custom` (your own `IdleMove`, registered from code with `MotionSettings(idle_move=...)` or `set_idle_move`; the hold until one is registered). Ignored while `presence` is off | `set_idle` / `set_idle_move` |
 | `wobbling` | `true` | Sways the head with every sound the robot plays. `false` keeps it still while audio plays | `set_wobbling` |
 | `tracking` | off | The bridge's head tracker and the posture it gives the head: an object, below (a `true` / `false` there is a config error pointing at `{"enabled": …}`) | `set_tracking` / `start_head_tracking` / `stop_head_tracking` |
+| `base_following` | on | The base turns toward the person the head follows, and every move — the idle move, an emotion — plays around that body yaw: an object, below | `set_base_following` |
 
 `idle_move` is a Python-only field (`MotionSettings(idle="custom", idle_move=SlowNod)`), as `face_detector` is; the key in a file is a `ConfigError`. Writing one: [../guides/custom-idle-move.md](../guides/custom-idle-move.md).
 
@@ -224,6 +225,15 @@ Omit the block and `say` raises unless you pass your own `SpeechSynthesizer`. A 
 | `span_m` | `0.20` | The intrusion over which the retreat grows from nothing to `max_back_mm` |
 | `exit_margin_m` | `null` | How far beyond `distance_m` a person who entered must go before they count as having left — the personal space event's hysteresis, so someone standing at the boundary never flickers it. `null`: 12.5 % of `distance_m` (5 cm at 0.40 m), since the distance estimate's noise grows with the distance; set it wider for a detector with a jumpier box |
 
+**`motion.base_following`** — the base toward the person: while the head follows someone well to one side, the base turns onto them, so the head no longer works at the edge of its range and the whole posture stays within reach; an emotion played meanwhile is performed toward the person; once they leave, the base keeps facing where they were for `hold_s`, then eases back to the front. The base turns only for a turn worth making — once the person's direction is more than `deadband_deg` from where the base points — and then catches up fully, so the deadband is also how far they move before the next turn. The same object, `BaseFollowingSettings`, is the runtime API: `bridge.base_following` reads it, `set_base_following(settings)` applies one, and `bridge.body_yaw_deg` reads where the base points ([api.md](api.md)). Every key is optional.
+
+| Field | Default | What it does |
+|---|---|---|
+| `enabled` | `true` | Turn the base toward the person. Off, the body yaw is 0 as it always was and only the robot's own kinematics ever turn the base |
+| `deadband_deg` | `20.0` | How far, in yaw, the person's direction must be from where the base points before the base turns onto them, at most 60. Smaller moves the base more often and keeps more of the posture at the far sides: with breathing on top, the default posture is out of reach from about 32° of head-body delta level, 14° looking up |
+| `hold_s` | `45.0` | How long the base keeps facing where the person was once nobody is followed, before easing back to the front; `0` returns as soon as the tracker lets go |
+| `lag_s` | `0.8` | How long the person's direction must have been past the deadband before the base turns: the head is on them by then and the body follows, as a person turns to someone. `0` starts the base with the head, which reads as the body doing the turning |
+
 ## Validation
 
 Every `from_*` constructor path validates identically, as it parses — before the bridge is constructed; a failure is a `ConfigError` (a `ValueError`) naming the field. The rules in full are in [specs/core/config.md](../../specs/core/config.md) "Validation rules"; the ones a consumer meets:
@@ -231,6 +241,7 @@ Every `from_*` constructor path validates identically, as it parses — before t
 - `backend` is `real`, `sim` or `fake`; `daemon.spawn` is `never`, `auto` or `always`, and anything but `never` needs `sim` or `real`; `daemon.kinematics_engine` is `analytical`, `placo` or `nn`.
 - `face_detection.enabled: true` or `motion.tracking.enabled: true` with no `face_detection.detector` is an error naming both fields.
 - `motion.tracking` is an object; its numbers are finite and within the bounds the tables give.
+- `motion.base_following` is an object; its numbers are finite and within the bounds the table gives.
 - `daemon.sim_displays` entries `true` with `daemon.headless: true` is an error naming both.
 - `robot.host`, when the bridge manages the daemon, must be `127.0.0.1` or `localhost`; `robot.use_sim` and `robot.spawn_daemon` are refused.
 - Numbers are finite: `daemon.startup_timeout` positive, `face_detection.width` a positive integer, `face_detection.target_fps` positive, `daemon.camera.hfov_deg` strictly between 1 and 179.

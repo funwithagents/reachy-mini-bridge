@@ -82,6 +82,10 @@ class PanelState:
     idle: str
     wobbling: bool
     tracking: bool
+    # whether the base turns toward the person the head follows (bridge.base_following)
+    base_following: bool
+    # where the base points, in degrees (bridge.body_yaw_deg)
+    body_yaw_deg: float
     # the posture the head takes toward the followed face (head_tracking's roll_deg,
     # offset_mm and in_personal_space); None while it follows nobody
     posture: tuple[float, float, bool] | None
@@ -427,6 +431,8 @@ class ControlPanelController:
             idle=bridge.idle,
             wobbling=bridge.wobbling,
             tracking=bridge.tracking.enabled,
+            base_following=bridge.base_following.enabled,
+            body_yaw_deg=bridge.body_yaw_deg,
             posture=posture,
             attention=bridge.attention,
             face_detection=bridge.face_detection,
@@ -518,6 +524,15 @@ class ControlPanelController:
                         settings.personal_space, enabled=personal_space
                     ),
                 )
+            )
+        )
+
+    def set_base_following(self, enabled: bool) -> None:
+        """The Base following checkbox: the base toward the person on or off, the rest
+        of the settings kept (``bridge.set_base_following``)."""
+        self._call(
+            self._bridge.set_base_following(
+                replace(self._bridge.base_following, enabled=enabled)
             )
         )
 

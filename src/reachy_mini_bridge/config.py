@@ -634,6 +634,66 @@ class TrackingSettings:
         return cls.from_dict(_load_file(path))
 
 
+# The deadband's ceiling: past it the head-body delta the base tolerates exceeds what
+# the posture can reach on the far side (specs/core/config.md "`motion.base_following`").
+BASE_FOLLOWING_MAX_DEADBAND_DEG = 60.0
+
+
+@dataclass(frozen=True)
+class BaseFollowingSettings:
+    """The base turned toward the person the head follows, every move played around
+    that body yaw (specs/core/config.md "`motion.base_following`",
+    specs/motion/motion.md "The body yaw"). Frozen: the same object is the runtime API
+    (``bridge.base_following``, ``set_base_following``), changed with
+    ``dataclasses.replace``."""
+
+    enabled: bool = True
+    # how far from the body yaw the followed person's direction must be, in degrees,
+    # before the base turns onto it — and so how far they move before the next turn
+    deadband_deg: float = 20.0
+    # how long the base keeps facing where the person was once nobody is followed,
+    # in seconds, before easing back to the front
+    hold_s: float = 45.0
+    # how long the person's direction must have been past the deadband before the
+    # base turns, in seconds: the head leads, the body follows
+    lag_s: float = 0.8
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> BaseFollowingSettings:
+        name = "motion.base_following"
+        if isinstance(data, bool):
+            raise ConfigError(
+                f"'{name}' is an object, not a boolean: write "
+                f'{{"enabled": {"true" if data else "false"}}}'
+            )
+        block = _require_object(data, name)
+        _reject_unknown_keys(
+            block, name, {"enabled", "deadband_deg", "hold_s", "lag_s"}
+        )
+        return cls(
+            enabled=_bool_field(block, name, "enabled", True),
+            deadband_deg=_number_field(
+                block,
+                name,
+                "deadband_deg",
+                20.0,
+                low=0.0,
+                low_inclusive=False,
+                high=BASE_FOLLOWING_MAX_DEADBAND_DEG,
+            ),
+            hold_s=_number_field(block, name, "hold_s", 45.0, low=0.0),
+            lag_s=_number_field(block, name, "lag_s", 0.8, low=0.0),
+        )
+
+    @classmethod
+    def from_json(cls, text: str) -> BaseFollowingSettings:
+        return cls.from_dict(_loads(text))
+
+    @classmethod
+    def from_json_file(cls, path: str | Path) -> BaseFollowingSettings:
+        return cls.from_dict(_load_file(path))
+
+
 # --- `motion` block -----------------------------------------------------------------
 
 
@@ -657,6 +717,9 @@ class MotionSettings:
     # The bridge's head tracker and its posture; `tracking.enabled` turns it on from
     # session entry (a mode: no motors needed, but a `face_detection.detector`).
     tracking: TrackingSettings = field(default_factory=TrackingSettings)
+    # The base turned toward the person the head follows, every move played around it
+    # (specs/motion/motion.md "The body yaw"); a mode like presence, on by default.
+    base_following: BaseFollowingSettings = field(default_factory=BaseFollowingSettings)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> MotionSettings:
@@ -667,12 +730,17 @@ class MotionSettings:
                 "build MotionSettings(idle_move=...) or call set_idle_move(...)"
             )
         _reject_unknown_keys(
-            block, "motion", {"presence", "idle", "wobbling", "tracking"}
+            block,
+            "motion",
+            {"presence", "idle", "wobbling", "tracking", "base_following"},
         )
         presence = block.get("presence", True)
         idle = block.get("idle", "breathing")
         wobbling = block.get("wobbling", True)
         tracking = TrackingSettings.from_dict(block.get("tracking", {}))
+        base_following = BaseFollowingSettings.from_dict(
+            block.get("base_following", {})
+        )
         if not isinstance(presence, bool):
             raise ConfigError("'motion.presence' must be a boolean")
         if idle not in IDLE_MODES:
@@ -681,7 +749,13 @@ class MotionSettings:
             )
         if not isinstance(wobbling, bool):
             raise ConfigError("'motion.wobbling' must be a boolean")
-        return cls(presence=presence, idle=idle, wobbling=wobbling, tracking=tracking)
+        return cls(
+            presence=presence,
+            idle=idle,
+            wobbling=wobbling,
+            tracking=tracking,
+            base_following=base_following,
+        )
 
     @classmethod
     def from_json(cls, text: str) -> MotionSettings:

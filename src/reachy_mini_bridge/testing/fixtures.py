@@ -35,6 +35,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Iterator
+from dataclasses import replace
 
 import pytest
 
@@ -361,7 +362,7 @@ def face_scene(
     pool of portraits cleared before the test and again after it, so a test starts with an
     empty view whatever the previous one left and leaves none behind
     (specs/testing/sim_scene.md "A pool of portraits"). After the test the bridge's
-    detection and tracking are back off and its tracking settings the config's, the state
+    detection and tracking are back off, its tracking and base-following settings the config's and its base back on the front, the state
     ``live_bridge`` starts in, whatever the test turned on or tuned. A test on a session of its own (not ``live_bridge``) writes the same
     gate and clears against that session."""
     requires_caps(live_bridge, "camera", "faces")
@@ -373,7 +374,22 @@ def face_scene(
         live_bridge.run(_seen_empty(live_bridge.bridge))
         bridge = live_bridge.bridge
         live_bridge.run(bridge.set_tracking(bridge.config.motion.tracking))
+        live_bridge.run(_base_to_front(bridge))
         live_bridge.run(live_bridge.bridge.set_face_detection(False))
+
+
+async def _base_to_front(bridge: ReachyMiniBridge, timeout: float = 8.0) -> None:
+    """The base back on the front, and the base-following settings the config's: the
+    base keeps facing where a test's portrait was for ``hold_s`` (specs/motion/motion.md
+    "The body yaw"), which would put the next test's portrait inside the deadband — so
+    the hold is cut to nothing, the base eased back (within half a degree of the front,
+    or ``timeout``), and the settings restored."""
+    settings = bridge.config.motion.base_following
+    await bridge.set_base_following(replace(settings, hold_s=0.0))
+    deadline = time.perf_counter() + timeout
+    while abs(bridge.body_yaw_deg) > 0.5 and time.perf_counter() < deadline:
+        await asyncio.sleep(0.05)
+    await bridge.set_base_following(settings)
 
 
 async def _seen_empty(bridge: ReachyMiniBridge, timeout: float = 3.0) -> None:

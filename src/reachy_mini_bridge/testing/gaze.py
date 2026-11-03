@@ -27,6 +27,7 @@ import numpy as np
 import pytest
 
 from reachy_mini_bridge.head_tracking import TRACKING_LOST_S
+from reachy_mini_bridge.motion import unframed
 from reachy_mini_bridge.testing.sim_scene import DEFAULT_FACE_POS
 
 if TYPE_CHECKING:
@@ -95,6 +96,18 @@ def angle_from_neutral_deg(pose: Any) -> float:
     """The head's rotation angle from the identity pose, in degrees."""
     r = np.asarray(pose)[:3, :3]
     return float(np.degrees(np.arccos(np.clip((np.trace(r) - 1) / 2, -1, 1))))
+
+
+def head_on_base(robot: Any) -> tuple[Any, float]:
+    """The head pose the robot reports, brought into the frame of its base — the pose
+    relative to the body yaw it reports — and that body yaw in degrees. "At rest on the
+    idle move" is a head square on the base, wherever the base points
+    (specs/motion/motion.md "The body yaw"): the base follows the person and holds
+    after they leave, so neutral is judged here, not in the world."""
+    pose = np.asarray(robot.get_current_head_pose(), dtype=np.float64)
+    joints, _antennas = robot.get_current_joint_positions()
+    body_yaw = float(joints[0])
+    return unframed(pose, body_yaw), math.degrees(body_yaw)
 
 
 async def wait_for(
@@ -302,12 +315,14 @@ async def arm_tracking(bridge: ReachyMiniBridge, *, focus: bool = False) -> None
 async def sample_idle(robot: Any, seconds: float) -> tuple[float, float]:
     """The head's z range and its mean angle from neutral over ``seconds`` — the two
     things the idle move shows: it breathes on z, and it roams a few degrees about
-    neutral rather than holding one heading (specs/motion/motion.md "The moves")."""
+    neutral rather than holding one direction (specs/motion/motion.md "The moves").
+    Neutral is judged relative to the base (:func:`head_on_base`): the base may be
+    turned toward where a person was."""
     zs: list[float] = []
     angles: list[float] = []
     deadline = time.perf_counter() + seconds
     while time.perf_counter() < deadline:
-        pose = await asyncio.to_thread(robot.get_current_head_pose)
+        pose, _body_yaw = await asyncio.to_thread(head_on_base, robot)
         zs.append(float(pose[2, 3]))
         angles.append(angle_from_neutral_deg(pose))
         await asyncio.sleep(0.1)

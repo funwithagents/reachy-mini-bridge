@@ -18,6 +18,7 @@ from reachy_mini_bridge.config import (
     KINEMATICS_ENGINES,
     UPSTREAM_KINEMATICS_ENGINES,
     ApproachSettings,
+    BaseFollowingSettings,
     DaemonConfig,
     FaceDetectionSettings,
     MirroringSettings,
@@ -51,6 +52,10 @@ def test_defaults() -> None:
     )
     # the shipped detector's default width, twice upstream's 320; null is the full frame
     assert cfg.face_detection.width == DETECT_WIDTH == 640
+    # the base follows the person by default (specs/core/config.md "`motion.base_following`")
+    assert cfg.motion.base_following == BaseFollowingSettings(
+        enabled=True, deadband_deg=20.0, hold_s=45.0, lag_s=0.8
+    )
 
 
 def test_the_repo_example_parses() -> None:
@@ -593,6 +598,44 @@ def test_tracking_settings_are_frozen() -> None:
 def test_tracking_rejects_bad_values(tracking: dict[str, object], field: str) -> None:
     with pytest.raises(ConfigError, match=field):
         ReachyMiniConfig.from_dict({"motion": {"tracking": tracking}})
+
+
+def test_base_following_parses_in_part_and_is_frozen() -> None:
+    """`motion.base_following` (specs/core/config.md): a partial object keeps the rest
+    of the defaults, a boolean is refused pointing at the object, and the object is
+    the runtime API's, changed with `replace`."""
+    cfg = ReachyMiniConfig.from_dict(
+        {"motion": {"base_following": {"deadband_deg": 15, "hold_s": 0}}}
+    )
+    assert cfg.motion.base_following == BaseFollowingSettings(
+        enabled=True, deadband_deg=15.0, hold_s=0.0
+    )
+    with pytest.raises(ConfigError, match=r'\{"enabled": false\}'):
+        ReachyMiniConfig.from_dict({"motion": {"base_following": False}})
+    settings = BaseFollowingSettings()
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        settings.enabled = False  # type: ignore[misc]
+    assert dataclasses.replace(settings, enabled=False).enabled is False
+
+
+@pytest.mark.parametrize(
+    ("block", "field"),
+    [
+        ({"enabled": "yes"}, r"motion\.base_following\.enabled"),
+        ({"deadband_deg": 0}, r"base_following\.deadband_deg"),
+        ({"deadband_deg": 61}, r"base_following\.deadband_deg"),
+        ({"deadband_deg": float("nan")}, r"deadband_deg"),
+        ({"hold_s": -1}, r"base_following\.hold_s"),
+        ({"lag_s": -0.1}, r"base_following\.lag_s"),
+        ({"lag_s": "soon"}, r"base_following\.lag_s"),
+        ({"ease_s": 1.5}, "ease_s"),
+    ],
+)
+def test_base_following_rejects_bad_values(
+    block: dict[str, object], field: str
+) -> None:
+    with pytest.raises(ConfigError, match=field):
+        ReachyMiniConfig.from_dict({"motion": {"base_following": block}})
 
 
 @pytest.mark.parametrize(

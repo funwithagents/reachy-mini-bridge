@@ -44,6 +44,7 @@ from .config import (
     DAEMON_INFO_ROUTE,
     IDLE_MODES,
     UPSTREAM_KINEMATICS_ENGINES,
+    BaseFollowingSettings,
     ReachyMiniConfig,
     TrackingSettings,
 )
@@ -354,6 +355,9 @@ class ReachyMiniBridge:
         # tracker while entered, built once per session and fed the detection loop's
         # reports while the settings say it runs.
         self._tracking: TrackingSettings = self._config.motion.tracking
+        # The base toward the person (specs/motion/motion.md "The body yaw"): the
+        # caller's settings, the config's and reset to it on exit, a mode like presence.
+        self._base_following: BaseFollowingSettings = self._config.motion.base_following
         self._tracker: HeadTracker | None = None
         self._daemon_info: DaemonInfo | None = None
         # The tracker's state (specs/motion/head_tracking.md "The head tracking report"):
@@ -547,6 +551,7 @@ class ReachyMiniBridge:
                 # the loop", specs/audio/audio.md "Sound files").
                 start_sound=media.start_sound,
                 stop_sound=stop_emotion_sound,
+                base_following=self._base_following,
             )
             # The camera feed (specs/vision/camera.md "Lifecycle"): the one reader of the
             # camera, started right after the media session and stopped right before it
@@ -682,6 +687,7 @@ class ReachyMiniBridge:
         finally:
             self._wobbling_session = None
             self._tracking = self._config.motion.tracking
+            self._base_following = self._config.motion.base_following
             self._presence = self._config.motion.presence
             self._idle = _idle_mode(self._config.motion.idle)
             self._idle_move = self._config.motion.idle_move
@@ -1335,6 +1341,44 @@ class ReachyMiniBridge:
     def idle(self) -> str:
         """The idle mode — the config's value outside a session."""
         return self._idle
+
+    async def set_base_following(self, settings: BaseFollowingSettings) -> None:
+        """Whether and how the base turns toward the person the head follows
+        (specs/motion/motion.md "The body yaw", specs/core/config.md
+        "`motion.base_following`"): the whole frozen object — ``enabled``, the
+        ``deadband_deg`` the person's direction must leave before the base turns, the
+        ``hold_s`` it keeps facing where they were, the ``lag_s`` it waits before a turn
+        so the head leads. Change one field with
+        ``dataclasses.replace(bridge.base_following, ...)``.
+
+        A mode like presence: it holds until changed, needs no motors, and takes
+        effect at the loop's next idle tick, never as a step — turned off, the base
+        eases back to the front; during an emotion the change waits for the idle entry
+        after it. ``ValueError`` for anything but a ``BaseFollowingSettings``.
+        """
+        if not isinstance(settings, BaseFollowingSettings):
+            raise ValueError(  # noqa: TRY004 - ValueError is the bridge's bad-input error
+                "set_base_following takes a BaseFollowingSettings, got "
+                f"{type(settings).__name__}"
+            )
+        motion = self._require_motion()  # before anything is recorded
+        motion.set_base_following(settings)
+        self._base_following = settings
+
+    @property
+    def base_following(self) -> BaseFollowingSettings:
+        """The base-following settings in force — the bridge's own record, the
+        config's value outside a session."""
+        return self._base_following
+
+    @property
+    def body_yaw_deg(self) -> float:
+        """Where the base points: the body yaw the motion loop plays every move on, in
+        degrees, positive to the left as upstream's yaw — eased, so it reads where the
+        loop is sending the base rather than where the person is. ``0.0`` outside a
+        session. The loop's state, not the tracker's: it outlives the person followed."""
+        motion = self._motion
+        return 0.0 if motion is None else math.degrees(motion.body_yaw)
 
     async def set_idle_move(self, factory: IdleMoveFactory | None) -> None:
         """Register the custom idle move (specs/motion/motion.md "Custom idle moves"): a

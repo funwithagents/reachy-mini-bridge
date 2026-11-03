@@ -23,6 +23,7 @@ import math
 import time
 from collections.abc import Callable
 from contextlib import suppress
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -50,6 +51,7 @@ from reachy_mini_bridge.testing.gaze import (
     expected_yaw_deg,
     face_at,
     followed_face,
+    head_on_base,
     sample_idle,
     track_onto,
     wait_for,
@@ -292,6 +294,81 @@ def test_emotion_plays_over_tracking_and_the_head_returns_to_the_face(
     )
     assert_tracked(after)
     assert bridge.attention == "engaged"
+
+
+# --- the base toward the person (specs/motion/motion.md "The body yaw") ------------------
+
+# A face this far to the side at the default distance implies 33.7° of yaw: past the
+# default deadband (20°), so the base turns onto it; the ±0.15 m of the other tests
+# (18.4°) stays inside it, and their base stays on the front.
+FAR_LATERAL_M = 0.30
+# The sim's base servo follows a step in under a second; the ease takes about 2.5 s to
+# settle within a degree, and the body yaw is read from the physics.
+BASE_SETTLE_S = 12.0
+BASE_TOLERANCE_DEG = 5.0
+
+
+async def _base_near(robot: Any, yaw_deg: float, timeout: float) -> float:
+    """Wait until the base the robot reports is within ``BASE_TOLERANCE_DEG`` of
+    ``yaw_deg``; returns where it is."""
+    base = math.nan
+
+    def near() -> bool:
+        nonlocal base
+        _pose, base = head_on_base(robot)
+        return abs(base - yaw_deg) < BASE_TOLERANCE_DEG
+
+    await wait_for(near, timeout)
+    return base
+
+
+def test_the_base_turns_onto_a_face_far_to_one_side_and_stays_after_it_leaves(
+    live_bridge: LiveBridge, face_scene: SimSceneClient
+) -> None:
+    """specs/motion/motion.md "The body yaw": a portrait past the deadband turns the base
+    onto it — the head on the face in the world, square on the base — the base stays
+    where the person was once they have left, the head at rest on it, and eases back
+    to the front once the hold is over (shortened here to nothing)."""
+    bridge, _caps = live_bridge
+    robot: Any = bridge.robot
+    expected = expected_yaw_deg(FAR_LATERAL_M)
+
+    async def scenario() -> tuple[Track, float, float, float, float, float, float]:
+        await bridge.set_motors_state("enabled")
+        await arm_tracking(bridge)
+        face = face_scene.spawn(face_at(FAR_LATERAL_M))
+        assert await wait_for(lambda: bridge.attention == "engaged", 6.0)
+        track = await track_onto(bridge, "far to the left", FAR_LATERAL_M)
+        base = await _base_near(robot, expected, BASE_SETTLE_S)
+        sent = bridge.body_yaw_deg
+        relative, _ = await asyncio.to_thread(head_on_base, robot)
+        square = yaw_pitch_deg(relative)[0]
+        face_scene.despawn(face)
+        hand_back = TRACKING_LOST_S + BLEND_S + 4.0
+        assert await wait_for(lambda: bridge.attention == "watching", hand_back)
+        await asyncio.sleep(2.0)  # the gaze layer faded out onto the idle move
+        _z_range, at_rest = await sample_idle(robot, 3.0)
+        held = bridge.body_yaw_deg
+        await bridge.set_base_following(replace(bridge.base_following, hold_s=0.0))
+        front = await _base_near(robot, 0.0, BASE_SETTLE_S)
+        return track, base, sent, square, at_rest, held, front
+
+    track, base, sent, square, at_rest, held, front = live_bridge.run(scenario())
+    print(
+        f"\n[e2e] base: turned to {base:+.1f} deg (sent {sent:+.1f}, expected "
+        f"{expected:+.1f}), head {square:+.1f} deg off the base once there; after the "
+        f"face left: {at_rest:.1f} deg from rest on the base on average, base held at "
+        f"{held:+.1f}; back to {front:+.1f} once the hold was over"
+    )
+    assert_tracked(track)
+    assert base == pytest.approx(expected, abs=BASE_TOLERANCE_DEG)
+    assert sent == pytest.approx(expected, abs=BASE_TOLERANCE_DEG)
+    assert abs(square) < BASE_TOLERANCE_DEG  # the head square on the base once there
+    assert held == pytest.approx(sent, abs=1.0)  # the base stays where the person was
+    assert (
+        at_rest <= NEUTRAL_THRESHOLD_DEG
+    )  # the head at rest on the base, not on the front
+    assert abs(front) < BASE_TOLERANCE_DEG
 
 
 # --- whom the head follows, with several portraits (specs/motion/head_tracking.md "Whom the
