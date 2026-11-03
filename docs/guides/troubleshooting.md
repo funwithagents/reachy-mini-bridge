@@ -25,6 +25,12 @@ The checks for each symptom, in the order to make them, each pointing at the pag
 - **The wrong device opened (macOS, a robot)**: upstream opens the camera by an index that can shift; the bridge's hardware-daemon launcher reads back which device opened and rebuilds the pipeline until it is the robot's — its log says so ([../../specs/daemon/real_daemon.md](../../specs/daemon/real_daemon.md)).
 - **Something else reads the camera.** Upstream's `get_frame()` has one reader; a second one beside the bridge's feed starves it silently. Sample `bridge.camera` instead ([perception-and-tracking.md](perception-and-tracking.md#beside-a-vision-graph)).
 
+## The camera image is dark — a Lite on macOS
+
+- **Upstream's default mode caps the exposure.** The daemon pins the Lite camera to 1920×1080 at 60 fps, where the camera never exposes longer than 1/60 s: the image is three to four times darker than the room. The bridge's hardware-daemon launcher sets the camera's auto-exposure priority over USB on every start, so the camera may slow down to expose — its log says `auto-exposure priority enabled`, and a warning there names what stopped it ([../../specs/daemon/real_daemon.md](../../specs/daemon/real_daemon.md)).
+- **A daemon started with upstream's `reachy-mini-daemon` directly stays dark**, as does one on Linux or Windows: upstream's troubleshooting page has the by-hand cure, the same control set from a camera-control application or `uvc-util` / `v4l2-ctl` (["Image is dark on the Lite version"](https://huggingface.co/docs/reachy_mini/en/troubleshooting)).
+- **The wireless robot is another camera stack** (the Pi's, through libcamera) and does not have this; a dim image there is a metering question, not a frame-rate cap.
+
 ## `faces.value.active` is `False`
 
 - **Inactive means no detector is looking, not that nobody is there** ([perception-and-tracking.md](perception-and-tracking.md#what-the-values-promise-and-what-they-do-not)).
