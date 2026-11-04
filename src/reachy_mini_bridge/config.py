@@ -20,7 +20,7 @@ import json
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from .errors import ConfigError
 
@@ -585,6 +585,8 @@ class PersonalSpaceSettings:
 # The fixed frame delay's ceiling: the delay estimate's own range
 # (specs/motion/head_tracking.md "The head pose the frame was taken from").
 FRAME_DELAY_MAX_S = 0.5
+# The value of `frame_delay_s` that has the tracker estimate the delay online.
+FRAME_DELAY_ESTIMATE = "estimate"
 
 
 @dataclass(frozen=True)
@@ -601,9 +603,10 @@ class TrackingSettings:
     approach: ApproachSettings = field(default_factory=ApproachSettings)
     personal_space: PersonalSpaceSettings = field(default_factory=PersonalSpaceSettings)
     # The delay between a frame's arrival and the head pose it was taken from, in
-    # seconds: a number fixes it, None leaves the tracker to estimate it online
-    # (specs/motion/head_tracking.md "The head pose the frame was taken from").
-    frame_delay_s: float | None = None
+    # seconds (specs/motion/head_tracking.md "The frame delay"): 0, a frame is aimed
+    # against the pose at its arrival; another number for a measured setup; "estimate"
+    # to estimate it online.
+    frame_delay_s: float | Literal["estimate"] = 0.0
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> TrackingSettings:
@@ -631,7 +634,7 @@ class TrackingSettings:
                 "frame_delay_s",
             },
         )
-        frame_delay = block.get("frame_delay_s")
+        frame_delay = block.get("frame_delay_s", 0.0)
         return cls(
             enabled=_bool_field(block, name, "enabled", False),
             focus=_bool_field(block, name, "focus", False),
@@ -640,8 +643,8 @@ class TrackingSettings:
             personal_space=PersonalSpaceSettings.from_dict(
                 block.get("personal_space", {})
             ),
-            frame_delay_s=None
-            if frame_delay is None
+            frame_delay_s=FRAME_DELAY_ESTIMATE
+            if frame_delay == FRAME_DELAY_ESTIMATE
             else _number_field(
                 block, name, "frame_delay_s", 0.0, low=0.0, high=FRAME_DELAY_MAX_S
             ),

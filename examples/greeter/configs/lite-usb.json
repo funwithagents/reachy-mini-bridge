@@ -22,7 +22,6 @@
     "tracking": {
       "enabled": true,
       "focus": false,
-      "frame_delay_s": 0.02,
       "mirroring": {
         "enabled": true,
         "gain": 1.0,

@@ -186,8 +186,8 @@ Omit the block and `say` raises unless you pass your own `SpeechSynthesizer`. A 
 | `idle` | `"breathing"` | Which idle move presence plays: `breathing` (slow breaths with rests, the head roaming, the antennas flicking), `hold` (a still neutral) or `custom` (your own `IdleMove`, registered from code with `MotionSettings(idle_move=...)` or `set_idle_move`; the hold until one is registered). Ignored while `presence` is off | `set_idle` / `set_idle_move` |
 | `wobbling` | `true` | Sways the head with every sound the robot plays. `false` keeps it still while audio plays | `set_wobbling` |
 | `tracking` | off | The bridge's head tracker and the posture it gives the head: an object, below (a `true` / `false` there is a config error pointing at `{"enabled": …}`) | `set_tracking` / `start_head_tracking` / `stop_head_tracking` |
-| `max_tilt_deg` | `25.0` | The most the head tilts from upright — pitch and roll together — while it looks at someone, its yaw kept. A Lite's head stops tilting near 27°–33° and, asked for more, stalls in yaw as well, so a person standing above the robot would see it freeze; at most 35. Read at session start | — |
 | `base_following` | on | The base turns toward the person the head follows, and every move — the idle move, an emotion — plays around that body yaw: an object, below | `set_base_following` |
+| `max_tilt_deg` | `25.0` | The most the head tilts from upright — pitch and roll together — while it looks at someone, its yaw kept. A Lite's head stops tilting near 27°–33° and, asked for more, stalls in yaw as well, so a person standing above the robot would see it freeze; at most 35. Read at session start | — |
 
 `idle_move` is a Python-only field (`MotionSettings(idle="custom", idle_move=SlowNod)`), as `face_detector` is; the key in a file is a `ConfigError`. Writing one: [../guides/custom-idle-move.md](../guides/custom-idle-move.md).
 
@@ -200,7 +200,7 @@ Omit the block and `say` raises unless you pass your own `SpeechSynthesizer`. A 
 | `mirroring` | on | The head rolls with the person's head roll, as a mirror does; below |
 | `approach` | on | The head leans toward the person it follows; below |
 | `personal_space` | on | The head pulls back from someone too close; below |
-| `frame_delay_s` | `null` | The delay between a camera frame's arrival and the head pose it was taken from, in seconds, at most 0.5. `null` lets the tracker estimate it from the head's own turns. Set a measured value when the head follows a moving person in steps: on a Lite the estimate drifts toward its cap while both the person and the head move |
+| `frame_delay_s` | `0.0` | The delay between a camera frame's arrival and the head pose it was taken from, in seconds, at most 0.5. `0` aims each face against the head's pose when its frame arrived, which is right within a few hundredths of a second on a Lite over USB and on the sim. Set a longer one for a slower camera path, tuned as the perception guide explains ([../guides/perception-and-tracking.md](../guides/perception-and-tracking.md#tuning-the-frame-delay)); `"estimate"` has the tracker estimate it from the head's own turns, which drifts long on a robot while the person moves and makes the head follow in steps |
 
 **`motion.tracking.mirroring`** — the person's head roll, mirrored: both heads lean toward the same side of the room. A tilt under 3° reads as upright (the landmarks' jitter), and the roll eases in within about a second. It is as good as the detector's roll: YuNet at the default width reads about two thirds of the roll of a face 0.45 m from the Lite, more nearer, little beyond 0.6 m.
 

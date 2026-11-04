@@ -330,11 +330,17 @@ class HeadTracker:
         return self._following
 
     @property
+    def fixed_delay_s(self) -> float | None:
+        """The fixed delay in force (specs/motion/head_tracking.md "The frame delay"): the
+        settings' number, ``None`` while it is ``"estimate"``."""
+        setting = self.settings.frame_delay_s
+        return None if isinstance(setting, str) else float(setting)
+
+    @property
     def delay_s(self) -> float:
         """The delay between an observation's time and the head pose its frame was taken
-        from: the settings' ``frame_delay_s`` when it fixes one, else the current
-        estimate."""
-        fixed = self.settings.frame_delay_s
+        from: the fixed one in force, else the current estimate."""
+        fixed = self.fixed_delay_s
         return self._delay if fixed is None else fixed
 
     def start(
@@ -553,7 +559,7 @@ class HeadTracker:
         if report.ts != self._last_ts:
             self._last_ts = report.ts
             self._last_t_obs = report.ts if report.ts > 0.0 else now
-            if self.settings.frame_delay_s is None:  # a fixed delay is not estimated
+            if self.fixed_delay_s is None:  # a fixed delay is not estimated
                 self._add_detection(self._last_t_obs, u, v, now)
 
     def _add_detection(self, t_obs: float, u: float, v: float, now: float) -> None:

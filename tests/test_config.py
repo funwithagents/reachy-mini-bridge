@@ -56,6 +56,8 @@ def test_defaults() -> None:
     assert cfg.motion.base_following == BaseFollowingSettings(
         enabled=True, deadband_deg=20.0, hold_s=45.0, lag_s=0.8
     )
+    # the frame delay: a frame aimed against the pose at its arrival
+    assert cfg.motion.tracking.frame_delay_s == 0.0
     # the head's tilt limit, measured on a Lite (specs/motion/motion.md "The tilt limit")
     assert cfg.motion.max_tilt_deg == 25.0
 
@@ -689,3 +691,15 @@ def test_max_tilt_parses_up_to_upstream_s_cone() -> None:
         ReachyMiniConfig.from_dict({"motion": {"max_tilt_deg": 35}}).motion.max_tilt_deg
         == 35.0
     )
+
+
+@pytest.mark.parametrize("value", [0.12, 0.0, "estimate"])
+def test_the_frame_delay_is_a_number_or_estimate(value: object) -> None:
+    cfg = ReachyMiniConfig.from_dict({"motion": {"tracking": {"frame_delay_s": value}}})
+    assert cfg.motion.tracking.frame_delay_s == value
+
+
+@pytest.mark.parametrize("value", [-0.01, 0.6, "auto", True, None])
+def test_a_frame_delay_is_within_the_estimate_s_range(value: object) -> None:
+    with pytest.raises(ConfigError, match=r"motion\.tracking\.frame_delay_s"):
+        ReachyMiniConfig.from_dict({"motion": {"tracking": {"frame_delay_s": value}}})

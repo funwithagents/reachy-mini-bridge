@@ -223,8 +223,8 @@ The initial values of everything that shapes the robot's behaviour at rest: the 
 | `idle_move` | a zero-argument callable returning an `IdleMove`, or `None` — **Python only** | `None` | The factory of the custom idle move, stored whatever `idle` is and played whenever `idle` is `"custom"`. It is code, so it is set on the dataclass (`MotionSettings(idle="custom", idle_move=SlowNod)`); a JSON file names the mode and code supplies the move. Checked when the session starts ([motion.md](../motion/motion.md) "Custom idle moves"). |
 | `wobbling` | bool | `true` | A robot that talks sways its head while it talks: `ReachyMiniBridge` enables upstream's audio-reactive head wobbling on entry and switches it off again on exit whenever it is still on ([bridge.md](bridge.md) "Audio-reactive motion (head wobbling)"; mechanism in [audio.md](../audio/audio.md) "Head wobbling"). `false` keeps the head still while audio plays (a caller driving the head precisely, or a quiet demo). |
 | `tracking` | object → `TrackingSettings` | off, the posture on | The bridge's head tracker and the posture it gives the head ([head_tracking.md](../motion/head_tracking.md)); the fields below. A JSON boolean is a `ConfigError` pointing at `{"enabled": …}`. |
-| `max_tilt_deg` | number > 0, ≤ 35 | `25.0` | The most the head tilts from upright — pitch and roll together — in every pose the gaze layer composes, its yaw kept ([motion.md](../motion/motion.md) "The gaze layer": "The tilt limit"). A Lite's head stops tilting near 27°–33° while upstream's analytical kinematics accept any tilt, and a head commanded past its ceiling stalls in yaw too; 25° is what it reached reliably (2026-11-04). At most upstream's Placo cone, 35°. Read at session start; no runtime verb. |
 | `base_following` | object → `BaseFollowingSettings` | on | The base turned toward the person the head follows, every move played around that body yaw ([motion.md](../motion/motion.md) "The body yaw"); the fields below. A JSON boolean is a `ConfigError` pointing at `{"enabled": …}`. |
+| `max_tilt_deg` | number > 0, ≤ 35 | `25.0` | The most the head tilts from upright — pitch and roll together — in every pose the gaze layer composes, its yaw kept ([motion.md](../motion/motion.md) "The gaze layer": "The tilt limit"). A Lite's head stops tilting near 27°–33° while upstream's analytical kinematics accept any tilt, and a head commanded past its ceiling stalls in yaw too; 25° is what it reached reliably (2026-11-04). At most upstream's Placo cone, 35°. Read at session start; no runtime verb. |
 
 ```python
 @dataclass
@@ -261,8 +261,8 @@ The head tracker ([head_tracking.md](../motion/head_tracking.md)): whether it ru
 | `personal_space.distance_m` | number > 0 | `0.40` | The distance from the robot's camera inside which the head retreats (`Face.distance_m`, [user_perception.md](../vision/user_perception.md) "The face report"). |
 | `personal_space.max_back_mm` | number ≥ 0, ≤ 30 | `20.0` | The largest retreat. |
 | `personal_space.span_m` | number > 0 | `0.20` | The intrusion over which the retreat grows from nothing to `max_back_mm`. |
-| `frame_delay_s` | number in `[0, 0.5]` \| null | `null` | The delay between a frame's arrival at the bridge and the head pose it was taken from ([head_tracking.md](../motion/head_tracking.md) "The aim": "The head pose the frame was taken from"). `null`: the tracker estimates it online from the head's own turns. A number fixes it, for a robot whose delay is measured: on a Lite the estimate runs away while the person and the head both move, toward its 0.5 s cap, and the head then tracks in steps. A runtime change takes effect on the next aim. |
 | `personal_space.exit_margin_m` | number > 0 \| null | `null` | How far beyond `distance_m` a person who entered must go to have left: the hysteresis of the personal space event ([head_tracking.md](../motion/head_tracking.md) "The personal space event"). `null`: `PERSONAL_SPACE_EXIT_SHARE = 0.125` of `distance_m`, since the distance estimate wanders by about ±5 % of itself. |
+| `frame_delay_s` | number in `[0, 0.5]` \| `"estimate"` | `0.0` | The delay between a frame's arrival at the bridge and the head pose it was taken from ([head_tracking.md](../motion/head_tracking.md) "The aim": "The frame delay"). `0`: a frame is aimed against the pose at its arrival — measured within 0.02 s of the truth on a Lite over USB, 0.06 s on the viewer sim. A number sets a longer one for a slower path; `"estimate"` has the tracker estimate it online from the head's own turns, which drifts toward its 0.5 s cap on a robot while the person and the head both move. A runtime change takes effect on the next aim. |
 
 ```python
 @dataclass(frozen=True)
@@ -291,7 +291,7 @@ class TrackingSettings:
     mirroring: MirroringSettings = field(default_factory=MirroringSettings)
     approach: ApproachSettings = field(default_factory=ApproachSettings)
     personal_space: PersonalSpaceSettings = field(default_factory=PersonalSpaceSettings)
-    frame_delay_s: float | None = None  # None: estimated online
+    frame_delay_s: float | Literal["estimate"] = 0.0
 ```
 
 Frozen, unlike the other blocks, because the object is handed across the runtime API: a caller changes a field with `dataclasses.replace` and applies the result, so the settings in force are never mutated behind the tracker's back. The bounds of 30 mm and 30° are the head's own range for these axes — what the emotions library's recordings span ([head_tracking.md](../motion/head_tracking.md) "The posture") — so no setting can ask for more than the robot's own repertoire. Every key is optional; a sub-object given in part keeps the defaults of the rest.

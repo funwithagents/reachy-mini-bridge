@@ -53,6 +53,8 @@ if TYPE_CHECKING:
 DETECT_HZ = 10.0  # upstream's detector sees the camera feed at 10 fps
 # The posture's defaults, which the posture tests expect (specs/core/config.md "`motion.tracking`").
 DEFAULTS = TrackingSettings()
+# The online delay estimate, which the estimate's own tests opt into.
+ESTIMATE = TrackingSettings(frame_delay_s="estimate")
 LEAN_MM = DEFAULTS.approach.lean_mm
 BACK_MM = DEFAULTS.personal_space.max_back_mm
 SPACE = DEFAULTS.personal_space
@@ -195,7 +197,9 @@ def test_an_unreported_frame_delay_is_learned_and_the_head_still_settles() -> No
     arrival time, as the live backends' are: the tracker learns the delay from its first
     turn and the head settles on the face."""
     face = _face_at(0.15)
-    yaws, centre, delay = asyncio.run(_closed_loop(face, 5.0, frame_delay_s=0.3))
+    yaws, centre, delay = asyncio.run(
+        _closed_loop(face, 5.0, frame_delay_s=0.3, settings=ESTIMATE)
+    )
     assert delay == pytest.approx(0.3, abs=0.1)
     _assert_converged(yaws, centre, 0.15)
 
@@ -213,22 +217,25 @@ def test_a_fixed_frame_delay_is_used_as_given_and_never_estimated() -> None:
     _assert_converged(yaws, centre, 0.15)
 
 
-def test_switching_between_a_fixed_delay_and_the_estimate() -> None:
-    """The setting takes effect on the next aim: fixed, the tracker reads it; back to
-    None, the estimate it had resumes — never fed while the delay was fixed."""
+def test_the_delay_is_zero_by_default_a_number_fixes_it_and_estimate_fits_it() -> None:
+    """`frame_delay_s` (specs/motion/head_tracking.md "The frame delay"): 0 by default, a
+    frame aimed against the pose at its arrival; a number fixes another; "estimate" runs
+    the online fit from its prior. While the delay is fixed no detection joins the fit,
+    and the estimate resumes from where it stood."""
     tracker = HeadTracker(
         CameraModel.for_sim(SimCameraSettings()),
         history=lambda: (np.array([time.perf_counter()]), np.eye(4)[np.newaxis]),
         set_gaze=lambda aim, *, focus=False: None,
     )
-    assert tracker.delay_s == head_tracking.DELAY_PRIOR_S
+    assert tracker.delay_s == 0.0
     tracker.configure(TrackingSettings(frame_delay_s=0.12))
     tracker.start()
     for k in range(20):
         tracker.observe(_report(0.1 * math.sin(k), 0.0, ts=time.perf_counter()))
     assert tracker.delay_s == 0.12
-    assert not tracker._detections  # the estimate is not fed while the delay is fixed
-    tracker.configure(TrackingSettings())
+    assert not tracker._detections  # the fit is not fed while the delay is fixed
+    tracker.configure(ESTIMATE)
+    assert tracker.fixed_delay_s is None
     assert tracker.delay_s == head_tracking.DELAY_PRIOR_S
 
 
@@ -242,6 +249,7 @@ def _jumping_face_while_turning() -> float:
         CameraModel.for_sim(SimCameraSettings()),
         history=lambda: (times, poses),
         set_gaze=lambda aim, *, focus=False: None,
+        settings=ESTIMATE,
     )
     for k in range(20):
         tracker.observe(_report(0.5 if k % 2 else -0.5, 0.0, ts=now - 2.0 + 0.1 * k))
@@ -272,6 +280,7 @@ def test_the_estimate_holds_while_the_head_is_still() -> None:
         CameraModel.for_sim(SimCameraSettings()),
         history=lambda: (np.array([time.perf_counter()]), np.eye(4)[np.newaxis]),
         set_gaze=lambda aim, *, focus=False: None,
+        settings=ESTIMATE,
     )
     for k in range(20):
         tracker.observe(_report(0.1 * math.sin(k), 0.0, ts=time.perf_counter()))
@@ -325,7 +334,10 @@ def test_frame_head_pose_is_the_pose_the_frame_was_taken_from() -> None:
 
     # Reading it for a marker never feeds the tracker's estimate.
     tracker = HeadTracker(
-        head_mounted, history=history, set_gaze=lambda aim, *, focus=False: None
+        head_mounted,
+        history=history,
+        set_gaze=lambda aim, *, focus=False: None,
+        settings=ESTIMATE,
     )
     for _ in range(20):
         frame_head_pose(unstamped, head_mounted, history, tracker.delay_s, 99.0)

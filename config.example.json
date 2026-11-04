@@ -37,7 +37,7 @@
   "face_detection": {
     "detector": "yunet",
     "enabled": true,
-    "width": 640,
+    "width": 1280,
     "target_fps": null
   },
   "motion": {
@@ -63,7 +63,7 @@
         "span_m": 0.2,
         "exit_margin_m": 0.2
       },
-      "frame_delay_s": null
+      "frame_delay_s": 0.0
     },
     "base_following": {
       "enabled": true,

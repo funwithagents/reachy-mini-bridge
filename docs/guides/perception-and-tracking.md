@@ -44,6 +44,26 @@ await bridge.set_tracking(replace(settings, approach=replace(settings.approach, 
 
 `bridge.attention` is the derived state: `"engaged"` while a face is followed, `"watching"` while tracking is on and nobody is, `None` when tracking is off.
 
+## Tuning the frame delay
+
+A face is seen in a frame the camera took a little before the bridge receives it, from wherever the head was then. The tracker aims each face against the head's pose at the frame's arrival minus `motion.tracking.frame_delay_s`: `0` by default, which on a Lite over USB and on the simulator is within a few hundredths of a second of the truth. A camera path that takes longer, such as a wireless robot's stream, a slow machine or a heavy detector upstream of the bridge, wants a longer delay. The head's behaviour tells you which way to go:
+
+| What the head does | The delay is | Change |
+|---|---|---|
+| It turns onto someone, swings past them and comes back, or hunts around a person standing still | too short: the head's own motion since the frame is counted twice | raise it |
+| It trails someone walking sideways and advances in steps, pausing and surging | too long: the aim mixes in where the head was before | lower it |
+| It turns onto you in one movement and follows a steady walk smoothly | right | keep it |
+
+Change it by 0.02 s at a time, standing about a metre away. Stand still to one side, let the head settle on you, then step across once quickly and once slowly. Raise the delay while it overshoots when you stop. Lower it while it steps as you walk. The setting applies on the next aim, so you can change it while the session runs:
+
+```python
+from dataclasses import replace
+
+await bridge.set_tracking(replace(bridge.tracking, frame_delay_s=0.04))
+```
+
+`"estimate"` has the tracker estimate the delay from the head's own turns. It needs nothing measured, but on a robot it drifts toward its 0.5 s limit while the person and the head both move, which is the stepping in the table above.
+
 ## The base toward the person
 
 While the head follows someone well to one side, the base turns toward them too (`motion.base_following`, on by default — fields: [../reference/configuration.md](../reference/configuration.md#motion--what-the-robot-does-at-rest)). The body yaw the loop chooses is a frame every move plays in: the idle move breathes around it, an emotion played meanwhile is performed toward the person rather than toward the front, and once the person leaves the base keeps facing where they were for `hold_s` (45 s) before easing back to the front. Two reasons: a robot that only turns its head at 60° reads as distracted, and the head's workspace is the body's — with the base turned onto the person the whole posture stays within reach at the far sides, where a front-facing base loses it.
