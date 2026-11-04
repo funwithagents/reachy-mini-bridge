@@ -24,6 +24,7 @@ import pytest
 
 from reachy_mini_bridge import face_detection as fd
 from reachy_mini_bridge import fake_reachy_mini as fake_module
+from reachy_mini_bridge import head_tracking as ht
 from reachy_mini_bridge.camera import CameraFeed, CameraFrame, frame_reader
 from reachy_mini_bridge.errors import BridgeError
 from reachy_mini_bridge.face_detection import (
@@ -494,6 +495,79 @@ def test_a_face_back_from_a_miss_takes_its_own_track_beside_a_fresh_one() -> Non
     assert tracks.update([_face(12, 24), _face(40, 24)], size) == [1, 2]
     assert tracks.update([_face(40, 24)], size) == [2]  # the first one missed once
     assert tracks.update([_face(14, 24), _face(40, 24)], size) == [1, 2]
+
+
+# --- tracks anchored in the world (specs/vision/user_perception.md "Tracks") ---------------
+
+
+class _Shift:
+    """A scripted geometry: the world is the image at shift 0, and the head's turn
+    shows every direction ``shift`` pixels further right."""
+
+    def __init__(self) -> None:
+        self.shift = 0.0
+
+    def direction(
+        self, u: float, v: float, size: tuple[int, int], ts: float, head_pose: Any
+    ) -> npt.NDArray[np.float64]:
+        return np.array([u - self.shift, v])
+
+    def pixel(
+        self, direction: Any, size: tuple[int, int], ts: float, head_pose: Any
+    ) -> tuple[float, float]:
+        return (float(direction[0] + self.shift), float(direction[1]))
+
+
+def test_a_face_continues_its_track_where_the_head_moved_it() -> None:
+    """The head turned between two observations: the face is matched where the turn
+    put it — 2.5 of its sizes from its last centre, beyond the gate measured there."""
+    geometry = _Shift()
+    tracks = fd._FaceTracks(_counter(), geometry=geometry)  # type: ignore[arg-type]
+    size = (WIDTH, HEIGHT)
+    assert tracks.update([_face(20, 24)], size, ts=1.0) == [1]
+    geometry.shift = 30.0
+    assert tracks.update([_face(50, 24)], size, ts=1.1) == [1]
+    geometry.shift = 0.0
+    assert tracks.update([_face(20, 24)], size, ts=1.2) == [1]
+    # without a geometry the same jump is someone else
+    plain = fd._FaceTracks(_counter())
+    assert plain.update([_face(20, 24)], size) == [1]
+    assert plain.update([_face(50, 24)], size) == [2]
+
+
+def test_a_track_the_camera_does_not_frame_keeps_its_misses() -> None:
+    """Expected off the frame, a track is out of view: the observations without it are
+    no misses, however many; back in view, the miss window runs as ever."""
+    geometry = _Shift()
+    tracks = fd._FaceTracks(_counter(), max_misses=3, geometry=geometry)  # type: ignore[arg-type]
+    size = (WIDTH, HEIGHT)
+    assert tracks.update([_face(20, 24)], size, ts=1.0) == [1]
+    geometry.shift = 100.0  # expected at 120 px: off the 64 px frame
+    for i in range(10):
+        assert tracks.update([], size, ts=1.1 + 0.1 * i) == []
+    geometry.shift = 0.0
+    assert tracks.update([_face(20, 24)], size, ts=2.2) == [1]
+    for i in range(4):  # one miss more than the window, in view
+        tracks.update([], size, ts=2.3 + 0.1 * i)
+    assert tracks.update([_face(20, 24)], size, ts=2.8) == [2]
+
+
+def test_a_track_unseen_past_the_net_is_dropped_whatever_the_view(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ht, "UNOBSERVABLE_MAX_S", 2.0)
+    geometry = _Shift()
+    tracks = fd._FaceTracks(_counter(), geometry=geometry)  # type: ignore[arg-type]
+    size = (WIDTH, HEIGHT)
+    assert tracks.update([_face(20, 24)], size, ts=1.0) == [1]
+    geometry.shift = 100.0
+    tracks.update([], size, ts=2.9)  # 1.9 s unseen, out of view: kept
+    geometry.shift = 0.0
+    assert tracks.update([_face(20, 24)], size, ts=2.95) == [1]
+    geometry.shift = 100.0
+    tracks.update([], size, ts=5.0)  # 2.05 s unseen: the net
+    geometry.shift = 0.0
+    assert tracks.update([_face(20, 24)], size, ts=5.1) == [2]
 
 
 # --- the runner over the camera feed ------------------------------------------------------

@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     import numpy.typing as npt
 
     from .camera import CameraFeed, CameraFrame
-    from .head_tracking import CameraModel
+    from .head_tracking import CameraModel, TrackGeometry
 
 from .concurrency import owned
 from .errors import BridgeError
@@ -238,6 +238,10 @@ class _Track:
     centre: tuple[float, float]  # in pixels, on its last observation
     size: float  # the larger side of its box, in pixels, on its last observation
     misses: int = 0
+    # its face's direction in the world on its last observation, and that frame's time
+    # (specs/vision/user_perception.md "Tracks": the anchor the expected pixel follows)
+    direction: npt.NDArray[np.float64] | None = None
+    seen_at: float = 0.0
 
 
 def _pixel_size(face: PixelFace) -> float:
@@ -246,43 +250,70 @@ def _pixel_size(face: PixelFace) -> float:
 
 class _FaceTracks:
     """Every face's ``track_id`` (specs/vision/user_perception.md "Tracks"): each observation's
-    faces continue the tracks whose centres lie nearest, within ``TRACK_MAX_JUMP_FACES``
-    face sizes (a size is a box's larger side, in pixels; the smaller of the track's and
-    the face's, so a small face near a large track's last place is held to its own
-    size) — pairs taken fresh tracks first (a track seen on the previous observation
-    before one with misses), nearest first within each,
-    each track and face used once; an unmatched face opens a
-    track with ``new_id()``; an unmatched track counts a miss and is dropped after
-    ``TRACK_MAX_MISSES``. Pure geometry, no smoothing, no face singled out — whom the
-    head follows is the head tracker's choice."""
+    faces continue the tracks whose **expected pixels** lie nearest — where the head's
+    own motion has moved each track's world direction, through ``geometry``; its last
+    centre without one — within ``TRACK_MAX_JUMP_FACES`` face sizes (a size is a box's
+    larger side, in pixels; the smaller of the track's and the face's, so a small face
+    near a large track's last place is held to its own size) — pairs taken fresh
+    tracks first (a track seen on the previous observation before one with misses),
+    nearest first within each, each track and face used once; an unmatched face opens a
+    track with ``new_id()``; an unmatched track **in view** (its expected pixel on the
+    frame) counts a miss and is dropped after ``TRACK_MAX_MISSES``, one out of view keeps
+    its count — the camera is not framing where its face was — until
+    ``UNOBSERVABLE_MAX_S`` without a sighting drops it whatever the view. Pure
+    geometry, no smoothing, no face singled out — whom the head follows is the head
+    tracker's choice."""
 
     def __init__(
         self,
         new_id: Callable[[], int],
         max_jump: float | None = None,
         max_misses: int | None = None,
+        geometry: TrackGeometry | None = None,
     ) -> None:
         self._new_id = new_id
         self._max_jump = max_jump
         self._max_misses = max_misses
+        self._geometry = geometry
         self._tracks: list[_Track] = []
 
-    def update(self, faces: Sequence[PixelFace], size: tuple[int, int]) -> list[int]:
-        """The ``track_id`` of each of ``faces``, in their order."""
+    def update(
+        self,
+        faces: Sequence[PixelFace],
+        size: tuple[int, int],
+        *,
+        ts: float = 0.0,
+        head_pose: npt.NDArray[np.float64] | None = None,
+    ) -> list[int]:
+        """The ``track_id`` of each of ``faces``, in their order, on a frame of ``size``
+        (width, height) taken at ``ts`` — stamped ``head_pose`` when the feed knows it."""
+        from .head_tracking import UNOBSERVABLE_MAX_S, in_frame
+
         max_jump = TRACK_MAX_JUMP_FACES if self._max_jump is None else self._max_jump
         max_misses = TRACK_MAX_MISSES if self._max_misses is None else self._max_misses
-        del size  # the gate is in the face's own pixels, whatever the frame's size
+        geometry = self._geometry
         centres = [_pixel_centre(face) for face in faces]
         sizes = [_pixel_size(face) for face in faces]
+        # Where each track's face is expected now, and whether the camera frames it.
+        expected: list[tuple[float, float] | None] = []
+        in_view: list[bool] = []
+        for track in self._tracks:
+            if geometry is None or track.direction is None:
+                expected.append(track.centre)
+                in_view.append(True)
+            else:
+                pixel = geometry.pixel(track.direction, size, ts, head_pose)
+                expected.append(pixel)
+                in_view.append(pixel is not None and in_frame(pixel, size))
         # Fresh tracks first: a track missed on the last observation (a face that left)
         # never takes a face its own fresh track could continue — the image centre, where
         # the head brings every followed face, is where a departed face's track waits.
         pairs = sorted(
             (track.misses > 0, d2, t, f)
             for t, track in enumerate(self._tracks)
+            if (at := expected[t]) is not None
             for f, centre in enumerate(centres)
-            if (d2 := _dist2(track.centre, centre))
-            <= (max_jump * min(track.size, sizes[f])) ** 2
+            if (d2 := _dist2(at, centre)) <= (max_jump * min(track.size, sizes[f])) ** 2
         )
         ids: list[int | None] = [None] * len(faces)
         matched: set[int] = set()
@@ -291,18 +322,28 @@ class _FaceTracks:
                 continue
             track = self._tracks[t]
             track.centre, track.size, track.misses = centres[f], sizes[f], 0
+            track.seen_at = ts
+            if geometry is not None:
+                u, v = centres[f]
+                track.direction = geometry.direction(u, v, size, ts, head_pose)
             ids[f] = track.track_id
             matched.add(t)
         survivors: list[_Track] = []
         for t, track in enumerate(self._tracks):
             if t not in matched:
-                track.misses += 1
-                if track.misses > max_misses:
-                    continue
+                if in_view[t]:
+                    track.misses += 1
+                    if track.misses > max_misses:
+                        continue
+                if ts > 0.0 and ts - track.seen_at > UNOBSERVABLE_MAX_S:
+                    continue  # the net: unseen this long, in view or not
             survivors.append(track)
         for f, track_id in enumerate(ids):
             if track_id is None:
-                track = _Track(self._new_id(), centres[f], sizes[f])
+                u, v = centres[f]
+                track = _Track(self._new_id(), centres[f], sizes[f], seen_at=ts)
+                if geometry is not None:
+                    track.direction = geometry.direction(u, v, size, ts, head_pose)
                 survivors.append(track)
                 ids[f] = track.track_id
         self._tracks = survivors
@@ -412,11 +453,14 @@ class FaceDetection:
         target_fps: float | None = None,
         new_track_id: Callable[[], int] | None = None,
         camera: CameraModel | None = None,
+        geometry: TrackGeometry | None = None,
     ) -> None:
         self._name = detector
         # The session's camera model, shared with the head tracker: what turns a face's
-        # size into its distance (specs/vision/user_perception.md "The face report").
+        # size into its distance (specs/vision/user_perception.md "The face report");
+        # and the tracker's geometry anchoring the tracks in the world ("Tracks").
         self._camera = camera
+        self._geometry = geometry
         self._width = width
         self._target_fps = target_fps
         self._faces = faces
@@ -443,7 +487,7 @@ class FaceDetection:
         self._detector_lock = threading.Lock()
         self._next_track_id = 1
         self._allocate_track_id = new_track_id or self._new_track_id
-        self._tracks = _FaceTracks(self._allocate_track_id)
+        self._tracks = _FaceTracks(self._allocate_track_id, geometry=self._geometry)
         self._last_frame_id = 0
         # When the current run's tracks began: a frame older than this shows the scene
         # from before the run, and never seeds a track (specs/vision/user_perception.md
@@ -508,7 +552,7 @@ class FaceDetection:
                 return
             factory = self._factory()
             self._detector = await self._acquire(factory)
-            self._tracks = _FaceTracks(self._allocate_track_id)
+            self._tracks = _FaceTracks(self._allocate_track_id, geometry=self._geometry)
             self._tracks_since = time.perf_counter()
             self._last_detect_at = None
             self._cost_since, self._cost_calls, self._cost_total_s = None, 0, 0.0
@@ -652,7 +696,7 @@ class FaceDetection:
                 await self._release(detector)
                 return None
             self._detector = detector
-            self._tracks = _FaceTracks(self._allocate_track_id)
+            self._tracks = _FaceTracks(self._allocate_track_id, geometry=self._geometry)
             self._tracks_since = time.perf_counter()
         frame = feed.latest()
         if frame is None or frame.frame_id == self._last_frame_id:
@@ -677,7 +721,9 @@ class FaceDetection:
         self._account(call_s)
         height, width = frame.image.shape[:2]
         size = (int(width), int(height))
-        track_ids = self._tracks.update(faces, size)
+        track_ids = self._tracks.update(
+            faces, size, ts=frame.ts, head_pose=frame.head_pose
+        )
         return report_from_pixels(
             faces,
             size,

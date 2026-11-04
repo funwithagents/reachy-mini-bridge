@@ -596,6 +596,7 @@ class ReachyMiniBridge:
                 target_fps=cfg.face_detection.target_fps,
                 new_track_id=self._new_face_track_id,
                 camera=camera_model,
+                geometry=self._tracker.track_geometry(),
             )
             self._detection = detection
             self._detection_sync = asyncio.Lock()

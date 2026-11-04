@@ -1010,7 +1010,12 @@ class FaceMarkerPublisher:
         from .head_tracking import frame_head_pose
 
         head = frame_head_pose(
-            report, self._camera, self._history, self._delay(), time.perf_counter()
+            report.ts,
+            report.head_pose,
+            self._camera,
+            self._history,
+            self._delay(),
+            time.perf_counter(),
         )
         followed = self._head_tracking.value.track_id
         markers = [
