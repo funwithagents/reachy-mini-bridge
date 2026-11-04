@@ -1527,8 +1527,8 @@ def test_the_head_turns_toward_a_face_and_back_once_it_is_gone(
     turned, delay, back = asyncio.run(run())
     assert turned < -5.0  # toward the face's side (negative yaw is to the right)
     # The fake's frames carry their capture pose, so the tracker aims against it exactly
-    # and its delay estimate is never exercised (specs/motion/head_tracking.md "The aim").
-    assert delay == head_tracking_module.DELAY_PRIOR_S
+    # and the delay — 0 by default — is never used (specs/motion/head_tracking.md "The aim").
+    assert delay == 0.0
     assert abs(back) < 1.0
 
 

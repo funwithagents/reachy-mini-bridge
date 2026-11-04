@@ -62,12 +62,13 @@
         "max_back_mm": 20.0,
         "span_m": 0.2,
         "exit_margin_m": 0.2
-      }
+      },
+      "frame_delay_s": 0.0
     },
     "base_following": {
       "enabled": true,
       "deadband_deg": 20.0,
-      "hold_s": 45.0,
+      "hold_s": 20.0,
       "lag_s": 0.8
     },
     "max_tilt_deg": 25.0

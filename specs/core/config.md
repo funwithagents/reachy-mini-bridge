@@ -9,7 +9,7 @@ tests:
 
 # Configuration (`ReachyMiniConfig`)
 
-**Status:** Updated
+**Status:** Implemented
 
 ## Purpose
 
@@ -223,8 +223,8 @@ The initial values of everything that shapes the robot's behaviour at rest: the 
 | `idle_move` | a zero-argument callable returning an `IdleMove`, or `None` — **Python only** | `None` | The factory of the custom idle move, stored whatever `idle` is and played whenever `idle` is `"custom"`. It is code, so it is set on the dataclass (`MotionSettings(idle="custom", idle_move=SlowNod)`); a JSON file names the mode and code supplies the move. Checked when the session starts ([motion.md](../motion/motion.md) "Custom idle moves"). |
 | `wobbling` | bool | `true` | A robot that talks sways its head while it talks: `ReachyMiniBridge` enables upstream's audio-reactive head wobbling on entry and switches it off again on exit whenever it is still on ([bridge.md](bridge.md) "Audio-reactive motion (head wobbling)"; mechanism in [audio.md](../audio/audio.md) "Head wobbling"). `false` keeps the head still while audio plays (a caller driving the head precisely, or a quiet demo). |
 | `tracking` | object → `TrackingSettings` | off, the posture on | The bridge's head tracker and the posture it gives the head ([head_tracking.md](../motion/head_tracking.md)); the fields below. A JSON boolean is a `ConfigError` pointing at `{"enabled": …}`. |
-| `max_tilt_deg` | number > 0, ≤ 35 | `25.0` | The most the head tilts from upright — pitch and roll together — in every pose the gaze layer composes, its yaw kept ([motion.md](../motion/motion.md) "The gaze layer": "The tilt limit"). A Lite's head stops tilting near 27°–33° while upstream's analytical kinematics accept any tilt, and a head commanded past its ceiling stalls in yaw too; 25° is what it reached reliably (2026-11-04). At most upstream's Placo cone, 35°. Read at session start; no runtime verb. |
 | `base_following` | object → `BaseFollowingSettings` | on | The base turned toward the person the head follows, every move played around that body yaw ([motion.md](../motion/motion.md) "The body yaw"); the fields below. A JSON boolean is a `ConfigError` pointing at `{"enabled": …}`. |
+| `max_tilt_deg` | number > 0, ≤ 35 | `25.0` | The most the head tilts from upright — pitch and roll together — in every pose the gaze layer composes, its yaw kept ([motion.md](../motion/motion.md) "The gaze layer": "The tilt limit"). A Lite's head stops tilting near 27°–33° while upstream's analytical kinematics accept any tilt, and a head commanded past its ceiling stalls in yaw too; 25° is what it reached reliably (2026-11-04). At most upstream's Placo cone, 35°. Read at session start; no runtime verb. |
 
 ```python
 @dataclass
@@ -262,6 +262,7 @@ The head tracker ([head_tracking.md](../motion/head_tracking.md)): whether it ru
 | `personal_space.max_back_mm` | number ≥ 0, ≤ 30 | `20.0` | The largest retreat. |
 | `personal_space.span_m` | number > 0 | `0.20` | The intrusion over which the retreat grows from nothing to `max_back_mm`. |
 | `personal_space.exit_margin_m` | number > 0 \| null | `null` | How far beyond `distance_m` a person who entered must go to have left: the hysteresis of the personal space event ([head_tracking.md](../motion/head_tracking.md) "The personal space event"). `null`: `PERSONAL_SPACE_EXIT_SHARE = 0.125` of `distance_m`, since the distance estimate wanders by about ±5 % of itself. |
+| `frame_delay_s` | number in `[0, 0.5]` \| `"estimate"` | `0.0` | The delay between a frame's arrival at the bridge and the head pose it was taken from ([head_tracking.md](../motion/head_tracking.md) "The aim": "The frame delay"). `0`: a frame is aimed against the pose at its arrival — measured within 0.02 s of the truth on a Lite over USB, 0.06 s on the viewer sim. A number sets a longer one for a slower path; `"estimate"` has the tracker estimate it online from the head's own turns, which drifts toward its 0.5 s cap on a robot while the person and the head both move. A runtime change takes effect on the next aim. |
 
 ```python
 @dataclass(frozen=True)
@@ -290,6 +291,7 @@ class TrackingSettings:
     mirroring: MirroringSettings = field(default_factory=MirroringSettings)
     approach: ApproachSettings = field(default_factory=ApproachSettings)
     personal_space: PersonalSpaceSettings = field(default_factory=PersonalSpaceSettings)
+    frame_delay_s: float | Literal["estimate"] = 0.0
 ```
 
 Frozen, unlike the other blocks, because the object is handed across the runtime API: a caller changes a field with `dataclasses.replace` and applies the result, so the settings in force are never mutated behind the tracker's back. The bounds of 30 mm and 30° are the head's own range for these axes — what the emotions library's recordings span ([head_tracking.md](../motion/head_tracking.md) "The posture") — so no setting can ask for more than the robot's own repertoire. Every key is optional; a sub-object given in part keeps the defaults of the rest.
@@ -302,7 +304,7 @@ The body yaw ([motion.md](../motion/motion.md) "The body yaw"): the motion loop 
 |---|---|---|---|
 | `enabled` | bool | `true` | Whether the base follows the person. Off, the loop sends body yaw 0 as it always did and upstream's inverse kinematics is the only thing that turns the base. A mode like `presence`: it needs no motors and holds until changed. |
 | `deadband_deg` | number > 0, ≤ 60 | `20.0` | How far from the body yaw the followed person's direction must be, in yaw, before the base turns onto it — the turn then catches up fully, so this is also how far they move before the next one. Bounded above by the posture's reach: the head-body delta at which the default posture is refused is about 32° level and 14° looking up 15° with breathing on top ([motion.md](../motion/motion.md) "Reach, with the base"). |
-| `hold_s` | number ≥ 0 | `45.0` | How long the base keeps facing where the person was once nobody is followed, before easing back to the front; `0` returns as soon as the tracker lets go. |
+| `hold_s` | number ≥ 0 | `20.0` | How long the base keeps facing where the person was once nobody is followed, before easing back to the front; `0` returns as soon as the tracker lets go. |
 | `lag_s` | number ≥ 0 | `0.8` | How long the person's direction must have been past the deadband before the base turns: the head, whose ease settles in a few tenths of a second, is on them by then, and the body follows — the beat that makes the turn read as a person's. `0` starts the base with the head. Set on a Lite with a person (2026-11-03: 0.5 s read as the body turning, 0.8 s as the head leading). |
 
 ```python
@@ -310,7 +312,7 @@ The body yaw ([motion.md](../motion/motion.md) "The body yaw"): the motion loop 
 class BaseFollowingSettings:
     enabled: bool = True
     deadband_deg: float = 20.0
-    hold_s: float = 45.0
+    hold_s: float = 20.0
     lag_s: float = 0.8
 ```
 

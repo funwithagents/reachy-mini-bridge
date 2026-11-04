@@ -20,7 +20,7 @@ import json
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from .errors import ConfigError
 
@@ -582,6 +582,13 @@ class PersonalSpaceSettings:
         )
 
 
+# The fixed frame delay's ceiling: the delay estimate's own range
+# (specs/motion/head_tracking.md "The head pose the frame was taken from").
+FRAME_DELAY_MAX_S = 0.5
+# The value of `frame_delay_s` that has the tracker estimate the delay online.
+FRAME_DELAY_ESTIMATE = "estimate"
+
+
 @dataclass(frozen=True)
 class TrackingSettings:
     """The head tracker's whole behaviour (specs/core/config.md "`motion.tracking`",
@@ -595,6 +602,11 @@ class TrackingSettings:
     mirroring: MirroringSettings = field(default_factory=MirroringSettings)
     approach: ApproachSettings = field(default_factory=ApproachSettings)
     personal_space: PersonalSpaceSettings = field(default_factory=PersonalSpaceSettings)
+    # The delay between a frame's arrival and the head pose it was taken from, in
+    # seconds (specs/motion/head_tracking.md "The frame delay"): 0, a frame is aimed
+    # against the pose at its arrival; another number for a measured setup; "estimate"
+    # to estimate it online.
+    frame_delay_s: float | Literal["estimate"] = 0.0
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> TrackingSettings:
@@ -613,8 +625,16 @@ class TrackingSettings:
         _reject_unknown_keys(
             block,
             name,
-            {"enabled", "focus", "mirroring", "approach", "personal_space"},
+            {
+                "enabled",
+                "focus",
+                "mirroring",
+                "approach",
+                "personal_space",
+                "frame_delay_s",
+            },
         )
+        frame_delay = block.get("frame_delay_s", 0.0)
         return cls(
             enabled=_bool_field(block, name, "enabled", False),
             focus=_bool_field(block, name, "focus", False),
@@ -622,6 +642,11 @@ class TrackingSettings:
             approach=ApproachSettings.from_dict(block.get("approach", {})),
             personal_space=PersonalSpaceSettings.from_dict(
                 block.get("personal_space", {})
+            ),
+            frame_delay_s=FRAME_DELAY_ESTIMATE
+            if frame_delay == FRAME_DELAY_ESTIMATE
+            else _number_field(
+                block, name, "frame_delay_s", 0.0, low=0.0, high=FRAME_DELAY_MAX_S
             ),
         )
 
@@ -653,7 +678,7 @@ class BaseFollowingSettings:
     deadband_deg: float = 20.0
     # how long the base keeps facing where the person was once nobody is followed,
     # in seconds, before easing back to the front
-    hold_s: float = 45.0
+    hold_s: float = 20.0
     # how long the person's direction must have been past the deadband before the
     # base turns, in seconds: the head leads, the body follows
     lag_s: float = 0.8
@@ -681,7 +706,7 @@ class BaseFollowingSettings:
                 low_inclusive=False,
                 high=BASE_FOLLOWING_MAX_DEADBAND_DEG,
             ),
-            hold_s=_number_field(block, name, "hold_s", 45.0, low=0.0),
+            hold_s=_number_field(block, name, "hold_s", 20.0, low=0.0),
             lag_s=_number_field(block, name, "lag_s", 0.8, low=0.0),
         )
 
