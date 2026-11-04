@@ -1,8 +1,8 @@
 # The frame delay: 0 by default, tunable
 
-**Status:** In progress
+**Status:** Done
 
-**Steps 1–3 done (2026-11-04):** the field, the tracker's use of it, the measurement on a Lite and the profiles — the static gate and the fast tier green. **Step 4 open:** the viewer-sim live tier on the default 0, then the Lite with a person walking.
+**Done (2026-11-04):** steps 1–3 as built, and step 4: the viewer-sim live tier green on the default 0 (37 passed, 2 expected skips), then a Lite with a person walking side to side on the default 0 — the stepping gone, the tracking reported far smoother than on the estimate.
 
 Implements `specs/motion/head_tracking.md` ("The aim": "The frame delay"; open question 7) and `specs/core/config.md` (`motion.tracking.frame_delay_s`). Delivers a fixed delay between a frame's arrival and the head pose it was taken from in place of the online estimate: `0` by default — measured within 0.02 s of the truth on a Lite over USB, 0.06 s on the viewer sim — a number for a slower path, `"estimate"` for the online fit, and a guide to tuning it by the head's behaviour. No per-backend constant: a measured value per backend would go stale with the robot, the stream or the machine. Leaves out: correcting the estimate's bias (open question 7), and smoothing the aim between frames.
 

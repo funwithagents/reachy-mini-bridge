@@ -1,8 +1,8 @@
 # The body yaw: the base toward the person
 
-**Status:** In progress
+**Status:** Done
 
-**Steps 1–8 done (2026-11-03):** config, the loop (the frame, the goal and the ease, reach with the base, the exit), the bridge verb and properties, the panel, the docs, the fake tests, the live kit judged relative to the base and the viewer-sim test — the static gate, the fast tier and the live tier on the viewer sim green. **Step 9 in progress:** a first walk on the Lite (2026-11-03) found the base turning well but reading as the body turning rather than the head; a lag of 0.8 s before a turn and a slower ease (two stages of 0.6 s, the exit 4 s) answer it — the beat and the pace to be judged on the Lite again, then the default.
+**Done (2026-11-04):** steps 1–8 as built, and step 9 on a Lite with a person. A first walk found the base turning well but reading as the body turning rather than the head; a lag before a turn and a slower ease (two stages of 0.6 s, the exit 4 s) answered it, the lag tuned to 0.8 s and made a config field (`lag_s`). The hold's default came down from 45 s to 20 s. Base following stays on by default.
 
 Implements `specs/motion/motion.md` ("The body yaw"; "The gaze layer" — the reach check at the tick's body yaw, the direction share toward the body yaw's rest; the composition model, the interactions, "Motors", "Lifecycle", "`fake` backend support"), `specs/core/config.md` (`motion.base_following` → `BaseFollowingSettings`), `specs/core/bridge.md` (`set_base_following` / `base_following` / `body_yaw_deg`) and `specs/examples/control_panel.md` (the Base following checkbox and readout). Delivers the motion loop turning the base toward the person the head follows, every move played around that body yaw, the hold after the person leaves and the return to the front, with the switch, the readout and the panel. Leaves out: a verb setting the body yaw directly, other inputs than the tracker (a sound's direction), the manual verbs' frame, and enforcing upstream's 65° / 160° limits in the bridge (`motion.md` open question 8).
 

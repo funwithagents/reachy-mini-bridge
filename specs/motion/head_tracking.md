@@ -13,7 +13,7 @@ tests:
 
 # Head tracking (`head_tracking.py`)
 
-**Status:** Updated
+**Status:** Implemented
 
 ## Purpose
 
