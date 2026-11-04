@@ -4073,7 +4073,7 @@ def test_a_person_who_leaves_during_an_emotion_is_lost_once_the_head_is_back(
     scene = _ProjectingScene(_person_at(20.0))
     config = _custom_config(scene, idle="hold")
 
-    async def run() -> tuple[str | None, float]:
+    async def run() -> float:
         async with ReachyMiniBridge(config) as bridge:
             scene.bridge = bridge
             await bridge.set_motors_state("enabled")
@@ -4081,20 +4081,27 @@ def test_a_person_who_leaves_during_an_emotion_is_lost_once_the_head_is_back(
                 bridge.head_tracking.wait_for(lambda r: r.attention == "engaged"), 5.0
             )
             await asyncio.sleep(0.5)
+            lost_at: list[float] = []
+
+            def lost(report: HeadTrackingReport) -> bool:
+                if report.attention == "watching" and not lost_at:
+                    lost_at.append(time.perf_counter())
+                return bool(lost_at)
+
+            # Stamped when the loss is published, not when the test gets to read it: a
+            # slow host's timers can only make that later, never earlier.
+            watcher = asyncio.create_task(bridge.head_tracking.wait_for(lost))
             started = time.perf_counter()
             emotion = asyncio.create_task(bridge.play_emotion("sad"))
             await asyncio.sleep(0.6)  # the head is away
             scene.point = None  # they leave, unseen
             await emotion
-            still = bridge.attention
-            await asyncio.wait_for(
-                bridge.head_tracking.wait_for(lambda r: r.attention == "watching"), 3.0
-            )
-            return still, time.perf_counter() - started
+            await asyncio.wait_for(watcher, 3.0)
+            return lost_at[0] - started
 
-    still, lost_after = asyncio.run(run())
-    assert still == "engaged"  # nothing said they left while the camera was away
-    # The head frames their direction again only in the move's last tenth of a second;
-    # the loss follows TRACKING_LOST_S (0.3 here) of that — after the move, where
-    # counting from the departure would have lost them 0.3 s into the head's absence.
+    lost_after = asyncio.run(run())
+    # Nothing says they left while the camera was away: the head frames their direction
+    # again only in the move's last tenth of a second, and the loss follows
+    # TRACKING_LOST_S (0.3 here) of that — after the move, where counting from the
+    # departure would have lost them 0.3 s into the head's absence.
     assert lost_after >= 1.2
