@@ -42,7 +42,7 @@ await bridge.set_tracking(replace(settings, approach=replace(settings.approach, 
 
 `bridge.head_tracking.value.roll_deg` and `offset_mm` read the posture the head holds.
 
-`bridge.attention` is the derived state: `"engaged"` while a face is followed, `"watching"` while tracking is on and nobody is, `None` when tracking is off.
+`bridge.attention` is the derived state: `"engaged"` while a face is followed, `"watching"` while tracking is on and nobody is, `None` when tracking is off. The robot's own moves do not count as the person leaving: an emotion that turns the camera away from the face for its length leaves the head engaged, and the person keeps their `track_id` when the head comes back onto them. Only the time the camera frames where they were counts toward the 2 s after which the head is handed back.
 
 ## Tuning the frame delay
 

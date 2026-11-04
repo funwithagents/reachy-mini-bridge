@@ -64,13 +64,19 @@ __all__ = [
     "TRACKING_LOST_S",
     "TRACKING_MIN_SIZE",
     "TRACKING_SWITCH_S",
+    "UNOBSERVABLE_MAX_S",
     "CameraModel",
     "HeadTracker",
     "HeadTrackingReport",
+    "TrackGeometry",
+    "distort_points",
+    "expected_pixel",
     "face_camera_point",
     "frame_head_pose",
+    "in_frame",
     "pinhole_intrinsics",
     "sim_hfov_deg",
+    "world_direction",
 ]
 
 _logger = logging.getLogger(__name__)
@@ -85,6 +91,13 @@ _logger = logging.getLogger(__name__)
 TRACKING_SWITCH_S = 1.0
 TRACKING_MIN_SIZE = 0.07
 TRACKING_LOST_S = 2.0
+# A face the camera is not framing — the head turned away by an emotion, the base swung
+# under it — is out of view, not missing: the polls meanwhile count toward neither the
+# switch nor the loss, for at most this long without a sighting (specs/motion/head_tracking.md
+# "Whom the head follows"); the detection loop drops a track unseen this long whatever
+# the view (specs/vision/user_perception.md "Tracks"). Longer than the longest recording
+# of the emotions library (16 s).
+UNOBSERVABLE_MAX_S = 20.0
 # The online delay estimate (specs/motion/head_tracking.md "The aim"): the delay L between an
 # observation's time — the frame's arrival at the bridge — and the head pose its frame
 # was taken from, fitted over the new detections of the last DELAY_WINDOW_S by the L in
@@ -202,25 +215,156 @@ type PoseHistory = Callable[[], tuple[npt.NDArray[np.float64], npt.NDArray[np.fl
 
 
 def frame_head_pose(
-    report: FaceReport,
+    ts: float,
+    head_pose: npt.NDArray[np.float64] | None,
     camera: CameraModel,
     history: PoseHistory,
     delay: float,
     now: float,
 ) -> npt.NDArray[np.float64]:
-    """The head pose ``report``'s frame was taken from (specs/motion/head_tracking.md "The
-    aim", "One rule, shared"): the neutral pose for a fixed camera, the report's own
-    ``head_pose`` when its frame was stamped, else the reported pose at the report's time
-    (``ts``, or ``now`` when it is unset) minus ``delay``. It reads the history and
-    changes nothing: the tracker's aim and the sim's face markers both place a face with
+    """The head pose a frame was taken from, given its time ``ts`` and the ``head_pose``
+    it was stamped with, if any (specs/motion/head_tracking.md "The aim", "One rule,
+    shared"): the neutral pose for a fixed camera, the frame's own ``head_pose`` when
+    stamped, else the reported pose at the frame's time (``ts``, or ``now`` when it is
+    unset) minus ``delay``. It reads the history and changes nothing: the tracker's
+    aim, the detection loop's tracks and the sim's face markers all place a face with
     it."""
     if camera.fixed:
         return np.asarray(INIT_HEAD_POSE, dtype=np.float64)
-    if report.head_pose is not None:
-        return np.asarray(report.head_pose, dtype=np.float64)
+    if head_pose is not None:
+        return np.asarray(head_pose, dtype=np.float64)
     times, poses = history()
-    t_obs = report.ts if report.ts > 0.0 else now
+    t_obs = ts if ts > 0.0 else now
     return poses[nearest_index(times, np.array([t_obs - delay]))[0]]
+
+
+def distort_points(
+    x_n: float, y_n: float, K: npt.NDArray[np.float64], D: npt.NDArray[np.float64]
+) -> tuple[float, float]:
+    """A point on the normalised image plane to its pixel through ``K`` and ``D``: the
+    forward, closed-form half of upstream's ``undistort_points`` — OpenCV's model, the
+    radial terms ``k1..k6`` as the rational model, the tangential ``p1``, ``p2``, the
+    thin prism ``s1..s4``; up to 14 coefficients, the unused ones zero."""
+    d = np.zeros(14)
+    n = min(len(D), 14)
+    d[:n] = D[:n]
+    r2 = x_n * x_n + y_n * y_n
+    r4 = r2 * r2
+    r6 = r4 * r2
+    cdist = 1.0 + d[0] * r2 + d[1] * r4 + d[4] * r6
+    icdist2_den = 1.0 + d[5] * r2 + d[6] * r4 + d[7] * r6
+    icdist2 = 1.0 / icdist2_den if icdist2_den != 0.0 else 1.0
+    a1 = 2.0 * x_n * y_n
+    a2 = r2 + 2.0 * x_n * x_n
+    a3 = r2 + 2.0 * y_n * y_n
+    xd = x_n * cdist * icdist2 + d[2] * a1 + d[3] * a2 + d[8] * r2 + d[9] * r4
+    yd = y_n * cdist * icdist2 + d[2] * a3 + d[3] * a1 + d[10] * r2 + d[11] * r4
+    return (
+        float(xd * K[0, 0] + K[0, 2]),
+        float(yd * K[1, 1] + K[1, 2]),
+    )
+
+
+def world_direction(
+    u: float, v: float, head_pose: npt.NDArray[np.float64], camera: CameraModel
+) -> npt.NDArray[np.float64]:
+    """The direction in the world of the pixel ``(u, v)`` of ``camera``'s frame, seen from
+    ``head_pose`` — the pose the frame was taken from — as a unit vector: the pixel
+    undistorted into a ray of the camera and rotated by the head-to-camera transform and
+    the head's rotation, the ray upstream's ``look_at_image_pose`` aims along
+    (specs/vision/user_perception.md "Tracks": a track's anchor in the world)."""
+    x_n, y_n = undistort_points(u, v, camera.K, camera.D)
+    rotation = (np.asarray(head_pose) @ default_head_to_camera_transform())[:3, :3]
+    ray = rotation @ np.array([x_n, y_n, 1.0])
+    return ray / np.linalg.norm(ray)
+
+
+def expected_pixel(
+    direction: npt.NDArray[np.float64],
+    head_pose: npt.NDArray[np.float64],
+    camera: CameraModel,
+) -> tuple[float, float] | None:
+    """Where the world ``direction`` is seen in ``camera``'s frame from ``head_pose``: the
+    inverse of :func:`world_direction` — the direction into the camera's frame,
+    projected through ``K`` and ``D``. ``None`` for a direction behind the camera."""
+    rotation = (np.asarray(head_pose) @ default_head_to_camera_transform())[:3, :3]
+    ray = rotation.T @ np.asarray(direction, dtype=np.float64)
+    if ray[2] <= 1e-9:
+        return None
+    return distort_points(ray[0] / ray[2], ray[1] / ray[2], camera.K, camera.D)
+
+
+def in_frame(pixel: tuple[float, float], size: tuple[int, int]) -> bool:
+    """Whether ``pixel`` lies on a frame of ``size`` (width, height): the in-view rule of
+    specs/vision/user_perception.md "Tracks". A face is detected until about its centre
+    reaches the edge, so a departing person's last sighting lies inside and counts; a
+    face the head turned away from projects far outside and does not."""
+    u, v = pixel
+    width, height = size
+    return 0.0 <= u <= width - 1 and 0.0 <= v <= height - 1
+
+
+type FramePose = Callable[
+    [float, "npt.NDArray[np.float64] | None"], "npt.NDArray[np.float64]"
+]
+
+
+@dataclass(frozen=True)
+class TrackGeometry:
+    """The detection loop's anchor of its tracks in the world
+    (specs/vision/user_perception.md "Tracks"): the head tracker's camera model and its
+    rule for the head pose a frame was taken from — ``frame_pose(ts, head_pose)``,
+    :func:`frame_head_pose` with the tracker's history and delay — handed to the loop
+    by the bridge (:meth:`HeadTracker.track_geometry`). Pixels are the frame's own, of
+    a frame of ``size``: mapped onto the model's frame the way the report normalises
+    them, so the loop never sees the model's resolution."""
+
+    camera: CameraModel
+    frame_pose: FramePose
+
+    def direction(
+        self,
+        u: float,
+        v: float,
+        size: tuple[int, int],
+        ts: float,
+        head_pose: npt.NDArray[np.float64] | None,
+    ) -> npt.NDArray[np.float64]:
+        """The world direction of the frame pixel ``(u, v)`` seen at ``ts``."""
+        mu, mv = self._to_model(u, v, size)
+        return world_direction(mu, mv, self.frame_pose(ts, head_pose), self.camera)
+
+    def pixel(
+        self,
+        direction: npt.NDArray[np.float64],
+        size: tuple[int, int],
+        ts: float,
+        head_pose: npt.NDArray[np.float64] | None,
+    ) -> tuple[float, float] | None:
+        """The frame pixel where ``direction`` is expected at ``ts``, ``None`` behind
+        the camera."""
+        pixel = expected_pixel(direction, self.frame_pose(ts, head_pose), self.camera)
+        return None if pixel is None else self._to_frame(*pixel, size)
+
+    def _to_model(
+        self, u: float, v: float, size: tuple[int, int]
+    ) -> tuple[float, float]:
+        width, height = size
+        model_width, model_height = self.camera.size
+        return (
+            u * (model_width - 1) / max(width - 1, 1),
+            v * (model_height - 1) / max(height - 1, 1),
+        )
+
+    def _to_frame(
+        self, u: float, v: float, size: tuple[int, int]
+    ) -> tuple[float, float]:
+        width, height = size
+        model_width, model_height = self.camera.size
+        return (
+            u * (width - 1) / max(model_width - 1, 1),
+            v * (height - 1) / max(model_height - 1, 1),
+        )
 
 
 class SetGaze(Protocol):
@@ -297,6 +441,12 @@ class HeadTracker:
     # whom the head follows, by track_id, and when an observation last showed that face
     _following: int | None = field(default=None, init=False)
     _seen_at: float | None = field(default=None, init=False)
+    # the followed face's direction in the world on its last sighting, and the time
+    # since then the camera did not frame it (specs/motion/head_tracking.md "Whom the
+    # head follows": out of view, not missing), measured poll to poll
+    _direction: npt.NDArray[np.float64] | None = field(default=None, init=False)
+    _unobservable_s: float = field(default=0.0, init=False)
+    _polled_at: float | None = field(default=None, init=False)
     _aimed_ts: float = field(default=0.0, init=False)
     _delay: float = field(default=DELAY_PRIOR_S, init=False)
     _detections: deque[_Detection] = field(default_factory=deque, init=False)
@@ -376,6 +526,7 @@ class HeadTracker:
                 (f for f in report.faces if f.track_id == self._following), None
             )
             if face is None:
+                self._note_poll(now, self._in_view(report.ts, report.head_pose, now))
                 missing = self._missing_for(now)
                 if missing >= TRACKING_SWITCH_S:
                     face = self._biggest(report)
@@ -390,7 +541,8 @@ class HeadTracker:
         if face.track_id != self._following:
             self._in_space = False  # a new person: their own entry, not the last one's
         self._following = face.track_id
-        self._seen_at = now
+        self._seen_at = self._polled_at = now
+        self._unobservable_s = 0.0
         self._note_personal_space(face)
         aim = self._aim(face, report, now)
         if aim is not None:
@@ -401,24 +553,71 @@ class HeadTracker:
     def tick(self, now: float | None = None) -> None:
         """A poll of the detection loop that produced no observation (no new frame, a
         failed ``detect``): the followed face has been missing since the last
-        observation that showed it, and ``TRACKING_LOST_S`` of that withdraws the aim
-        as on an observation (specs/motion/head_tracking.md "Easing, loss, focus")."""
+        observation that showed it — the time the camera did not frame it, judged on
+        the latest reported head pose, not counted — and ``TRACKING_LOST_S`` of that
+        withdraws the aim as on an observation (specs/motion/head_tracking.md "Easing,
+        loss, focus")."""
         if self._following is None:
             return
         if now is None:
             now = time.perf_counter()
+        self._note_poll(now, self._in_view(now, None, now))
         if self._missing_for(now) >= TRACKING_LOST_S:
             self._lose()
 
     def _missing_for(self, now: float) -> float:
         """How long the followed face has been missing: since the observation that last
-        showed it."""
-        return 0.0 if self._seen_at is None else now - self._seen_at
+        showed it, less the time the camera did not frame its direction."""
+        if self._seen_at is None:
+            return 0.0
+        return now - self._seen_at - self._unobservable_s
+
+    def _note_poll(self, now: float, in_view: bool) -> None:
+        """A poll without the followed face: the time since the previous poll joins the
+        unobservable time when the camera was not framing the face, up to
+        ``UNOBSERVABLE_MAX_S`` — after which the face counts as missing whatever the
+        view (specs/motion/head_tracking.md "Whom the head follows")."""
+        elapsed = 0.0 if self._polled_at is None else max(0.0, now - self._polled_at)
+        self._polled_at = now
+        if not in_view:
+            self._unobservable_s = min(
+                self._unobservable_s + elapsed, UNOBSERVABLE_MAX_S
+            )
+
+    def _in_view(
+        self, ts: float, head_pose: npt.NDArray[np.float64] | None, now: float
+    ) -> bool:
+        """Whether the camera, from the head pose a frame at ``ts`` (stamped
+        ``head_pose``) was taken from, frames the followed face's direction — its
+        expected pixel on the model's frame (specs/vision/user_perception.md "Tracks");
+        a face without a direction yet is taken as in view."""
+        if self._direction is None:
+            return True
+        head = frame_head_pose(
+            ts, head_pose, self.camera, self.history, self.delay_s, now
+        )
+        pixel = expected_pixel(self._direction, head, self.camera)
+        return pixel is not None and in_frame(pixel, self.camera.size)
+
+    def track_geometry(self) -> TrackGeometry:
+        """The detection loop's anchor of its tracks in the world: this tracker's camera
+        model and frame-pose rule, reading its delay as it stands at each call."""
+        return TrackGeometry(
+            self.camera,
+            lambda ts, head_pose: frame_head_pose(
+                ts,
+                head_pose,
+                self.camera,
+                self.history,
+                self.delay_s,
+                time.perf_counter(),
+            ),
+        )
 
     def _lose(self) -> None:
         """Follow nobody and withdraw the aim (the gaze layer fades out); published."""
         self._following = None
-        self._seen_at = None
+        self._forget_sighting()
         self._reset_posture()
         self.set_gaze(None, focus=self.focus)
         self._publish()
@@ -428,10 +627,15 @@ class HeadTracker:
         inactive report."""
         self._active = False
         self._following = None
-        self._seen_at = None
+        self._forget_sighting()
         self._reset_posture()
         self.set_gaze(None, focus=self.focus)
         self._publish()
+
+    def _forget_sighting(self) -> None:
+        self._seen_at = self._polled_at = None
+        self._direction = None
+        self._unobservable_s = 0.0
 
     def _note_personal_space(self, face: Face) -> None:
         """Whether the followed person is inside the personal space
@@ -500,11 +704,17 @@ class HeadTracker:
             if not camera.fixed and report.head_pose is None:
                 self._note_detection(report, u, v, now)
             head = frame_head_pose(
-                report, camera, self.history, self.delay_s, self._last_t_obs
+                report.ts,
+                report.head_pose,
+                camera,
+                self.history,
+                self.delay_s,
+                self._last_t_obs,
             )
             look = look_at_image_pose(
                 u, v, camera.K, camera.D, head, default_head_to_camera_transform()
             )
+            self._direction = world_direction(u, v, head, camera)
             return self._posture(face, look, head, now)
         except Exception as e:  # noqa: BLE001 - one bad pixel keeps the previous aim
             _logger.debug("head tracking: no aim for the face at (%s, %s): %s", u, v, e)

@@ -296,6 +296,99 @@ def test_emotion_plays_over_tracking_and_the_head_returns_to_the_face(
     assert bridge.attention == "engaged"
 
 
+# A portrait high enough that `downcast1` — the head down 22.5 deg for most of its 5.9 s —
+# takes it out of the eye camera's view: the camera sits about 0.27 m up in the scene
+# (a portrait at 0.32 m reads 7 deg above its axis, measured 2026-11-04), its vertical
+# half field of view about 34 deg as streamed, so a face 0.19 m above the camera at
+# 0.45 m — 23 deg up, within the tilt limit's 25 deg — is 46 deg off the axis once the
+# head is down. The sim's field of view is wider than the Lite's, where 24 of the
+# library's 85 recordings take a standing person out of view for the loss time.
+HIGH_FACE_POS = (DEFAULT_FACE_POS[0], 0.0, 0.46)
+AWAY_EMOTION = "downcast1"
+
+
+def test_an_emotion_that_turns_the_head_away_keeps_the_person(
+    live_bridge: LiveBridge,
+    face_scene: SimSceneClient,
+    emotions_library: None,
+) -> None:
+    """specs/motion/head_tracking.md "Whom the head follows", specs/vision/user_perception.md
+    "Tracks": the move takes the portrait out of the camera's view for longer than
+    `TRACKING_LOST_S` and the miss window, with detection running on — the faces report
+    empties — yet the tracker neither hands the head back nor loses the person's track:
+    engaged throughout with nothing published, the same `track_id` after the move, and
+    the head back up on the portrait."""
+    bridge, _caps = live_bridge
+
+    async def scenario() -> tuple[
+        int | None, int | None, list[HeadTrackingReport], int, float
+    ]:
+        await bridge.set_motors_state("enabled")
+        await arm_tracking(bridge)
+        face_scene.spawn(HIGH_FACE_POS)
+        assert await wait_for(lambda: bridge.attention == "engaged", 6.0)
+        await asyncio.sleep(3.0)  # the head settles, looking up at it
+        before = bridge.head_tracking.value.track_id
+        names = await bridge.list_emotions()
+        assert AWAY_EMOTION in names, f"{AWAY_EMOTION!r} not in the emotions library"
+        empties = 0
+        samples: list[tuple[float, float | None]] = []  # (head pitch, the face's y)
+        rest = await asyncio.to_thread(bridge.robot.get_current_head_pose)
+        print(
+            f"\n[e2e] head at rest on the portrait: z {rest[2, 3]:.3f} m, "
+            f"pitch {yaw_pitch_deg(rest)[1]:.1f} deg"
+        )
+
+        async def watch_faces() -> None:
+            nonlocal empties
+            while True:
+                faces = bridge.faces.value.faces
+                pose = await asyncio.to_thread(bridge.robot.get_current_head_pose)
+                samples.append((yaw_pitch_deg(pose)[1], faces[0].y if faces else None))
+                if not faces:
+                    empties += 1
+                await asyncio.sleep(0.1)
+
+        watcher = asyncio.create_task(watch_faces())
+        changes = _Changes(bridge)
+        try:
+            await bridge.play_emotion(AWAY_EMOTION)
+        finally:
+            watcher.cancel()
+            with suppress(asyncio.CancelledError):
+                await watcher
+        pitches = [p for p, _ in samples]
+        print(
+            f"[e2e] during the move: head pitch {min(pitches):.1f}..{max(pitches):.1f} "
+            f"deg, the faces report empty on {empties} of {len(samples)} samples"
+        )
+        await asyncio.sleep(2.0)  # the gaze fades back in, the head returns
+        await changes.stop()
+        pitch_after = yaw_pitch_deg(
+            await asyncio.to_thread(bridge.robot.get_current_head_pose)
+        )[1]
+        return (
+            before,
+            bridge.head_tracking.value.track_id,
+            changes.woken,
+            empties,
+            pitch_after,
+        )
+
+    before, after, woken, empties, pitch_after = live_bridge.run(scenario())
+    print(
+        f"[e2e] {AWAY_EMOTION!r} over a high portrait: track {before} -> {after}; "
+        f"head pitch after {pitch_after:.1f} deg"
+    )
+    assert empties >= int(
+        TRACKING_LOST_S / 0.1
+    )  # out of view longer than the loss time
+    assert woken == []  # engaged on the same person throughout
+    assert before is not None and after == before
+    assert bridge.attention == "engaged"
+    assert pitch_after < -10.0  # looking up at it again (pitch negative is up)
+
+
 # --- the base toward the person (specs/motion/motion.md "The body yaw") ------------------
 
 # A face this far to the side at the default distance implies 33.7° of yaw: past the

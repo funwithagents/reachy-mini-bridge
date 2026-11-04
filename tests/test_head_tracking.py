@@ -39,9 +39,12 @@ from reachy_mini_bridge.head_tracking import (
     CameraModel,
     HeadTracker,
     HeadTrackingReport,
+    expected_pixel,
     frame_head_pose,
+    in_frame,
     pinhole_intrinsics,
     sim_hfov_deg,
+    world_direction,
 )
 from reachy_mini_bridge.motion import GazeAim, MotionSession
 from reachy_mini_bridge.testing.gaze import OVERSHOOT_MAX_DEG, YAW_TOLERANCE_DEG
@@ -316,7 +319,9 @@ def test_frame_head_pose_is_the_pose_the_frame_was_taken_from() -> None:
     unstamped = _report(0.0, 0.0, ts=10.3)
 
     def yaw(report: FaceReport, camera: CameraModel, delay: float, now: float) -> float:
-        return _yaw_deg(frame_head_pose(report, camera, history, delay, now))
+        return _yaw_deg(
+            frame_head_pose(report.ts, report.head_pose, camera, history, delay, now)
+        )
 
     # Unstamped: the history at the report's time minus the delay.
     assert yaw(unstamped, head_mounted, 0.0, 99.0) == pytest.approx(30.0)
@@ -340,7 +345,9 @@ def test_frame_head_pose_is_the_pose_the_frame_was_taken_from() -> None:
         settings=ESTIMATE,
     )
     for _ in range(20):
-        frame_head_pose(unstamped, head_mounted, history, tracker.delay_s, 99.0)
+        frame_head_pose(
+            unstamped.ts, None, head_mounted, history, tracker.delay_s, 99.0
+        )
     assert tracker.delay_s == head_tracking.DELAY_PRIOR_S
     assert not tracker._detections
 
@@ -431,9 +438,13 @@ class _Published:
 
 
 class _Chooser:
-    """A running tracker on a test clock, recording its aims and published reports."""
+    """A running tracker on a test clock, recording its aims and published reports. A
+    fixed (webcam) camera unless ``camera`` says otherwise; a head-mounted one sees from
+    ``pose`` — the head's reported pose, its reports stamped with it."""
 
-    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def __init__(
+        self, monkeypatch: pytest.MonkeyPatch, camera: CameraModel | None = None
+    ) -> None:
         self.clock = _Clock()
         monkeypatch.setattr(
             head_tracking, "time", SimpleNamespace(perf_counter=self.clock.perf_counter)
@@ -441,9 +452,12 @@ class _Chooser:
         self.aims: list[Any] = []
         self.report = _Published()
         self.published = self.report.sets
+        self.pose: npt.NDArray[np.float64] = np.eye(4)
+        camera = camera or CameraModel.for_sim(SimCameraSettings(source="webcam"))
+        self.mounted = not camera.fixed
         self.tracker = HeadTracker(
-            CameraModel.for_sim(SimCameraSettings(source="webcam")),
-            history=lambda: (np.zeros(0), np.zeros((0, 4, 4))),
+            camera,
+            history=lambda: (np.array([self.clock.now]), self.pose[np.newaxis]),
             set_gaze=lambda aim, *, focus=False: self.aims.append(_pose(aim)),
             settings=NO_POSTURE,
             report=self.report,  # type: ignore[arg-type]
@@ -454,7 +468,11 @@ class _Chooser:
         self.clock.now += after
         self.tracker.observe(
             FaceReport(
-                faces=tuple(faces), ts=self.clock.now, source="custom", active=True
+                faces=tuple(faces),
+                ts=self.clock.now,
+                source="custom",
+                active=True,
+                head_pose=self.pose if self.mounted else None,
             )
         )
 
@@ -1063,3 +1081,140 @@ def test_the_exit_margin_is_a_share_of_the_distance_unless_configured(
     assert posture.state.in_personal_space
     posture.see(0.5, distance_m=out)
     assert not posture.state.in_personal_space
+
+
+# --- the robot's own moves: out of view, not missing --------------------------------------
+# (specs/motion/head_tracking.md "Whom the head follows"; the detection loop's rule,
+# specs/vision/user_perception.md "Tracks", is test_face_detection's to pin)
+
+
+def _mounted(monkeypatch: pytest.MonkeyPatch) -> _Chooser:
+    """A chooser whose camera turns with the head: the sim's eye camera, seeing from
+    the chooser's ``pose``."""
+    return _Chooser(monkeypatch, camera=CameraModel.for_sim(SimCameraSettings()))
+
+
+AWAY = 80.0  # a turn past the sim camera's 56 deg half field of view
+
+
+def test_a_face_the_camera_does_not_frame_is_not_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An emotion turns the head off the person for longer than the loss time: the
+    observations and ticks meanwhile count for nothing — the head stays engaged on the
+    same face, no change published, the aim held — and once the camera frames their
+    direction again, a real absence is counted as ever."""
+    monkeypatch.setattr(head_tracking, "TRACKING_LOST_S", 2.0)
+    chooser = _mounted(monkeypatch)
+    chooser.see(_person(1, 0.0, NEAR))
+    sets, aims = len(chooser.published), len(chooser.aims)
+    chooser.pose = _turned(AWAY)  # the move turned the head away from the face
+    for _ in range(30):
+        chooser.see()  # 3 s of observations without it...
+    for _ in range(10):
+        chooser.tick()  # ...and a second of silence
+    assert chooser.tracker.following == 1
+    assert len(chooser.aims) == aims and len(chooser.published) == sets
+    assert chooser.published[-1].attention == "engaged"
+    chooser.pose = np.eye(4)  # the head back on the face
+    chooser.see(_person(1, 0.0, NEAR))
+    assert chooser.tracker.following == 1 and len(chooser.published) == sets
+    for _ in range(19):
+        chooser.see()  # 1.9 s in view without the face: a real absence
+    assert chooser.tracker.following == 1
+    chooser.see(after=0.2)  # 2.1 s
+    assert chooser.tracker.following is None and chooser.aims[-1] is None
+
+
+def test_the_camera_sweeping_over_someone_else_does_not_switch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bigger face the turned camera sees for longer than the switch time is not
+    switched to: the followed face was out of view, not missing. Back on the face's
+    direction, the switch wait counts from there."""
+    chooser = _mounted(monkeypatch)
+    chooser.see(_person(1, 0.0, FAR))
+    chooser.pose = _turned(AWAY)
+    for _ in range(15):
+        chooser.see(_person(2, 0.0, NEAR))  # 1.5 s of someone else, seen by the sweep
+    assert chooser.tracker.following == 1
+    chooser.pose = np.eye(4)
+    for _ in range(9):
+        chooser.see(_person(2, 0.0, NEAR))  # 0.9 s in view without face 1: held
+    assert chooser.tracker.following == 1
+    chooser.see(_person(2, 0.0, NEAR), after=0.2)  # 1.1 s: switched
+    assert chooser.tracker.following == 2
+
+
+def test_the_out_of_view_hold_is_capped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``UNOBSERVABLE_MAX_S`` without a sighting, the face counts as missing whatever
+    the view: the loss follows ``TRACKING_LOST_S`` later."""
+    monkeypatch.setattr(head_tracking, "TRACKING_LOST_S", 2.0)
+    monkeypatch.setattr(head_tracking, "UNOBSERVABLE_MAX_S", 3.0)
+    chooser = _mounted(monkeypatch)
+    chooser.see(_person(1, 0.0, NEAR))
+    chooser.pose = _turned(AWAY)
+    for _ in range(49):
+        chooser.tick()  # 4.9 s away: 3 s not counted, 1.9 s counted
+    assert chooser.tracker.following == 1
+    chooser.tick(after=0.2)  # 5.1 s: 2.1 s counted
+    assert chooser.tracker.following is None and chooser.aims[-1] is None
+
+
+def test_a_face_last_seen_at_the_frame_s_edge_is_lost_as_any_other(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A departing person's last sighting is near the edge, inside the frame: with the
+    head still, their direction stays in view and the loss counts as ever."""
+    monkeypatch.setattr(head_tracking, "TRACKING_LOST_S", 2.0)
+    chooser = _mounted(monkeypatch)
+    chooser.see(_person(1, 0.95, NEAR))
+    for _ in range(19):
+        chooser.see()  # 1.9 s
+    assert chooser.tracker.following == 1
+    chooser.see(after=0.2)  # 2.1 s
+    assert chooser.tracker.following is None
+
+
+def test_expected_pixel_is_the_inverse_of_the_world_direction() -> None:
+    """A pixel's world direction, seen again from the same head, projects back onto the
+    pixel — on the Lite's calibration with its distortion and on the sim's pinhole, from
+    turned heads too; the direction is the ray the aim looks along; a direction behind
+    the camera has no pixel; a pixel is in frame when it lies on the image."""
+    from reachy_mini.media.camera_constants import ReachyMiniLiteCamSpecs
+    from reachy_mini.vision.look_at import look_at_image_pose
+
+    lite = CameraModel.for_robot(
+        SimpleNamespace(
+            media=SimpleNamespace(
+                camera=SimpleNamespace(camera_specs=ReachyMiniLiteCamSpecs())
+            )
+        )  # type: ignore[arg-type]
+    )
+    sim = CameraModel.for_sim(SimCameraSettings())
+    for camera in (lite, sim):
+        width, height = camera.size
+        for u, v in (
+            (width / 2, height / 2),
+            (width * 0.2, height * 0.3),
+            (width * 0.85, height * 0.8),
+        ):
+            for pose in (np.eye(4), _turned(30.0), _turned(-70.0)):
+                direction = world_direction(u, v, pose, camera)
+                assert np.linalg.norm(direction) == pytest.approx(1.0)
+                back = expected_pixel(direction, pose, camera)
+                assert back == pytest.approx((u, v), abs=0.05)
+    pose = _turned(20.0)
+    look = look_at_image_pose(
+        300.0, 200.0, sim.K, sim.D, pose, default_head_to_camera_transform()
+    )
+    assert world_direction(300.0, 200.0, pose, sim) == pytest.approx(
+        look[:3, 0], abs=1e-9
+    )
+    ahead = world_direction(sim.K[0, 2], sim.K[1, 2], np.eye(4), sim)
+    assert expected_pixel(ahead, _turned(90.0), sim) is None  # at the camera's side
+    assert expected_pixel(-ahead, np.eye(4), sim) is None  # behind it
+    assert in_frame((0.0, 0.0), sim.size) and in_frame((1279.0, 719.0), sim.size)
+    assert not in_frame((-0.5, 10.0), sim.size) and not in_frame(
+        (10.0, 719.5), sim.size
+    )

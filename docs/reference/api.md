@@ -236,7 +236,7 @@ What runs together, and who wins:
 | `say` + `play_sound` | both play, mixed at the speaker |
 | `say` + `play_emotion` | both run; wobbling is paused for the emotion, so speech does not sway the head while it plays |
 | tracking + idle move | composed: the head looks at the face and breathes (`focus` holds it still on the face) |
-| tracking + emotion | the emotion plays as recorded; the gaze fades back in after it |
+| tracking + emotion | the emotion plays as recorded; the gaze fades back in after it, onto the same person — a face the move turned the camera away from is not counted as gone, and keeps its `track_id` |
 | base following + anything | every move plays around the body yaw: the idle move and an emotion face the person; the base holds for an emotion's length, and after the person leaves until `hold_s` has passed |
 | a mode verb + the same mode verb | one at a time per mode; the last call's value stands |
 

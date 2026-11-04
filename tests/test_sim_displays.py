@@ -457,7 +457,7 @@ def test_a_fixed_camera_places_a_face_from_the_neutral_pose() -> None:
     face = Face(x=0.2, y=0.0, roll=None, size=0.3)
     report = FaceReport(faces=(face,), ts=5.0, source="yunet", active=True)
     history = lambda: (np.array([5.0]), _turned(40.0)[np.newaxis])
-    pose = frame_head_pose(report, fixed, history, 0.2, 5.0)
+    pose = frame_head_pose(report.ts, report.head_pose, fixed, history, 0.2, 5.0)
     marker = face_marker(face, fixed, pose)
     at_rest = face_marker(face, fixed, np.eye(4))
     assert marker is not None and at_rest is not None

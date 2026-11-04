@@ -8,6 +8,7 @@ no hardware. Async runs via `asyncio.run` (fast-tier convention).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import itertools
 import json
@@ -2441,7 +2442,7 @@ def _pixel_face(x_norm: float, y_norm: float = 0.0) -> PixelFace:
 
 
 def _custom_config(
-    scene: _Scene | None, *, detection: bool = True, **motion: Any
+    scene: _Scene | _ProjectingScene | None, *, detection: bool = True, **motion: Any
 ) -> ReachyMiniConfig:
     """A fake with a stub detector registered through the `custom` path — the fake's
     stand-in for a person (specs/vision/user_perception.md "`fake` backend support"); detection
@@ -3916,3 +3917,184 @@ def test_set_tracking_starts_stops_and_refuses_what_it_cannot_apply() -> None:
     assert off == (replace(wanted, enabled=False), None)
     assert outside == TrackingSettings()
     assert recorded is True
+
+
+# --- the robot's own moves: a face the camera does not frame is not gone -------------------
+# (specs/motion/head_tracking.md "Whom the head follows", specs/vision/user_perception.md
+# "Tracks": the projecting stub of both specs' fake support)
+
+
+class _ProjectingScene:
+    """A person at a fixed place in the world, seen by the fake's camera where its head
+    pose frames them — where `_Scene` shows a face at a fixed pixel whatever the head
+    does. `robot` is set once the bridge runs; `unseen` counts the frames on which the
+    camera did not frame the person."""
+
+    def __init__(self, point: tuple[float, float, float] | None) -> None:
+        self.point = point
+        self.bridge: ReachyMiniBridge | None = None
+        self.unseen = 0
+        self.detector: Callable[[], _ProjectingDetector] = lambda: _ProjectingDetector(
+            self
+        )
+
+    def faces(self, ts: float) -> list[PixelFace]:
+        """The person on the frame taken at ``ts``, seen from the head pose the feed
+        stamped that frame with — as a detector sees the image the camera took."""
+        from reachy_mini.vision.look_at import default_head_to_camera_transform
+
+        bridge = self.bridge
+        if self.point is None or bridge is None:
+            return []
+        robot = _fake(bridge)
+        camera = CameraModel.for_robot(robot)
+        frame = bridge.camera.latest()
+        pose = (
+            frame.head_pose
+            if frame is not None and frame.ts == ts and frame.head_pose is not None
+            else robot.get_current_head_pose()
+        )
+        cam = pose @ default_head_to_camera_transform()
+        p = np.linalg.inv(cam) @ np.array([*self.point, 1.0])
+        if p[2] <= 0.0:
+            self.unseen += 1
+            return []
+        width, height = camera.size
+        u = camera.K[0, 0] * p[0] / p[2] + camera.K[0, 2]
+        v = camera.K[1, 1] * p[1] / p[2] + camera.K[1, 2]
+        x, y = u / (width - 1) * 2 - 1, v / (height - 1) * 2 - 1
+        if not (-1.0 <= x <= 1.0 and -1.0 <= y <= 1.0):
+            self.unseen += 1
+            return []
+        return [_pixel_face(x, y)]
+
+
+class _ProjectingDetector:
+    def __init__(self, scene: _ProjectingScene) -> None:
+        self._scene = scene
+
+    def detect(self, frame_bgr: npt.NDArray[np.uint8], ts: float) -> list[PixelFace]:
+        return self._scene.faces(ts)
+
+
+def _person_at(yaw_deg: float, distance: float = 0.6) -> tuple[float, float, float]:
+    """A person ``yaw_deg`` to the robot's left at the camera's height."""
+    return (
+        distance * math.cos(math.radians(yaw_deg)),
+        distance * math.sin(math.radians(yaw_deg)),
+        0.05,
+    )
+
+
+def _turning_emotions(
+    monkeypatch: pytest.MonkeyPatch, yaw_deg: float, seconds: float
+) -> None:
+    """The fake's emotions turn the head ``yaw_deg`` away and back over ``seconds``."""
+    monkeypatch.setattr(bridge_module, "_FAKE_MOVE_DURATION_S", seconds)
+
+    def evaluate(self: Any, t: float) -> tuple[Any, Any, float]:
+        angle = math.radians(yaw_deg) * math.sin(math.pi * t / seconds)
+        head = np.eye(4)
+        head[0, 0] = head[1, 1] = math.cos(angle)
+        head[1, 0] = math.sin(angle)
+        head[0, 1] = -math.sin(angle)
+        return (
+            head,
+            bridge_module.NEUTRAL_ANTENNAS.copy(),
+            bridge_module.NEUTRAL_BODY_YAW,
+        )
+
+    monkeypatch.setattr(bridge_module._FakeRecordedMove, "evaluate", evaluate)
+
+
+def test_an_emotion_that_turns_the_head_away_keeps_the_person(
+    monkeypatch: pytest.MonkeyPatch, fast_attention: None
+) -> None:
+    """The person 20 degrees to the left, the emotion turning the head 80 degrees to the
+    right for longer than the loss time and the miss window: detection runs on and sees
+    nobody, the tracker holds — engaged throughout, nothing published — and once the
+    head is back the person continues their track, the head on them again."""
+    monkeypatch.setattr(face_detection_module, "TRACK_MAX_MISSES", 2)
+    _turning_emotions(monkeypatch, yaw_deg=-80.0, seconds=1.2)
+    scene = _ProjectingScene(_person_at(20.0))
+    config = _custom_config(scene, idle="hold")
+
+    async def run() -> tuple[
+        int | None, int | None, int, list[HeadTrackingReport], int, float, float
+    ]:
+        woken: list[HeadTrackingReport] = []
+        async with ReachyMiniBridge(config) as bridge:
+            scene.bridge = bridge
+            await bridge.set_motors_state("enabled")
+            await asyncio.wait_for(
+                bridge.head_tracking.wait_for(lambda r: r.attention == "engaged"), 5.0
+            )
+            await asyncio.sleep(1.0)  # the head settles on the person
+            before = bridge.head_tracking.value.track_id
+            yaw_before = _yaw_deg(_fake(bridge).last_target[0])
+            unseen_before = scene.unseen
+
+            async def subscribe() -> None:
+                async for report in bridge.head_tracking.changes():
+                    woken.append(report)
+
+            subscriber = asyncio.create_task(subscribe())
+            await asyncio.sleep(0)
+            await bridge.play_emotion("sad")
+            unseen = scene.unseen - unseen_before
+            await asyncio.sleep(1.0)  # the gaze fades back in, the head returns
+            subscriber.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await subscriber
+            return (
+                before,
+                bridge.head_tracking.value.track_id,
+                bridge.faces.value.faces[0].track_id,
+                woken,
+                unseen,
+                yaw_before,
+                _yaw_deg(_fake(bridge).last_target[0]),
+            )
+
+    before, after, seen_as, woken, unseen, yaw_before, yaw_after = asyncio.run(run())
+    assert unseen > 3  # the camera lost the person for longer than the miss window
+    assert woken == []  # engaged on the same person throughout
+    assert before is not None and after == before and seen_as == before
+    assert yaw_before == pytest.approx(20.0, abs=3.0)
+    assert yaw_after == pytest.approx(yaw_before, abs=3.0)
+
+
+def test_a_person_who_leaves_during_an_emotion_is_lost_once_the_head_is_back(
+    monkeypatch: pytest.MonkeyPatch, fast_attention: None
+) -> None:
+    """Gone while the camera could not see them: nothing says so until the head is back
+    on their direction, and the loss follows ``TRACKING_LOST_S`` of that — not sooner."""
+    _turning_emotions(monkeypatch, yaw_deg=-80.0, seconds=1.2)
+    scene = _ProjectingScene(_person_at(20.0))
+    config = _custom_config(scene, idle="hold")
+
+    async def run() -> tuple[str | None, float]:
+        async with ReachyMiniBridge(config) as bridge:
+            scene.bridge = bridge
+            await bridge.set_motors_state("enabled")
+            await asyncio.wait_for(
+                bridge.head_tracking.wait_for(lambda r: r.attention == "engaged"), 5.0
+            )
+            await asyncio.sleep(0.5)
+            started = time.perf_counter()
+            emotion = asyncio.create_task(bridge.play_emotion("sad"))
+            await asyncio.sleep(0.6)  # the head is away
+            scene.point = None  # they leave, unseen
+            await emotion
+            still = bridge.attention
+            await asyncio.wait_for(
+                bridge.head_tracking.wait_for(lambda r: r.attention == "watching"), 3.0
+            )
+            return still, time.perf_counter() - started
+
+    still, lost_after = asyncio.run(run())
+    assert still == "engaged"  # nothing said they left while the camera was away
+    # The head frames their direction again only in the move's last tenth of a second;
+    # the loss follows TRACKING_LOST_S (0.3 here) of that — after the move, where
+    # counting from the departure would have lost them 0.3 s into the head's absence.
+    assert lost_after >= 1.2
