@@ -56,6 +56,20 @@ PITCH_TOLERANCE_DEG = 3.0
 # about 3° of the image centre on the sim's 112° camera. Measured at settle on the viewer
 # sim: |x|, |y| under 0.025 — the head breathing around the aim moves it a little.
 CENTRED = 0.05
+# The head has settled on the face when, over the last SETTLE_WINDOW_S, the followed face
+# was reported on every sample within CENTRED of the image centre, its mean within
+# SETTLED_CENTRED — the measured settle — and the yaw held within SETTLE_YAW_RANGE_DEG.
+# The head alone holding still is not enough: a head creeping back onto a face after an
+# overshoot moves less than a degree over two seconds, and read as settled it fails the
+# yaw check at the wrong moment (measured on the viewer sim, 2026-11-04: settled at
+# +28.6 deg against +23.2, the face at x +0.047, still closing).
+# A face past base following's 20 deg deadband settles last: the base turns 0.8 s
+# after the head is on it, and while it comes round under the head (two stages of
+# 0.6 s) the face drifts up to 0.10 off the centre and creeps back over 2-3 s —
+# measured on the viewer sim (2026-11-04): 6.4-6.8 s to settle at 23-34 deg, 2.8-5 s
+# inside the deadband. `track_onto`'s timeout (15 s) leaves a slower runner room.
+SETTLED_CENTRED = 0.025
+SETTLE_YAW_RANGE_DEG = 1.0
 # How far off neutral the head may sit once it has been handed back. The idle move roams
 # in roll/pitch/yaw (specs/motion/motion.md "The moves"): it averages ~6° from neutral and
 # reaches 10.3° at the corner of its envelope, so this is measured as a mean over a
@@ -149,6 +163,10 @@ class Track:
         # One id is a clean track; more means the face's track was re-created under
         # a new id while the head turned (a detector flicker, a jump past the gate).
         self.ids: list[int | None] = []
+        # The followed face's (x, y) on each sample, None while none was reported.
+        self.centres: list[tuple[float, float] | None] = []
+        # Why the head never settled when the timeout ended the track, else None.
+        self.unsettled: str | None = None
 
     def _settled(self) -> list[tuple[float, float]]:
         """The samples of the track's last SETTLE_WINDOW_S."""
@@ -198,6 +216,41 @@ class Track:
         return max(0.0, *(-p for p in past[peak:]))
 
 
+def _unsettled(track: Track, now: float) -> str | None:
+    """Why the head has not settled on the face as of ``now`` — ``None`` once it has:
+    the last SETTLE_WINDOW_S sampled, the followed face reported on every sample of it
+    within CENTRED, their mean within SETTLED_CENTRED, the yaw within
+    SETTLE_YAW_RANGE_DEG."""
+    if track.times[0] > now - SETTLE_WINDOW_S:
+        return "a full settle window"
+    window = [
+        (yaw, centre)
+        for (yaw, _), centre, t in zip(
+            track.samples, track.centres, track.times, strict=True
+        )
+        if t >= now - SETTLE_WINDOW_S
+    ]
+    centres = [c for _, c in window if c is not None]
+    if len(centres) < len(window):
+        return "the followed face reported on every sample"
+    worst = max(max(abs(x), abs(y)) for x, y in centres)
+    if worst >= CENTRED:
+        return f"the face within {CENTRED} of the centre (it reached {worst:.3f})"
+    mean_x = sum(x for x, _ in centres) / len(centres)
+    mean_y = sum(y for _, y in centres) / len(centres)
+    if max(abs(mean_x), abs(mean_y)) >= SETTLED_CENTRED:
+        return (
+            f"the face's mean within {SETTLED_CENTRED} of the centre "
+            f"(({mean_x:+.3f}, {mean_y:+.3f}))"
+        )
+    yaws = [yaw for yaw, _ in window]
+    if max(yaws) - min(yaws) >= SETTLE_YAW_RANGE_DEG:
+        return (
+            f"the yaw within {SETTLE_YAW_RANGE_DEG} deg ({max(yaws) - min(yaws):.1f})"
+        )
+    return None
+
+
 def followed_face(bridge: ReachyMiniBridge) -> Face | None:
     """The face of ``bridge.faces`` the head follows, by ``bridge.head_tracking``'s
     ``track_id``."""
@@ -210,14 +263,17 @@ async def track_onto(
     where: str,
     lateral: float,
     *,
-    settle_timeout: float = 10.0,
+    settle_timeout: float = 15.0,
     min_seconds: float = 2.5,
     expected_yaw_deg: float | None = None,
 ) -> Track:
-    """Sample the head until it holds still (yaw within 1° over ``SETTLE_WINDOW_S``, and
-    at least ``min_seconds`` in — detection and the gaze layer's fade take a moment to
-    start the head moving), or ``settle_timeout``; then read the followed face from
-    ``bridge.faces``. The window outlasts the tracker's hold (``TRACKING_SWITCH_S``, 1 s
+    """Sample the head until it has settled on the face — over the last
+    ``SETTLE_WINDOW_S``, the followed face reported on every sample within ``CENTRED`` of
+    the image centre and its mean within ``SETTLED_CENTRED``, the yaw within
+    ``SETTLE_YAW_RANGE_DEG``; and at least ``min_seconds`` in, since detection and the
+    gaze layer's fade take a moment to start the head moving — or ``settle_timeout``,
+    which :func:`assert_tracked` fails naming the condition that never held; then read
+    the followed face from ``bridge.faces``. The window outlasts the tracker's hold (``TRACKING_SWITCH_S``, 1 s
     toward a face gone missing), so a head pausing while the tracker waits for a
     re-created track never reads as settled. The expected yaw is a face at ``lateral`` at
     the default distance, unless given. ``where`` names the step in the assertion
@@ -239,16 +295,13 @@ async def track_onto(
         followed = bridge.head_tracking.value.track_id
         if not track.ids or track.ids[-1] != followed:
             track.ids.append(followed)
-        recent = [
-            y
-            for (y, _), t in zip(track.samples, track.times, strict=True)
-            if t >= now - SETTLE_WINDOW_S
-        ]
-        covered = track.times[0] <= now - SETTLE_WINDOW_S
-        still = covered and max(recent) - min(recent) < 1.0
-        if still and now - started >= min_seconds:
+        face = followed_face(bridge)
+        track.centres.append(None if face is None else (face.x, face.y))
+        reason = _unsettled(track, now)
+        if reason is None and now - started >= min_seconds:
             break
         if now >= deadline:
+            track.unsettled = reason or "the minimum time"
             break
         await asyncio.sleep(0.05)
     track.face = followed_face(bridge)
@@ -272,12 +325,21 @@ def assert_tracked(track: Track, *, pitch_ahead: float | None = None) -> None:
     a face that only moved sideways, the same pitch as ``pitch_ahead``), with the tracked
     face at the image centre. Prints the track's numbers first, for the run's log."""
     face = track.face
+    trace = " ".join(
+        "-" if c is None else f"{c[0]:+.2f}"
+        for c in track.centres[:: max(1, len(track.centres) // 40)]
+    )
     print(
         f"\n[e2e] {track.where}: yaw {track.start_yaw:+.1f} -> {track.yaw:+.1f} deg "
         f"(expected {track.expected_yaw:+.1f}, overshoot {track.overshoot_deg:.1f}, "
         f"swing back {track.swing_back_deg:.1f}), "
         f"pitch {track.pitch:+.1f}, settled in {track.settle_s:.1f} s, ids followed "
         f"{track.ids}, face {face}, delay estimate {track.delay_s}, {track.frame_note}"
+        f"\n[e2e]   the face's x along the way: {trace}"
+    )
+    assert track.unsettled is None, (
+        f"{track.where}: the head did not settle on the face within the timeout — "
+        f"never {track.unsettled}"
     )
     assert track.overshoot_deg <= OVERSHOOT_MAX_DEG, (
         f"{track.where}: the head swung {track.overshoot_deg:.1f} deg past the face"
