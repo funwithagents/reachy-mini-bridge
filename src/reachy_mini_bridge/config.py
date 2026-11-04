@@ -678,7 +678,7 @@ class BaseFollowingSettings:
     deadband_deg: float = 20.0
     # how long the base keeps facing where the person was once nobody is followed,
     # in seconds, before easing back to the front
-    hold_s: float = 45.0
+    hold_s: float = 20.0
     # how long the person's direction must have been past the deadband before the
     # base turns, in seconds: the head leads, the body follows
     lag_s: float = 0.8
@@ -706,7 +706,7 @@ class BaseFollowingSettings:
                 low_inclusive=False,
                 high=BASE_FOLLOWING_MAX_DEADBAND_DEG,
             ),
-            hold_s=_number_field(block, name, "hold_s", 45.0, low=0.0),
+            hold_s=_number_field(block, name, "hold_s", 20.0, low=0.0),
             lag_s=_number_field(block, name, "lag_s", 0.8, low=0.0),
         )
 

@@ -54,7 +54,7 @@ def test_defaults() -> None:
     assert cfg.face_detection.width == DETECT_WIDTH == 640
     # the base follows the person by default (specs/core/config.md "`motion.base_following`")
     assert cfg.motion.base_following == BaseFollowingSettings(
-        enabled=True, deadband_deg=20.0, hold_s=45.0, lag_s=0.8
+        enabled=True, deadband_deg=20.0, hold_s=20.0, lag_s=0.8
     )
     # the frame delay: a frame aimed against the pose at its arrival
     assert cfg.motion.tracking.frame_delay_s == 0.0

@@ -304,7 +304,7 @@ The body yaw ([motion.md](../motion/motion.md) "The body yaw"): the motion loop 
 |---|---|---|---|
 | `enabled` | bool | `true` | Whether the base follows the person. Off, the loop sends body yaw 0 as it always did and upstream's inverse kinematics is the only thing that turns the base. A mode like `presence`: it needs no motors and holds until changed. |
 | `deadband_deg` | number > 0, ≤ 60 | `20.0` | How far from the body yaw the followed person's direction must be, in yaw, before the base turns onto it — the turn then catches up fully, so this is also how far they move before the next one. Bounded above by the posture's reach: the head-body delta at which the default posture is refused is about 32° level and 14° looking up 15° with breathing on top ([motion.md](../motion/motion.md) "Reach, with the base"). |
-| `hold_s` | number ≥ 0 | `45.0` | How long the base keeps facing where the person was once nobody is followed, before easing back to the front; `0` returns as soon as the tracker lets go. |
+| `hold_s` | number ≥ 0 | `20.0` | How long the base keeps facing where the person was once nobody is followed, before easing back to the front; `0` returns as soon as the tracker lets go. |
 | `lag_s` | number ≥ 0 | `0.8` | How long the person's direction must have been past the deadband before the base turns: the head, whose ease settles in a few tenths of a second, is on them by then, and the body follows — the beat that makes the turn read as a person's. `0` starts the base with the head. Set on a Lite with a person (2026-11-03: 0.5 s read as the body turning, 0.8 s as the head leading). |
 
 ```python
@@ -312,7 +312,7 @@ The body yaw ([motion.md](../motion/motion.md) "The body yaw"): the motion loop 
 class BaseFollowingSettings:
     enabled: bool = True
     deadband_deg: float = 20.0
-    hold_s: float = 45.0
+    hold_s: float = 20.0
     lag_s: float = 0.8
 ```
 

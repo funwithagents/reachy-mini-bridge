@@ -233,7 +233,7 @@ Omit the block and `say` raises unless you pass your own `SpeechSynthesizer`. A 
 |---|---|---|
 | `enabled` | `true` | Turn the base toward the person. Off, the body yaw is 0 as it always was and only the robot's own kinematics ever turn the base |
 | `deadband_deg` | `20.0` | How far, in yaw, the person's direction must be from where the base points before the base turns onto them, at most 60. Smaller moves the base more often and keeps more of the posture at the far sides: with breathing on top, the default posture is out of reach from about 32° of head-body delta level, 14° looking up |
-| `hold_s` | `45.0` | How long the base keeps facing where the person was once nobody is followed, before easing back to the front; `0` returns as soon as the tracker lets go |
+| `hold_s` | `20.0` | How long the base keeps facing where the person was once nobody is followed, before easing back to the front; `0` returns as soon as the tracker lets go |
 | `lag_s` | `0.8` | How long the person's direction must have been past the deadband before the base turns: the head is on them by then and the body follows, as a person turns to someone. `0` starts the base with the head, which reads as the body doing the turning |
 
 ## Validation
