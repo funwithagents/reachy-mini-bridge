@@ -261,6 +261,7 @@ The head tracker ([head_tracking.md](../motion/head_tracking.md)): whether it ru
 | `personal_space.distance_m` | number > 0 | `0.40` | The distance from the robot's camera inside which the head retreats (`Face.distance_m`, [user_perception.md](../vision/user_perception.md) "The face report"). |
 | `personal_space.max_back_mm` | number ≥ 0, ≤ 30 | `20.0` | The largest retreat. |
 | `personal_space.span_m` | number > 0 | `0.20` | The intrusion over which the retreat grows from nothing to `max_back_mm`. |
+| `frame_delay_s` | number in `[0, 0.5]` \| null | `null` | The delay between a frame's arrival at the bridge and the head pose it was taken from ([head_tracking.md](../motion/head_tracking.md) "The aim": "The head pose the frame was taken from"). `null`: the tracker estimates it online from the head's own turns. A number fixes it, for a robot whose delay is measured: on a Lite the estimate runs away while the person and the head both move, toward its 0.5 s cap, and the head then tracks in steps. A runtime change takes effect on the next aim. |
 | `personal_space.exit_margin_m` | number > 0 \| null | `null` | How far beyond `distance_m` a person who entered must go to have left: the hysteresis of the personal space event ([head_tracking.md](../motion/head_tracking.md) "The personal space event"). `null`: `PERSONAL_SPACE_EXIT_SHARE = 0.125` of `distance_m`, since the distance estimate wanders by about ±5 % of itself. |
 
 ```python
@@ -290,6 +291,7 @@ class TrackingSettings:
     mirroring: MirroringSettings = field(default_factory=MirroringSettings)
     approach: ApproachSettings = field(default_factory=ApproachSettings)
     personal_space: PersonalSpaceSettings = field(default_factory=PersonalSpaceSettings)
+    frame_delay_s: float | None = None  # None: estimated online
 ```
 
 Frozen, unlike the other blocks, because the object is handed across the runtime API: a caller changes a field with `dataclasses.replace` and applies the result, so the settings in force are never mutated behind the tracker's back. The bounds of 30 mm and 30° are the head's own range for these axes — what the emotions library's recordings span ([head_tracking.md](../motion/head_tracking.md) "The posture") — so no setting can ask for more than the robot's own repertoire. Every key is optional; a sub-object given in part keeps the defaults of the rest.

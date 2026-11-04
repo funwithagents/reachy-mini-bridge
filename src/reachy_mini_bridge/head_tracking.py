@@ -331,9 +331,11 @@ class HeadTracker:
 
     @property
     def delay_s(self) -> float:
-        """The current estimate of the delay between an observation's time and the head
-        pose its frame was taken from."""
-        return self._delay
+        """The delay between an observation's time and the head pose its frame was taken
+        from: the settings' ``frame_delay_s`` when it fixes one, else the current
+        estimate."""
+        fixed = self.settings.frame_delay_s
+        return self._delay if fixed is None else fixed
 
     def start(
         self, settings: TrackingSettings | None = None, *, focus: bool | None = None
@@ -492,7 +494,7 @@ class HeadTracker:
             if not camera.fixed and report.head_pose is None:
                 self._note_detection(report, u, v, now)
             head = frame_head_pose(
-                report, camera, self.history, self._delay, self._last_t_obs
+                report, camera, self.history, self.delay_s, self._last_t_obs
             )
             look = look_at_image_pose(
                 u, v, camera.K, camera.D, head, default_head_to_camera_transform()
@@ -551,7 +553,8 @@ class HeadTracker:
         if report.ts != self._last_ts:
             self._last_ts = report.ts
             self._last_t_obs = report.ts if report.ts > 0.0 else now
-            self._add_detection(self._last_t_obs, u, v, now)
+            if self.settings.frame_delay_s is None:  # a fixed delay is not estimated
+                self._add_detection(self._last_t_obs, u, v, now)
 
     def _add_detection(self, t_obs: float, u: float, v: float, now: float) -> None:
         x_n, y_n = undistort_points(u, v, self.camera.K, self.camera.D)

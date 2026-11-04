@@ -582,6 +582,11 @@ class PersonalSpaceSettings:
         )
 
 
+# The fixed frame delay's ceiling: the delay estimate's own range
+# (specs/motion/head_tracking.md "The head pose the frame was taken from").
+FRAME_DELAY_MAX_S = 0.5
+
+
 @dataclass(frozen=True)
 class TrackingSettings:
     """The head tracker's whole behaviour (specs/core/config.md "`motion.tracking`",
@@ -595,6 +600,10 @@ class TrackingSettings:
     mirroring: MirroringSettings = field(default_factory=MirroringSettings)
     approach: ApproachSettings = field(default_factory=ApproachSettings)
     personal_space: PersonalSpaceSettings = field(default_factory=PersonalSpaceSettings)
+    # The delay between a frame's arrival and the head pose it was taken from, in
+    # seconds: a number fixes it, None leaves the tracker to estimate it online
+    # (specs/motion/head_tracking.md "The head pose the frame was taken from").
+    frame_delay_s: float | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> TrackingSettings:
@@ -613,8 +622,16 @@ class TrackingSettings:
         _reject_unknown_keys(
             block,
             name,
-            {"enabled", "focus", "mirroring", "approach", "personal_space"},
+            {
+                "enabled",
+                "focus",
+                "mirroring",
+                "approach",
+                "personal_space",
+                "frame_delay_s",
+            },
         )
+        frame_delay = block.get("frame_delay_s")
         return cls(
             enabled=_bool_field(block, name, "enabled", False),
             focus=_bool_field(block, name, "focus", False),
@@ -622,6 +639,11 @@ class TrackingSettings:
             approach=ApproachSettings.from_dict(block.get("approach", {})),
             personal_space=PersonalSpaceSettings.from_dict(
                 block.get("personal_space", {})
+            ),
+            frame_delay_s=None
+            if frame_delay is None
+            else _number_field(
+                block, name, "frame_delay_s", 0.0, low=0.0, high=FRAME_DELAY_MAX_S
             ),
         )
 

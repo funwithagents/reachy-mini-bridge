@@ -116,6 +116,7 @@ async def _closed_loop(
     seconds: float,
     *,
     frame_delay_s: float = 0.0,
+    settings: TrackingSettings | None = None,
 ) -> tuple[list[float], tuple[float, float], float]:
     """Track ``face`` for ``seconds``: every detection projects it from the head pose
     of ``frame_delay_s`` ago — when its frame was taken — and is stamped *now*, as the
@@ -130,6 +131,7 @@ async def _closed_loop(
             camera,
             history=session.head_pose_history,
             set_gaze=session.set_gaze,
+            settings=settings or TrackingSettings(),
         )
         session.resume()
         yaws: list[float] = []
@@ -196,6 +198,38 @@ def test_an_unreported_frame_delay_is_learned_and_the_head_still_settles() -> No
     yaws, centre, delay = asyncio.run(_closed_loop(face, 5.0, frame_delay_s=0.3))
     assert delay == pytest.approx(0.3, abs=0.1)
     _assert_converged(yaws, centre, 0.15)
+
+
+def test_a_fixed_frame_delay_is_used_as_given_and_never_estimated() -> None:
+    """`frame_delay_s` fixes the delay (specs/motion/head_tracking.md "The head pose the
+    frame was taken from"): frames 0.3 s older than their stamp, the delay fixed at the
+    truth — the head settles on the face and `delay_s` reads the fixed value."""
+    face = _face_at(0.15)
+    fixed = TrackingSettings(frame_delay_s=0.3)
+    yaws, centre, delay = asyncio.run(
+        _closed_loop(face, 5.0, frame_delay_s=0.3, settings=fixed)
+    )
+    assert delay == 0.3
+    _assert_converged(yaws, centre, 0.15)
+
+
+def test_switching_between_a_fixed_delay_and_the_estimate() -> None:
+    """The setting takes effect on the next aim: fixed, the tracker reads it; back to
+    None, the estimate it had resumes — never fed while the delay was fixed."""
+    tracker = HeadTracker(
+        CameraModel.for_sim(SimCameraSettings()),
+        history=lambda: (np.array([time.perf_counter()]), np.eye(4)[np.newaxis]),
+        set_gaze=lambda aim, *, focus=False: None,
+    )
+    assert tracker.delay_s == head_tracking.DELAY_PRIOR_S
+    tracker.configure(TrackingSettings(frame_delay_s=0.12))
+    tracker.start()
+    for k in range(20):
+        tracker.observe(_report(0.1 * math.sin(k), 0.0, ts=time.perf_counter()))
+    assert tracker.delay_s == 0.12
+    assert not tracker._detections  # the estimate is not fed while the delay is fixed
+    tracker.configure(TrackingSettings())
+    assert tracker.delay_s == head_tracking.DELAY_PRIOR_S
 
 
 def _jumping_face_while_turning() -> float:

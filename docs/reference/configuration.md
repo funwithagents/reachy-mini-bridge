@@ -200,6 +200,7 @@ Omit the block and `say` raises unless you pass your own `SpeechSynthesizer`. A 
 | `mirroring` | on | The head rolls with the person's head roll, as a mirror does; below |
 | `approach` | on | The head leans toward the person it follows; below |
 | `personal_space` | on | The head pulls back from someone too close; below |
+| `frame_delay_s` | `null` | The delay between a camera frame's arrival and the head pose it was taken from, in seconds, at most 0.5. `null` lets the tracker estimate it from the head's own turns. Set a measured value when the head follows a moving person in steps: on a Lite the estimate drifts toward its cap while both the person and the head move |
 
 **`motion.tracking.mirroring`** — the person's head roll, mirrored: both heads lean toward the same side of the room. A tilt under 3° reads as upright (the landmarks' jitter), and the roll eases in within about a second. It is as good as the detector's roll: YuNet at the default width reads about two thirds of the roll of a face 0.45 m from the Lite, more nearer, little beyond 0.6 m.
 
