@@ -48,7 +48,7 @@ from reachy_mini_bridge.testing.sim_scene import DEFAULT_FACE_POS, SimSceneClien
 # head moves.
 
 
-pytestmark = pytest.mark.requires("camera", "faces", "face_markers")
+pytestmark = pytest.mark.requires("camera", "props:face", "face_markers")
 
 
 # Sideways, the marker is on the portrait; in height it is on the face's nose, a few

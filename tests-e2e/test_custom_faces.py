@@ -50,19 +50,19 @@ from reachy_mini_bridge.testing.gaze import (
 from reachy_mini_bridge.testing.sim_scene import DEFAULT_FACE_POS, SimSceneClient
 from reachy_mini_bridge.yunet import YuNetDetector
 
-pytestmark = pytest.mark.requires("camera", "faces")
+pytestmark = pytest.mark.requires("camera", "props:face")
 
 
 @pytest.fixture(scope="module")
 def live_bridge_custom_faces(
-    _live_daemon: tuple[str, int],
+    live_daemon: tuple[str, int],
 ) -> Iterator[LiveBridge]:
     """`live_bridge`'s twin for the `custom` detection path: the same target, daemon,
     capability probe and event loop (`BridgeLoop`), but a config with
     `face_detection.detector="custom"` and the shipped detector class registered as the
     custom factory. Its own session, because the detector is config-only and two bridge
     sessions on one daemon would be two motion loops writing the head."""
-    host, port = _live_daemon
+    host, port = live_daemon
     bridge = ReachyMiniBridge(
         ReachyMiniConfig(
             backend=_daemon.backend(),
@@ -76,9 +76,7 @@ def live_bridge_custom_faces(
     with BridgeLoop() as loop:
         loop.run(bridge.start())
         try:
-            caps = probed_capabilities(
-                bridge.robot, (host, port), bridge.camera, bridge.mic
-            )
+            caps = probed_capabilities(bridge, (host, port))
             check_required_capabilities(caps)
             yield LiveBridge(bridge, caps, loop)
         finally:
@@ -91,7 +89,7 @@ def custom_face_scene(
     sim_scene: SimSceneClient,
 ) -> Iterator[SimSceneClient]:
     """conftest's `face_scene`, gated on this module's own session."""
-    requires_caps(live_bridge_custom_faces, "camera", "faces")
+    requires_caps(live_bridge_custom_faces, "camera", "props:face")
     sim_scene.clear()  # nobody in view (specs/testing/sim_scene.md "A pool of portraits")
     yield sim_scene
     sim_scene.clear()

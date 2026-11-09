@@ -1,7 +1,8 @@
 """The importable pytest plugin: the ``requires`` marker and its gate, the
-``live_bridge`` fixture and its capability probe, ``live_capabilities``, the
-``sim_scene`` client, the ``face_scene`` / ``emotions_library`` helpers and the
-``live target`` summary.
+``live_daemon`` and ``live_bridge`` fixtures and the capability probe, ``live_capabilities``,
+the ``sim_scene`` client, the ``face_scene`` / ``emotions_library`` helpers, the
+``live target`` summary, and the two hooks a consumer's conftest extends the harness with
+(``pytest_reachy_mini_scene_props``, ``pytest_reachy_mini_capabilities`` — ``hooks.py``).
 
 A consumer opts in from their own (root) ``conftest.py``::
 
@@ -33,9 +34,11 @@ See ../../../specs/testing/testing_support.md for the strategy and
 from __future__ import annotations
 
 import asyncio
+import tempfile
 import time
-from collections.abc import Iterator
-from dataclasses import replace
+from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass, field, replace
+from typing import cast
 
 import pytest
 
@@ -50,14 +53,23 @@ from reachy_mini_bridge.errors import SimSceneError
 from reachy_mini_bridge.microphone import MicFeed
 from reachy_mini_bridge.robot import AnyReachyMini
 from reachy_mini_bridge.sim_displays import fetch_face_markers
-from reachy_mini_bridge.testing import _daemon
-from reachy_mini_bridge.testing.sim_scene import SimSceneClient
+from reachy_mini_bridge.testing import _daemon, hooks
+from reachy_mini_bridge.testing.sim_scene import (
+    ImagePlane,
+    SimSceneClient,
+    _kind_of,
+    face_pool,
+    write_test_scene,
+)
 from reachy_mini_bridge.testing.support import (
+    CAPABILITIES,
+    PROPS_PREFIX,
     BridgeLoop,
     LiveBridge,
     check_capability_names,
     missing_reason,
     requires_caps,
+    set_run_capabilities,
 )
 
 MARKER = "requires"
@@ -152,16 +164,17 @@ def _probe_gravity_compensation(robot: AnyReachyMini) -> bool:
         return False
 
 
-def _probe_faces(host: str, port: int) -> bool:
-    """True if the daemon serves the bridge's inject endpoint with a portrait (a body
-    of kind `face`): it was launched on the bridge's test scene (every harness-spawned sim
-    is, specs/testing/sim_scene.md), so tests can spawn, move and despawn faces in front of
-    the eye camera. A daemon launched any other way lacks it."""
+def _probe_props(host: str, port: int, kinds: tuple[str, ...]) -> set[str]:
+    """``props:<kind>`` for each of ``kinds`` the daemon's inject endpoint lists a body
+    of: it was launched on the bridge's test scene (every harness-spawned sim is,
+    specs/testing/sim_scene.md) with that kind's props, so tests can spawn, move and
+    despawn them in front of the eye camera. A daemon launched any other way has none."""
     try:
         bodies = SimSceneClient(host, port).bodies().values()
-        return any(state.kind == "face" for state in bodies)
     except SimSceneError:
-        return False
+        return set()
+    present = {state.kind for state in bodies}
+    return {PROPS_PREFIX + kind for kind in kinds if kind in present}
 
 
 def _probe_face_markers(host: str, port: int) -> bool:
@@ -176,14 +189,15 @@ def _probe_capabilities(
     address: tuple[str, int] | None = None,
     camera: CameraFeed | None = None,
     mic: MicFeed | None = None,
+    kinds: tuple[str, ...] = ("face",),
 ) -> frozenset[str]:
     """Probe what the live daemon can actually do — never inferred from backend type.
 
     Environment quirks decide: audio needs a recording session (the bridge's), the sim camera
     needs a GL context, honored motor states need hardware, gravity compensation needs hardware on the Placo kinematics engine,
-    etc. `faces` (probed at `address`, the daemon's HTTP port) means the daemon runs the
-    bridge's generated face scene; `face_markers` that it draws the faces the bridge
-    sends it. `doa` (mic-array direction of arrival) is robot-only
+    etc. `props:<kind>` (probed at `address`, the daemon's HTTP port) means the daemon's
+    scene carries that kind's props — `props:face` the bridge's pool of portraits;
+    `face_markers` that it draws the faces the bridge sends it. `doa` (mic-array direction of arrival) is robot-only
     and reserved — left unprobed, so `requires_caps("doa")` skips on sim.
     """
     caps: set[str] = set()
@@ -201,8 +215,8 @@ def _probe_capabilities(
         caps.add("motor_states")
     if _probe_gravity_compensation(robot):
         caps.add("gravity_compensation")
-    if address is not None and _probe_faces(*address):
-        caps.add("faces")
+    if address is not None:
+        caps |= _probe_props(*address, kinds)
     if address is not None and _probe_face_markers(*address):
         caps.add("face_markers")
     return frozenset(caps)
@@ -230,19 +244,36 @@ def check_required_capabilities(caps: frozenset[str]) -> None:
         )
 
 
+def _probe_declared(bridge: ReachyMiniBridge) -> set[str]:
+    """The capabilities the run declared (``pytest_reachy_mini_capabilities``) that the
+    target has: each probe called once, given the started bridge. A probe that raises
+    fails the calling fixture — a broken probe is not a missing capability."""
+    caps: set[str] = set()
+    for name, probe in _declared.probes.items():
+        try:
+            present = probe(bridge)
+        except Exception as e:  # noqa: BLE001 - reported, never read as absent
+            pytest.fail(f"the probe of capability {name!r} raised {e!r}")
+        if present:
+            caps.add(name)
+    return caps
+
+
 def probed_capabilities(
-    robot: AnyReachyMini,
-    address: tuple[str, int],
-    camera: CameraFeed | None = None,
-    mic: MicFeed | None = None,
+    bridge: ReachyMiniBridge, address: tuple[str, int]
 ) -> frozenset[str]:
     """The capabilities of the daemon at ``address``, probed once per ``pytest`` run — on
-    the first bridge session over it — and reused by every later session on it: they are
-    the daemon's (its camera, its audio device, its kinematics engine, its scene and
-    displays), not a session's, and probing them again on every module would only add
-    the probes' waits to every file's setup (specs/testing/testing.md "The harness")."""
+    the first bridge session over it, ``bridge``, started — and reused by every later
+    session on it: they are the daemon's (its camera, its audio device, its kinematics
+    engine, its scene and displays), not a session's, and probing them again on every
+    module would only add the probes' waits to every file's setup
+    (specs/testing/testing.md "The harness"). The built-in probes, a ``props:<kind>`` per
+    kind of the run's scene, and every probe the run declared."""
     if address not in _PROBED:
-        _PROBED[address] = _probe_capabilities(robot, address, camera, mic)
+        caps = _probe_capabilities(
+            bridge.robot, address, bridge.camera, bridge.mic, _declared.kinds
+        )
+        _PROBED[address] = caps | _probe_declared(bridge)
     return _PROBED[address]
 
 
@@ -250,20 +281,22 @@ def probed_capabilities(
 
 
 @pytest.fixture(scope="session")
-def _live_daemon() -> Iterator[tuple[str, int]]:
-    """A live daemon for the selected target — session-scoped: one per ``pytest`` run,
-    brought up by the first module that needs it and stopped when the run ends
-    (specs/testing/testing.md "Daemon lifecycle"). The bridge session over it is each
-    module's own (``live_bridge``)."""
-    yield from _daemon.managed_daemon(_daemon.target())
+def live_daemon() -> Iterator[tuple[str, int]]:
+    """The run's daemon as ``(host, port)`` — session-scoped: one per ``pytest`` run,
+    brought up by the first test that needs it and stopped when the run ends
+    (specs/testing/testing.md "Daemon lifecycle"); a sim it spawns runs the test scene
+    with the run's declared props. The bridge session over it is each module's own
+    (``live_bridge``); a consumer whose code owns its bridge builds one on it with
+    ``robot_options(host, port)``."""
+    yield from _daemon.managed_daemon(_daemon.target(), props=_declared.props)
 
 
 @pytest.fixture(scope="module")
-def sim_scene(_live_daemon: tuple[str, int]) -> SimSceneClient:
+def sim_scene(live_daemon: tuple[str, int]) -> SimSceneClient:
     """A ``SimSceneClient`` on the fixture-managed daemon: show, place, move and hide
     the scriptable bodies of a bridge scene (specs/testing/sim_scene.md). Only useful where
-    ``live_bridge`` probed the ``faces`` capability — gate with ``requires_caps``."""
-    host, port = _live_daemon
+    the run probed the kind's capability (``props:face``, ``props:<kind>``) — gate on it."""
+    host, port = live_daemon
     return SimSceneClient(host, port)
 
 
@@ -281,7 +314,7 @@ def _harness_config(host: str, port: int) -> ReachyMiniConfig:
     """The config of every bridge session the harness opens over the run's daemon."""
     # Build the bridge on the target's own backend (`sim`/`real`) with the daemon left to
     # this harness (`daemon.spawn` stays "never"): the bridge connects as a plain network
-    # client to the daemon `_live_daemon` already manages — the run's one daemon, this
+    # client to the daemon `live_daemon` already manages — the run's one daemon, this
     # module's own session over it — its media backend by the host's locality
     # (`_daemon.robot_options`). See `_daemon.backend` for why the label is safe here.
     # The config names the shipped `yunet` detector (the defaults run none —
@@ -300,7 +333,7 @@ def _harness_config(host: str, port: int) -> ReachyMiniConfig:
 
 @pytest.fixture(scope="module")
 def live_bridge(
-    _live_daemon: tuple[str, int],
+    live_daemon: tuple[str, int],
 ) -> Iterator[LiveBridge]:
     """A connected ``ReachyMiniBridge`` + its probed capability set, for the selected target.
 
@@ -315,14 +348,12 @@ def live_bridge(
     already started, which the probes leave running (see ``_probe_audio``) — once per
     run: a later module's session reuses the set (``probed_capabilities``).
     """
-    host, port = _live_daemon
+    host, port = live_daemon
     bridge = ReachyMiniBridge(_harness_config(host, port))
     with BridgeLoop() as loop:
         loop.run(bridge.start())
         try:
-            caps = probed_capabilities(
-                bridge.robot, (host, port), bridge.camera, bridge.mic
-            )
+            caps = probed_capabilities(bridge, (host, port))
             check_required_capabilities(caps)
             yield LiveBridge(bridge, caps, loop)
         finally:
@@ -339,14 +370,12 @@ def live_capabilities(request: pytest.FixtureRequest) -> frozenset[str]:
     known = known_capabilities()
     if known is not None:
         return known
-    host, port = request.getfixturevalue("_live_daemon")
+    host, port = request.getfixturevalue("live_daemon")
     bridge = ReachyMiniBridge(_harness_config(host, port))
     with BridgeLoop() as loop:
         loop.run(bridge.start())
         try:
-            caps = probed_capabilities(
-                bridge.robot, (host, port), bridge.camera, bridge.mic
-            )
+            caps = probed_capabilities(bridge, (host, port))
         finally:
             loop.run(bridge.stop())
     check_required_capabilities(caps)
@@ -358,14 +387,14 @@ def face_scene(
     live_bridge: LiveBridge, sim_scene: SimSceneClient
 ) -> Iterator[SimSceneClient]:
     """The scene with nobody in view, for a test that puts faces in front of the robot:
-    gated on ``camera`` and ``faces`` (it skips where ``live_bridge`` probed neither), the
+    gated on ``camera`` and ``props:face`` (it skips where ``live_bridge`` probed neither), the
     pool of portraits cleared before the test and again after it, so a test starts with an
     empty view whatever the previous one left and leaves none behind
     (specs/testing/sim_scene.md "A pool of portraits"). After the test the bridge's
     detection and tracking are back off, its tracking and base-following settings the config's and its base back on the front, the state
     ``live_bridge`` starts in, whatever the test turned on or tuned. A test on a session of its own (not ``live_bridge``) writes the same
     gate and clears against that session."""
-    requires_caps(live_bridge, "camera", "faces")
+    requires_caps(live_bridge, "camera", "props:face")
     sim_scene.clear()
     try:
         yield sim_scene
@@ -451,15 +480,90 @@ def _gate(needs: list[str], caps: frozenset[str]) -> None:
     pytest.skip(reason)
 
 
+@dataclass(frozen=True)
+class _Declarations:
+    """What the run's conftests declared through the two hooks, collected at configure
+    time: the props the spawned sim's scene adds to the pool, the kinds of the scene (the
+    pool's ``face`` among them), and the declared capabilities' probes."""
+
+    props: tuple[ImagePlane, ...] = ()
+    kinds: tuple[str, ...] = ("face",)
+    probes: Mapping[str, Callable[[ReachyMiniBridge], bool]] = field(
+        default_factory=dict
+    )
+
+
+_declared = _Declarations()
+
+
+def _collect_declarations(config: pytest.Config) -> _Declarations:
+    """The run's props and capabilities, checked before collection
+    (specs/testing/testing_support.md "Props and capabilities a consumer declares"): a
+    prop the writer refuses, or one named like the pool's, and a capability named like a
+    built-in or a ``props:`` name, or declared twice, stop the run as a usage error."""
+    props = tuple(
+        prop
+        for answer in config.hook.pytest_reachy_mini_scene_props()
+        for prop in answer
+    )
+    if props:
+        pool = face_pool()
+        clash = sorted({p.name for p in pool} & {p.name for p in props})
+        if clash:
+            raise pytest.UsageError(
+                f"pytest_reachy_mini_scene_props: {', '.join(clash)} is the pool of "
+                "portraits' — name the props after their own kind"
+            )
+        with tempfile.TemporaryDirectory() as tmp:
+            try:
+                write_test_scene(tmp, [*pool, *props])
+            except (ValueError, OSError) as e:
+                raise pytest.UsageError(f"pytest_reachy_mini_scene_props: {e}") from e
+    probes: dict[str, Callable[[ReachyMiniBridge], bool]] = {}
+    for answer in config.hook.pytest_reachy_mini_capabilities():
+        for name, probe in dict(answer).items():
+            if name in CAPABILITIES or name.startswith(PROPS_PREFIX) or name in probes:
+                raise pytest.UsageError(
+                    f"pytest_reachy_mini_capabilities: {name!r} is a built-in, a "
+                    "props: name or declared twice — declare a name of your own"
+                )
+            if not callable(probe):
+                raise pytest.UsageError(
+                    f"pytest_reachy_mini_capabilities: the probe of {name!r} is not "
+                    "callable"
+                )
+            probes[name] = cast("Callable[[ReachyMiniBridge], bool]", probe)
+    kinds = tuple(sorted({"face", *(_kind_of(prop.name) for prop in props)}))
+    return _Declarations(props=props, kinds=kinds, probes=probes)
+
+
+def pytest_addhooks(pluginmanager: pytest.PytestPluginManager) -> None:
+    """The hooks a consumer's conftest implements (``hooks.py``)."""
+    pluginmanager.add_hookspecs(hooks)
+
+
 def pytest_configure(config: pytest.Config) -> None:
-    """Register the marker, and stop the run at once on an unknown capability in
+    """Register the marker, collect the run's declared props and capabilities into its
+    vocabulary, and stop the run at once on an unknown capability in
     ``REACHY_MINI_E2E_REQUIRED_CAPS``."""
+    global _declared
     config.addinivalue_line(
         "markers",
         f"{MARKER}(*capabilities): run the test only where the live target probed every "
         "capability; skip it elsewhere (specs/testing/testing_support.md)",
     )
+    _declared = _collect_declarations(config)
+    set_run_capabilities(
+        {PROPS_PREFIX + kind for kind in _declared.kinds} | set(_declared.probes)
+    )
     _daemon.required_capabilities()
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    """Back to the plugin's defaults, for a process that runs pytest again."""
+    global _declared
+    _declared = _Declarations()
+    set_run_capabilities({PROPS_PREFIX + "face"})
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:

@@ -25,6 +25,7 @@ from reachy_mini_bridge.config import (
     MotionSettings,
     PersonalSpaceSettings,
     ReachyMiniConfig,
+    SimAudioSettings,
     SimCameraSettings,
     SimDisplaySettings,
     TrackingSettings,
@@ -357,6 +358,34 @@ def test_daemon_camera_selects_a_webcam() -> None:
 def test_daemon_camera_rejects_bad_values(camera: dict[str, object], key: str) -> None:
     with pytest.raises(ConfigError, match=key):
         ReachyMiniConfig.from_dict({"backend": "sim", "daemon": {"camera": camera}})
+
+
+def test_daemon_audio_names_the_sim_robot_s_devices() -> None:
+    """specs/core/config.md `daemon.audio`: a name per direction, `null` for upstream's
+    choice — the default for both."""
+    assert ReachyMiniConfig().daemon.audio == SimAudioSettings()
+    cfg = ReachyMiniConfig.from_dict(
+        {"backend": "sim", "daemon": {"audio": {"input_device": "BlackHole 2ch"}}}
+    )
+    assert cfg.daemon.audio == SimAudioSettings(input_device="BlackHole 2ch")
+    both = SimAudioSettings.from_json(
+        '{"input_device": "BlackHole 2ch", "output_device": "Null Output"}'
+    )
+    assert both.output_device == "Null Output"
+
+
+@pytest.mark.parametrize(
+    ("audio", "key"),
+    [
+        ({"input_device": ""}, "input_device"),
+        ({"output_device": 3}, "output_device"),
+        ({"microphone": "BlackHole"}, "microphone"),
+        ("BlackHole", "daemon.audio"),
+    ],
+)
+def test_daemon_audio_rejects_bad_values(audio: object, key: str) -> None:
+    with pytest.raises(ConfigError, match=key):
+        ReachyMiniConfig.from_dict({"backend": "sim", "daemon": {"audio": audio}})
 
 
 def test_daemon_sim_displays_turn_on_a_viewer_display() -> None:

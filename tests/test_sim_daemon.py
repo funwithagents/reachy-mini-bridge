@@ -13,6 +13,7 @@ import logging
 import sys
 import threading
 import time
+import types
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -22,7 +23,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from reachy_mini_bridge import sim_daemon, sim_displays
+from reachy_mini_bridge import audio_devices, sim_daemon, sim_displays
 from reachy_mini_bridge.sim_daemon import (
     SimDaemonExtension,
     WebcamRelay,
@@ -59,12 +60,14 @@ def mujoco() -> Any:
 @pytest.fixture
 def scene_name(tmp_path: Path, mujoco: Any) -> str:
     from reachy_mini_bridge.testing.sim_scene import (
-        FacePlane,
+        DEFAULT_FACE_IMAGE,
+        ImagePlane,
         upstream_scene_name,
         write_test_scene,
     )
 
-    path = write_test_scene(tmp_path, faces=(FacePlane(visible=True),))
+    face = ImagePlane("face_1", DEFAULT_FACE_IMAGE, height=0.36, visible=True)
+    path = write_test_scene(tmp_path, [face])
     return upstream_scene_name(path)
 
 
@@ -1051,6 +1054,108 @@ def test_the_launcher_reports_how_it_runs(
     answer = http.get("/api/bridge/daemon").json()
     assert answer["launcher"] == "sim"
     assert {key: answer[key] for key in report} == report
+
+
+def _audio_device(name: str, device_id: str) -> Any:
+    """A device as upstream's listing describes it, with the id upstream's matcher reads
+    on every platform (CoreAudio, PipeWire, WASAPI)."""
+    from reachy_mini.media.device_detection import DeviceInfo
+
+    return DeviceInfo(
+        display_name=name,
+        device_class="Audio/Source",
+        properties={
+            "unique-id": device_id,
+            "node.name": device_id,
+            "device.api": "wasapi2",
+            "device.id": device_id,
+        },
+    )
+
+
+@pytest.fixture
+def host_audio(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """The host's audio devices, scripted, and a stand-in for the daemon's media server
+    module recording what its `get_audio_device` answers while upstream's `main()` runs."""
+    devices = {
+        "Source": [
+            _audio_device("MacBook Pro Microphone", "mic-id"),
+            _audio_device("BlackHole 2ch", "blackhole-id"),
+        ],
+        "Sink": [
+            _audio_device("MacBook Pro Speakers", "speakers-id"),
+            _audio_device("BlackHole 2ch", "blackhole-out-id"),
+        ],
+    }
+    monkeypatch.setattr(audio_devices, "_list_devices", lambda d: devices[d])
+    media_server = types.ModuleType("fake_media_server")
+    media_server.get_audio_device = lambda device_type="Source": None  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "fake_media_server", media_server)
+    monkeypatch.setattr(sim_daemon, "_DAEMON_AUDIO_MODULE", "fake_media_server")
+    return media_server
+
+
+def test_named_audio_devices_are_opened_by_the_daemon_for_its_life(
+    monkeypatch: pytest.MonkeyPatch, host_audio: Any
+) -> None:
+    """specs/daemon/sim_daemon.md "Audio devices": the names resolve to upstream's ids
+    before the daemon starts, the media server's lookups answer them while it runs — a
+    direction left unnamed keeps upstream's answer — and upstream's lookup is back after."""
+    from reachy_mini.daemon.app import main as upstream_main
+
+    seen: list[tuple[str | None, str | None]] = []
+    monkeypatch.setattr(
+        upstream_main,
+        "main",
+        lambda: seen.append(
+            (host_audio.get_audio_device("Source"), host_audio.get_audio_device("Sink"))
+        ),
+    )
+    monkeypatch.setattr(sys, "argv", ["untouched"])
+    sim_daemon.run_sim_daemon(["--headless", "--audio-input-device", "BlackHole"])
+    assert seen == [("blackhole-id", None)]
+    assert host_audio.get_audio_device("Source") is None  # upstream's again
+
+
+@pytest.mark.parametrize(
+    ("argv", "message"),
+    [
+        (["--audio-input-device", "Loopback"], "no audio input device matches"),
+        (["--audio-output-device", "e"], "is ambiguous"),
+    ],
+)
+def test_an_audio_device_that_is_not_one_device_stops_the_launch(
+    argv: list[str],
+    message: str,
+    host_audio: Any,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit):
+        sim_daemon.run_sim_daemon(["--headless", *argv])
+    err = capsys.readouterr().err
+    assert message in err and "BlackHole 2ch" in err
+
+
+def test_the_report_names_the_audio_devices(
+    monkeypatch: pytest.MonkeyPatch, host_audio: Any
+) -> None:
+    fastapi = pytest.importorskip("fastapi")
+    testclient = pytest.importorskip("fastapi.testclient")
+    from reachy_mini.daemon.app import main as upstream_main
+
+    monkeypatch.setattr(
+        upstream_main, "create_app", lambda *a, **kw: fastapi.FastAPI(title="upstream")
+    )
+    monkeypatch.setattr(
+        sim_daemon, "bridge_backend", lambda backend_class, **kw: backend_class
+    )
+    _run(["--audio-output-device", "BlackHole"], monkeypatch)
+    upstream_args: Any = SimpleNamespace()
+    http = testclient.TestClient(upstream_main.create_app(upstream_args, None))
+    assert http.get("/api/bridge/daemon").json()["audio"] == {
+        "input_device": None,
+        "output_device": "BlackHole",
+    }
 
 
 @pytest.mark.parametrize(

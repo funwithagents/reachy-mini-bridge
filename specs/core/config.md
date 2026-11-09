@@ -91,6 +91,7 @@ How the bridge brings up the daemon the robot client talks to — the MuJoCo dae
 | `scene` | string \| null | `null` | `sim` only. An upstream MuJoCo scene *name* (`empty`, `minimal`), passed as `--scene` when set — or, when it ends in `.xml`, the path of a scene *file* the bridge's own launcher loads (hidden-by-default props — a face today — a test shows/moves from tests: [sim_scene.md](../testing/sim_scene.md), written by `write_test_scene`). |
 | `kinematics_engine` | `"analytical"` \| `"placo"` \| `"nn"` | `"analytical"` | The kinematics engine the spawned daemon solves every head target through — `sim` and `real` alike: upstream's MuJoCo backend takes the same engine as its hardware backend, and [daemon.md](../daemon/daemon.md) "The launch command" passes `--kinematics-engine` on every recipe. `analytical` is upstream's default, the closed-form solver of base `reachy-mini`; `placo` the full-URDF QP solver, the one engine with gravity compensation ([bridge.md](bridge.md) "Motors"), which needs the `placo` extra (`reachy-mini-bridge[placo]`, [../project.md](../project.md)) — a spawn without it is a `DaemonError` naming the extra; `nn` upstream's ONNX networks fitted from Placo data, in base `reachy-mini`. See "Kinematics engines" below. Like `scene`, it applies only to a daemon the bridge spawns: a borrowed daemon — a wireless robot's included — runs whatever it was started with, and the bridge reads the engine it runs at session start (`bridge.daemon`, one warning when it differs from this field) and again at the gravity-compensation guard. `camera` launches a spawned daemon too, and is also the fallback for a daemon that reports no camera of its own (below). |
 | `camera` | object → `SimCameraSettings` | `{"source": "sim"}` | `sim` only. What the sim daemon's camera shows ([sim_daemon.md](../daemon/sim_daemon.md) "Camera sources"): `source` `"sim"` renders the scene from the robot's eye camera (under the viewer, and headless on Linux where it renders offscreen — a macOS headless sim has none); `"webcam"` relays a host camera instead — the person in front of the computer is who the simulated robot sees and follows, headless or viewer. See the table below. |
+| `audio` | object → `SimAudioSettings` | `{}` | `sim` only. The simulated robot's microphone and speaker ([sim_daemon.md](../daemon/sim_daemon.md) "Audio devices"): `input_device` / `output_device`, a device name as the operating system shows it, or `null` for upstream's choice — the robot's sound card when one is plugged in, else the system default. The daemon opens them, reports them, and every bridge on this machine follows the report ([audio.md](../audio/audio.md) "The robot's audio devices"), so the bridge's own process opens the same ones. See the table below. |
 | `sim_displays` | object → `SimDisplaySettings` | `{}` | `sim` only, viewer only. What the MuJoCo viewer window shows besides the scene: one boolean per display, all off by default — `camera_overlay`, `robot_gaze`, `face_markers` ([sim_displays.md](../daemon/sim_displays.md)). A display on with `headless: true` is a `ConfigError`. See the table below. |
 | `preload_datasets` | bool | `true` | `true` passes `--preload-datasets`: the daemon downloads the recorded-move datasets (emotions, dances) in the background after it starts, so the first `play_emotion` does not wait on a download; readiness is not delayed. `false` passes `--no-preload-datasets` (the datasets then load on first use). |
 | `startup_timeout` | number | `45.0` | Seconds to wait for a spawned or booting daemon to become ready — a positive, finite number (`Infinity` / `NaN`, which JSON parsers may accept, would make the wait unbounded). |
@@ -102,6 +103,7 @@ class DaemonConfig:
     headless: bool = True
     scene: str | None = None
     camera: SimCameraSettings = field(default_factory=SimCameraSettings)
+    audio: SimAudioSettings = field(default_factory=SimAudioSettings)
     sim_displays: SimDisplaySettings = field(default_factory=SimDisplaySettings)
     preload_datasets: bool = True
     startup_timeout: float = 45.0
@@ -126,6 +128,22 @@ class SimCameraSettings:
 ```
 
 `device` and `hfov_deg` are accepted with `source: "sim"` and play no part there, so a file switches sources by changing `source` alone. The launch flags they produce are [daemon.md](../daemon/daemon.md)'s.
+
+The `audio` object (`SimAudioSettings`, with the same trio):
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `input_device` | string \| null | `null` | The simulated robot's microphone: a device name as the operating system shows it (the macOS Sound settings name, the PulseAudio / PipeWire description on Linux) — a virtual cable a test speaks into, say. Matched as upstream matches the robot's card: the name is contained in the device's name, and exactly one device must match. `null`: upstream's choice. |
+| `output_device` | string \| null | `null` | The simulated robot's speaker, the same way. |
+
+```python
+@dataclass
+class SimAudioSettings:
+    input_device: str | None = None
+    output_device: str | None = None
+```
+
+Like `camera`, the block launches a daemon the bridge spawns (`--audio-input-device` / `--audio-output-device`, [daemon.md](../daemon/daemon.md) "The launch command"); unlike it, it is never a fallback: the bridge opens the devices the daemon *reports*, and a daemon that reports none leaves the bridge on upstream's choice. A borrowed daemon reporting devices other than the block's draws the same warning a camera does. A named device has no echo cancellation ([audio.md](../audio/audio.md) "The robot's audio devices").
 
 The `sim_displays` object (`SimDisplaySettings`, with the same trio) is the home of the viewer's displays: one boolean per display, every one off by default, and `enabled()` lists the names of those that are on. The names are `SIM_DISPLAYS`, the values `--sim-display` takes ([sim_daemon.md](../daemon/sim_daemon.md)); a new display is one more field and one more name there, nowhere else.
 
@@ -328,12 +346,13 @@ All enforced by `ReachyMiniConfig.from_dict` (delegating to `DaemonConfig.from_d
 
 - Invalid JSON raises `ConfigError` (with the file path from `from_json_file`).
 - The top-level value and the `robot`, `daemon`, `tts`, `audio`, `face_detection`, and `motion` blocks must be JSON objects (`tts` may be `null`); `backend` is the one top-level scalar. Shape failures raise `ConfigError`, never a raw `AttributeError` / `TypeError`.
-- Unknown top-level keys, and unknown keys inside `daemon` / `daemon.camera` / `daemon.sim_displays` / `audio` / `face_detection` / `motion`, raise `ConfigError` naming the key (the blocks are ours, so a typo is caught); so do unknown keys in `motion.tracking` and its three sub-objects. Unknown keys inside `robot` raise `ConfigError` per the upstream-signature check above; `tts.module` is left to tts-engine.
+- Unknown top-level keys, and unknown keys inside `daemon` / `daemon.camera` / `daemon.audio` / `daemon.sim_displays` / `audio` / `face_detection` / `motion`, raise `ConfigError` naming the key (the blocks are ours, so a typo is caught); so do unknown keys in `motion.tracking` and its three sub-objects. Unknown keys inside `robot` raise `ConfigError` per the upstream-signature check above; `tts.module` is left to tts-engine.
 - `face_detection.detector` is `null` or one of {`yunet`, `custom`}; `face_detection.enabled` is a boolean; `face_detection.width` is `null` or a positive integer other than `bool`; `face_detection.target_fps` is `null` or a positive finite number other than `bool`; `face_detection.face_detector` in a dict / JSON config is a `ConfigError` (it is set from code, as `motion.idle_move` is).
 - `face_detection.enabled: true` or `motion.tracking.enabled: true` with `face_detection.detector` `null` is a `ConfigError` naming both fields — the one cross-block rule, checked by `ReachyMiniConfig.from_dict` once both blocks are built. (A `ReachyMiniConfig` assembled directly in code is not validated; the bridge raises `ValueError` for the same contradiction at session entry, [user_perception.md](../vision/user_perception.md) "Configuration".)
 - `backend` ∈ {`real`, `sim`, `fake`}; `daemon.spawn` ∈ {`never`, `auto`, `always`}; `daemon.spawn != "never"` requires `backend` `sim` or `real`.
 - `daemon.kinematics_engine` ∈ {`analytical`, `placo`, `nn`} (a string; the `placo` package's presence is [daemon.md](../daemon/daemon.md)'s check, at launch); `daemon.headless` / `daemon.preload_datasets` are booleans; `daemon.scene` a non-empty string or `null`; `daemon.startup_timeout` a positive finite number other than `bool` (`inf` / `nan` are rejected: the readiness deadline must be reachable, [../daemon/daemon.md](../daemon/daemon.md)).
 - `daemon.camera` is an object with no unknown keys; `source` ∈ {`sim`, `webcam`}; `device` is `null`, a non-empty string, or a non-negative integer other than `bool`; `hfov_deg` a number other than `bool`, strictly between 1 and 179.
+- `daemon.audio` is an object with no unknown keys; `input_device` / `output_device` are `null` or a non-empty string.
 - `daemon.sim_displays` is an object with no unknown keys, every value a boolean; a display `true` while `daemon.headless` is `true` is a `ConfigError` naming both.
 - `robot` must not contain `use_sim` or `spawn_daemon`; with `daemon.spawn != "never"`, `robot.host` (if given) must be a loopback address.
 - `tts`, when not `null`, is an object with a `module` object whose `type` is a non-empty string.
@@ -349,7 +368,7 @@ All enforced by `ReachyMiniConfig.from_dict` (delegating to `DaemonConfig.from_d
 - **[motion.md](../motion/motion.md):** the `motion` block is the initial state of the loop's presence, idle mode, custom idle move and gaze layer (and, for `wobbling`, of the daemon-side mode the bridge arms around it).
 - **[robot.md](robot.md):** the `robot` block is what `build_robot(backend, **robot)` forwards.
 - **[daemon.md](../daemon/daemon.md):** the `daemon` block configures the bridge-owned daemon lifecycle; `backend` selects its launch recipe; `daemon.kinematics_engine` the `--kinematics-engine` every recipe passes.
-- **[sim_daemon.md](../daemon/sim_daemon.md):** `daemon.camera` selects the sim daemon's camera source; `daemon.sim_displays` turns its sim displays on, specified in [sim_displays.md](../daemon/sim_displays.md).
+- **[sim_daemon.md](../daemon/sim_daemon.md):** `daemon.camera` selects the sim daemon's camera source; `daemon.audio` its audio devices; `daemon.sim_displays` turns its sim displays on, specified in [sim_displays.md](../daemon/sim_displays.md).
 - **[audio.md](../audio/audio.md):** the `tts` block builds the default `TTSEngineSynthesizer`; `audio.xvf3800` is the session's `audio_config`; `motion.wobbling` arms the head wobbler on the speaker path.
 - **[testing_support.md](../testing/testing_support.md):** the `live_bridge` fixture builds its bridge from a `ReachyMiniConfig` whose `robot` block carries the harness's connection options.
 

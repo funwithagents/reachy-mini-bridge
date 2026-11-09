@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import math
 import socket
+import struct
 import sys
 import threading
 import time
+import zlib
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,14 +29,18 @@ from reachy_mini_bridge.testing import sim_scene
 from reachy_mini_bridge.testing.sim_scene import (
     DEFAULT_FACE_IMAGE,
     DEFAULT_FACE_POS,
+    DEFAULT_FACE_SIZE,
+    FACE_HEIGHT_M,
     FACE_IMAGES,
     FACE_POOL_SIZE,
     LOOKING_DOWN_FACE,
     TURNED_FACE,
-    FacePlane,
+    ImagePlane,
     SceneDirector,
     SimSceneClient,
     face_pool,
+    image_pool,
+    png_size,
     upstream_scene_name,
     write_test_scene,
 )
@@ -123,8 +129,8 @@ def test_test_scene_takes_several_props_custom_images_and_starting_visibility(
     path = write_test_scene(
         tmp_path,
         [
-            FacePlane(),
-            FacePlane(name="guest", image=other, pos=(0.5, 0.3, 0.2), visible=True),
+            *face_pool(1),
+            ImagePlane("guest", other, pos=(0.5, 0.3, 0.2), height=0.36, visible=True),
         ],
     )
     model = mujoco.MjModel.from_xml_path(str(path))
@@ -140,8 +146,8 @@ def test_test_scene_takes_several_props_custom_images_and_starting_visibility(
     assert model.geom_rgba[guest_geom, 3] == 1.0
     # each image has its own material, named after the image
     for geom, material in (
-        (face_geom, "portrait_armstrong"),
-        (guest_geom, "portrait_other"),
+        (face_geom, "prop_armstrong"),
+        (guest_geom, "prop_other"),
     ):
         name = mujoco.mj_id2name(
             model, mujoco.mjtObj.mjOBJ_MATERIAL, int(model.geom_matid[geom])
@@ -149,12 +155,12 @@ def test_test_scene_takes_several_props_custom_images_and_starting_visibility(
         assert name == material
 
 
-def _portrait_materials(model: Any) -> list[str]:
+def _prop_materials(model: Any) -> list[str]:
     names = [
         mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_MATERIAL, i)
         for i in range(int(model.nmat))
     ]
-    return [n for n in names if n and n.startswith("portrait_")]
+    return [n for n in names if n and n.startswith("prop_")]
 
 
 def test_default_scene_is_a_pool_of_hidden_portraits_one_person_each(
@@ -171,7 +177,7 @@ def test_default_scene_is_a_pool_of_hidden_portraits_one_person_each(
     assert _body_id(model, f"face_{FACE_POOL_SIZE + 1}") < 0
     people = [image.stem for image in FACE_IMAGES]
     assert len(set(people)) == FACE_POOL_SIZE  # no two props look alike
-    assert sorted(_portrait_materials(model)) == sorted(f"portrait_{p}" for p in people)
+    assert sorted(_prop_materials(model)) == sorted(f"prop_{p}" for p in people)
     assert (
         int(model.ntex) - 2 == FACE_POOL_SIZE
     )  # the skybox and the floor, plus one each
@@ -195,15 +201,15 @@ def test_face_pool_assigns_images_round_robin_with_one_texture_each(
     assert stems == ["armstrong", "other", "armstrong", "other"]
     assert all(not f.visible and f.pos == DEFAULT_FACE_POS for f in pool)
     model = mujoco.MjModel.from_xml_path(str(write_test_scene(tmp_path, pool)))
-    assert sorted(_portrait_materials(model)) == [
-        "portrait_armstrong",
-        "portrait_other",
+    assert sorted(_prop_materials(model)) == [
+        "prop_armstrong",
+        "prop_other",
     ]
     geom = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "face_4_geom")
     material = mujoco.mj_id2name(
         model, mujoco.mjtObj.mjOBJ_MATERIAL, int(model.geom_matid[geom])
     )
-    assert material == "portrait_other"
+    assert material == "prop_other"
 
 
 def test_same_stem_images_get_distinct_materials(tmp_path: Path) -> None:
@@ -215,7 +221,7 @@ def test_same_stem_images_get_distinct_materials(tmp_path: Path) -> None:
     model = mujoco.MjModel.from_xml_path(
         str(write_test_scene(tmp_path, face_pool(2, images=[first, second])))
     )
-    assert sorted(_portrait_materials(model)) == ["portrait_face", "portrait_face__2"]
+    assert sorted(_prop_materials(model)) == ["prop_face", "prop_face__2"]
     director = SceneDirector()
     director.attach(model, mujoco.MjData(model))
     # the uniqueness suffix is not part of the image's name
@@ -223,23 +229,129 @@ def test_same_stem_images_get_distinct_materials(tmp_path: Path) -> None:
 
 
 def test_face_pool_refuses_an_empty_pool() -> None:
-    with pytest.raises(ValueError, match="at least one portrait"):
+    with pytest.raises(ValueError, match="at least one prop"):
         face_pool(0)
     with pytest.raises(ValueError, match="at least one image"):
         face_pool(2, images=[])
 
 
+def _face(name: str = "face_1", **kw: Any) -> ImagePlane:
+    return ImagePlane(name, DEFAULT_FACE_IMAGE, height=FACE_HEIGHT_M, **kw)
+
+
 def test_test_scene_rejects_bad_props(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="unique"):
-        write_test_scene(tmp_path, [FacePlane(), FacePlane()])
+    with pytest.raises(ValueError, match="repeated: face_1"):
+        write_test_scene(tmp_path, [_face(), _face()])
     with pytest.raises(ValueError, match="unique"):
         write_test_scene(tmp_path, [])
     with pytest.raises(FileNotFoundError, match="nope.png"):
-        write_test_scene(tmp_path, [FacePlane(image=tmp_path / "nope.png")])
+        write_test_scene(tmp_path, [ImagePlane("x_1", tmp_path / "nope.png", height=1)])
     # The inject router serves bodies/spawn and bodies/clear: no prop may shadow them.
     for name in ("spawn", "clear"):
         with pytest.raises(ValueError, match="reserved"):
-            write_test_scene(tmp_path, [FacePlane(name=name)])
+            write_test_scene(tmp_path, [_face(name)])
+    assert not (tmp_path / "scene.xml").exists()  # nothing written for a refused scene
+
+
+def _write_png(path: Path, width: int, height: int) -> Path:
+    """A real PNG of ``width`` x ``height`` grey pixels (zlib + struct, no decoder)."""
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        body = kind + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+
+    rows = b"".join(b"\x00" + b"\x80" * width for _ in range(height))
+    path.write_bytes(
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(rows))
+        + chunk(b"IEND", b"")
+    )
+    return path
+
+
+def _geom_half_size(model: Any, name: str) -> tuple[float, float]:
+    geom = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, f"{name}_geom")
+    return float(model.geom_size[geom, 0]), float(model.geom_size[geom, 1])
+
+
+def test_a_prop_keeps_its_image_s_aspect_whichever_dimension_is_given(
+    tmp_path: Path,
+) -> None:
+    """specs/testing/sim_scene.md "A prop is an image on a plane": one dimension given,
+    the other from the PNG's own width over height — a 3:2 photo stays 3:2."""
+    photo = _write_png(tmp_path / "hand_stop.png", 300, 200)
+    assert png_size(photo) == (300, 200)
+    path = write_test_scene(
+        tmp_path,
+        [
+            ImagePlane("hand_1", photo, width=0.36),
+            ImagePlane("hand_2", photo, height=0.36),
+        ],
+    )
+    model = mujoco.MjModel.from_xml_path(str(path))
+    assert _geom_half_size(model, "hand_1") == pytest.approx((0.18, 0.12))
+    assert _geom_half_size(model, "hand_2") == pytest.approx((0.27, 0.18))
+
+
+def test_the_default_portraits_are_life_size_and_follow_their_image() -> None:
+    """The bundled portraits are 320x400: 0.36 m tall makes them 0.288 m wide."""
+    assert DEFAULT_FACE_SIZE == pytest.approx((0.288, 0.36))
+    assert all(f.height == FACE_HEIGHT_M and f.width is None for f in face_pool())
+
+
+@pytest.mark.parametrize(
+    ("height", "width"),
+    [(None, None), (0.3, 0.2), (0.0, None), (None, -1.0), (math.inf, None)],
+)
+def test_a_prop_needs_exactly_one_positive_size(
+    tmp_path: Path, height: float | None, width: float | None
+) -> None:
+    plane = ImagePlane("card_1", DEFAULT_FACE_IMAGE, height=height, width=width)
+    with pytest.raises(ValueError, match="card_1"):
+        write_test_scene(tmp_path, [plane])
+
+
+def test_a_non_png_image_is_refused_at_write_time_naming_the_file(
+    tmp_path: Path,
+) -> None:
+    """MuJoCo reads PNG only; a JPEG must fail here, not inside the daemon."""
+    jpeg = tmp_path / "hand_stop.jpg"
+    jpeg.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 64)
+    with pytest.raises(ValueError, match=r"hand_stop\.jpg.*convert it to PNG"):
+        write_test_scene(tmp_path, [ImagePlane("hand_1", jpeg, width=0.36)])
+    renamed = tmp_path / "not_really.png"
+    renamed.write_bytes(jpeg.read_bytes())
+    with pytest.raises(ValueError, match="not_really.png"):
+        png_size(renamed)
+
+
+def test_image_pool_names_its_props_by_kind_and_sizes_each(tmp_path: Path) -> None:
+    signs = [_write_png(tmp_path / f"{s}.png", 300, 200) for s in ("stop", "fist")]
+    pool = image_pool("hand", signs, width=0.36)
+    assert [p.name for p in pool] == ["hand_1", "hand_2"]
+    assert [Path(p.image).stem for p in pool] == ["stop", "fist"]
+    assert all(not p.visible and p.pos == DEFAULT_FACE_POS for p in pool)
+    assert len(image_pool("hand", signs, count=5, width=0.3)) == 5
+    for bad in ("", "hand_2"):
+        with pytest.raises(ValueError, match="kind"):
+            image_pool(bad, signs, width=0.3)
+
+
+def test_props_of_another_kind_spawn_by_kind_beside_the_faces(tmp_path: Path) -> None:
+    """A consumer's kind lives in the same scene as the pool and is spawned by kind."""
+    sign = _write_png(tmp_path / "stop.png", 300, 200)
+    path = write_test_scene(
+        tmp_path, [*face_pool(), *image_pool("hand", [sign], width=0.36)]
+    )
+    model = mujoco.MjModel.from_xml_path(str(path))
+    director = SceneDirector()
+    director.attach(model, mujoco.MjData(model))
+    state = director.spawn((0.45, 0.0, 0.2), kind="hand")
+    assert (state.name, state.kind, state.image) == ("hand_1", "hand", "stop")
+    assert director.spawn((0.45, 0.1, 0.2)).kind == "face"  # the default kind
+    with pytest.raises(LookupError, match=r"image_pool\(count"):
+        director.spawn((0.45, 0.0, 0.2), kind="hand")
 
 
 def test_upstream_scene_name_resolves_back_to_the_file(scene_path: Path) -> None:
@@ -672,14 +784,14 @@ def test_run_daemon_refuses_a_missing_scene(tmp_path: Path) -> None:
         sim_scene.run_daemon(["--scene-path", str(tmp_path / "missing.xml")])
 
 
-def test_a_numbered_portrait_keeps_its_image_name(tmp_path: Path) -> None:
+def test_a_numbered_prop_keeps_its_image_name(tmp_path: Path) -> None:
     """``person_1.png`` is the image ``person_1`` — a trailing ``_<n>`` of the stem is
     the file's own, not the writer's same-stem suffix (specs/testing/sim_scene.md)."""
     person = tmp_path / "person_1.png"
     person.write_bytes(DEFAULT_FACE_IMAGE.read_bytes())
     path = write_test_scene(tmp_path, face_pool(2, images=[person]))
     model = mujoco.MjModel.from_xml_path(str(path))
-    assert _portrait_materials(model) == ["portrait_person_1"]
+    assert _prop_materials(model) == ["prop_person_1"]
     director = SceneDirector()
     director.attach(model, mujoco.MjData(model))
     assert {s.image for s in director.states().values()} == {"person_1"}

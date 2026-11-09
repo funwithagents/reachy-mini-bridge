@@ -38,6 +38,7 @@ from .config import (
     DAEMON_BACKENDS,
     UPSTREAM_KINEMATICS_ENGINES,
     DaemonConfig,
+    SimAudioSettings,
     SimCameraSettings,
 )
 from .errors import DaemonError
@@ -64,6 +65,7 @@ class DaemonInfo:
     kinematics_engine: str | None = None  # upstream's name, e.g. "AnalyticalKinematics"
     launcher: str | None = None  # "sim" | "real"; None: not a bridge launcher
     camera: SimCameraSettings | None = None
+    audio: SimAudioSettings | None = None
     scene: str | None = None
     headless: bool | None = None
     preload_datasets: bool | None = None
@@ -84,10 +86,14 @@ class DaemonInfo:
         fields = {"source": camera["source"]}
         if camera["source"] == "webcam":
             fields["hfov_deg"] = camera["hfov_deg"]
+        audio = report.get("audio") or {}
         return cls(
             kinematics_engine=kinematics_engine,
             launcher=launcher,
             camera=SimCameraSettings.from_dict(fields),
+            audio=SimAudioSettings.from_dict(
+                {key: audio.get(key) for key in ("input_device", "output_device")}
+            ),
             scene=str(report["scene"]),
             headless=bool(report["headless"]),
             preload_datasets=bool(report["preload_datasets"]),
@@ -132,6 +138,15 @@ def daemon_differences(info: DaemonInfo, config: DaemonConfig) -> list[str]:
             f"camera is {describe_camera(info.camera)}, "
             f"the config says {describe_camera(config.camera)}"
         )
+    if info.audio is not None:
+        for word, field_ in (("input", "input_device"), ("output", "output_device")):
+            wanted = getattr(config.audio, field_)
+            running = getattr(info.audio, field_)
+            if wanted is not None and wanted != running:
+                differences.append(
+                    f"audio {word} is {running or 'the default'}, "
+                    f"the config says {wanted}"
+                )
     if (
         info.scene is not None
         and config.scene is not None
@@ -342,7 +357,7 @@ def launch_command(
     launcher (specs/daemon/sim_daemon.md: upstream's daemon with the ``config.camera``
     source and the sim displays): headless ``<this interpreter> -m
     reachy_mini_bridge.sim_daemon --headless --[no-]preload-datasets --kinematics-engine
-    E [--scene S] [camera flags]`` — on Linux with the eye camera rendered offscreen, on macOS camera-less
+    E [--scene S] [camera flags] [audio flags]`` — on Linux with the eye camera rendered offscreen, on macOS camera-less
     (specs/daemon/sim_daemon.md "The headless camera"); viewer ``<viewer interpreter> -m
     reachy_mini_bridge.sim_daemon [...] [display flags]`` (the window's GL context; needs
     a GUI session; ``--sim-display <name>`` per display on in ``config.sim_displays``),
@@ -383,7 +398,9 @@ def launch_command(
     if config.headless:
         cmd.append("--headless")
     cmd.append(_preload_flag(config))
-    cmd += engine + _camera_flags(config) + _display_flags(config)
+    cmd += (
+        engine + _camera_flags(config) + _audio_flags(config) + _display_flags(config)
+    )
     return cmd + _address_flags(host, port)
 
 
@@ -435,6 +452,17 @@ def _display_flags(config: DaemonConfig) -> list[str]:
     flags: list[str] = []
     for name in config.sim_displays.enabled():
         flags += ["--sim-display", name]
+    return flags
+
+
+def _audio_flags(config: DaemonConfig) -> list[str]:
+    """The sim daemon launcher's audio devices (specs/daemon/sim_daemon.md "Audio
+    devices"): a flag per device the config names, none for upstream's choice."""
+    flags: list[str] = []
+    if config.audio.input_device is not None:
+        flags += ["--audio-input-device", config.audio.input_device]
+    if config.audio.output_device is not None:
+        flags += ["--audio-output-device", config.audio.output_device]
     return flags
 
 

@@ -48,7 +48,11 @@ from reachy_mini_bridge.testing import (
     require_env,
     requires_caps,
 )
-from reachy_mini_bridge.testing.sim_scene import BodyState
+from reachy_mini_bridge.testing.sim_scene import (
+    DEFAULT_FACE_IMAGE,
+    BodyState,
+    ImagePlane,
+)
 
 pytest_plugins = ["pytester"]
 
@@ -136,7 +140,7 @@ def test_one(bridge_session):
     pass
 
 
-@pytest.mark.requires("faces")
+@pytest.mark.requires("props:face")
 def test_two(bridge_session):
     pass
 """
@@ -150,7 +154,7 @@ def test_once_probed_the_gate_skips_before_the_files_bridge_session(
     result = pytester.runpytest_inprocess(*INNER, "-rs")
     result.assert_outcomes(skipped=2)
     result.stdout.fnmatch_lines(["*the target lacks camera"])
-    result.stdout.fnmatch_lines(["*the target lacks camera, faces"])
+    result.stdout.fnmatch_lines(["*the target lacks camera, props:face"])
 
 
 def test_the_marks_of_the_file_and_the_test_add_up(
@@ -168,7 +172,7 @@ def test_the_marks_of_the_file_and_the_test_add_up(
             pass
 
 
-        @pytest.mark.requires("faces")
+        @pytest.mark.requires("props:face")
         def test_camera_and_faces():
             pass
 
@@ -179,7 +183,7 @@ def test_the_marks_of_the_file_and_the_test_add_up(
     )
     result = pytester.runpytest_inprocess(*INNER, "-rs")
     result.assert_outcomes(passed=2, skipped=1)
-    result.stdout.fnmatch_lines(["*the target lacks faces"])
+    result.stdout.fnmatch_lines(["*the target lacks props:face"])
 
 
 def test_a_missing_capability_the_run_requires_fails_instead_of_skipping(
@@ -271,6 +275,180 @@ def test_the_run_closes_with_what_the_target_had(
     )
 
 
+# --- what a consumer's conftest declares (specs/testing/testing_support.md "Props and
+# capabilities a consumer declares") ---
+
+_DECLARING_CONFTEST = f"""
+from reachy_mini_bridge.testing.sim_scene import ImagePlane
+
+
+def pytest_reachy_mini_scene_props():
+    return [ImagePlane("hand_1", {str(DEFAULT_FACE_IMAGE)!r}, width=0.36)]
+
+
+def pytest_reachy_mini_capabilities():
+    return {{"asr_key": lambda bridge: True}}
+"""
+
+
+def test_declared_props_and_capabilities_join_the_vocabulary(
+    pytester: pytest.Pytester, probed: Any, monkeypatch: pytest.MonkeyPatch
+):
+    """A declared kind is `props:<kind>`, a declared name is a capability: marks name
+    them like the built-ins, gate on them, and the run may require them."""
+    probed("motion", "props:face", "props:hand")
+    monkeypatch.setenv("REACHY_MINI_E2E_REQUIRED_CAPS", "props:hand")
+    pytester.makeconftest(_DECLARING_CONFTEST)
+    pytester.makepyfile(
+        test_live="""
+        import pytest
+
+
+        @pytest.mark.requires("props:hand")
+        def test_hand():
+            pass
+
+
+        @pytest.mark.requires("props:face", "motion")
+        def test_face():
+            pass
+
+
+        @pytest.mark.requires("asr_key")
+        def test_asr():
+            pass
+        """
+    )
+    result = pytester.runpytest_inprocess(*INNER, "-rs")
+    result.assert_outcomes(passed=2, skipped=1)
+    result.stdout.fnmatch_lines(["*the target lacks asr_key"])
+
+
+def test_an_undeclared_kind_stops_the_run(pytester: pytest.Pytester, probed: Any):
+    probed("motion")
+    pytester.makeconftest(_DECLARING_CONFTEST)
+    pytester.makepyfile(
+        test_live="""
+        import pytest
+
+
+        @pytest.mark.requires("props:hnad")
+        def test_typo():
+            pass
+        """
+    )
+    result = pytester.runpytest_inprocess(*INNER)
+    assert result.ret == pytest.ExitCode.USAGE_ERROR
+    result.stderr.fnmatch_lines(["*unknown capability props:hnad; choose from *"])
+
+
+@pytest.mark.parametrize(
+    ("declaration", "message"),
+    [
+        (
+            (
+                "def pytest_reachy_mini_scene_props():\n"
+                f"    return [ImagePlane('face_1', {str(DEFAULT_FACE_IMAGE)!r}, width=0.3)]"
+            ),
+            "*face_1 is the pool of portraits'*",
+        ),
+        (
+            (
+                "def pytest_reachy_mini_scene_props():\n"
+                "    return [ImagePlane('hand_1', __file__, width=0.3)]"
+            ),
+            "*is not a PNG*convert it to PNG*",
+        ),
+        (
+            (
+                "def pytest_reachy_mini_scene_props():\n"
+                f"    return [ImagePlane('hand_1', {str(DEFAULT_FACE_IMAGE)!r})]"
+            ),
+            "*exactly one of height and width*",
+        ),
+        (
+            (
+                "def pytest_reachy_mini_capabilities():\n"
+                "    return {'camera': lambda bridge: True}"
+            ),
+            "*'camera' is a built-in*",
+        ),
+        (
+            (
+                "def pytest_reachy_mini_capabilities():\n"
+                "    return {'props:hand': lambda bridge: True}"
+            ),
+            "*'props:hand' is a built-in, a props: name*",
+        ),
+        (
+            "def pytest_reachy_mini_capabilities():\n    return {'asr_key': True}",
+            "*the probe of 'asr_key' is not callable*",
+        ),
+    ],
+)
+def test_a_bad_declaration_stops_the_run_before_collection(
+    pytester: pytest.Pytester, probed: Any, declaration: str, message: str
+):
+    probed("motion")
+    pytester.makeconftest(
+        "from reachy_mini_bridge.testing.sim_scene import ImagePlane\n\n\n"
+        + declaration
+        + "\n"
+    )
+    pytester.makepyfile(test_live="def test_nothing():\n    pass\n")
+    result = pytester.runpytest_inprocess(*INNER)
+    assert result.ret == pytest.ExitCode.USAGE_ERROR
+    result.stderr.fnmatch_lines([message])
+
+
+def test_declared_probes_run_once_with_the_bridge_and_a_raising_one_fails(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Each declared probe gets the started bridge, once per run; a probe that raises is
+    a failure of the probing fixture, never an absent capability."""
+    bridge: Any = SimpleNamespace(robot=object(), camera=None, mic=None)
+    seen: list[object] = []
+
+    def asr_key(given: object) -> bool:
+        seen.append(given)
+        return True
+
+    monkeypatch.setattr(
+        fixtures, "_probe_capabilities", lambda *a, **kw: frozenset({"motion"})
+    )
+    monkeypatch.setattr(
+        fixtures,
+        "_declared",
+        fixtures._Declarations(probes={"asr_key": asr_key, "gpu": lambda b: False}),
+    )
+    monkeypatch.setattr(fixtures, "_PROBED", {})
+    address = ("127.0.0.1", 8000)
+    assert fixtures.probed_capabilities(bridge, address) == {"motion", "asr_key"}
+    assert fixtures.probed_capabilities(bridge, address) == {"motion", "asr_key"}
+    assert seen == [bridge]  # probed once, given the bridge
+
+    def broken(given: object) -> bool:
+        raise RuntimeError("no network")
+
+    monkeypatch.setattr(
+        fixtures, "_declared", fixtures._Declarations(probes={"asr_key": broken})
+    )
+    monkeypatch.setattr(fixtures, "_PROBED", {})
+    with pytest.raises(pytest.fail.Exception, match="asr_key.*no network"):
+        fixtures.probed_capabilities(bridge, address)
+
+
+def test_a_consumer_builds_its_own_bridge_from_the_exported_options():
+    from reachy_mini_bridge import testing
+
+    assert testing.robot_options("127.0.0.1", 8001) == {
+        "connection_mode": "network",
+        "host": "127.0.0.1",
+        "port": 8001,
+        "media_backend": "local",
+    }
+
+
 # --- require_env skip gate ---
 
 
@@ -300,7 +478,7 @@ def test_the_daemon_is_the_runs_and_the_bridge_session_the_modules():
     # One daemon per pytest run, one bridge session (and scene client) per test file
     # (specs/testing/testing.md "Daemon lifecycle").
     scopes = {
-        fixtures._live_daemon: "session",
+        fixtures.live_daemon: "session",
         fixtures.live_bridge: "module",
         fixtures.live_capabilities: "session",
         fixtures.sim_scene: "module",
@@ -519,9 +697,11 @@ def test_required_capabilities_parse_the_environment(monkeypatch: pytest.MonkeyP
     assert _daemon.required_capabilities() == frozenset()
     monkeypatch.setenv("REACHY_MINI_E2E_REQUIRED_CAPS", " , ")
     assert _daemon.required_capabilities() == frozenset()
-    monkeypatch.setenv("REACHY_MINI_E2E_REQUIRED_CAPS", "Motion, audio ,CAMERA,faces,")
+    monkeypatch.setenv(
+        "REACHY_MINI_E2E_REQUIRED_CAPS", "Motion, audio ,CAMERA,props:face,"
+    )
     assert _daemon.required_capabilities() == frozenset(
-        {"motion", "audio", "camera", "faces"}
+        {"motion", "audio", "camera", "props:face"}
     )
 
 
@@ -530,12 +710,14 @@ def test_check_required_capabilities_fails_naming_the_missing_ones(
 ):
     monkeypatch.delenv("REACHY_MINI_E2E_REQUIRED_CAPS", raising=False)
     fixtures.check_required_capabilities(frozenset())  # nothing required: a no-op
-    monkeypatch.setenv("REACHY_MINI_E2E_REQUIRED_CAPS", "motion,audio,camera,faces")
+    monkeypatch.setenv(
+        "REACHY_MINI_E2E_REQUIRED_CAPS", "motion,audio,camera,props:face"
+    )
     fixtures.check_required_capabilities(
-        frozenset({"motion", "audio", "camera", "faces", "face_markers"})
+        frozenset({"motion", "audio", "camera", "props:face", "face_markers"})
     )
     with pytest.raises(
-        pytest.fail.Exception, match=r"camera, faces \(probed: audio, motion\)"
+        pytest.fail.Exception, match=r"camera, props:face \(probed: audio, motion\)"
     ):
         fixtures.check_required_capabilities(frozenset({"motion", "audio"}))
     with pytest.raises(pytest.fail.Exception, match=r"probed: none"):
@@ -608,6 +790,32 @@ def test_a_spawned_sim_runs_the_test_scene_for_the_daemon_lifetime(
     assert not scene.exists()
 
 
+def test_a_spawned_sim_carries_the_runs_props_and_audio_devices(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The declared props join the pool in the spawned sim's scene, and the run's audio
+    devices are the spawned sim's `daemon.audio`."""
+    monkeypatch.delenv("REACHY_MINI_HOST", raising=False)
+    monkeypatch.delenv("REACHY_MINI_E2E_SIM_VIEWER", raising=False)
+    monkeypatch.delenv("REACHY_MINI_E2E_KINEMATICS", raising=False)
+    monkeypatch.setenv("REACHY_MINI_E2E_AUDIO_INPUT", " BlackHole 2ch ")
+    monkeypatch.delenv("REACHY_MINI_E2E_AUDIO_OUTPUT", raising=False)
+    spawns = _RecordedSpawns()
+    _patch_lifecycle(monkeypatch, ready=False, spawns=spawns)
+    hand = ImagePlane("hand_1", DEFAULT_FACE_IMAGE, width=0.36)
+
+    lifecycle = _daemon.managed_daemon("sim", props=[hand])
+    next(lifecycle)
+    (config,) = spawns.configs
+    assert config.audio.input_device == "BlackHole 2ch"
+    assert config.audio.output_device is None
+    assert config.scene is not None
+    text = Path(config.scene).read_text(encoding="utf-8")
+    assert 'name="hand_1"' in text and 'name="face_4"' in text
+    with pytest.raises(StopIteration):
+        next(lifecycle)
+
+
 # --- camera capability probe: through the bridge's feed, never beside it ---
 
 
@@ -660,11 +868,11 @@ def test_camera_probe_reads_the_bridges_feed_and_never_get_frame(
 # --- faces capability probe ---
 
 
-def test_faces_probe_needs_a_face_body_on_the_sim_scene_endpoint(
+def test_props_probe_names_each_kind_the_scene_carries(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """The `faces` capability is a portrait in the scene: any body of kind `face`
-    (specs/testing/sim_scene.md "The testing harness")."""
+    """`props:<kind>` is a body of that kind in the scene: `props:face` a portrait
+    (specs/testing/sim_scene.md "The testing harness"), and only the run's kinds."""
 
     class _Client:
         def __init__(self, host: str, port: int) -> None:
@@ -677,15 +885,23 @@ def test_faces_probe_needs_a_face_body_on_the_sim_scene_endpoint(
         return BodyState(name, (0, 0, 0), (1, 0, 0, 0), False, False, kind)
 
     answers: dict[tuple[str, int], dict[str, BodyState]] = {
-        ("127.0.0.1", 8000): {"face_2": body("face_2", "face")},
+        ("127.0.0.1", 8000): {
+            "face_2": body("face_2", "face"),
+            "hand_1": body("hand_1", "hand"),
+        },
         ("127.0.0.1", 8001): {"duck_1": body("duck_1", "duck")},
     }
     monkeypatch.setattr(fixtures, "SimSceneClient", _Client)
-    assert fixtures._probe_faces("127.0.0.1", 8000)
-    assert not fixtures._probe_faces("127.0.0.1", 8001)
+    kinds = ("face", "hand")
+    assert fixtures._probe_props("127.0.0.1", 8000, kinds) == {
+        "props:face",
+        "props:hand",
+    }
+    assert fixtures._probe_props("127.0.0.1", 8000, ("face",)) == {"props:face"}
+    assert fixtures._probe_props("127.0.0.1", 8001, kinds) == set()
 
 
-def test_faces_probe_absent_without_the_endpoint(monkeypatch: pytest.MonkeyPatch):
+def test_props_probe_absent_without_the_endpoint(monkeypatch: pytest.MonkeyPatch):
     class _NoEndpoint:
         def __init__(self, host: str, port: int) -> None:
             pass
@@ -694,7 +910,7 @@ def test_faces_probe_absent_without_the_endpoint(monkeypatch: pytest.MonkeyPatch
             raise SimSceneError("no inject endpoint")
 
     monkeypatch.setattr(fixtures, "SimSceneClient", _NoEndpoint)
-    assert not fixtures._probe_faces("127.0.0.1", 8000)
+    assert fixtures._probe_props("127.0.0.1", 8000, ("face",)) == set()
 
 
 # --- face_markers capability probe, and the bridge's side of it ---
@@ -872,15 +1088,17 @@ def test_capabilities_are_probed_once_per_daemon_and_reused(
         address: tuple[str, int] | None = None,
         camera: object = None,
         mic: object = None,
+        kinds: tuple[str, ...] = (),
     ) -> frozenset[str]:
         assert address is not None
         probed.append(address)
         return frozenset({"motion", f"port-{address[1]}"})
 
     monkeypatch.setattr(fixtures, "_probe_capabilities", probe)
-    first = fixtures.probed_capabilities(object(), ("127.0.0.1", 8000))  # pyright: ignore[reportArgumentType]
-    again = fixtures.probed_capabilities(object(), ("127.0.0.1", 8000))  # pyright: ignore[reportArgumentType]
-    other = fixtures.probed_capabilities(object(), ("127.0.0.1", 8010))  # pyright: ignore[reportArgumentType]
+    bridge: Any = SimpleNamespace(robot=object(), camera=None, mic=None)
+    first = fixtures.probed_capabilities(bridge, ("127.0.0.1", 8000))
+    again = fixtures.probed_capabilities(bridge, ("127.0.0.1", 8000))
+    other = fixtures.probed_capabilities(bridge, ("127.0.0.1", 8010))
     assert first == again == {"motion", "port-8000"}
     assert other == {"motion", "port-8010"}
     assert probed == [("127.0.0.1", 8000), ("127.0.0.1", 8010)]

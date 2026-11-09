@@ -12,8 +12,10 @@ run it:
   value, so a test passes that value in: `requires_caps(live_bridge, "audio")` — see
   specs/testing/testing_support.md.
 
-Both check their names against `CAPABILITIES`, the one vocabulary: a misspelt
-capability is a usage error, never a skip that reads like a capability nobody has.
+Both check their names against the run's vocabulary — the built-in `CAPABILITIES`, a
+`props:<kind>` per kind of the run's scene, and the names a consumer declares
+(`pytest_reachy_mini_capabilities`): a misspelt capability is a usage error, never a skip
+that reads like a capability nobody has.
 
 And the loop a bridge's lifecycle runs on across a test module:
 
@@ -54,20 +56,40 @@ CAPABILITIES: frozenset[str] = frozenset(
         "camera",
         "motor_states",
         "gravity_compensation",
-        "faces",
         "face_markers",
         "doa",
     }
 )
 
+# A prop kind's capability: `props:face` for the pool of portraits, `props:<kind>` for a
+# kind the run declares (specs/testing/testing_support.md "Props and capabilities a
+# consumer declares").
+PROPS_PREFIX = "props:"
+
+# The names the run adds to the built-ins — its scene's `props:<kind>` and the names a
+# consumer declares — set when the plugin is configured, before collection.
+_run_names: frozenset[str] = frozenset({PROPS_PREFIX + "face"})
+
+
+def set_run_capabilities(names: Iterable[str]) -> None:
+    """The names the run adds to ``CAPABILITIES`` (the plugin's, at configure time)."""
+    global _run_names
+    _run_names = frozenset(names)
+
+
+def vocabulary() -> frozenset[str]:
+    """Every capability name the run knows: the built-ins and the run's own."""
+    return CAPABILITIES | _run_names
+
 
 def check_capability_names(names: Iterable[str], where: str) -> None:
     """A ``pytest.UsageError`` naming the vocabulary when one of ``names`` isn't in it."""
-    unknown = sorted(set(names) - CAPABILITIES)
+    known = vocabulary()
+    unknown = sorted(set(names) - known)
     if unknown:
         raise pytest.UsageError(
             f"{where}: unknown capability {', '.join(unknown)}; "
-            f"choose from {', '.join(sorted(CAPABILITIES))}"
+            f"choose from {', '.join(sorted(known))}"
         )
 
 
@@ -191,7 +213,8 @@ def requires_caps(live: LiveBridge | tuple[object, frozenset[str]], *caps: str) 
     """Skip the calling test unless the live target probed every capability in `caps`.
 
     Pass the `live_bridge` fixture value; the probed set travels in it, so no ambient
-    state is needed. A name outside `CAPABILITIES` fails the test (``pytest.UsageError``).
+    state is needed. A name outside the run's vocabulary fails the test
+    (``pytest.UsageError``).
     """
     check_capability_names(caps, "requires_caps")
     available = live.capabilities if isinstance(live, LiveBridge) else live[1]

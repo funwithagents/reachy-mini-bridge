@@ -86,7 +86,7 @@ from reachy_mini_bridge.testing.sim_scene import (
 # tracking on, with no aim held — which the tracker only reaches if the loop ticks it.
 
 
-pytestmark = pytest.mark.requires("camera", "faces")
+pytestmark = pytest.mark.requires("camera", "props:face")
 
 
 def test_head_tracking_turns_onto_a_face_and_follows_it(

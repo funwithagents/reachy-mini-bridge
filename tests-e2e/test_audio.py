@@ -34,7 +34,7 @@ from reachy_mini_bridge.errors import (
 from reachy_mini_bridge.motion import (
     BLEND_S,
 )
-from reachy_mini_bridge.testing import LiveBridge
+from reachy_mini_bridge.testing import LiveBridge, require_env
 from reachy_mini_bridge.testing.gaze import angle_from_neutral_deg
 
 pytestmark = pytest.mark.requires("audio")
@@ -113,6 +113,35 @@ def test_mic_tap_yields_int16_mono_frames(
     for chunk in chunks:
         assert len(chunk) > 0
         assert len(chunk) % 2 == 0  # whole int16 samples (mono)
+
+
+def test_the_sim_s_named_input_device_feeds_the_bridge_s_mic(
+    live_bridge: LiveBridge,
+) -> None:
+    """specs/audio/audio.md "The robot's audio devices": with
+    `REACHY_MINI_E2E_AUDIO_INPUT` naming a device of this host, the sim the harness spawns
+    opens it and reports it, and the bridge — whose config names no device — follows the
+    report: `bridge.daemon.audio` names it and the mic feed publishes from it. Skips
+    without the variable."""
+    name = require_env("REACHY_MINI_E2E_AUDIO_INPUT")
+    bridge, _caps = live_bridge
+    info = bridge.daemon
+    assert info is not None and info.audio is not None, "the daemon reported no audio"
+    assert info.audio.input_device == name
+    assert (
+        bridge.config.daemon.audio.input_device is None
+    )  # the daemon's, not the config's
+
+    async def take(n: int) -> list[bytes]:
+        out: list[bytes] = []
+        async for chunk in bridge.audio_input():
+            out.append(chunk)
+            if len(out) == n:
+                break
+        return out
+
+    chunks = live_bridge.run(take(10), timeout=5.0)
+    assert len(chunks) == 10 and all(len(chunk) > 0 for chunk in chunks)
 
 
 def test_two_mic_subscribers_each_receive_the_whole_capture(

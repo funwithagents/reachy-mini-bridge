@@ -158,7 +158,7 @@ jobs:
         # its camera (the EGL render), its audio (the null sink) or at all fails the job
         # instead of skipping the files that need them (specs/testing/ci.md).
         env:
-          REACHY_MINI_E2E_REQUIRED_CAPS: motion,audio,camera,faces
+          REACHY_MINI_E2E_REQUIRED_CAPS: motion,audio,camera,props:face,props:card
           # The engine the harness's sim solves through; the tier's engine check fails
           # the entry if the daemon reports another (specs/testing/testing.md).
           REACHY_MINI_E2E_KINEMATICS: ${{ matrix.kinematics }}

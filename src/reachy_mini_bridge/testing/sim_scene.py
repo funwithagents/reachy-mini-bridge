@@ -5,10 +5,10 @@ depends on.
 
 Upstream's MuJoCo daemon loads a scene by *name* from inside its own package, ships
 nothing to look at, and offers no way to add or move anything in it once it runs. This
-module closes all three gaps for the ``sim`` backend: a scene with a pool of named props
-— today **faces** (portrait planes, ``face_1`` … ``face_4``, one person each), room for
-other kinds later — that start **hidden** and that a test spawns, moves and despawns over
-HTTP while the daemon runs. Showing the face exercises the real pipeline (the daemon's offscreen render → GStreamer → the
+module closes all three gaps for the ``sim`` backend: a scene with named props — images
+on planes (``ImagePlane``): by default a pool of **faces** (``face_1`` … ``face_4``, one
+person each), plus whatever kinds a consumer adds (a hand, an object) — that start
+**hidden** and that a test spawns, moves and despawns over HTTP while the daemon runs. Showing the face exercises the real pipeline (the daemon's offscreen render → GStreamer → the
 bridge's camera feed → its face detector → its head tracker's aim → the motion loop →
 head IK) and, on top of it, the bridge's attention hand-back (specs/core/bridge.md "Attention"); hiding it again leaves the scene exactly as a test
 that needs no face found it.
@@ -17,9 +17,8 @@ Three pieces, one process boundary:
 
 - **Scene file** — ``write_test_scene`` writes an MJCF scene *outside* the upstream
   package (absolute ``<include>`` of the robot model) with one ``mocap`` body per prop
-  (``FacePlane`` today: a thin box textured with a portrait photo, upright and facing the
-  camera), each starting at the visibility its dataclass says — the default face starts
-  **invisible**.
+  (an ``ImagePlane``: a thin box textured with a PNG, upright and facing the camera),
+  each starting at the visibility its dataclass says — **invisible** by default.
 - **Launcher** (daemon side, ``python -m reachy_mini_bridge.testing.sim_scene``) —
   ``run_daemon`` starts the bridge's sim daemon (``reachy_mini_bridge.sim_daemon``, with
   its camera source and viewer displays) on that file (``upstream_scene_name`` turns the path into
@@ -46,6 +45,7 @@ import logging
 import math
 import os
 import re
+import struct
 import threading
 import time
 import urllib.error
@@ -63,16 +63,20 @@ from ..sim_daemon import SimDaemonExtension, run_sim_daemon
 __all__ = [
     "DEFAULT_FACE_IMAGE",
     "DEFAULT_FACE_POS",
+    "DEFAULT_FACE_SIZE",
+    "FACE_HEIGHT_M",
     "FACE_IMAGES",
     "FACE_POOL_SIZE",
     "FACE_QUAT",
     "LOOKING_DOWN_FACE",
     "TURNED_FACE",
     "BodyState",
-    "FacePlane",
+    "ImagePlane",
     "SceneDirector",
     "SimSceneClient",
     "face_pool",
+    "image_pool",
+    "png_size",
     "run_daemon",
     "scene_extension",
     "upstream_scene_name",
@@ -93,24 +97,25 @@ FACE_IMAGES = (
     _ASSETS / "schmid.png",
     _ASSETS / "malenchenko.png",
 )
-# The portrait a ``FacePlane`` shows when it names none: the pool's first, frontal face.
+# The pool's first portrait, a frontal face.
 DEFAULT_FACE_IMAGE = FACE_IMAGES[0]
 
-# Orientation (w, x, y, z) of a face plane: the box's thin axis points at the robot (world
+# Orientation (w, x, y, z) of every prop's plane: the box's thin axis points at the robot (world
 # -x, the eye camera looks along +x from the neutral head pose), its width axis runs
 # right-to-left as seen from the camera and its height axis points up — the portrait
 # reads upright and unmirrored.
 FACE_QUAT = (0.5, 0.5, -0.5, -0.5)
 
-# Where a face sits by default: 0.45 m in front of the robot, at eye-camera height
-# (~0.20 m from the neutral head), a life-size 29 x 36 cm portrait: the pool's framing
+# Where a prop sits by default: 0.45 m in front of the robot, at eye-camera height
+# (~0.20 m from the neutral head). A portrait is life size, 36 cm tall (0.288 m wide for
+# the bundled 320x400 photos — the width follows the image): the pool's framing
 # puts the face box at 0.49 of its height, so YuNet's box spans FACE_BOX_HEIGHT_M (0.18 m)
 # and a portrait's distance_m reads its true distance. Rendered from the eye camera
 # (fovy 80°, 1280x720) the plane is ~340 px tall, its face ~170 px; after the detector's
 # stride to 640 px wide ~85 px — well above the ~40 px where YuNet starts firing reliably
 # (specs/testing/sim_scene.md "Geometry").
 DEFAULT_FACE_POS = (0.45, 0.0, 0.20)
-DEFAULT_FACE_SIZE = (0.29, 0.36)
+FACE_HEIGHT_M = 0.36
 
 # The test scene's pool of hidden portraits (specs/testing/sim_scene.md "A pool of
 # portraits"): MuJoCo compiles a scene at load, so the props a test may spawn are written
@@ -121,9 +126,9 @@ FACE_POOL_SIZE = len(FACE_IMAGES)
 TURNED_FACE = "face_3"
 LOOKING_DOWN_FACE = "face_4"
 
-# A portrait's material is named after its image, so the director reads a body's image
-# back from the compiled model (specs/testing/sim_scene.md "A pool of portraits").
-_PORTRAIT_MATERIAL_PREFIX = "portrait_"
+# A prop's material is named after its image, so the director reads a body's image back
+# from the compiled model (specs/testing/sim_scene.md "A pool of portraits").
+_PROP_MATERIAL_PREFIX = "prop_"
 
 _HTTP_TIMEOUT_S = 5.0
 _ROUTE_PREFIX = "/api/sim/inject"
@@ -134,19 +139,84 @@ _RESERVED_NAMES = frozenset({"spawn", "clear"})
 # --- the scene file --------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class FacePlane:
-    """One portrait plane in a test scene: a ``mocap`` body named ``name`` carrying a thin
-    box textured with ``image`` (a PNG; the bundled portrait when ``None``), ``size`` =
-    (width, height) in metres, placed at ``pos`` (world metres) facing the robot.
-    ``visible`` is the prop's state as the daemon boots — **False** by default, so a test
-    scene loads with nothing in view until a test asks for it (``SimSceneClient.show``)."""
+# The 8-byte signature every PNG file opens with, then the IHDR chunk: its length (13),
+# its type, and the image's width and height as big-endian 32-bit integers.
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
-    name: str = "face_1"
-    image: Path | None = None
+
+def png_size(path: str | Path) -> tuple[int, int]:
+    """The (width, height) in pixels of the PNG at ``path``, read from its header.
+
+    MuJoCo decodes PNG textures and nothing else — any other file fails the scene's
+    compile inside the daemon (specs/testing/sim_scene.md "A prop is an image on a
+    plane"), so the writer checks here, where the caller is. ``FileNotFoundError`` for a
+    missing file, ``ValueError`` naming the file for anything that is not a PNG."""
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(f"prop image not found: {path}")
+    with path.open("rb") as f:
+        header = f.read(24)
+    if len(header) < 24 or header[:8] != _PNG_SIGNATURE or header[12:16] != b"IHDR":
+        raise ValueError(
+            f"prop image {path} is not a PNG: MuJoCo reads PNG textures only — "
+            "convert it to PNG"
+        )
+    width, height = struct.unpack(">II", header[16:24])
+    if width == 0 or height == 0:
+        raise ValueError(f"prop image {path} has no pixels ({width}x{height})")
+    return width, height
+
+
+@dataclass(frozen=True)
+class ImagePlane:
+    """One prop of a test scene: a ``mocap`` body named ``name`` carrying a thin box
+    textured with ``image`` (a PNG), placed at ``pos`` (world metres) facing the robot
+    (specs/testing/sim_scene.md "A prop is an image on a plane"). Exactly one of
+    ``height`` and ``width`` (metres) is given; the other follows from the image's
+    aspect ratio, so a photo is never stretched. ``visible`` is the prop's state as the
+    daemon boots — **False** by default, so a scene loads with nothing in view until a
+    test spawns it."""
+
+    name: str
+    image: str | Path
     pos: tuple[float, float, float] = DEFAULT_FACE_POS
-    size: tuple[float, float] = DEFAULT_FACE_SIZE
+    height: float | None = None
+    width: float | None = None
     visible: bool = False
+
+    def size(self, aspect: float) -> tuple[float, float]:
+        """The plane's (width, height) in metres for an image of ``aspect`` = its width
+        over its height. ``ValueError`` unless exactly one dimension is given, as a
+        positive finite number."""
+        given = [d for d in (self.height, self.width) if d is not None]
+        if len(given) != 1:
+            raise ValueError(
+                f"prop {self.name!r}: give exactly one of height and width (metres), "
+                "the other follows from the image"
+            )
+        dimension = given[0]
+        if (
+            isinstance(dimension, bool)
+            or not isinstance(dimension, int | float)
+            or not math.isfinite(dimension)
+            or dimension <= 0
+        ):
+            raise ValueError(
+                f"prop {self.name!r}: a size is a positive number of metres, "
+                f"got {dimension!r}"
+            )
+        if self.height is not None:
+            return (self.height * aspect, self.height)
+        return (dimension, dimension / aspect)
+
+
+def _face_size() -> tuple[float, float]:
+    width, height = png_size(DEFAULT_FACE_IMAGE)
+    return (FACE_HEIGHT_M * width / height, FACE_HEIGHT_M)
+
+
+# A bundled portrait's plane (width, height) in metres: every one shares one framing.
+DEFAULT_FACE_SIZE = _face_size()
 
 
 def _mjcf_root() -> Path:
@@ -155,33 +225,63 @@ def _mjcf_root() -> Path:
     return Path(str(files(reachy_mini).joinpath("descriptions/reachy_mini/mjcf")))
 
 
-def face_pool(
-    count: int | None = None, images: Sequence[str | Path] | None = None
-) -> tuple[FacePlane, ...]:
-    """The portraits of a pool (specs/testing/sim_scene.md "A pool of portraits"):
-    ``face_1`` … ``face_<count>``, hidden, parked at ``DEFAULT_FACE_POS``, their images
-    assigned in order from ``images`` (the bundled ``FACE_IMAGES`` when ``None``) — one
-    prop per image by default, round-robin when ``count`` is larger. A test spawns them
-    with ``SimSceneClient.spawn``, by name for a given person."""
-    paths = list(FACE_IMAGES) if images is None else [Path(i) for i in images]
+def image_pool(
+    kind: str,
+    images: Sequence[str | Path],
+    *,
+    count: int | None = None,
+    height: float | None = None,
+    width: float | None = None,
+) -> tuple[ImagePlane, ...]:
+    """The props of a pool (specs/testing/sim_scene.md "A prop is an image on a plane"):
+    ``<kind>_1`` … ``<kind>_<count>``, hidden, parked at ``DEFAULT_FACE_POS``, their
+    images assigned in order — one prop per image when ``count`` is ``None``,
+    round-robin when it is larger — each sized by the one dimension given. A test spawns
+    them with ``SimSceneClient.spawn(kind=kind)``, or by name."""
+    if not kind or _kind_of(f"{kind}_1") != kind or _kind_of(kind) != kind:
+        raise ValueError(
+            f"a pool's kind is a non-empty name not ending in _<n>, got {kind!r}"
+        )
+    paths = [Path(i) for i in images]
     if not paths:
-        raise ValueError("a face pool needs at least one image")
+        raise ValueError(f"a {kind} pool needs at least one image")
     count = len(paths) if count is None else count
     if count < 1:
-        raise ValueError(f"a face pool needs at least one portrait, got {count}")
+        raise ValueError(f"a {kind} pool needs at least one prop, got {count}")
     return tuple(
-        FacePlane(name=f"face_{i + 1}", image=paths[i % len(paths)])
+        ImagePlane(
+            name=f"{kind}_{i + 1}",
+            image=paths[i % len(paths)],
+            height=height,
+            width=width,
+        )
         for i in range(count)
     )
 
 
+def face_pool(
+    count: int | None = None, images: Sequence[str | Path] | None = None
+) -> tuple[ImagePlane, ...]:
+    """The portraits of a pool (specs/testing/sim_scene.md "A pool of portraits"):
+    ``face_1`` … ``face_<count>``, hidden, parked at ``DEFAULT_FACE_POS``, life size
+    (``FACE_HEIGHT_M`` tall), their images assigned in order from ``images`` (the
+    bundled ``FACE_IMAGES`` when ``None``) — one prop per image by default, round-robin
+    when ``count`` is larger. A test spawns them with ``SimSceneClient.spawn``, by name
+    for a given person."""
+    return image_pool(
+        "face",
+        list(FACE_IMAGES) if images is None else images,
+        count=count,
+        height=FACE_HEIGHT_M,
+    )
+
+
 def write_test_scene(
-    out_dir: str | Path, faces: Sequence[FacePlane] | None = None
+    out_dir: str | Path, props: Sequence[ImagePlane] | None = None
 ) -> Path:
     """Write ``<out_dir>/scene.xml``: upstream's ``empty`` scene plus one prop per entry
-    of ``faces`` — by default ``face_pool()``, four hidden portraits, one person each
-    (only one prop shape exists today, the portrait plane). Returns the scene path (hand it to
-    ``DaemonConfig.scene``).
+    of ``props`` — by default ``face_pool()``, four hidden portraits, one person each.
+    Returns the scene path (hand it to ``DaemonConfig.scene``).
 
     Each prop starts at its own ``visible`` — a pool starts hidden, so the scene this
     generates with no arguments loads with nothing in view; a test spawns, places and
@@ -189,44 +289,48 @@ def write_test_scene(
 
     The scene includes the robot model and its assets by absolute path, so it loads from
     anywhere; textures are referenced by absolute path too, one texture and one material
-    (``portrait_<image stem>``) per distinct image, shared by every portrait showing it.
-    Prop names must be unique and non-empty, and neither ``spawn`` nor ``clear`` (the
-    inject router's own paths under ``bodies/``).
+    (``prop_<image stem>``) per distinct image, shared by every prop showing it. Prop
+    names must be unique and non-empty, and neither ``spawn`` nor ``clear`` (the inject
+    router's own paths under ``bodies/``); every image must be a PNG
+    (``FileNotFoundError`` / ``ValueError`` here, not a daemon that fails to load).
     """
-    if faces is None:
-        faces = face_pool()
-    names = [face.name for face in faces]
-    if not faces or len(set(names)) != len(names) or any(not n for n in names):
-        raise ValueError("face planes need unique, non-empty names")
+    if props is None:
+        props = face_pool()
+    names = [prop.name for prop in props]
+    if not props or len(set(names)) != len(names) or any(not n for n in names):
+        duplicates = sorted({n for n in names if names.count(n) > 1})
+        raise ValueError(
+            "props need unique, non-empty names"
+            + (f" (repeated: {', '.join(duplicates)})" if duplicates else "")
+        )
     reserved = sorted(_RESERVED_NAMES.intersection(names))
     if reserved:
         raise ValueError(
-            f"face plane name(s) {', '.join(reserved)} are reserved: the inject router "
+            f"prop name(s) {', '.join(reserved)} are reserved: the inject router "
             "serves bodies/spawn and bodies/clear"
         )
     root = _mjcf_root()
     out = Path(out_dir)
-    out.mkdir(parents=True, exist_ok=True)
     assets: list[str] = []
     bodies: list[str] = []
     materials: dict[Path, str] = {}  # resolved image -> its material's name
-    for face in faces:
-        image = Path(face.image if face.image is not None else DEFAULT_FACE_IMAGE)
-        if not image.is_file():
-            raise FileNotFoundError(f"face image not found: {image}")
+    for prop in props:
+        image = Path(prop.image)
+        pixels_w, pixels_h = png_size(image)
+        w, h = prop.size(pixels_w / pixels_h)
         image = image.resolve()
         material = materials.get(image)
         if material is None:
             if _SAME_STEM_SUFFIX.search(image.stem):
                 raise ValueError(
-                    f"face image {image.name!r}: a stem ending in '__<number>' cannot "
+                    f"prop image {image.name!r}: a stem ending in '__<number>' cannot "
                     "be carried by the scene (that suffix marks two files of one stem)"
                 )
-            material = _PORTRAIT_MATERIAL_PREFIX + image.stem
+            material = _PROP_MATERIAL_PREFIX + image.stem
             taken = set(materials.values())
             suffix = 2
             while material in taken:  # two files with the same stem
-                material = f"{_PORTRAIT_MATERIAL_PREFIX}{image.stem}__{suffix}"
+                material = f"{_PROP_MATERIAL_PREFIX}{image.stem}__{suffix}"
                 suffix += 1
             materials[image] = material
             assets.append(
@@ -236,17 +340,17 @@ def write_test_scene(
                 f'texture={quoteattr(material + "_tex")} emission="1" specular="0" '
                 f'shininess="0" reflectance="0"/>'
             )
-        w, h = face.size
-        x, y, z = face.pos
-        alpha = 1.0 if face.visible else 0.0
+        x, y, z = prop.pos
+        alpha = 1.0 if prop.visible else 0.0
         bodies.append(
-            f'    <body name={quoteattr(face.name)} mocap="true" '
+            f'    <body name={quoteattr(prop.name)} mocap="true" '
             f'pos="{x:g} {y:g} {z:g}" quat="{" ".join(f"{q:g}" for q in FACE_QUAT)}">\n'
-            f'      <geom name={quoteattr(face.name + "_geom")} type="box" '
+            f'      <geom name={quoteattr(prop.name + "_geom")} type="box" '
             f'size="{w / 2:g} {h / 2:g} 0.001" material={quoteattr(material)} '
             f'rgba="1 1 1 {alpha:g}" contype="0" conaffinity="0"/>\n'
             f"    </body>"
         )
+    out.mkdir(parents=True, exist_ok=True)
     xml = f"""<mujoco model="scene">
   <!-- Generated by reachy_mini_bridge.testing.sim_scene (specs/testing/sim_scene.md). -->
   <include file={quoteattr(str(root / "reachy_mini.xml"))}/>
@@ -353,11 +457,11 @@ _SAME_STEM_SUFFIX = re.compile(r"__\d+$")
 
 
 def _image_of(material: str | None) -> str | None:
-    """A portrait's image: its material's name without the ``portrait_`` prefix and
+    """A prop's image: its material's name without the ``prop_`` prefix and
     without the ``__<n>`` suffix ``write_test_scene`` adds for two same-stem files."""
-    if not material or not material.startswith(_PORTRAIT_MATERIAL_PREFIX):
+    if not material or not material.startswith(_PROP_MATERIAL_PREFIX):
         return None
-    return _SAME_STEM_SUFFIX.sub("", material[len(_PORTRAIT_MATERIAL_PREFIX) :])
+    return _SAME_STEM_SUFFIX.sub("", material[len(_PROP_MATERIAL_PREFIX) :])
 
 
 def _vec3(value: Any) -> tuple[float, float, float]:
@@ -558,7 +662,7 @@ class SceneDirector:
                     raise LookupError(
                         f"no free {kind} prop: the scene's pool holds {len(of_kind)} "
                         f"{kind} prop(s), all shown — despawn one, or write a bigger "
-                        "pool (face_pool(count=...))"
+                        "pool (image_pool(count=...))"
                     )
                 name, body = free[0]
             current_pos, current_quat = self._pose_at(body, now)

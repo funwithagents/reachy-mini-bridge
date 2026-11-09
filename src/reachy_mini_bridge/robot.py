@@ -19,7 +19,7 @@ from reachy_mini import ReachyMini
 
 from .fake_reachy_mini import FakeReachyMini
 
-__all__ = ["AnyReachyMini", "build_robot", "fetch_daemon_json"]
+__all__ = ["AnyReachyMini", "build_robot", "fetch_daemon_json", "fetch_daemon_json_at"]
 
 # A readable name for "any Reachy Mini implementation" — the real SDK object or our
 # fake. The union keeps the fake honest against the real surface under pyright.
@@ -51,6 +51,16 @@ def fetch_daemon_json(robot: AnyReachyMini, path: str) -> Any:
     (``robot.fetch_daemon_json``), so tests patch it here.
     """
     client = robot.client
-    url = f"http://{client.host}:{client.port}{path}"
+    return _get_json(f"http://{client.host}:{client.port}{path}")
+
+
+def fetch_daemon_json_at(host: str, port: int, path: str) -> Any:
+    """GET ``path`` from the daemon at ``host:port`` and decode the JSON body — the read
+    a session makes before it has a client (specs/daemon/daemon.md "What the daemon
+    reports"). Blocking; raises like ``fetch_daemon_json``, and is patched here too."""
+    return _get_json(f"http://{host}:{port}{path}")
+
+
+def _get_json(url: str) -> Any:
     with urllib.request.urlopen(url, timeout=DAEMON_HTTP_TIMEOUT_S) as response:
         return json.load(response)

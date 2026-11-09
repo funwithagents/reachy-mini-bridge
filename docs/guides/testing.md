@@ -127,8 +127,9 @@ def test_it_nods_while_speaking(live_bridge):
 
 Once the run has probed its capabilities (the first bridge session does), a test that cannot
 run skips before its fixtures are set up — a file the target cannot serve never starts its
-bridge session. A capability name the harness does not know (`CAPABILITIES`, the table
-below) stops the run as a usage error rather than skipping the test everywhere, and the run
+bridge session. A capability name the harness does not know (the table below, a
+`props:<kind>` per kind of the scene, and the names your conftest declares — "Your own props
+and capabilities" below) stops the run as a usage error rather than skipping the test everywhere, and the run
 closes with a `live target` section — the target, its engine, what it probed and what the run
 required — to read the skips against. `requires_caps(live_bridge, "audio")` is the same gate
 as a call, for a fixture (a fixture cannot carry a mark) or a need known only at run time.
@@ -141,7 +142,7 @@ publish there), so a coroutine run on a second loop would leave any task it star
 die with that loop. `BridgeLoop`, from the same package, is the mechanism for a fixture
 of your own — a second bridge session, say.
 
-(A test that needs the robot to *see* something gates on `camera`, and on `faces` when it
+(A test that needs the robot to *see* something gates on `camera`, and on `props:face` when it
 uses the sim's portrait — see "Testing tracking without a person" below. `live_bridge`
 starts with detection and tracking off: a test turns on what it needs, and the
 `face_scene` fixture turns both off again after it, so a test that measures the head is
@@ -169,7 +170,8 @@ the live daemon, once per run:
 | `camera` | a camera frame comes back on `bridge.camera` (needs a GL context: offscreen through EGL on Linux, a window elsewhere) |
 | `motor_states` | the daemon honors `set_motors_state("enabled" / "disabled")`: any hardware daemon, read from its status (not a simulation); never a sim, which ignores the change and keeps reporting `enabled` |
 | `gravity_compensation` | the hardware daemon runs the Placo kinematics engine — a harness-spawned one does with `REACHY_MINI_E2E_KINEMATICS=placo` (the `placo` extra); never a sim, which accepts the mode and does nothing |
-| `faces` | the daemon runs the bridge's test scene (every sim the harness spawns does), which has a pool of portraits (bodies of kind `face`) — hidden until spawned; the bridge's `yunet` detector, which `live_bridge` configures, finds it in the rendered camera |
+| `props:face` | the daemon runs the bridge's test scene (every sim the harness spawns does), which has a pool of portraits (bodies of kind `face`) — hidden until spawned; the bridge's `yunet` detector, which `live_bridge` configures, finds it in the rendered camera |
+| `props:<kind>` | the scene has a body of a kind your conftest declared (`props:hand`) — every sim the harness spawns carries your props |
 | `face_markers` | the daemon draws the faces the bridge sends it and returns them (`/api/sim/displays/face_markers`): every viewer sim the harness spawns; a test reads back where the bridge placed a face |
 | `doa` | mic-array direction of arrival (reserved: no test uses it yet) |
 
@@ -191,7 +193,11 @@ what actually works.
 
 **Audio devices.** Every target picks the audio card named "Reachy Mini Audio" when one is
 plugged in, so the `sim` target plays through (and records from) a USB-connected robot
-too; without one it uses the machine's default speaker and mic. Don't stop and restart the
+too; without one it uses the machine's default speaker and mic. To keep a run off your own
+microphone and speakers, give the sim devices of its own: `REACHY_MINI_E2E_AUDIO_INPUT` /
+`REACHY_MINI_E2E_AUDIO_OUTPUT` name them (below), the sim opens them, and every bridge of the
+run follows — a test speaks into a virtual cable (BlackHole on macOS) and the bridge's mic
+hears it. Named devices run without echo cancellation. Don't stop and restart the
 media pipeline in a test (`bridge.robot.media.stop_recording()` then `start_recording()`): on
 macOS the restarted pipeline reopens on the system defaults, so the rest of the module's
 audio silently leaves the robot.
@@ -206,7 +212,8 @@ The `live_bridge` fixture reads the same knobs the bridge's own tier uses:
 | `REACHY_MINI_HOST` | `127.0.0.1` | daemon host (borrow one already running, or your robot; loopback lets the harness start a USB robot's daemon) |
 | `REACHY_MINI_PORT` | `8000` | daemon port |
 | `REACHY_MINI_E2E_SIM_VIEWER` | unset | `1` to launch the headfull MuJoCo viewer (local; needs a GUI/GL context) |
-| `REACHY_MINI_E2E_REQUIRED_CAPS` | unset | comma-separated capabilities the run must have (`motion,audio,camera,faces` in the bridge's CI): a missing one, or a daemon the harness cannot bring up, **fails** the fixture instead of skipping |
+| `REACHY_MINI_E2E_REQUIRED_CAPS` | unset | comma-separated capabilities the run must have (`motion,audio,camera,props:face,props:card` in the bridge's CI): a missing one, or a daemon the harness cannot bring up, **fails** the fixture instead of skipping |
+| `REACHY_MINI_E2E_AUDIO_INPUT` / `REACHY_MINI_E2E_AUDIO_OUTPUT` | unset | the microphone and speaker of the sim the harness spawns, by name as your system shows it (`daemon.audio`, [configuration.md](../reference/configuration.md)) — a virtual cable, a sink nobody hears. Every bridge of the run, yours included, opens the same devices; a name matching no device, or several, fails the spawn naming the devices |
 | `REACHY_MINI_E2E_MEDIA_BACKEND` | by host | the `media_backend` the fixture's bridge connects with; by default `local` on a loopback host and upstream's `default` (WebRTC) for a remote robot |
 | `REACHY_MINI_E2E_KINEMATICS` | `analytical` | the kinematics engine of the daemon the harness spawns, sim or real: `analytical`, `placo` (needs the `placo` extra) or `nn` — the same suite runs on each, and the sim solves every target through the engine chosen ([configuration.md](../reference/configuration.md#kinematics-engines)). On `nn` expect two head-tracking tests to fail on the image-centring check: the engine itself over-rotates by 3 to 4° at 18° of yaw, which is why the bridge's CI runs `analytical` and `placo` only. A borrowed daemon runs its own engine, so set this to match it. Another word fails the run |
 
@@ -214,7 +221,7 @@ The `live_bridge` fixture reads the same knobs the bridge's own tier uses:
 scene: upstream's empty scene plus a pool of portraits (`face_1` … `face_4`, one person each: two frontal, `TURNED_FACE` and
 `LOOKING_DOWN_FACE`) that stay hidden until a test spawns them — `spawn(pos, name="face_2")` for a
 given person, `spawn(pos)` for the next free one — so
-tests that don't use it are unaffected, and `faces` is probed on every spawned sim. With a
+tests that don't use it are unaffected, and `props:face` is probed on every spawned sim. With a
 camera — the viewer (`REACHY_MINI_E2E_SIM_VIEWER=1`), or a Linux headless sim, which renders
 it offscreen — the `sim_scene` fixture (from the same plugin module) hands you a `SimSceneClient` to spawn portraits — as many at once as the
 pool holds — move and despawn them while your code runs, and `clear()` the scene between
@@ -235,7 +242,7 @@ from reachy_mini_bridge.testing.gaze import (
 
 
 def test_it_looks_at_whoever_is_there(live_bridge, face_scene):
-    # `face_scene` (the same plugin module) gates on `camera` + `faces` and hands you the
+    # `face_scene` (the same plugin module) gates on `camera` + `props:face` and hands you the
     # scene with nobody in view, cleared again after the test
     bridge, _caps = live_bridge
 
@@ -264,6 +271,62 @@ and the angles the head settles at. For trying things by hand with *yourself* in
 sim, a sim config with `"daemon": {"camera": {"source": "webcam"}}` uses the computer's
 webcam as the robot's camera ([running-daemons.md](running-daemons.md)).
 
+**Your own props and capabilities.** The scene takes any image, not only faces: a photo of a
+hand for a gesture recogniser, an object. Declare your props from your conftest and every sim
+the harness spawns carries them beside the portraits; each kind is a capability,
+`props:<kind>`. Declare capabilities of your own the same way — a name and a probe the harness
+calls once per run with the started bridge:
+
+```python
+# conftest.py
+import os
+
+from reachy_mini_bridge.testing.sim_scene import image_pool
+
+pytest_plugins = ["reachy_mini_bridge.testing.fixtures"]
+
+
+def pytest_reachy_mini_scene_props():
+    # hand_1 … hand_3: PNG only — convert photos first; 0.36 m wide, the height from
+    # each image's own aspect ratio, so nothing is stretched
+    return image_pool("hand", ["fixtures/stop.png", "fixtures/fist.png", "fixtures/palm.png"],
+                      width=0.36)
+
+
+def pytest_reachy_mini_capabilities():
+    return {"asr_key": lambda bridge: bool(os.environ.get("DEEPGRAM_API_KEY"))}
+```
+
+```python
+@pytest.mark.requires("camera", "props:hand", "asr_key")
+def test_it_answers_a_stop_sign(live_daemon, sim_scene):
+    sim_scene.spawn((0.45, 0.0, 0.20), name="hand_1")  # the stop sign, in front of the head
+    ...
+```
+
+Both hooks are read before collection: a prop that is not a PNG, a name clashing with the
+portraits' (`face_<n>`), or a capability named like a built-in stops the run at once. On a
+borrowed daemon started without your props, `props:hand` probes absent and the test skips — or
+fails, if the run requires it.
+
+**Your own bridge over the run's daemon.** When the code under test starts and stops its own
+`ReachyMiniBridge` — an application's lifecycle is part of what its e2e test proves — take
+`live_daemon` (the run's daemon, as `(host, port)`) instead of `live_bridge`, and build the
+config's `robot` block with `robot_options`, the connection the harness's own bridges use:
+
+```python
+from reachy_mini_bridge import ReachyMiniBridge, ReachyMiniConfig
+from reachy_mini_bridge.testing import robot_options
+
+
+@pytest.mark.requires("audio")
+def test_my_app_starts_its_bridge(live_daemon):
+    host, port = live_daemon
+    config = ReachyMiniConfig(backend="sim", robot=robot_options(host, port))
+    my_app = MyApp(ReachyMiniBridge(config))
+    ...
+```
+
 **Own it or borrow it:** the fixture reuses a daemon already reachable at the address
 (never tears it down); otherwise it spawns one and owns its teardown — a MuJoCo daemon for
 `sim`, and for `real` on a loopback address (a robot plugged into this machine over USB)
@@ -274,7 +337,7 @@ upstream's default, the WebRTC stream the robot serves (a local daemon gets the 
 `media_backend="local"`). When it can't bring one up (missing sim extra, busy port, no robot
 answering), the test **skips** rather than failing — unless `REACHY_MINI_E2E_REQUIRED_CAPS`
 names capabilities the run must have, in which case it fails, as it does when a required
-capability isn't probed (what the bridge's CI does with `motion,audio,camera,faces`).
+capability isn't probed (what the bridge's CI does with `motion,audio,camera,props:face,props:card`).
 
 **Gravity compensation** needs the daemon's Placo kinematics engine, which is a choice, not
 an install: with the `placo` extra installed, `REACHY_MINI_E2E_KINEMATICS=placo` makes a

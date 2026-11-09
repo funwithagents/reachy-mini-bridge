@@ -11,11 +11,15 @@ backends ([specs/core/robot.md]) the same way the bridge does:
   the ``live_bridge`` fixture (own-it-or-borrow-it daemon lifecycle, GStreamer env scrub,
   capability probing, and one event loop for the bridge's lifetime — run a test's
   coroutines through ``live_bridge.run(...)``), then gate each test, or each file through
-  ``pytestmark``, with ``@pytest.mark.requires(...)`` on the capabilities it needs.
+  ``pytestmark``, with ``@pytest.mark.requires(...)`` on the capabilities it needs. A
+  conftest adds props to the sim's scene and capabilities to the vocabulary through the
+  ``pytest_reachy_mini_scene_props`` / ``pytest_reachy_mini_capabilities`` hooks; a test
+  whose code owns its bridge builds one over ``live_daemon`` with ``robot_options``.
 
 See ../../../specs/testing/testing_support.md and ../../../docs/guides/testing.md.
 """
 
+from reachy_mini_bridge.testing._daemon import robot_options
 from reachy_mini_bridge.testing.support import (
     CAPABILITIES,
     BridgeLoop,
@@ -24,4 +28,11 @@ from reachy_mini_bridge.testing.support import (
     requires_caps,
 )
 
-__all__ = ["CAPABILITIES", "BridgeLoop", "LiveBridge", "require_env", "requires_caps"]
+__all__ = [
+    "CAPABILITIES",
+    "BridgeLoop",
+    "LiveBridge",
+    "require_env",
+    "requires_caps",
+    "robot_options",
+]

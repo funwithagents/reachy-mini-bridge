@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Any, Self, cast
 
 from reachy_mini.motion.move import Move
 
+from . import audio_devices
 from . import daemon as _daemon
 from . import robot as _robot
 from .audio import MediaSession, SoundToken, TTSEngineSynthesizer, cancel_safe_step
@@ -43,6 +44,7 @@ from .concurrency import owned
 from .config import (
     DAEMON_INFO_ROUTE,
     IDLE_MODES,
+    LOOPBACK_HOSTS,
     UPSTREAM_KINEMATICS_ENGINES,
     BaseFollowingSettings,
     ReachyMiniConfig,
@@ -211,22 +213,61 @@ def _daemon_kinematics_engine(robot: AnyReachyMini) -> str:
     return str(info["info"]["engine"])
 
 
-def _read_daemon_info(robot: AnyReachyMini) -> DaemonInfo:
-    """What the daemon says about itself (specs/daemon/daemon.md "What the daemon reports").
-    Blocking. A failed read is one warning and leaves its values unknown: it never stops
-    a session."""
+# The upstream module whose `get_audio_device` the client's audio calls on a local
+# backend: the session's source and sink, and every sound file's sink
+# (specs/audio/audio.md "The robot's audio devices").
+_CLIENT_AUDIO_MODULE = "reachy_mini.media.audio_gstreamer"
+
+
+def _daemon_address(options: dict[str, Any]) -> tuple[str, int]:
+    """Where the client will find its daemon: the ``robot`` block's host on a network
+    connection, this machine otherwise (upstream tries it first in ``auto``)."""
+    if options.get("connection_mode", "auto") == "network":
+        host = str(options.get("host", "reachy-mini.local"))
+    else:
+        host = "127.0.0.1"
+    return host, int(options.get("port", 8000))
+
+
+def _fetch_daemon_report(host: str, port: int) -> object:
+    """The bridge launcher's report (``GET /api/bridge/daemon``), read before the client
+    is built (specs/daemon/daemon.md "What the daemon reports"). Blocking. ``None`` for a
+    daemon without the route (upstream's, an older launcher); a failed read is returned,
+    not raised, for ``_read_daemon_info`` to warn about once the session is up."""
+    try:
+        return _robot.fetch_daemon_json_at(host, port, DAEMON_INFO_ROUTE)
+    except urllib.error.HTTPError as e:
+        return None if e.code == 404 else e
+    except _DAEMON_READ_ERRORS as e:
+        return e
+
+
+def _reported_audio_devices(report: object) -> audio_devices.AudioDevices:
+    """The devices the daemon's report names, resolved on this host. Blocking. Nothing
+    when the report names none or is unreadable (its warning comes with the rest of the
+    report's); ``AudioDeviceError`` when a named device is not one device here."""
+    try:
+        audio = DaemonInfo.from_report(report, None).audio
+    except _DAEMON_READ_ERRORS:
+        return audio_devices.AudioDevices()
+    if audio is None:
+        return audio_devices.AudioDevices()
+    return audio_devices.resolve_devices(audio.input_device, audio.output_device)
+
+
+def _read_daemon_info(robot: AnyReachyMini, report: object) -> DaemonInfo:
+    """What the daemon says about itself (specs/daemon/daemon.md "What the daemon reports"):
+    its engine, read through ``robot``, and the launcher's ``report`` read before the
+    client was built. Blocking. A failed read is one warning and leaves its values
+    unknown: it never stops a session."""
     engine = None
     try:
         engine = _daemon_kinematics_engine(robot)
     except _DAEMON_READ_ERRORS as e:
         _logger.warning("could not read the daemon's kinematics engine (%s)", e)
     try:
-        try:
-            report = _robot.fetch_daemon_json(robot, DAEMON_INFO_ROUTE)
-        except urllib.error.HTTPError as e:
-            if e.code != 404:
-                raise
-            report = None  # upstream's daemon, or an older launcher
+        if isinstance(report, Exception):
+            raise report
         return DaemonInfo.from_report(report, engine)
     except _DAEMON_READ_ERRORS as e:
         _logger.warning("could not read the daemon's report (%s): using the config", e)
@@ -513,6 +554,19 @@ class ReachyMiniBridge:
                 )
                 stack.push_async_callback(asyncio.to_thread, handle.stop)
 
+            # The launcher's report, read before the client is built: on a daemon on this
+            # machine, the audio devices it reports are the ones the client opens
+            # (specs/audio/audio.md "The robot's audio devices"), for the whole session.
+            report: object = None
+            if cfg.backend != "fake":
+                host, port = _daemon_address(cfg.effective_robot_options())
+                report = await asyncio.to_thread(_fetch_daemon_report, host, port)
+                if host in LOOPBACK_HOSTS:
+                    devices = await asyncio.to_thread(_reported_audio_devices, report)
+                    stack.enter_context(
+                        audio_devices.substitute(_CLIENT_AUDIO_MODULE, devices)
+                    )
+
             # Build and enter are one step: upstream's `ReachyMini` connects in its
             # constructor, so a built-but-dropped robot is already a leaked connection.
             def connect() -> AnyReachyMini:
@@ -568,7 +622,7 @@ class ReachyMiniBridge:
             if cfg.motion.wobbling:
                 await self.set_wobbling(True)
             motors_enabled = await self.get_motors_state() == "enabled"
-            info = await self._start_daemon_info(robot)
+            info = await self._start_daemon_info(robot, report)
             # One camera model per session (specs/motion/head_tracking.md "The aim"): the
             # tracker aims with it, the detection loop turns face sizes into distances
             # with it (specs/vision/user_perception.md "The face report"), the face
@@ -741,13 +795,15 @@ class ReachyMiniBridge:
             return CameraModel.for_sim(info.camera or self._config.daemon.camera)
         return CameraModel.for_robot(robot)
 
-    async def _start_daemon_info(self, robot: AnyReachyMini) -> DaemonInfo:
+    async def _start_daemon_info(
+        self, robot: AnyReachyMini, report: object
+    ) -> DaemonInfo:
         """Read the daemon, warn on what contradicts the config, and keep the answer for
         ``bridge.daemon`` (specs/daemon/daemon.md "What the daemon reports")."""
         if self._config.backend == "fake":
             info = DaemonInfo()  # no daemon to ask
         else:
-            info = await asyncio.to_thread(_read_daemon_info, robot)
+            info = await asyncio.to_thread(_read_daemon_info, robot, report)
             differences = daemon_differences(info, self._config.daemon)
             if differences:
                 _logger.warning(
@@ -755,11 +811,15 @@ class ReachyMiniBridge:
                     "; ".join(differences),
                 )
         camera = None if info.camera is None else describe_camera(info.camera)
+        audio = info.audio
         _logger.info(
-            "daemon: launcher %s, kinematics engine %s, camera %s, scene %s",
+            "daemon: launcher %s, kinematics engine %s, camera %s, audio %s / %s, "
+            "scene %s",
             info.launcher,
             info.kinematics_engine,
             camera,
+            audio and (audio.input_device or "default"),
+            audio and (audio.output_device or "default"),
             info.scene,
         )
         self._daemon_info = info

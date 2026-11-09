@@ -28,6 +28,7 @@ from reachy_mini_bridge import daemon
 from reachy_mini_bridge.config import (
     UPSTREAM_KINEMATICS_ENGINES,
     DaemonConfig,
+    SimAudioSettings,
     SimCameraSettings,
     SimDisplaySettings,
 )
@@ -210,6 +211,64 @@ def test_launch_command_passes_the_webcam_camera_source(
     # device and field of view play no part for the rendered camera
     rendered = SimCameraSettings(source="sim", device=1, hfov_deg=62.5)
     assert "--camera" not in daemon.launch_command(DaemonConfig(camera=rendered))
+
+
+def test_launch_command_passes_the_named_audio_devices(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`daemon.audio` becomes the launcher's audio flags, after the camera's — a flag per
+    named device, none for upstream's choice — on the plain and the scene-file recipes."""
+    monkeypatch.setattr(daemon.shutil, "which", lambda name: f"/bin/{name}")
+    named = SimAudioSettings(input_device="BlackHole 2ch", output_device="Null Output")
+    webcam = SimCameraSettings(source="webcam")
+    cmd = daemon.launch_command(DaemonConfig(audio=named, camera=webcam))
+    camera_at = cmd.index("--camera")
+    assert cmd[camera_at:-4] == [
+        "--camera",
+        "webcam",
+        "--webcam-hfov",
+        "70",
+        "--audio-input-device",
+        "BlackHole 2ch",
+        "--audio-output-device",
+        "Null Output",
+    ]
+    scene = str(tmp_path / "scene.xml")
+    output_only = SimAudioSettings(output_device="Null Output")
+    assert daemon.launch_command(DaemonConfig(scene=scene, audio=output_only))[
+        -6:-4
+    ] == ["--audio-output-device", "Null Output"]
+    assert not any("--audio" in arg for arg in daemon.launch_command(DaemonConfig()))
+    # A sim knob: the hardware recipe takes none of it.
+    real = daemon.launch_command(DaemonConfig(audio=named), backend="real")
+    assert not any("--audio" in arg for arg in real)
+
+
+def test_a_daemon_on_other_audio_devices_than_the_config_names_is_a_difference() -> (
+    None
+):
+    """A named device the daemon does not open is a contradiction; a config that names
+    none has no opinion."""
+    info = daemon.DaemonInfo.from_report(
+        {
+            "launcher": "sim",
+            "camera": {"source": "sim", "hfov_deg": None},
+            "audio": {"input_device": "BlackHole 2ch", "output_device": None},
+            "scene": "empty",
+            "headless": True,
+            "preload_datasets": True,
+            "sim_displays": [],
+        },
+        None,
+    )
+    assert info.audio == SimAudioSettings(input_device="BlackHole 2ch")
+    assert daemon.daemon_differences(info, DaemonConfig()) == []
+    wanted = DaemonConfig(
+        audio=SimAudioSettings(input_device="BlackHole 2ch", output_device="Null")
+    )
+    assert daemon.daemon_differences(info, wanted) == [
+        "audio output is the default, the config says Null"
+    ]
 
 
 def test_launch_command_turns_on_the_viewer_displays(
