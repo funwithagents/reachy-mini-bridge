@@ -69,7 +69,9 @@ def _list_devices(direction: Direction) -> Sequence[Any]:
     """The host's devices of ``direction``, as upstream lists them (a seam for tests)."""
     # upstream's module pins the GStreamer version before anything imports it
     from reachy_mini.media.device_detection import gst_monitor_devices  # noqa: I001
-    from gi.repository import Gst  # pyright: ignore[reportMissingImports]
+    from gi.repository import (  # pyright: ignore[reportMissingImports]
+        Gst,  # pyright: ignore[reportAttributeAccessIssue]
+    )
 
     if not Gst.is_initialized():
         Gst.init(None)
