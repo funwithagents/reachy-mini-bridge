@@ -46,6 +46,7 @@ from typing import Any, Protocol
 
 import numpy as np
 
+from . import audio_devices
 from .config import (
     CAMERA_SOURCES,
     DAEMON_INFO_ROUTE,
@@ -869,6 +870,10 @@ def bridge_backend(
 
 # --- the launcher -----------------------------------------------------------------------
 
+# The upstream module whose `get_audio_device` the daemon's media server calls for its
+# source and its sinks (specs/daemon/sim_daemon.md "Audio devices").
+_DAEMON_AUDIO_MODULE = "reachy_mini.media.media_server"
+
 
 def _device(value: str) -> str | int:
     return int(value) if value.isdigit() else value
@@ -922,6 +927,19 @@ def _parser(prog: str) -> argparse.ArgumentParser:
         f"(default {DEFAULT_WEBCAM_HFOV_DEG:g})",
     )
     parser.add_argument(
+        "--audio-input-device",
+        default=None,
+        metavar="NAME",
+        help="the simulated robot's microphone: a device name as the system shows it "
+        "(default: the robot's sound card, else the system default)",
+    )
+    parser.add_argument(
+        "--audio-output-device",
+        default=None,
+        metavar="NAME",
+        help="the simulated robot's speaker, the same way",
+    )
+    parser.add_argument(
         "--sim-display",
         action="append",
         choices=SIM_DISPLAYS,
@@ -968,6 +986,14 @@ def run_sim_daemon(
     if args.sim_display and args.headless:
         parser.error("--sim-display needs the viewer (drop --headless)")
     displays = _Displays.named(args.sim_display)
+    # The audio devices (specs/daemon/sim_daemon.md "Audio devices"): resolved before
+    # anything starts, so a name matching no device, or several, stops the launch here.
+    try:
+        devices = audio_devices.resolve_devices(
+            args.audio_input_device, args.audio_output_device
+        )
+    except audio_devices.AudioDeviceError as e:
+        parser.error(str(e))
     # The headless camera: the GL backend is chosen — and MUJOCO_GL set — before anything
     # imports mujoco, which reads the variable once.
     headless_render: str | None = None
@@ -979,6 +1005,10 @@ def run_sim_daemon(
     report = {
         "launcher": "sim",
         "camera": _camera_report(camera),
+        "audio": {
+            "input_device": args.audio_input_device,
+            "output_device": args.audio_output_device,
+        },
         "scene": args.scene or _UPSTREAM_DEFAULT_SCENE,
         "headless": args.headless,
         "preload_datasets": args.preload_datasets,
@@ -1024,12 +1054,15 @@ def run_sim_daemon(
         *passthrough,
     ]
     _logger.info(
-        "sim daemon: camera %s, displays %s, headless render %s",
+        "sim daemon: camera %s, audio %s, displays %s, headless render %s",
         camera,
+        report["audio"],
         args.sim_display or "none",
         headless_render or "none",
     )
-    upstream_main.main()
+    # The daemon's media server opens the named devices for the daemon's life.
+    with audio_devices.substitute(_DAEMON_AUDIO_MODULE, devices):
+        upstream_main.main()
 
 
 if __name__ == "__main__":  # pragma: no cover - the daemon-side entry point

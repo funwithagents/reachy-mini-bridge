@@ -39,6 +39,7 @@ __all__ = [
     "MotionSettings",
     "PersonalSpaceSettings",
     "ReachyMiniConfig",
+    "SimAudioSettings",
     "SimCameraSettings",
     "SimDisplaySettings",
     "TrackingSettings",
@@ -192,6 +193,41 @@ class SimCameraSettings:
 
 
 @dataclass
+class SimAudioSettings:
+    """The simulated robot's microphone and speaker (specs/core/config.md
+    ``daemon.audio``; specs/daemon/sim_daemon.md "Audio devices"): a device name as the
+    operating system shows it, or ``None`` for upstream's choice — the robot's sound card
+    when one is plugged in, else the system default. The sim daemon opens them and
+    reports them, and every bridge on the machine follows the report."""
+
+    input_device: str | None = None
+    output_device: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> SimAudioSettings:
+        block = _require_object(data, "daemon.audio")
+        _reject_unknown_keys(block, "daemon.audio", {"input_device", "output_device"})
+        values: dict[str, str | None] = {}
+        for name in ("input_device", "output_device"):
+            value = block.get(name)
+            if value is not None and (not isinstance(value, str) or not value):
+                raise ConfigError(
+                    f"'daemon.audio.{name}' must be null or a non-empty string, "
+                    f"got {value!r}"
+                )
+            values[name] = value
+        return cls(**values)
+
+    @classmethod
+    def from_json(cls, text: str) -> SimAudioSettings:
+        return cls.from_dict(_loads(text))
+
+    @classmethod
+    def from_json_file(cls, path: str | Path) -> SimAudioSettings:
+        return cls.from_dict(_load_file(path))
+
+
+@dataclass
 class SimDisplaySettings:
     """What the MuJoCo viewer window shows besides the scene (specs/core/config.md
     ``daemon.sim_displays``): one boolean per display, every one off by default.
@@ -235,7 +271,7 @@ class SimDisplaySettings:
 class DaemonConfig:
     """How the bridge brings up the daemon the robot client talks to (specs/daemon/daemon.md).
 
-    ``headless``, ``scene``, ``camera`` and ``sim_displays`` are MuJoCo knobs: they play
+    ``headless``, ``scene``, ``camera``, ``audio`` and ``sim_displays`` are MuJoCo knobs: they play
     no part for a ``real`` daemon. ``kinematics_engine`` applies to both: upstream's
     MuJoCo backend solves its targets through the same engine as the hardware one
     (specs/core/config.md "Kinematics engines"); the default is upstream's, and
@@ -251,6 +287,7 @@ class DaemonConfig:
     scene: str | None = None
     kinematics_engine: str = "analytical"
     camera: SimCameraSettings = field(default_factory=SimCameraSettings)
+    audio: SimAudioSettings = field(default_factory=SimAudioSettings)
     sim_displays: SimDisplaySettings = field(default_factory=SimDisplaySettings)
     preload_datasets: bool = True
     startup_timeout: float = 45.0
@@ -267,6 +304,7 @@ class DaemonConfig:
                 "scene",
                 "kinematics_engine",
                 "camera",
+                "audio",
                 "sim_displays",
                 "preload_datasets",
                 "startup_timeout",
@@ -290,6 +328,7 @@ class DaemonConfig:
                 f"got {engine!r}"
             )
         camera = SimCameraSettings.from_dict(block.get("camera", {}))
+        audio = SimAudioSettings.from_dict(block.get("audio", {}))
         displays = SimDisplaySettings.from_dict(block.get("sim_displays", {}))
         if headless and displays.enabled():
             raise ConfigError(
@@ -312,6 +351,7 @@ class DaemonConfig:
             scene=scene,
             kinematics_engine=engine,
             camera=camera,
+            audio=audio,
             sim_displays=displays,
             preload_datasets=preload,
             startup_timeout=float(timeout),

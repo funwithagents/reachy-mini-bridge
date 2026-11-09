@@ -127,7 +127,7 @@ Tracking implies detection, and needs a `face_detection.detector` in the config:
 | `presence`, `idle`, `idle_move`, `wobbling` | `bool`, `str`, factory \| `None`, `bool` | The idle behaviour's switches |
 | `mic_sample_rate`, `mic_channels` | `int`, `int` | The capture format behind `audio_input` (16 kHz; stereo on the robot and the sim) |
 | `robot`, `raw` | `ReachyMini \| FakeReachyMini` | The upstream object, while running ("The escape hatch") |
-| `daemon` | `DaemonInfo \| None` | How the session's daemon runs, as it reports it: `kinematics_engine` for any daemon; `launcher`, `camera`, `scene`, `headless`, `preload_datasets`, `sim_displays` from the bridge's launchers, `None` where a daemon does not say; `None` outside a session |
+| `daemon` | `DaemonInfo \| None` | How the session's daemon runs, as it reports it: `kinematics_engine` for any daemon; `launcher`, `camera`, `audio` (the devices the bridge then opens too), `scene`, `headless`, `preload_datasets`, `sim_displays` from the bridge's launchers, `None` where a daemon does not say; `None` outside a session |
 | `running`, `config`, `synthesizer_error` | `bool`, `ReachyMiniConfig`, `Exception \| None` | Session state; the config; a voice that failed to build |
 
 ### The values

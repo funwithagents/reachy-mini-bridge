@@ -79,14 +79,15 @@ Two keys are **reserved**: `use_sim` (derived from `backend`) and `spawn_daemon`
 |---|---|---|
 | `spawn` | `"never"` | `"never"`: only connect, to a daemon you run (what a wireless robot needs). `"auto"`: reuse one already listening at `host:port`, else start one and stop it on exit. `"always"`: insist on starting one — a port already in use is an error |
 | `headless` | `true` | *sim only.* `true` runs MuJoCo with no window: motion and audio, and on Linux the rendered camera too (offscreen through EGL); on macOS no camera. `false` opens the **viewer** (under `mjpython` on macOS), so you watch the robot and the `sim` camera works everywhere; needs an unlocked GUI session |
-| `scene` | `null` | *sim only.* An upstream scene name (`"empty"`, `"minimal"`), or the path of a scene `.xml` for the bridge's launcher — how the test scene's portrait gets loaded ([specs/testing/sim_scene.md](../../specs/testing/sim_scene.md)) |
+| `scene` | `null` | *sim only.* An upstream scene name (`"empty"`, `"minimal"`), or the path of a scene `.xml` for the bridge's launcher — how the test scene and its props get loaded ([specs/testing/sim_scene.md](../../specs/testing/sim_scene.md)) |
 | `kinematics_engine` | `"analytical"` | The kinematics engine the daemon solves every head target through — `"analytical"`, `"placo"` or `"nn"`, sim and robot alike; see [Kinematics engines](#kinematics-engines) below. `"placo"` needs the `placo` extra, checked when the daemon starts |
 | `camera` | `{"source": "sim"}` | *sim only.* What the sim's camera shows — see the table below |
+| `audio` | both `null` | *sim only.* The simulated robot's microphone and speaker, by name — see the table below |
 | `sim_displays` | all `false` | *sim viewer only.* What the viewer window draws besides the scene — see the table below |
 | `preload_datasets` | `true` | Downloads the recorded-move datasets in the background at startup, so the first `play_emotion` doesn't wait on a download. Readiness isn't delayed either way |
 | `startup_timeout` | `45.0` | Seconds to wait for a spawned daemon to become ready (a positive, finite number) |
 
-`spawn` other than `"never"` needs `backend` `"sim"` or `"real"` (`fake` has no daemon). On `real` it starts the hardware daemon of a robot plugged into **this machine** over USB — it wakes the robot, and puts it to sleep on exit. `headless`, `scene`, `camera` and `sim_displays` are MuJoCo knobs and play no part on `real`; `kinematics_engine` applies to both. Every field here describes a daemon the bridge starts: a daemon you run yourself, a wireless robot's included, keeps whatever it was started with. The commands the bridge runs, for starting a daemon by hand: [../guides/running-daemons.md](../guides/running-daemons.md).
+`spawn` other than `"never"` needs `backend` `"sim"` or `"real"` (`fake` has no daemon). On `real` it starts the hardware daemon of a robot plugged into **this machine** over USB — it wakes the robot, and puts it to sleep on exit. `headless`, `scene`, `camera`, `audio` and `sim_displays` are MuJoCo knobs and play no part on `real`; `kinematics_engine` applies to both. Every field here describes a daemon the bridge starts: a daemon you run yourself, a wireless robot's included, keeps whatever it was started with. The commands the bridge runs, for starting a daemon by hand: [../guides/running-daemons.md](../guides/running-daemons.md).
 
 ### Kinematics engines
 
@@ -107,6 +108,13 @@ Installing the `placo` extra changes nothing by itself: the engine is this field
 | `source` | `"sim"` | `"sim"` renders the scene from the robot's eye camera (the viewer, or headless on Linux). `"webcam"` relays your computer's camera instead, so the person in front of the screen is who the simulated robot sees and follows — headless or viewer |
 | `device` | `null` | *webcam only.* `null` is the default camera; an integer is a macOS device index, a string a Linux device path (`/dev/video0`) |
 | `hfov_deg` | `70.0` | *webcam only.* The camera's horizontal field of view in degrees, which the tracker's intrinsics derive from — match it to your camera for an accurate aim |
+
+**`daemon.audio`** — the sim robot's microphone and speaker ([specs/daemon/sim_daemon.md](../../specs/daemon/sim_daemon.md) "Audio devices"). Without it the sim uses the robot's sound card when one is plugged in, else your computer's default microphone and speakers. Name a device instead — a virtual cable a test speaks into, a sink nobody hears — and the daemon opens it, says so in its report, and every bridge on this machine opens the same one, whatever its own config ([specs/audio/audio.md](../../specs/audio/audio.md) "The robot's audio devices"). A name matches the one device whose name contains it, as the robot's card is matched; none or several fail the daemon's start, naming the devices. A named device runs without echo cancellation:
+
+| Field | Default | What it does |
+|---|---|---|
+| `input_device` | `null` | The microphone: a device name as your system shows it — `"BlackHole 2ch"` in the macOS Sound settings, a PulseAudio / PipeWire source's description on Linux (a real source: a null sink's monitor is not one) |
+| `output_device` | `null` | The speaker, the same way |
 
 **`daemon.sim_displays`** — what the viewer shows ([specs/daemon/sim_displays.md](../../specs/daemon/sim_displays.md)); every one is viewer only, so any of them `true` with `headless: true` is a `ConfigError`:
 

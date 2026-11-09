@@ -17,6 +17,7 @@ import math
 import sys
 import threading
 import time
+import types
 import urllib.error
 import wave
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -31,6 +32,7 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
+from reachy_mini_bridge import audio_devices
 from reachy_mini_bridge import bridge as bridge_module
 from reachy_mini_bridge import face_detection as face_detection_module
 from reachy_mini_bridge import head_tracking as head_tracking_module
@@ -43,6 +45,7 @@ from reachy_mini_bridge.config import (
     FaceDetectionSettings,
     MotionSettings,
     ReachyMiniConfig,
+    SimAudioSettings,
     SimCameraSettings,
     SimDisplaySettings,
     TrackingSettings,
@@ -1991,13 +1994,13 @@ def _on_daemon(
     fake.client.kinematics_engine = engine
     monkeypatch.setattr(bridge_module, "build_robot", lambda backend, **kw: fake)
 
-    def fetch(robot: object, path: str) -> object:
+    def fetch(host: str, port: int, path: str) -> object:
         assert path == "/api/bridge/daemon"
         if isinstance(answer, Exception):
             raise answer
         return answer
 
-    monkeypatch.setattr(robot_module, "fetch_daemon_json", fetch)
+    monkeypatch.setattr(robot_module, "fetch_daemon_json_at", fetch)
 
 
 def _sim_on_camera(
@@ -2140,6 +2143,7 @@ def test_every_contradiction_lands_in_one_warning(
         kinematics_engine="Placo",
         launcher="sim",
         camera=SimCameraSettings(source="webcam", hfov_deg=40.0),
+        audio=SimAudioSettings(),
         scene="minimal",
         headless=False,
         preload_datasets=True,
@@ -2195,6 +2199,100 @@ def test_the_daemon_info_lasts_as_long_as_the_session(
 
     asyncio.run(run())
     assert bridge.daemon is None
+
+
+def _audio_daemon(
+    monkeypatch: pytest.MonkeyPatch, audio: dict[str, str | None]
+) -> types.ModuleType:
+    """A sim daemon reporting ``audio``, the host's devices scripted, and a stand-in for
+    upstream's client audio module recording what its lookup answers."""
+    _on_daemon(monkeypatch, _report(audio=audio))
+    names = {
+        "Source": {"MacBook Pro Microphone": "mic-id", "BlackHole 2ch": "bh-in"},
+        "Sink": {"MacBook Pro Speakers": "speakers-id", "BlackHole 2ch": "bh-out"},
+    }
+
+    def listing(direction: str) -> list[object]:
+        return [SimpleNamespace(display_name=n) for n in names[direction]]
+
+    def match(device: Any, direction: str, name: str) -> str | None:
+        return (
+            names[direction][device.display_name]
+            if name in device.display_name
+            else None
+        )
+
+    monkeypatch.setattr(audio_devices, "_list_devices", listing)
+    monkeypatch.setattr(audio_devices, "_platform_id", match)
+    module = types.ModuleType("fake_client_audio")
+    module.get_audio_device = lambda device_type="Source": None  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "fake_client_audio", module)
+    monkeypatch.setattr(bridge_module, "_CLIENT_AUDIO_MODULE", "fake_client_audio")
+    return module
+
+
+_LOCAL_SIM = ReachyMiniConfig(
+    backend="sim", robot={"connection_mode": "network", "host": "127.0.0.1"}
+)
+
+
+def test_a_session_opens_the_audio_devices_its_daemon_reports(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """specs/audio/audio.md "The robot's audio devices": the bridge's own client opens what
+    the daemon on this machine reports, for the whole session, and `bridge.daemon` says
+    so; the config names no device."""
+    module = _audio_daemon(
+        monkeypatch, {"input_device": "BlackHole", "output_device": None}
+    )
+
+    async def run() -> tuple[object, object, DaemonInfo | None]:
+        async with ReachyMiniBridge(_LOCAL_SIM) as bridge:
+            return (
+                module.get_audio_device("Source"),
+                module.get_audio_device("Sink"),
+                bridge.daemon,
+            )
+
+    source, sink, info = asyncio.run(run())
+    assert (source, sink) == ("bh-in", None)  # the unnamed direction stays upstream's
+    assert info is not None and info.audio == SimAudioSettings(input_device="BlackHole")
+    assert (
+        module.get_audio_device("Source") is None
+    )  # upstream's again after the session
+
+
+def test_a_reported_device_this_host_does_not_have_fails_the_bring_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Never a silent fallback to the host's own microphone."""
+    module = _audio_daemon(
+        monkeypatch, {"input_device": "Loopback", "output_device": None}
+    )
+    bridge = ReachyMiniBridge(_LOCAL_SIM)
+    with pytest.raises(audio_devices.AudioDeviceError, match="BlackHole 2ch"):
+        asyncio.run(bridge.start())
+    assert not bridge.running
+    assert module.get_audio_device("Source") is None
+
+
+def test_a_remote_daemon_s_devices_are_not_this_host_s(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The report is applied only on a daemon on this machine: a remote one's devices
+    are its own, and the client gets its audio from it."""
+    module = _audio_daemon(
+        monkeypatch, {"input_device": "Loopback", "output_device": None}
+    )
+    remote = ReachyMiniConfig(
+        backend="sim", robot={"connection_mode": "network", "host": "192.168.1.35"}
+    )
+
+    async def run() -> object:
+        async with ReachyMiniBridge(remote):
+            return module.get_audio_device("Source")
+
+    assert asyncio.run(run()) is None
 
 
 def test_no_face_markers_are_sent_to_a_daemon_without_the_display(

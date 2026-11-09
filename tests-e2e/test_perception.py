@@ -69,7 +69,7 @@ def test_camera_frame_delivers_a_frame(
     print(f"[e2e] camera frame pose stamped: {frame.head_pose is not None}")
 
 
-@pytest.mark.requires("faces")
+@pytest.mark.requires("props:face")
 def test_detection_runs_on_the_live_camera(live_bridge: LiveBridge) -> None:
     """specs/vision/user_perception.md: the configured detector (`yunet`) runs on the
     live camera's frames — the report is active and advances at the loop's rate, with
@@ -103,7 +103,7 @@ def test_detection_runs_on_the_live_camera(live_bridge: LiveBridge) -> None:
     assert rate >= 5.0, f"the detector reported {rate:.1f} times a second"
 
 
-@pytest.mark.requires("faces")
+@pytest.mark.requires("props:face")
 def test_faces_report_someone_appearing_and_leaving(
     live_bridge: LiveBridge, face_scene: SimSceneClient
 ) -> None:
@@ -143,7 +143,7 @@ def test_faces_report_someone_appearing_and_leaving(
     assert left.faces == ()
 
 
-@pytest.mark.requires("faces")
+@pytest.mark.requires("props:face")
 def test_faces_report_two_portraits_spawned_side_by_side(
     live_bridge: LiveBridge, face_scene: SimSceneClient
 ) -> None:

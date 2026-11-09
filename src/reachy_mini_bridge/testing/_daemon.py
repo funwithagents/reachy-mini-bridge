@@ -4,7 +4,8 @@
 Resolves the *target* from the environment (`REACHY_MINI_E2E_TARGET` = `sim` default |
 `real`), the daemon address (`REACHY_MINI_HOST` / `REACHY_MINI_PORT`) and the kinematics
 engine the spawned daemon runs (`REACHY_MINI_E2E_KINEMATICS` = `analytical` default |
-`placo` | `nn`, specs/testing/testing.md "One engine per run"), then hands the
+`placo` | `nn`, specs/testing/testing.md "One engine per run") and its audio devices
+(`REACHY_MINI_E2E_AUDIO_INPUT` / `_OUTPUT`), then hands the
 daemon work to the library's [daemon.py](../daemon.py) (specs/daemon/daemon.md): reuse a daemon
 already ready at the address (never torn down), else spawn one and own its teardown — a
 MuJoCo daemon for `sim`, the hardware daemon for `real` on a loopback address (a USB robot
@@ -19,8 +20,9 @@ elsewhere — or `REACHY_MINI_E2E_MEDIA_BACKEND`.
 
 Kept out of `fixtures.py` so the plugin module reads as the fixture surface. The names
 used by `fixtures.py` (`target`, `backend`, `address`, `robot_options`,
-`required_capabilities`, `sim_displays`, `managed_daemon`) and by the bridge's own engine
-check (`kinematics_engine`) are un-underscored; the rest stays module-private.
+`required_capabilities`, `sim_displays`, `audio_settings`, `managed_daemon`) and by the
+bridge's own engine check (`kinematics_engine`) are un-underscored; the rest stays
+module-private. `robot_options` is public, re-exported from `reachy_mini_bridge.testing`.
 """
 
 from __future__ import annotations
@@ -28,7 +30,7 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from typing import NoReturn
 
@@ -39,10 +41,11 @@ from reachy_mini_bridge.config import (
     KINEMATICS_ENGINES,
     LOOPBACK_HOSTS,
     DaemonConfig,
+    SimAudioSettings,
     SimDisplaySettings,
 )
 from reachy_mini_bridge.errors import DaemonError
-from reachy_mini_bridge.testing.sim_scene import write_test_scene
+from reachy_mini_bridge.testing.sim_scene import ImagePlane, face_pool, write_test_scene
 from reachy_mini_bridge.testing.support import check_capability_names
 
 _DEFAULT_HOST = "127.0.0.1"
@@ -154,14 +157,28 @@ def sim_displays() -> SimDisplaySettings:
     return SimDisplaySettings(face_markers=_sim_viewer())
 
 
+def audio_settings() -> SimAudioSettings:
+    """The audio devices of the sim the harness spawns, from
+    `REACHY_MINI_E2E_AUDIO_INPUT` / `REACHY_MINI_E2E_AUDIO_OUTPUT` (a device name as the
+    operating system shows it; unset or empty: upstream's choice). Every bridge of the run
+    follows the daemon's devices through its report (specs/audio/audio.md "The robot's
+    audio devices"), so a run never opens the developer's own microphone and speakers."""
+    names = (
+        os.environ.get("REACHY_MINI_E2E_AUDIO_INPUT", "").strip() or None,
+        os.environ.get("REACHY_MINI_E2E_AUDIO_OUTPUT", "").strip() or None,
+    )
+    return SimAudioSettings(input_device=names[0], output_device=names[1])
+
+
 @contextmanager
-def _test_scene() -> Iterator[str]:
-    """The bridge's test scene (specs/testing/sim_scene.md), written into a temporary directory
-    that lives as long as the daemon: every sim the harness spawns runs it. Its props
-    start hidden, so a test that never shows one runs on upstream's empty scene."""
+def _test_scene(props: Sequence[ImagePlane] = ()) -> Iterator[str]:
+    """The bridge's test scene (specs/testing/sim_scene.md) — the pool of portraits plus
+    the run's declared ``props`` — written into a temporary directory that lives as long
+    as the daemon: every sim the harness spawns runs it. Its props start hidden, so a test
+    that never shows one runs on upstream's empty scene."""
     tmp = tempfile.mkdtemp(prefix="reachy-mini-test-scene-")
     try:
-        yield str(write_test_scene(tmp))
+        yield str(write_test_scene(tmp, [*face_pool(), *props]))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -169,12 +186,16 @@ def _test_scene() -> Iterator[str]:
 # --- daemon lifecycle: own it or borrow it (via the library) ---
 
 
-def managed_daemon(target_: str) -> Iterator[tuple[str, int]]:
+def managed_daemon(
+    target_: str, props: Sequence[ImagePlane] = ()
+) -> Iterator[tuple[str, int]]:
     """Yield a live daemon at (host, port) for `target_`.
 
     Borrows a daemon already ready at the address (never tears it down). Otherwise it
     spawns one through `reachy_mini_bridge.daemon.managed_daemon` and owns its teardown:
-    a MuJoCo daemon for `sim` (on the bridge's test scene, see `_test_scene`), the hardware daemon for `real` — only on a loopback address
+    a MuJoCo daemon for `sim` (on the bridge's test scene with the run's `props`, and
+    the run's audio devices, see `_test_scene` / `audio_settings`), the hardware daemon
+    for `real` — only on a loopback address
     (a USB robot on this machine; the harness never starts a daemon elsewhere, so a remote
     `real` address skips). Skips cleanly when the launcher / sim extra is missing, the port
     is busy with something else, no robot answers, or the daemon can't become ready in
@@ -200,12 +221,13 @@ def managed_daemon(target_: str) -> Iterator[tuple[str, int]]:
         import mujoco  # noqa: F401 - the sim extra, which the launcher needs
     except ImportError:
         _unavailable("sim extra (mujoco) not installed")
-    with _test_scene() as scene:
+    with _test_scene(props) as scene:
         config = DaemonConfig(
             spawn="auto",
             headless=not _sim_viewer(),
             scene=scene,
             kinematics_engine=kinematics_engine(),
+            audio=audio_settings(),
             sim_displays=sim_displays(),
         )
         with _spawned(config, host, port, "sim") as handle:

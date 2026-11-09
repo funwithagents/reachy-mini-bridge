@@ -1,6 +1,6 @@
 # Sim props from any image, extensible capabilities, the sim robot's audio devices
 
-**Status:** Todo
+**Status:** Done
 
 Implements the settled behavior in `specs/testing/sim_scene.md` ("A prop is an image on a plane", "A pool of portraits", "The testing harness"), `specs/testing/testing_support.md` ("Public surface", "Props and capabilities a consumer declares", "Configuration via the environment"), `specs/testing/testing.md`, `specs/testing/ci.md`, `specs/core/config.md` (`daemon.audio`), `specs/daemon/daemon.md` ("The launch command", "What the daemon reports"), `specs/daemon/sim_daemon.md` ("Audio devices") and `specs/audio/audio.md` ("The robot's audio devices"). It lets a consumer's e2e tier put its own images in the sim scene, declare capabilities of its own, run its own bridge over the harness's daemon, and give the sim robot a virtual microphone and speaker that every bridge follows. It leaves out image conversion (PNG only, the consumer converts), the upstream option that would retire the device substitution, and provisioning a virtual microphone on CI's Linux runner.
 

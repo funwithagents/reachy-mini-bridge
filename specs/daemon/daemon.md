@@ -10,7 +10,7 @@ tests:
 
 # Daemon lifecycle (`daemon.py`)
 
-**Status:** Updated
+**Status:** Implemented
 
 ## Purpose
 

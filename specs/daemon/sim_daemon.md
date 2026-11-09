@@ -11,7 +11,7 @@ tests:
 
 # Sim daemon launcher (`sim_daemon.py`)
 
-**Status:** Updated
+**Status:** Implemented
 
 ## Purpose
 

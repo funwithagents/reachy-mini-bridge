@@ -17,6 +17,10 @@
       "device": null,
       "hfov_deg": 70.0
     },
+    "audio": {
+      "input_device": null,
+      "output_device": null
+    },
     "sim_displays": {
       "camera_overlay": true,
       "robot_gaze": true,
