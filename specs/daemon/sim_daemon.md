@@ -3,6 +3,7 @@ code:
   - src/reachy_mini_bridge/sim_daemon.py
   - src/reachy_mini_bridge/config.py
   - src/reachy_mini_bridge/daemon.py
+  - src/reachy_mini_bridge/audio_devices.py
 tests:
   - tests/test_sim_daemon.py
   - tests/test_daemon.py
@@ -10,7 +11,7 @@ tests:
 
 # Sim daemon launcher (`sim_daemon.py`)
 
-**Status:** Implemented
+**Status:** Updated
 
 ## Purpose
 
@@ -25,6 +26,7 @@ The daemon's own face tracking plays no part in any of it. The bridge detects fa
 ```
 python -m reachy_mini_bridge.sim_daemon [--scene NAME] [--headless] [--[no-]preload-datasets]
     [--camera sim|webcam] [--webcam-device DEVICE] [--webcam-hfov DEGREES]
+    [--audio-input-device NAME] [--audio-output-device NAME]
     [--sim-display camera_overlay|robot_gaze|face_markers]… [upstream flags…]
 ```
 
@@ -55,9 +57,18 @@ It runs under `mjpython` for the viewer on macOS, under the plain interpreter fo
 - **Capture errors don't stop the daemon.** A source that cannot start, or delivers no frame within 5 s, logs one `ERROR` naming the device and — on macOS — the likely cause (camera permission for the terminal or editor that launched the daemon); the daemon keeps running with no camera (upstream's `get_frame()` returns nothing, `bridge.camera.latest()` stays `None` and the bridge's detector reads inactive), and the relay retries every 5 s so granting the permission or plugging the camera in recovers without a restart.
 - `--webcam-device` and `--webcam-hfov` are accepted only with `--camera webcam` (an argument error otherwise). `--webcam-hfov` is a number strictly between 1 and 179, default **70** — typical of a laptop or USB webcam; aim precision follows how well it matches the real camera (open question 1). A webcam is a **fixed** camera — it does not turn with the head — which is the bridge tracker's business ([head_tracking.md](../motion/head_tracking.md): the ray is rotated by the neutral pose, so the head eases to where the person is and holds), not the daemon's.
 
+### Audio devices
+
+`--audio-input-device NAME` / `--audio-output-device NAME` (`daemon.audio` in a config) name the simulated robot's microphone and speaker, so a sim can listen to a virtual cable a test speaks into and play to a sink nobody hears instead of the host's own microphone and speakers — which a test run must never take over. Upstream's daemon has no such option: its media server opens the card named "Reachy Mini Audio" when one is plugged in, else the system defaults (`get_audio_device` in `reachy_mini.media.device_detection`).
+
+- **Resolved before anything starts.** The launcher lists the host's audio devices once (`reachy_mini_bridge.audio_devices.resolve`, through upstream's own `Gst.DeviceMonitor` listing and matcher: the name contained in the device's name, upstream's per-platform id) and exits with an argument error when a name matches no device or more than one, naming the devices of that direction — the spawn then fails like any daemon that cannot come up, never a silent fallback to the host's microphone.
+- **Applied where upstream decides.** The launcher installs `audio_devices.substitute(...)` on `reachy_mini.media.media_server`, the module whose `get_audio_device` the daemon's media server calls for its source and its sinks, for the daemon's life: every lookup of a named direction returns the chosen device's id, the other direction keeps upstream's answer. The daemon's own sounds (wake-up, sleep) and its WebRTC audio use the chosen devices.
+- **Reported.** The report (below) carries `"audio": {"input_device", "output_device"}`, the names as given, `null` for a direction left to upstream — which is how every bridge on this machine opens the same devices ([../audio/audio.md](../audio/audio.md) "The robot's audio devices").
+- **No echo cancellation on a named device.** Upstream opens a named device as it opens the robot's card, which cancels echo in hardware, so without software AEC; the default devices keep `webrtcdsp`.
+
 ### The report
 
-The launcher serves `GET /api/bridge/daemon` on every run, in `run_sim_daemon`'s `create_app` wrap and whatever the flags, so the test scene's launcher and any other `SimDaemonExtension` user serve it too: its camera source and field of view, scene, `headless`, `preload_datasets` and the displays that are on. The route and who reads it are [daemon.md](daemon.md)'s ("What the daemon reports"). `hfov_deg` is `--webcam-hfov` or its default, known at launch, before any frame: the camera's own field of view. The narrower field of a cropped source would be a field of its own (`effective_hfov_deg`), known only once frames flow ([head_tracking.md](../motion/head_tracking.md) open question 1). Upstream's `reachy-mini-daemon --sim` has no such route: a client gets a 404.
+The launcher serves `GET /api/bridge/daemon` on every run, in `run_sim_daemon`'s `create_app` wrap and whatever the flags, so the test scene's launcher and any other `SimDaemonExtension` user serve it too: its camera source and field of view, its audio devices, scene, `headless`, `preload_datasets` and the displays that are on. The route and who reads it are [daemon.md](daemon.md)'s ("What the daemon reports"). `hfov_deg` is `--webcam-hfov` or its default, known at launch, before any frame: the camera's own field of view. The narrower field of a cropped source would be a field of its own (`effective_hfov_deg`), known only once frames flow ([head_tracking.md](../motion/head_tracking.md) open question 1). Upstream's `reachy-mini-daemon --sim` has no such route: a client gets a 404.
 
 ### The headless camera
 
@@ -89,7 +100,8 @@ The backend subclass, the argv handling and the display wiring are pure or in-pr
 - **Hooks.** `on_backend` runs once the model exists, `on_app` on the built app; the subclass leaves the control loop's methods as upstream's.
 - **Any camera feeds the stream.** The capture pipeline crops and scales into 1280×720 rather than constraining the source; the relay reports the resolution it negotiated.
 - **Launcher argv.** Flag rewriting and passthrough; the webcam flags rejected without `--camera webcam`; `--sim-display` rejected with `--headless` and reaching the backend as its displays, each of `SIM_DISPLAYS` accepted; the render thread not started and the relay started in webcam mode (the capture pipeline behind a seam).
-- **The report.** `GET /api/bridge/daemon` answers with the launcher's arguments on every run: the source and field of view — `sim` with `null`, `webcam` with `--webcam-hfov` or its default — the scene, `empty` when none is named, `headless`, `preload_datasets` and the displays that are on.
+- **Audio devices.** The flags resolved before the daemon starts, an unknown or ambiguous name an argument error naming the devices (the device listing behind a seam); the substitution installed on the media server's module with the resolved ids, nothing installed without the flags.
+- **The report.** `GET /api/bridge/daemon` answers with the launcher's arguments on every run: the source and field of view — `sim` with `null`, `webcam` with `--webcam-hfov` or its default — the audio devices, the scene, `empty` when none is named, `headless`, `preload_datasets` and the displays that are on.
 - **The headless camera.** `MUJOCO_GL` defaulted to `egl` for a headless run with the `sim` camera on Linux, and left alone when the environment sets it, on another platform, with a webcam, or under the viewer (the platform behind a seam); the render thread started with the run on Linux headless — with the backend the environment names, else `egl` — and nowhere else, a webcam run included, and joined after the run; the renderer it builds drawing without shadows, reflections, skybox, haze, fog or multisampling, and leaving out exactly the geoms of the eye camera's kinematic tree (a portrait and the floor stay, the head's meshes go); a renderer that fails to build logged once, the run continuing; the renderer built only once the backend reports ready; a render without a first frame warned about once, a render that drew one not.
 - **The display wiring.** The relay description with the overlay has the `tee` branch and an unchanged stream branch, and without it is today's string; the backend subclass taps the renderer in `sim` mode and hands the overlay to the relay in `webcam` mode; the displays that are on reach the viewer handle in `run()`; the displays router is mounted with `face_markers` and absent without it. The displays' own tests are [sim_displays.md](sim_displays.md)'s.
 
@@ -97,8 +109,8 @@ The sim's faces are the bridge's to detect and the head's convergence on them th
 
 ## Relationship to the other specs
 
-- **[daemon.md](daemon.md):** `launch_command` builds every `sim` recipe on this launcher (the test scene's for a `.xml` scene), forwarding the camera flags from `DaemonConfig.camera` and a `--sim-display` per display on in `DaemonConfig.sim_displays`.
-- **[config.md](../core/config.md):** `daemon.camera` (`source`, `device`, `hfov_deg`) configures the camera source of a spawned daemon; `daemon.sim_displays` (`camera_overlay`, `robot_gaze`, `face_markers`) the sim displays.
+- **[daemon.md](daemon.md):** `launch_command` builds every `sim` recipe on this launcher (the test scene's for a `.xml` scene), forwarding the camera flags from `DaemonConfig.camera`, the audio flags from `DaemonConfig.audio` and a `--sim-display` per display on in `DaemonConfig.sim_displays`.
+- **[config.md](../core/config.md):** `daemon.camera` (`source`, `device`, `hfov_deg`) configures the camera source of a spawned daemon; `daemon.audio` (`input_device`, `output_device`) its audio devices; `daemon.sim_displays` (`camera_overlay`, `robot_gaze`, `face_markers`) the sim displays.
 - **[sim_displays.md](sim_displays.md):** the three sim displays — the camera overlay, the robot's gaze, the face markers — the viewer handle they share, the scene layer, and the `/api/sim/displays` router.
 - **[sim_scene.md](../testing/sim_scene.md):** the test scene is a `SimDaemonExtension`; its face tests rely on the rendered camera stream for detection and on the bridge's tracker for the aim.
 - **[user_perception.md](../vision/user_perception.md):** the bridge's detector runs on the camera stream the launcher feeds — rendered under the viewer, or a host webcam.

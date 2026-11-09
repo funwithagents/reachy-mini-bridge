@@ -2,14 +2,17 @@
 code:
   - src/reachy_mini_bridge/audio.py
   - src/reachy_mini_bridge/microphone.py
+  - src/reachy_mini_bridge/audio_devices.py
+  - src/reachy_mini_bridge/bridge.py
 tests:
   - tests/test_audio.py
+  - tests/test_audio_devices.py
   - tests-e2e/test_audio.py
 ---
 
 # Audio & media session (`audio.py`)
 
-**Status:** Implemented
+**Status:** Updated
 
 ## Purpose
 
@@ -167,6 +170,17 @@ Upstream ships a **head wobbler**: while it is enabled, every sound that reaches
   - **On the `webrtc` client backend** (a wireless robot) the array is plugged into the robot, out of the client's reach, so the session posts the profile to the robot's daemon — `POST {daemon_url}/api/audio/config/apply` with `{"config": [{"name": ..., "values": [...]}, ...], "verify": true}`, upstream's remote counterpart of `apply_audio_config` — and the daemon writes it.
 
   A profile that does not apply is **reported, never silent**: upstream reports it by a result — `apply_audio_config` returning `False` (no ReSpeaker found — always so on a sim — or a write or its readback failing), or the daemon answering `503` (no board) or `{"applied": false}` — and the session logs one warning naming the cause, then opens with whatever the chip holds. Upstream *raising* is a failure of the open: a local `apply_audio_config` raising propagates, and the daemon answering `500` (its `apply_audio_config` raised) or being unreachable raises `BridgeError` with its detail; either unwinds the session like any failed open. The firmware-default baseline (firmware 2.1.2) reads `PP_AGCONOFF=1`, `PP_AGCGAIN≈10.4`, `AUDIO_MGR_MIC_GAIN=90`, `AUDIO_MGR_REF_GAIN=8`, `AUDIO_MGR_SYS_DELAY=12`, with `AEC_AECCONVERGED=1` once speech has played through the daemon.
+
+### The robot's audio devices
+
+Which microphone and speaker the robot has is a property of the robot, not of a client: on hardware it is the robot's sound card, which the daemon and every client find by its name ("Reachy Mini Audio"); on the sim it is the host's devices — the system defaults, or the ones the sim daemon was told to open (`daemon.audio`, [../daemon/sim_daemon.md](../daemon/sim_daemon.md) "Audio devices"), a virtual cable a test speaks into, say. On a **local** backend the client's own process opens the devices: upstream's `GStreamerAudio`, built inside `ReachyMini(...)`, opens a source and a sink for the session's pipeline and a fresh sink for every sound file, each through `get_audio_device` (`reachy_mini.media.device_detection`), which looks for the robot's card and falls back to the system defaults. So the bridge's process must open what the daemon opened, or the sim's robot would hear one microphone through the daemon and another through the bridge.
+
+- **The bridge follows the daemon.** `start()` reads the daemon's report before it builds the client ([../daemon/daemon.md](../daemon/daemon.md) "What the daemon reports"). When the report names an input or an output device and the daemon is on this machine (a loopback host — the only place both processes see the same devices), the bridge resolves each name against its own host's devices and installs, for the session, `audio_devices.substitute(...)` on `reachy_mini.media.audio_gstreamer` — the module whose `get_audio_device` the client's every lookup goes through: the mic and the pipeline's sink when the client is built, and the sink of every `play_sound` afterwards, the emotions' sounds included. A named direction returns the chosen device's id, the other keeps upstream's answer. The bridge's config carries no device: every bridge on the daemon — an application's, the testing harness's, its probe session — opens the same ones.
+- **Resolution is upstream's matching.** `audio_devices.resolve(name, direction)` lists the host's devices through upstream's `Gst.DeviceMonitor` listing and keeps those upstream's own matcher (`find_audio_device`, with the name as its target) accepts — the name contained in the device's name, monitors and loopbacks skipped as upstream skips them — and returns upstream's per-platform id (CoreAudio `unique-id`, PipeWire `node.name`, a PulseAudio name, WASAPI `device.id`). No device, or more than one, is a `BridgeError` at `start()` naming the devices of that direction: never a silent fallback to the host's own microphone. On Linux a PulseAudio *monitor* is not a microphone to upstream's matcher; a virtual microphone there is a real source (a `module-remap-source` over a null sink's monitor, or a PipeWire virtual source).
+- **For the session, for the process.** The substitution is installed before the client is built and removed when the session closes (or its bring-up fails). It is one module-level name, so it holds for the whole process: a second session started in the same process while one holds devices opens the same ones, and one whose daemon reports other devices fails `start()` with a `BridgeError` naming the devices in force. The speaker equalizer's own lookup (`reachy_mini.media.audio_base`) is left to upstream: the EQ is tuned for the robot's speaker, and stays off on any other output.
+- **No echo cancellation on a named device.** Upstream opens a named device the way it opens the robot's card, whose XVF3800 cancels echo in hardware, so without the software AEC (`webrtcdsp`) it puts on the default devices. Separate virtual devices do not echo; a sim session that needs software AEC keeps the default devices.
+- **The upstream option.** Upstream's matcher already takes the name to look for; `ReachyMini(...)` and the daemon taking `audio_input_device` / `audio_output_device` and passing them down is the fix that retires the substitution, on both sides.
+- **Pinned offline.** `tests/test_audio_devices.py` pins the matching (one device, none, two; a direction left alone) on upstream's matcher with a scripted device list, and — in a child process, GStreamer being initialised there ([../testing/testing.md](../testing/testing.md)) — builds a `GStreamerAudio` under the substitution and asserts its source, its pipeline's sink and a sound file's sink built afterwards all carry the chosen ids: an upstream release that looks the device up some other way fails it, rather than the bridge opening the host's microphone without a word.
 
 - **Barge-in.** Interrupting playback mid-utterance flushes queued speaker audio via `media.audio.clear_player()` (`MediaSession.clear_player()`; the pinned `reachy-mini>=1.11` has it, so no legacy fallback). Exposed so [bridge.md](../core/bridge.md) can offer a "stop talking" action.
 
