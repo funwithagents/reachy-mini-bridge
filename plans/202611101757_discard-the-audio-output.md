@@ -14,6 +14,7 @@ Implements the settled behavior in `specs/core/config.md` (`daemon.audio.discard
 - `src/reachy_mini_bridge/testing/_daemon.py`, `testing/fixtures.py` — `REACHY_MINI_E2E_DISCARD_AUDIO_OUTPUT`, a usage error with `REACHY_MINI_E2E_AUDIO_OUTPUT`, checked at configure time.
 - `tests/test_config.py`, `tests/test_audio_devices.py`, `tests/test_sim_daemon.py`, `tests/test_daemon.py`, `tests/test_bridge.py`, `tests/test_testing_support.py` — functional tests; `tests-e2e/test_audio.py` — the discard on a live sim under the variable.
 - `config.example.json`, `docs/reference/configuration.md`, `docs/guides/testing.md`, `AGENTS.md` — the consumer side.
+- `.github/workflows/ci.yml`, `specs/testing/ci.md` — a separate `e2e-sim-discarded-audio` job: the `e2e-sim` environment on the default engine, `tests-e2e/test_audio.py` whole with `REACHY_MINI_E2E_DISCARD_AUDIO_OUTPUT=1`, `REACHY_MINI_E2E_REQUIRED_CAPS=motion,audio`; the job table, the expected skips (the discard test skips in the `e2e-sim` entries and runs there), the required checks; the `e2e-sim` entries unchanged.
 
 ## Steps
 
@@ -24,6 +25,7 @@ Implements the settled behavior in `specs/core/config.md` (`daemon.audio.discard
 5. **Bridge.** `_reported_audio_devices` carries the discard into the session's substitution; the log line via `describe_audio_output`.
 6. **Harness.** `audio_settings()` reads the variable (`1`/`true`/`yes`/`on`), refuses it with an output name, and `pytest_configure` calls it so the error stops the run early.
 7. **Specs and docs.**
+8. **CI.** The `e2e-sim-discarded-audio` job beside `e2e-sim` (not a matrix entry), and `specs/testing/ci.md` updated with it.
 
 ## Verification
 
