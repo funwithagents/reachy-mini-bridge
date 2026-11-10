@@ -197,16 +197,21 @@ class SimAudioSettings:
     """The simulated robot's microphone and speaker (specs/core/config.md
     ``daemon.audio``; specs/daemon/sim_daemon.md "Audio devices"): a device name as the
     operating system shows it, or ``None`` for upstream's choice — the robot's sound card
-    when one is plugged in, else the system default. The sim daemon opens them and
-    reports them, and every bridge on the machine follows the report."""
+    when one is plugged in, else the system default. ``discard_output``: no speaker at
+    all — the robot's sound is consumed in real time and dropped (contradicts an
+    ``output_device``). The sim daemon opens them and reports them, and every bridge on
+    the machine follows the report."""
 
     input_device: str | None = None
     output_device: str | None = None
+    discard_output: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SimAudioSettings:
         block = _require_object(data, "daemon.audio")
-        _reject_unknown_keys(block, "daemon.audio", {"input_device", "output_device"})
+        _reject_unknown_keys(
+            block, "daemon.audio", {"input_device", "output_device", "discard_output"}
+        )
         values: dict[str, str | None] = {}
         for name in ("input_device", "output_device"):
             value = block.get(name)
@@ -216,7 +221,17 @@ class SimAudioSettings:
                     f"got {value!r}"
                 )
             values[name] = value
-        return cls(**values)
+        discard = block.get("discard_output", False)
+        if not isinstance(discard, bool):
+            raise ConfigError(
+                f"'daemon.audio.discard_output' must be a boolean, got {discard!r}"
+            )
+        if discard and values["output_device"] is not None:
+            raise ConfigError(
+                "'daemon.audio.discard_output' and 'daemon.audio.output_device' "
+                "contradict each other: a discarded output opens no device"
+            )
+        return cls(**values, discard_output=discard)
 
     @classmethod
     def from_json(cls, text: str) -> SimAudioSettings:

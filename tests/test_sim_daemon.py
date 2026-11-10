@@ -1090,6 +1090,13 @@ def host_audio(monkeypatch: pytest.MonkeyPatch) -> Any:
     monkeypatch.setattr(audio_devices, "_list_devices", lambda d: devices[d])
     media_server = types.ModuleType("fake_media_server")
     media_server.get_audio_device = lambda device_type="Source": None  # type: ignore[attr-defined]
+
+    class GstMediaServer:  # upstream's class, its speaker sink builder
+        def _build_audiosink_element(self) -> str:
+            return "the host's speaker"
+
+    GstMediaServer.__module__ = "fake_media_server"
+    media_server.GstMediaServer = GstMediaServer  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "fake_media_server", media_server)
     monkeypatch.setattr(sim_daemon, "_DAEMON_AUDIO_MODULE", "fake_media_server")
     return media_server
@@ -1136,6 +1143,50 @@ def test_an_audio_device_that_is_not_one_device_stops_the_launch(
     assert message in err and "BlackHole 2ch" in err
 
 
+def test_a_discarded_output_replaces_the_media_server_s_speaker_for_the_daemon_s_life(
+    monkeypatch: pytest.MonkeyPatch, host_audio: Any
+) -> None:
+    """specs/daemon/sim_daemon.md "Audio devices": `--discard-audio-output` replaces the
+    media server's sink builder with the discarding sink while the daemon runs — the
+    microphone still the named one — and upstream's builder is back after."""
+    from reachy_mini.daemon.app import main as upstream_main
+
+    server = host_audio.GstMediaServer
+    upstream_builder = server._build_audiosink_element
+    seen: list[tuple[object, object]] = []
+    monkeypatch.setattr(
+        upstream_main,
+        "main",
+        lambda: seen.append(
+            (host_audio.get_audio_device("Source"), server._build_audiosink_element)
+        ),
+    )
+    monkeypatch.setattr(sys, "argv", ["untouched"])
+    sim_daemon.run_sim_daemon(
+        ["--headless", "--audio-input-device", "BlackHole", "--discard-audio-output"]
+    )
+    assert seen == [("blackhole-id", audio_devices.discarding_sink)]
+    assert server._build_audiosink_element is upstream_builder
+    assert server()._build_audiosink_element() == "the host's speaker"
+
+
+def test_a_discarded_output_and_a_named_speaker_stop_the_launch(
+    host_audio: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit):
+        sim_daemon.run_sim_daemon(
+            [
+                "--headless",
+                "--audio-output-device",
+                "BlackHole",
+                "--discard-audio-output",
+            ]
+        )
+    assert "--discard-audio-output excludes --audio-output-device" in (
+        capsys.readouterr().err
+    )
+
+
 def test_the_report_names_the_audio_devices(
     monkeypatch: pytest.MonkeyPatch, host_audio: Any
 ) -> None:
@@ -1155,6 +1206,31 @@ def test_the_report_names_the_audio_devices(
     assert http.get("/api/bridge/daemon").json()["audio"] == {
         "input_device": None,
         "output_device": "BlackHole",
+        "discard_output": False,
+    }
+
+
+def test_the_report_says_the_output_is_discarded(
+    monkeypatch: pytest.MonkeyPatch, host_audio: Any
+) -> None:
+    """What every bridge on the machine follows (specs/audio/audio.md)."""
+    fastapi = pytest.importorskip("fastapi")
+    testclient = pytest.importorskip("fastapi.testclient")
+    from reachy_mini.daemon.app import main as upstream_main
+
+    monkeypatch.setattr(
+        upstream_main, "create_app", lambda *a, **kw: fastapi.FastAPI(title="upstream")
+    )
+    monkeypatch.setattr(
+        sim_daemon, "bridge_backend", lambda backend_class, **kw: backend_class
+    )
+    _run(["--discard-audio-output"], monkeypatch)
+    upstream_args: Any = SimpleNamespace()
+    http = testclient.TestClient(upstream_main.create_app(upstream_args, None))
+    assert http.get("/api/bridge/daemon").json()["audio"] == {
+        "input_device": None,
+        "output_device": None,
+        "discard_output": True,
     }
 
 

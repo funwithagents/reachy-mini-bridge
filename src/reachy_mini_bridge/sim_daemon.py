@@ -940,6 +940,12 @@ def _parser(prog: str) -> argparse.ArgumentParser:
         help="the simulated robot's speaker, the same way",
     )
     parser.add_argument(
+        "--discard-audio-output",
+        action="store_true",
+        help="no speaker at all: the robot's sound is consumed in real time and "
+        "dropped (excludes --audio-output-device)",
+    )
+    parser.add_argument(
         "--sim-display",
         action="append",
         choices=SIM_DISPLAYS,
@@ -988,9 +994,13 @@ def run_sim_daemon(
     displays = _Displays.named(args.sim_display)
     # The audio devices (specs/daemon/sim_daemon.md "Audio devices"): resolved before
     # anything starts, so a name matching no device, or several, stops the launch here.
+    if args.discard_audio_output and args.audio_output_device is not None:
+        parser.error("--discard-audio-output excludes --audio-output-device")
     try:
         devices = audio_devices.resolve_devices(
-            args.audio_input_device, args.audio_output_device
+            args.audio_input_device,
+            args.audio_output_device,
+            discard_output=args.discard_audio_output,
         )
     except audio_devices.AudioDeviceError as e:
         parser.error(str(e))
@@ -1008,6 +1018,7 @@ def run_sim_daemon(
         "audio": {
             "input_device": args.audio_input_device,
             "output_device": args.audio_output_device,
+            "discard_output": args.discard_audio_output,
         },
         "scene": args.scene or _UPSTREAM_DEFAULT_SCENE,
         "headless": args.headless,
@@ -1060,7 +1071,8 @@ def run_sim_daemon(
         args.sim_display or "none",
         headless_render or "none",
     )
-    # The daemon's media server opens the named devices for the daemon's life.
+    # The daemon's media server opens the named devices — and discards the output when
+    # asked — for the daemon's life.
     with audio_devices.substitute(_DAEMON_AUDIO_MODULE, devices):
         upstream_main.main()
 

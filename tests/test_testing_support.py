@@ -34,6 +34,7 @@ from reachy_mini_bridge.config import (
     FaceDetectionSettings,
     MotionSettings,
     ReachyMiniConfig,
+    SimAudioSettings,
     TrackingSettings,
 )
 from reachy_mini_bridge.errors import DaemonError, SimSceneError
@@ -814,6 +815,37 @@ def test_a_spawned_sim_carries_the_runs_props_and_audio_devices(
     assert 'name="hand_1"' in text and 'name="face_4"' in text
     with pytest.raises(StopIteration):
         next(lifecycle)
+
+
+def test_the_run_can_discard_the_spawned_sim_s_audio_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`REACHY_MINI_E2E_DISCARD_AUDIO_OUTPUT=1`: the spawned sim's speaker goes nowhere,
+    beside the named microphone; together with a named speaker it is a usage error."""
+    monkeypatch.delenv("REACHY_MINI_HOST", raising=False)
+    monkeypatch.delenv("REACHY_MINI_E2E_SIM_VIEWER", raising=False)
+    monkeypatch.delenv("REACHY_MINI_E2E_KINEMATICS", raising=False)
+    monkeypatch.setenv("REACHY_MINI_E2E_AUDIO_INPUT", "CABLE Output")
+    monkeypatch.delenv("REACHY_MINI_E2E_AUDIO_OUTPUT", raising=False)
+    monkeypatch.setenv("REACHY_MINI_E2E_DISCARD_AUDIO_OUTPUT", "1")
+    spawns = _RecordedSpawns()
+    _patch_lifecycle(monkeypatch, ready=False, spawns=spawns)
+
+    lifecycle = _daemon.managed_daemon("sim")
+    next(lifecycle)
+    (config,) = spawns.configs
+    assert config.audio == SimAudioSettings(
+        input_device="CABLE Output", discard_output=True
+    )
+    with pytest.raises(StopIteration):
+        next(lifecycle)
+
+    monkeypatch.setenv("REACHY_MINI_E2E_DISCARD_AUDIO_OUTPUT", "0")
+    assert _daemon.audio_settings().discard_output is False
+    monkeypatch.setenv("REACHY_MINI_E2E_DISCARD_AUDIO_OUTPUT", "yes")
+    monkeypatch.setenv("REACHY_MINI_E2E_AUDIO_OUTPUT", "CABLE Input")
+    with pytest.raises(pytest.UsageError, match="contradict each other"):
+        _daemon.audio_settings()
 
 
 # --- camera capability probe: through the bridge's feed, never beside it ---

@@ -144,6 +144,30 @@ def test_the_sim_s_named_input_device_feeds_the_bridge_s_mic(
     assert len(chunks) == 10 and all(len(chunk) > 0 for chunk in chunks)
 
 
+def test_the_sim_s_discarded_output_is_discarded_by_the_bridge_too(
+    live_bridge: LiveBridge,
+) -> None:
+    """specs/audio/audio.md "The robot's audio devices": with
+    `REACHY_MINI_E2E_DISCARD_AUDIO_OUTPUT` set, the sim reports a discarded output, the
+    bridge's own client builds its speaker sink as the discarding one, and `say` still
+    lasts as long as the speech — the sink paces the audio in real time. Skips without the
+    variable."""
+    require_env("REACHY_MINI_E2E_DISCARD_AUDIO_OUTPUT")
+    from reachy_mini.media.audio_gstreamer import GStreamerAudio
+
+    from reachy_mini_bridge import audio_devices
+
+    bridge, _caps = live_bridge
+    info = bridge.daemon
+    assert info is not None and info.audio is not None, "the daemon reported no audio"
+    assert info.audio.discard_output
+    assert GStreamerAudio._build_audiosink_element is audio_devices.discarding_sink
+
+    start = time.perf_counter()
+    live_bridge.run(bridge.say("ignored", _ToneSynth(seconds=1.0)))
+    assert 1.0 <= time.perf_counter() - start < 3.0
+
+
 def test_two_mic_subscribers_each_receive_the_whole_capture(
     live_bridge: LiveBridge,
 ) -> None:

@@ -19,7 +19,8 @@
     },
     "audio": {
       "input_device": null,
-      "output_device": null
+      "output_device": null,
+      "discard_output": false
     },
     "sim_displays": {
       "camera_overlay": true,

@@ -271,6 +271,67 @@ def test_a_daemon_on_other_audio_devices_than_the_config_names_is_a_difference()
     ]
 
 
+def test_launch_command_discards_the_audio_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`daemon.audio.discard_output` becomes `--discard-audio-output` beside the named
+    microphone; the hardware recipe takes none of it."""
+    monkeypatch.setattr(daemon.shutil, "which", lambda name: f"/bin/{name}")
+    discard = SimAudioSettings(input_device="CABLE Output", discard_output=True)
+    cmd = daemon.launch_command(DaemonConfig(audio=discard))
+    at = cmd.index("--audio-input-device")
+    assert cmd[at : at + 3] == [
+        "--audio-input-device",
+        "CABLE Output",
+        "--discard-audio-output",
+    ]
+    assert "--audio-output-device" not in cmd
+    assert "--discard-audio-output" not in daemon.launch_command(DaemonConfig())
+    real = daemon.launch_command(DaemonConfig(audio=discard), backend="real")
+    assert "--discard-audio-output" not in real
+
+
+def _sim_report(audio: dict[str, object]) -> daemon.DaemonInfo:
+    return daemon.DaemonInfo.from_report(
+        {
+            "launcher": "sim",
+            "camera": {"source": "sim", "hfov_deg": None},
+            "audio": audio,
+            "scene": "empty",
+            "headless": True,
+            "preload_datasets": True,
+            "sim_displays": [],
+        },
+        None,
+    )
+
+
+def test_a_daemon_that_discards_or_not_against_the_config_is_a_difference() -> None:
+    """The report says whether the daemon discards its output (an older launcher's report,
+    without the key, did not); a config that discards and a daemon that plays — or the
+    other way round with a named speaker — contradict each other."""
+    discarding = _sim_report(
+        {"input_device": None, "output_device": None, "discard_output": True}
+    )
+    assert discarding.audio == SimAudioSettings(discard_output=True)
+    older = _sim_report({"input_device": None, "output_device": "Null"})
+    assert older.audio == SimAudioSettings(output_device="Null")
+    wants_discard = DaemonConfig(audio=SimAudioSettings(discard_output=True))
+    wants_null = DaemonConfig(audio=SimAudioSettings(output_device="Null"))
+    assert daemon.daemon_differences(discarding, wants_discard) == []
+    assert daemon.daemon_differences(discarding, DaemonConfig()) == []  # no opinion
+    assert daemon.daemon_differences(older, wants_discard) == [
+        "audio output is Null, the config says discarded"
+    ]
+    assert daemon.daemon_differences(discarding, wants_null) == [
+        "audio output is discarded, the config says Null"
+    ]
+    default = _sim_report({"input_device": None, "output_device": None})
+    assert daemon.daemon_differences(default, wants_discard) == [
+        "audio output is the default, the config says discarded"
+    ]
+
+
 def test_launch_command_turns_on_the_viewer_displays(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -381,11 +381,36 @@ def test_daemon_audio_names_the_sim_robot_s_devices() -> None:
         ({"output_device": 3}, "output_device"),
         ({"microphone": "BlackHole"}, "microphone"),
         ("BlackHole", "daemon.audio"),
+        ({"discard_output": "yes"}, "discard_output"),
+        ({"discard_output": 1}, "discard_output"),
+        (
+            {"discard_output": True, "output_device": "Null Output"},
+            "contradict each other",
+        ),
     ],
 )
 def test_daemon_audio_rejects_bad_values(audio: object, key: str) -> None:
     with pytest.raises(ConfigError, match=key):
         ReachyMiniConfig.from_dict({"backend": "sim", "daemon": {"audio": audio}})
+
+
+def test_daemon_audio_discards_the_output_on_request() -> None:
+    """specs/core/config.md `daemon.audio.discard_output`: off by default, on beside a
+    named microphone, never beside a named speaker (tested above)."""
+    assert ReachyMiniConfig().daemon.audio.discard_output is False
+    cfg = ReachyMiniConfig.from_dict(
+        {
+            "backend": "sim",
+            "daemon": {
+                "audio": {"input_device": "CABLE Output", "discard_output": True}
+            },
+        }
+    )
+    assert cfg.daemon.audio == SimAudioSettings(
+        input_device="CABLE Output", discard_output=True
+    )
+    off = SimAudioSettings.from_json('{"discard_output": false, "output_device": "X"}')
+    assert off == SimAudioSettings(output_device="X")
 
 
 def test_daemon_sim_displays_turn_on_a_viewer_display() -> None:

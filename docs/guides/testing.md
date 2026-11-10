@@ -197,7 +197,10 @@ too; without one it uses the machine's default speaker and mic. To keep a run of
 microphone and speakers, give the sim devices of its own: `REACHY_MINI_E2E_AUDIO_INPUT` /
 `REACHY_MINI_E2E_AUDIO_OUTPUT` name them (below), the sim opens them, and every bridge of the
 run follows — a test speaks into a virtual cable (BlackHole on macOS) and the bridge's mic
-hears it. Named devices run without echo cancellation. Don't stop and restart the
+hears it. Named devices run without echo cancellation. On a machine with a single virtual
+cable — its playback end feeding the robot's microphone, a CI runner say — no speaker may
+play into it: `REACHY_MINI_E2E_DISCARD_AUDIO_OUTPUT=1` gives the sim no speaker at all, its
+sound played in real time into nothing, and every bridge of the run discards too. Don't stop and restart the
 media pipeline in a test (`bridge.robot.media.stop_recording()` then `start_recording()`): on
 macOS the restarted pipeline reopens on the system defaults, so the rest of the module's
 audio silently leaves the robot.
@@ -214,6 +217,7 @@ The `live_bridge` fixture reads the same knobs the bridge's own tier uses:
 | `REACHY_MINI_E2E_SIM_VIEWER` | unset | `1` to launch the headfull MuJoCo viewer (local; needs a GUI/GL context) |
 | `REACHY_MINI_E2E_REQUIRED_CAPS` | unset | comma-separated capabilities the run must have (`motion,audio,camera,props:face,props:card` in the bridge's CI): a missing one, or a daemon the harness cannot bring up, **fails** the fixture instead of skipping |
 | `REACHY_MINI_E2E_AUDIO_INPUT` / `REACHY_MINI_E2E_AUDIO_OUTPUT` | unset | the microphone and speaker of the sim the harness spawns, by name as your system shows it (`daemon.audio`, [configuration.md](../reference/configuration.md)) — a virtual cable, a sink nobody hears. Every bridge of the run, yours included, opens the same devices; a name matching no device, or several, fails the spawn naming the devices |
+| `REACHY_MINI_E2E_DISCARD_AUDIO_OUTPUT` | unset | `1` for no speaker at all on the sim the harness spawns (`daemon.audio.discard_output`): its sound is consumed in real time and dropped, so `say` still lasts as long as the speech, and every bridge of the run discards too. Set together with `REACHY_MINI_E2E_AUDIO_OUTPUT` it stops the run with a usage error |
 | `REACHY_MINI_E2E_MEDIA_BACKEND` | by host | the `media_backend` the fixture's bridge connects with; by default `local` on a loopback host and upstream's `default` (WebRTC) for a remote robot |
 | `REACHY_MINI_E2E_KINEMATICS` | `analytical` | the kinematics engine of the daemon the harness spawns, sim or real: `analytical`, `placo` (needs the `placo` extra) or `nn` — the same suite runs on each, and the sim solves every target through the engine chosen ([configuration.md](../reference/configuration.md#kinematics-engines)). On `nn` expect two head-tracking tests to fail on the image-centring check: the engine itself over-rotates by 3 to 4° at 18° of yaw, which is why the bridge's CI runs `analytical` and `placo` only. A borrowed daemon runs its own engine, so set this to match it. Another word fails the run |
 
