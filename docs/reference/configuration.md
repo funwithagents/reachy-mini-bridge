@@ -115,6 +115,7 @@ Installing the `placo` extra changes nothing by itself: the engine is this field
 |---|---|---|
 | `input_device` | `null` | The microphone: a device name as your system shows it — `"BlackHole 2ch"` in the macOS Sound settings, a PulseAudio / PipeWire source's description on Linux (a real source: a null sink's monitor is not one) |
 | `output_device` | `null` | The speaker, the same way |
+| `discard_output` | `false` | No speaker at all: the robot's sound plays in real time into nothing (a GStreamer `fakesink` paced on the clock), so `say` still lasts as long as the speech, and every bridge on this machine discards too. For a machine whose only audio device is a cable feeding the robot's microphone — a CI runner — where any speaker, the default included, would let the robot hear itself. `true` together with an `output_device` is a `ConfigError` |
 
 **`daemon.sim_displays`** — what the viewer shows ([specs/daemon/sim_displays.md](../../specs/daemon/sim_displays.md)); every one is viewer only, so any of them `true` with `headless: true` is a `ConfigError`:
 

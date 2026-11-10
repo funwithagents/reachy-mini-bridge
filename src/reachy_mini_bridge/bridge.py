@@ -50,7 +50,12 @@ from .config import (
     ReachyMiniConfig,
     TrackingSettings,
 )
-from .daemon import DaemonInfo, daemon_differences, describe_camera
+from .daemon import (
+    DaemonInfo,
+    daemon_differences,
+    describe_audio_output,
+    describe_camera,
+)
 from .errors import (
     BridgeError,
     GravityCompensationUnsupportedError,
@@ -243,16 +248,20 @@ def _fetch_daemon_report(host: str, port: int) -> object:
 
 
 def _reported_audio_devices(report: object) -> audio_devices.AudioDevices:
-    """The devices the daemon's report names, resolved on this host. Blocking. Nothing
-    when the report names none or is unreadable (its warning comes with the rest of the
-    report's); ``AudioDeviceError`` when a named device is not one device here."""
+    """The devices the daemon's report names, resolved on this host, and whether it
+    discards its output — the bridge's own client then discards too, so no process of
+    the session opens a speaker. Blocking. Nothing when the report names none or is
+    unreadable (its warning comes with the rest of the report's); ``AudioDeviceError``
+    when a named device is not one device here."""
     try:
         audio = DaemonInfo.from_report(report, None).audio
     except _DAEMON_READ_ERRORS:
         return audio_devices.AudioDevices()
     if audio is None:
         return audio_devices.AudioDevices()
-    return audio_devices.resolve_devices(audio.input_device, audio.output_device)
+    return audio_devices.resolve_devices(
+        audio.input_device, audio.output_device, discard_output=audio.discard_output
+    )
 
 
 def _read_daemon_info(robot: AnyReachyMini, report: object) -> DaemonInfo:
@@ -555,8 +564,9 @@ class ReachyMiniBridge:
                 stack.push_async_callback(asyncio.to_thread, handle.stop)
 
             # The launcher's report, read before the client is built: on a daemon on this
-            # machine, the audio devices it reports are the ones the client opens
-            # (specs/audio/audio.md "The robot's audio devices"), for the whole session.
+            # machine, the audio devices it reports are the ones the client opens, and an
+            # output it discards the client discards too (specs/audio/audio.md "The
+            # robot's audio devices"), for the whole session.
             report: object = None
             if cfg.backend != "fake":
                 host, port = _daemon_address(cfg.effective_robot_options())
@@ -819,7 +829,7 @@ class ReachyMiniBridge:
             info.kinematics_engine,
             camera,
             audio and (audio.input_device or "default"),
-            audio and (audio.output_device or "default"),
+            audio and describe_audio_output(audio),
             info.scene,
         )
         self._daemon_info = info

@@ -5,8 +5,8 @@ Resolves the *target* from the environment (`REACHY_MINI_E2E_TARGET` = `sim` def
 `real`), the daemon address (`REACHY_MINI_HOST` / `REACHY_MINI_PORT`) and the kinematics
 engine the spawned daemon runs (`REACHY_MINI_E2E_KINEMATICS` = `analytical` default |
 `placo` | `nn`, specs/testing/testing.md "One engine per run") and its audio devices
-(`REACHY_MINI_E2E_AUDIO_INPUT` / `_OUTPUT`), then hands the
-daemon work to the library's [daemon.py](../daemon.py) (specs/daemon/daemon.md): reuse a daemon
+(`REACHY_MINI_E2E_AUDIO_INPUT` / `_OUTPUT`, `REACHY_MINI_E2E_DISCARD_AUDIO_OUTPUT`),
+then hands the daemon work to the library's [daemon.py](../daemon.py) (specs/daemon/daemon.md): reuse a daemon
 already ready at the address (never torn down), else spawn one and own its teardown — a
 MuJoCo daemon for `sim`, the hardware daemon for `real` on a loopback address (a USB robot
 on this machine; a remote `real` address skips) — translating a `DaemonError` into a
@@ -139,14 +139,14 @@ def _unavailable(reason: str) -> NoReturn:
     pytest.skip(reason)
 
 
+def _env_flag(name: str) -> bool:
+    """Whether the environment variable ``name`` is on (`1`/`true`/`yes`/`on`)."""
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _sim_viewer() -> bool:
     """Whether to launch the headfull MuJoCo viewer instead of headless."""
-    return os.environ.get("REACHY_MINI_E2E_SIM_VIEWER", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    return _env_flag("REACHY_MINI_E2E_SIM_VIEWER")
 
 
 def sim_displays() -> SimDisplaySettings:
@@ -160,14 +160,25 @@ def sim_displays() -> SimDisplaySettings:
 def audio_settings() -> SimAudioSettings:
     """The audio devices of the sim the harness spawns, from
     `REACHY_MINI_E2E_AUDIO_INPUT` / `REACHY_MINI_E2E_AUDIO_OUTPUT` (a device name as the
-    operating system shows it; unset or empty: upstream's choice). Every bridge of the run
-    follows the daemon's devices through its report (specs/audio/audio.md "The robot's
-    audio devices"), so a run never opens the developer's own microphone and speakers."""
+    operating system shows it; unset or empty: upstream's choice), and
+    `REACHY_MINI_E2E_DISCARD_AUDIO_OUTPUT` (`1`/`true`/`yes`/`on`: no speaker at all, the
+    robot's sound consumed in real time and dropped — a ``pytest.UsageError`` together
+    with an output device). Every bridge of the run follows the daemon's devices through
+    its report (specs/audio/audio.md "The robot's audio devices"), so a run never opens
+    the developer's own microphone and speakers."""
     names = (
         os.environ.get("REACHY_MINI_E2E_AUDIO_INPUT", "").strip() or None,
         os.environ.get("REACHY_MINI_E2E_AUDIO_OUTPUT", "").strip() or None,
     )
-    return SimAudioSettings(input_device=names[0], output_device=names[1])
+    discard = _env_flag("REACHY_MINI_E2E_DISCARD_AUDIO_OUTPUT")
+    if discard and names[1] is not None:
+        raise pytest.UsageError(
+            "REACHY_MINI_E2E_DISCARD_AUDIO_OUTPUT and REACHY_MINI_E2E_AUDIO_OUTPUT "
+            "contradict each other: a discarded output opens no device"
+        )
+    return SimAudioSettings(
+        input_device=names[0], output_device=names[1], discard_output=discard
+    )
 
 
 @contextmanager

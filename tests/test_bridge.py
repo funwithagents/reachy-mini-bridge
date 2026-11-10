@@ -2202,7 +2202,7 @@ def test_the_daemon_info_lasts_as_long_as_the_session(
 
 
 def _audio_daemon(
-    monkeypatch: pytest.MonkeyPatch, audio: dict[str, str | None]
+    monkeypatch: pytest.MonkeyPatch, audio: dict[str, str | bool | None]
 ) -> types.ModuleType:
     """A sim daemon reporting ``audio``, the host's devices scripted, and a stand-in for
     upstream's client audio module recording what its lookup answers."""
@@ -2226,6 +2226,13 @@ def _audio_daemon(
     monkeypatch.setattr(audio_devices, "_platform_id", match)
     module = types.ModuleType("fake_client_audio")
     module.get_audio_device = lambda device_type="Source": None  # type: ignore[attr-defined]
+
+    class GStreamerAudio:  # upstream's client audio, its speaker sink builder
+        def _build_audiosink_element(self) -> str:
+            return "the host's speaker"
+
+    GStreamerAudio.__module__ = "fake_client_audio"
+    module.GStreamerAudio = GStreamerAudio  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "fake_client_audio", module)
     monkeypatch.setattr(bridge_module, "_CLIENT_AUDIO_MODULE", "fake_client_audio")
     return module
@@ -2260,6 +2267,37 @@ def test_a_session_opens_the_audio_devices_its_daemon_reports(
     assert (
         module.get_audio_device("Source") is None
     )  # upstream's again after the session
+
+
+def test_a_session_discards_its_output_when_its_daemon_does(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """specs/audio/audio.md "The robot's audio devices": a daemon that discards its
+    output has the bridge's own client discard too — no process of the session opens a
+    speaker — while the microphone follows the report; the session log says so, and
+    upstream's sink builder is back after the session."""
+    module = _audio_daemon(
+        monkeypatch,
+        {"input_device": "BlackHole", "output_device": None, "discard_output": True},
+    )
+    caplog.set_level(logging.INFO, logger="reachy_mini_bridge")
+
+    async def run() -> tuple[object, object, DaemonInfo | None]:
+        async with ReachyMiniBridge(_LOCAL_SIM) as bridge:
+            return (
+                module.get_audio_device("Source"),
+                module.GStreamerAudio._build_audiosink_element,
+                bridge.daemon,
+            )
+
+    source, builder, info = asyncio.run(run())
+    assert source == "bh-in"
+    assert builder is audio_devices.discarding_sink
+    assert info is not None and info.audio == SimAudioSettings(
+        input_device="BlackHole", discard_output=True
+    )
+    assert "audio BlackHole / discarded" in caplog.text
+    assert module.GStreamerAudio()._build_audiosink_element() == "the host's speaker"
 
 
 def test_a_reported_device_this_host_does_not_have_fails_the_bring_up(

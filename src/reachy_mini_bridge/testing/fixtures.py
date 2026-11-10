@@ -557,6 +557,7 @@ def pytest_configure(config: pytest.Config) -> None:
         {PROPS_PREFIX + kind for kind in _declared.kinds} | set(_declared.probes)
     )
     _daemon.required_capabilities()
+    _daemon.audio_settings()  # contradictory audio variables stop the run here
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:

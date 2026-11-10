@@ -47,6 +47,7 @@ __all__ = [
     "DaemonHandle",
     "DaemonInfo",
     "daemon_differences",
+    "describe_audio_output",
     "describe_camera",
     "is_daemon_ready",
     "launch_command",
@@ -92,7 +93,12 @@ class DaemonInfo:
             launcher=launcher,
             camera=SimCameraSettings.from_dict(fields),
             audio=SimAudioSettings.from_dict(
-                {key: audio.get(key) for key in ("input_device", "output_device")}
+                {
+                    "input_device": audio.get("input_device"),
+                    "output_device": audio.get("output_device"),
+                    # absent from an older launcher's report: it discarded nothing
+                    "discard_output": bool(audio.get("discard_output", False)),
+                }
             ),
             scene=str(report["scene"]),
             headless=bool(report["headless"]),
@@ -107,12 +113,23 @@ def describe_camera(camera: SimCameraSettings) -> str:
     return camera.source
 
 
+def describe_audio_output(audio: SimAudioSettings) -> str:
+    """The robot's speaker in a phrase: discarded, a device's name, or the default."""
+    if audio.discard_output:
+        return "discarded"
+    return audio.output_device or "default"
+
+
 def _same_camera(a: SimCameraSettings, b: SimCameraSettings) -> bool:
     """Whether the two give one camera model: ``device`` plays no part in it, and
     ``hfov_deg`` none for a ``sim`` source."""
     if a.source != b.source:
         return False
     return a.source != "webcam" or a.hfov_deg == b.hfov_deg
+
+
+def _the(output: str) -> str:
+    return "the default" if output == "default" else output
 
 
 def _scene_stem(scene: str) -> str:
@@ -139,14 +156,21 @@ def daemon_differences(info: DaemonInfo, config: DaemonConfig) -> list[str]:
             f"the config says {describe_camera(config.camera)}"
         )
     if info.audio is not None:
-        for word, field_ in (("input", "input_device"), ("output", "output_device")):
-            wanted = getattr(config.audio, field_)
-            running = getattr(info.audio, field_)
-            if wanted is not None and wanted != running:
-                differences.append(
-                    f"audio {word} is {running or 'the default'}, "
-                    f"the config says {wanted}"
-                )
+        wanted_in, running_in = config.audio.input_device, info.audio.input_device
+        if wanted_in is not None and wanted_in != running_in:
+            differences.append(
+                f"audio input is {running_in or 'the default'}, "
+                f"the config says {wanted_in}"
+            )
+        # The output: a config naming a device or discarding has an opinion.
+        wanted_out = describe_audio_output(config.audio)
+        running_out = describe_audio_output(info.audio)
+        if (
+            config.audio.output_device is not None or config.audio.discard_output
+        ) and wanted_out != running_out:
+            differences.append(
+                f"audio output is {_the(running_out)}, the config says {wanted_out}"
+            )
     if (
         info.scene is not None
         and config.scene is not None
@@ -463,6 +487,8 @@ def _audio_flags(config: DaemonConfig) -> list[str]:
         flags += ["--audio-input-device", config.audio.input_device]
     if config.audio.output_device is not None:
         flags += ["--audio-output-device", config.audio.output_device]
+    if config.audio.discard_output:
+        flags.append("--discard-audio-output")
     return flags
 
 
