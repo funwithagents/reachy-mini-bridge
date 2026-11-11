@@ -1,7 +1,8 @@
 # Spike: two Reachy Minis in one MuJoCo simulation
 
 **Status:** spike, 2026-11-11. Prototype code, not production, no spec changed. Measured on
-macOS arm64 (Apple M5 Pro), `reachy_mini` 1.11.0, `mujoco` 3.3.7.
+macOS arm64 (Apple M5 Pro) and on GitHub's `ubuntu-24.04` runner (x86_64, 4 vCPUs, Mesa
+llvmpipe through EGL), `reachy_mini` 1.11.0, `mujoco` 3.3.7.
 
 ## Question
 
@@ -88,12 +89,88 @@ The trimmed render drops shadows and reflections and leaves each camera's own ro
 (its visual meshes sit in a geom group of their own, hidden by a per-camera `MjvOption`, so
 the model the viewer draws is never touched).
 
+## On Linux (GitHub Actions)
+
+`.github/workflows/spike-two-robot-sim.yml` runs the proofs on every push to this branch
+and nowhere else (the repository's CI fires on `main` and on pull requests, so it did not
+run). Both runs so far are green:
+https://github.com/funwithagents/reachy-mini-bridge/actions/runs/43070436244 and
+https://github.com/funwithagents/reachy-mini-bridge/actions/runs/43071684759. The frames
+and logs are the run's `two-robot-sim` artifact.
+
+The job: the live tier's setup (`ci.yml` `e2e-sim`), two PulseAudio cables, the world
+started headless with each robot's mouth on the other's ear
+(`--audio-output-device-a a_mouth --audio-input-device-a a_ear --audio-output-device-b
+b_mouth --audio-input-device-b b_ear`), then each proof as a step.
+
+| Proof | Step | Result on the runner |
+|---|---|---|
+| Model, EGL render | `check_world --render` | same names and poses as on the Mac; both eye cameras draw; 5 s of physics in 0.29 s |
+| Each client moves only its robot | `prove_isolation` | a: 0.122 rad head, 0.600 rad antennas, yaw +20.2°, robot b 0.00008 rad. b: the same, −20.2°, robot a 0.00022 rad |
+| Each client sees through its robot | `prove_cameras`, asserted on the frames | neutral: the other robot centred in both (x=640, 17 950 white pixels). b turned 25°: x=877 in b's frame, x=639 in a's; a's frame changed (mean abs diff 0.47); the two frames differ (15.36). Passed again after a media release / re-acquire on both ports |
+| A `ReachyMiniBridge` per robot | `prove_bridge` on each | camera frame, about 890 mic chunks in 8 s; bridge a alone moves robot a 0.43, robot b 0.0002; bridge b alone 0.66 against 0.0008 |
+| Both directions at once, tone | `prove_conversation` | a alone: b's ear RMS 0.212, a's own ear 0.00000. b alone: a's ear 0.212, b's own ear 0.00000. Both at once: both ears 0.212. Every `play_sound` 3.11 to 3.12 s |
+| Both directions at once, speech | `prove_conversation --say …` (phonon) | a alone: b's ear 0.082, a's own 0.00000. b alone: a's ear 0.082, b's own 0.00000. Both: 0.079 and 0.078. `say` 3.69 to 4.02 s |
+| `No caps found for stream audio_0` | the host's log | absent in both runs |
+
+**A robot hears nothing of its own voice** in this wiring: exactly 0 on its own microphone
+feed while it alone plays. There is no acoustic path, so there is nothing for an echo
+canceller to cancel, and none ran: `webrtcdsp` and `webrtcechoprobe` are absent from Ubuntu
+24.04's GStreamer (`gst-inspect-1.0` on the runner), and upstream only adds them on the
+*default* devices anyway. Where it exists it would run twice per robot: in the bridge's
+process (upstream's `GStreamerAudio`, `media/audio_gstreamer.py:157-175`, the path a local
+session records through) and in the daemon's media server for WebRTC clients
+(`media/media_server.py`). A named device gets neither.
+
+**The camera rate is the open problem.** On the runner:
+
+| | Physics | Camera, per robot | Draw per frame |
+|---|---|---|---|
+| nobody connected | 499 Hz | 4.7 to 4.9 fps | 102 to 104 ms |
+| two bridges in session | 499 Hz | 4.5 to 4.6 fps | 109 to 110 ms |
+
+Physics holds its rate; the cameras do not. A single-robot sim's trimmed render leaves
+the robot out and costs about 10 ms there; here each camera must draw the *other* robot,
+and one thread draws both cameras. `bench_render` on the same runner, one camera alone,
+no daemon:
+
+| Variant | 1280x720 | 640x360 |
+|---|---|---|
+| the other robot whole (161 geoms, 940 180 triangles) | 91.0 ms | 87.5 ms |
+| only the geoms the camera can see (19 geoms, 296 816 triangles) | 39.3 ms | 33.7 ms |
+
+The cost is triangles, not pixels: halving the resolution buys nothing. Leaving out what
+never reaches a pixel (motors, boards, most of the Stewart platform; found by segmentation
+renders over a sweep of the other robot's head, 1 219 of 921 600 pixels differing) would
+give about 12 fps per robot with two cameras on one thread. Reaching 25 needs the shell
+meshes themselves decimated for the camera render, or a GPU runner. The bridge's tracker
+is specified against a camera at upstream's rate ("a camera at four frames a second …
+starves the head tracker"), so this is a design decision, not a tuning one. Not applied in
+the host: the numbers above are the benchmark's.
+
+What Linux needed, each a finding for the spec:
+
+- **`MUJOCO_GL=egl` before `mujoco` is imported**, as the bridge's launcher does:
+  `spikes/two_robot_sim/__init__.py` sets it on a display-less Linux.
+- **The software-rasterizer trim**: no multisampling, skybox, haze or fog, on top of the
+  Mac's no shadows and reflections. Hiding a camera's own robot through geom groups works
+  under EGL unchanged.
+- **A cable is a null sink plus a source remapped over its monitor**, both with
+  `device.description` and `device.string` set to the name, because upstream's matcher
+  skips monitor sources and takes a virtual PulseAudio device only through `device.string`.
+  The default sink and source point at a third null sink, so nothing reaches a cable
+  unless a robot was given it by name.
+- **Children of a Python process need `scrubbed_env()`** (found on the Mac, needed here
+  too): the proofs spawn their bridge sessions with it.
+- Nothing else: the per-instance seams (UDP port, IPC socket, signalling port, audio
+  builders) behaved on Linux as on macOS, first run.
+
 ## Not verified
 
-- **Linux, EGL, CI.** Nothing ran off this Mac. The bridge's headless trim hides the eye
-  camera's own tree by writing alpha 0 into the shared model; with two robots and a viewer
-  that would blank a robot in the window, which is why the spike uses geom groups. Inferred
-  to work under EGL, not run.
+- **A camera fast enough for the head tracker on a CPU-only Linux runner.** 4.5 to 4.9 fps
+  per robot there, against upstream's 25 (see "On Linux"). The mitigations were benchmarked,
+  not built into the host.
+- **Linux with a viewer, PipeWire, arm64.** The runner is headless x86_64 on PulseAudio.
 - **macOS headless camera, in general.** `mujoco.Renderer` built a CGL context and drew in a
   plain `python` process with no window here, in a thread, which the bridge's spec says a
   Mac cannot do. This shell runs inside a logged-in GUI session; whether it holds over SSH or
@@ -110,13 +187,18 @@ the model the viewer draws is never touched).
   robot b's daemon-side source are the same cable *in one process*, which on macOS can
   stall that process's capture. Nothing the bridges do depends on it; a WebRTC client of
   robot b might. Not tested.
-- **Echo.** Robot a heard the built-in microphone, not a cable, so nothing checked what a
-  robot hears of its own voice. Two cables (a→b and b→a) are the end use's wiring.
+- **Echo where there is an acoustic path.** With two cables a robot hears exactly nothing
+  of itself (measured on Linux). A speaker and a microphone in one room, or one cable used
+  both ways, was not tried, and no software echo canceller ran anywhere: absent on the
+  runner, not applied to named devices on the Mac.
+- **Two cables on macOS.** The Mac has one loopback device; both directions at once ran on
+  Linux only.
 - **`No caps found for stream audio_0`.** With both daemons on the *default* microphone,
   one start in nine logged this webrtcsink error, and that run's clients got no frames
   after a media release / re-acquire. With a named device per robot it appeared in none
   of five starts (one with inputs only, four in the cross-wired configuration), and
-  release / re-acquire worked each time it was tried (twice). Cause not established;
+  release / re-acquire worked each time it was tried (twice), and on Linux with named
+  devices it did not appear either (two runs). Cause not established;
   whether a stock single daemon shows it was not checked.
 - **WebRTC clients.** Each robot's signalling server listens on its own port (8451, 8452),
   but upstream's client hardcodes 8443 (`media_manager.py:174`), so a remote / WebRTC client
@@ -205,6 +287,11 @@ discard). It owns the physics host and serves one upstream app per robot, as her
 - **Backend.** The view should wrap the bridge's backend subclass, so sim displays, the
   webcam source and extensions keep one implementation; the render thread moves to the host
   and the headless trim switches from alpha-in-the-model to geom groups.
+- **The camera render is budgeted per world, not per robot.** Each camera draws the other
+  robots. The design has to choose how a CPU-only runner reaches a usable rate: a
+  visible-geoms set per robot (computed once, by segmentation), decimated meshes for the
+  camera render, a lower camera rate with the tracker's tests adapted, or a GPU runner.
+  Measure before promising the head-tracking tests on a two-robot world in CI.
 - **Testing.** A `live_world` fixture beside `live_daemon`, two `live_bridge`s, and the
   isolation and camera proofs of this spike as live tests; the view-against-stock
   comparison as a fast test.
@@ -228,6 +315,10 @@ one plan, several days.
 | `prove_isolation.py` | two upstream clients, joint-state assertions |
 | `grab_frame.py` | one upstream client, one camera frame to a PNG |
 | `prove_bridge.py` | one `ReachyMiniBridge` session on one robot |
+| `prove_cameras.py` | two upstream clients; asserts on the frames that each is its own robot's view with the other robot in it |
+| `prove_conversation.py` | two cables, both directions at once, and what each robot hears of itself |
+| `bench_render.py` | what one eye-camera frame costs: the other robot whole, or only the geoms the camera can see |
+| `report_rates.py`, `wait_ready.py` | the host's rates over a window; wait for both daemons |
 | `prove_audio.py` | the three sound scenarios; starts `sound_session.py` (one bridge: play, listen) per robot and `record_cable.py` (the cable's recorder), each a process |
 | `frame_*.png`, `viewer_frame_*.png`, `bridge_frame_*.png` | frames read through `get_frame()` / `bridge.camera`, headless, under the viewer, and from the bridge |
 | `side_view_offscreen.png` | both robots awake, from the viewer's camera, rendered offscreen |
