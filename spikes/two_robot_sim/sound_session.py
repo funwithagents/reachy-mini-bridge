@@ -5,7 +5,8 @@
 
 Runs for ``--seconds`` once the session is open. At ``--play-at`` it calls ``play_sound(wav)`` or ``say(text)`` and
 times the verb. With ``--listen`` it follows ``bridge.audio_input()`` for the whole run and
-keeps the loudness of what the robot's microphone hears. Writes
+keeps the loudness of what the robot's microphone hears. ``--play-at-wall`` / ``--until-wall``
+take wall-clock times instead, for sessions that must line up with one another. Writes
 ``{"robot", "audio", "play": {"start", "end", "elapsed"} | null, "mic": [[wall_s, rms], …]}``.
 """
 
@@ -43,6 +44,16 @@ async def main() -> None:
     parser.add_argument("--out", required=True)
     parser.add_argument("--seconds", type=float, default=12.0)
     parser.add_argument("--play-at", type=float)
+    parser.add_argument(
+        "--play-at-wall",
+        type=float,
+        nargs="*",
+        default=[],
+        help="epoch seconds, each a play",
+    )
+    parser.add_argument(
+        "--until-wall", type=float, help="epoch seconds: end of the session"
+    )
     parser.add_argument("--wav")
     parser.add_argument("--say")
     parser.add_argument("--listen", action="store_true")
@@ -60,29 +71,47 @@ async def main() -> None:
     if ns.say:
         config["tts"] = {"module": {"type": "phonon", "voice": "Micah"}}
     mic: list[tuple[float, float]] = []
-    play: dict[str, float] | None = None
     async with ReachyMiniBridge(ReachyMiniConfig.from_dict(config)) as bridge:
         print(f"session open on robot {report['prefix']}", flush=True)
         start = time.monotonic()  # --play-at and --seconds count from the open session
         listener = asyncio.create_task(listen(bridge, mic)) if ns.listen else None
-        if ns.play_at is not None:
-            await asyncio.sleep(max(0.0, ns.play_at - (time.monotonic() - start)))
+        plays: list[dict[str, float]] = []
+
+        async def play_once() -> None:
             began, t0 = time.time(), time.monotonic()
             if ns.say:
                 await bridge.say(ns.say)
             else:
                 await bridge.play_sound(ns.wav)
-            play = {
-                "start": began,
-                "end": time.time(),
-                "elapsed": time.monotonic() - t0,
-            }
-        await asyncio.sleep(max(0.0, ns.seconds - (time.monotonic() - start)))
+            plays.append(
+                {"start": began, "end": time.time(), "elapsed": time.monotonic() - t0}
+            )
+
+        if ns.play_at is not None:
+            await asyncio.sleep(max(0.0, ns.play_at - (time.monotonic() - start)))
+            await play_once()
+        for at in ns.play_at_wall:
+            if time.time() > at:
+                raise SystemExit(
+                    f"the session opened after its play time ({time.time() - at:.1f} s late)"
+                )
+            await asyncio.sleep(at - time.time())
+            await play_once()
+        if ns.until_wall is not None:
+            await asyncio.sleep(max(0.0, ns.until_wall - time.time()))
+        else:
+            await asyncio.sleep(max(0.0, ns.seconds - (time.monotonic() - start)))
         if listener is not None:
             listener.cancel()
             await asyncio.gather(listener, return_exceptions=True)
         audio = bridge.daemon.audio if bridge.daemon is not None else None
-    result = {"robot": report["prefix"], "audio": str(audio), "play": play, "mic": mic}
+    result = {
+        "robot": report["prefix"],
+        "audio": str(audio),
+        "play": plays[0] if plays else None,
+        "plays": plays,
+        "mic": mic,
+    }
     await asyncio.to_thread(Path(ns.out).write_text, json.dumps(result))
 
 

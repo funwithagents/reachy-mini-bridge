@@ -104,6 +104,7 @@ class PhysicsHost:
         self._cameras: list[tuple[str, int]] = []  # (camera name, udp port)
         self._threads: list[threading.Thread] = []
         self.frames_sent: dict[str, int] = {}
+        self.render_backend = "none"
         self.render_ms: dict[str, float] = {}  # running means, per camera frame
         self.step_count = 0
 
@@ -243,6 +244,15 @@ class PhysicsHost:
         from reachy_mini.media.gstreamer_udp_camera import GStreamerUDPCamera
 
         width, height = STREAM_SIZE
+        # A software rasterizer (Mesa's llvmpipe behind EGL or OSMesa, a CI runner) also
+        # drops what the bridge's headless render drops for it: multisampling, the
+        # skybox, haze and fog (specs/daemon/sim_daemon.md "Drawn for the detector").
+        software = not self.full_render and os.environ.get("MUJOCO_GL") in (
+            "egl",
+            "osmesa",
+        )
+        if software:
+            self.model.vis.quality.offsamples = 0
         try:
             renderer = mujoco.Renderer(self.model, height=height, width=width)
         except Exception:
@@ -268,6 +278,14 @@ class PhysicsHost:
                 mujoco.mjtRndFlag.mjRND_REFLECTION,
             ):
                 renderer.scene.flags[flag] = 0
+        if software:
+            for flag in (
+                mujoco.mjtRndFlag.mjRND_SKYBOX,
+                mujoco.mjtRndFlag.mjRND_HAZE,
+                mujoco.mjtRndFlag.mjRND_FOG,
+            ):
+                renderer.scene.flags[flag] = 0
+        self.render_backend = os.environ.get("MUJOCO_GL") or "default"
         logger.info(
             "rendering %s", ", ".join(f"{n} -> udp {p}" for n, p in self._cameras)
         )
@@ -563,6 +581,7 @@ def robot_app(
             ),
             "render_ms": {k: round(v, 2) for k, v in host.render_ms.items()},
             "physics_steps": host.step_count,
+            "render_backend": host.render_backend,
         }
 
     # The bridge's own report, so a ReachyMiniBridge follows this robot's audio devices.

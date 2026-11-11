@@ -1,0 +1,134 @@
+# The two-robot sim spike's proofs on Linux — spikes/two_robot_sim/README.md.
+#
+# Runs only on pushes to the spike's own branch (a workflow_dispatch trigger would need
+# the file on main). Not part of CI: the branch is a feasibility spike, never merged as is.
+# The setup is the live tier's (ci.yml `e2e-sim`): Mesa's EGL for the offscreen cameras,
+# the system GStreamer, upstream's prebuilt webrtc plugin, PulseAudio — here with two
+# virtual cables, one per direction of a conversation between the two robots.
+
+name: Spike — two-robot sim
+
+on:
+  push:
+    branches: [spike/two-robot-sim]
+
+concurrency:
+  group: spike-two-robot-sim
+  cancel-in-progress: true
+
+env:
+  APT_BASE: >-
+    libgirepository1.0-dev libcairo2-dev pkg-config
+    gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0
+    gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
+    gstreamer1.0-pulseaudio gstreamer1.0-tools
+  APT_LIVE: >-
+    pulseaudio pulseaudio-utils
+    gstreamer1.0-nice libnice10
+    libegl1 libgl1-mesa-dri libosmesa6
+
+jobs:
+  proofs:
+    name: two robots, one headless sim (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends -o Acquire::http::Timeout=30 -o Acquire::Retries=3 $APT_BASE $APT_LIVE
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Sync (every group, against the lock)
+        run: uv sync --locked
+      - name: Hugging Face cache (emotions library, phonon model)
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+          restore-keys: hf-${{ runner.os }}-
+      - name: Two virtual cables, one per direction
+        # A cable is a null sink (a robot's mouth) and a source remapped over its monitor
+        # (the other robot's ear): upstream's matcher skips monitor sources, and on a
+        # PulseAudio host without PipeWire takes a virtual device only through its
+        # `device.string`, set to the name. The defaults point at a third sink nobody
+        # listens to, so nothing reaches a cable unless a robot was given it by name.
+        run: |
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=a_mouth 'sink_properties="device.description=a_mouth device.string=a_mouth"'
+          pactl load-module module-remap-source master=a_mouth.monitor source_name=b_ear 'source_properties="device.description=b_ear device.string=b_ear"'
+          pactl load-module module-null-sink sink_name=b_mouth 'sink_properties="device.description=b_mouth device.string=b_mouth"'
+          pactl load-module module-remap-source master=b_mouth.monitor source_name=a_ear 'source_properties="device.description=a_ear device.string=a_ear"'
+          pactl load-module module-null-sink sink_name=nobody sink_properties=device.description=nobody
+          pactl set-default-sink nobody
+          pactl set-default-source nobody.monitor
+          pactl list short sinks
+          pactl list short sources
+      - name: Rust webrtc plugin (upstream's action, pinned)
+        uses: pollen-robotics/reachy_mini/.github/actions/webrtc-plugin@c14dc5fd43100582d349466aec4bdc4960490522
+      - name: The runner (CPUs, the echo canceller)
+        run: |
+          nproc
+          if gst-inspect-1.0 webrtcdsp > /dev/null 2>&1; then echo "webrtcdsp: present"; else echo "webrtcdsp: absent"; fi
+          if gst-inspect-1.0 webrtcechoprobe > /dev/null 2>&1; then echo "webrtcechoprobe: present"; else echo "webrtcechoprobe: absent"; fi
+      - name: The model on its own (EGL render)
+        run: uv run python -m spikes.two_robot_sim.check_world --render
+      - name: Start the world (headless, each robot's mouth on the other's ear)
+        run: |
+          mkdir -p out
+          nohup uv run python -m spikes.two_robot_sim.host --headless \
+            --audio-output-device-a a_mouth --audio-input-device-a a_ear \
+            --audio-output-device-b b_mouth --audio-input-device-b b_ear \
+            > out/host.log 2>&1 &
+          uv run python -m spikes.two_robot_sim.wait_ready --timeout 240
+          for port in 8011 8012; do curl -s localhost:$port/api/bridge/daemon; echo; done
+      - name: Rates, nobody connected
+        run: uv run python -m spikes.two_robot_sim.report_rates --seconds 15 --label "no client"
+      - name: Each client moves only its own robot
+        run: uv run python -m spikes.two_robot_sim.prove_isolation
+      - name: Each client sees through its own robot, the other robot in view
+        run: uv run python -m spikes.two_robot_sim.prove_cameras --out-dir out/frames
+      - name: A ReachyMiniBridge on robot a, then on robot b
+        run: |
+          uv run python -m spikes.two_robot_sim.prove_bridge --port 8011 --other-port 8012 --seconds 8 --out out/frames/ci_bridge_frame_a.png
+          uv run python -m spikes.two_robot_sim.prove_bridge --port 8012 --other-port 8011 --seconds 8 --out out/frames/ci_bridge_frame_b.png
+      - name: Both directions at once, a tone (rates measured meanwhile)
+        env:
+          PROVE_AUDIO_LOG: out/sessions.log
+          PROVE_CONVERSATION_LEAD_S: "60"
+        run: |
+          (sleep 45; uv run python -m spikes.two_robot_sim.report_rates --seconds 30 --label "two bridges") &
+          uv run python -m spikes.two_robot_sim.prove_conversation
+          wait
+      - name: Both directions at once, speech (phonon)
+        env:
+          PROVE_AUDIO_LOG: out/sessions.log
+          PROVE_CONVERSATION_LEAD_S: "90"
+        run: uv run python -m spikes.two_robot_sim.prove_conversation --say "Hello, I am a robot. Can you hear me over there?"
+      - name: Media release and re-acquire, then the cameras again
+        run: |
+          for port in 8011 8012; do
+            curl -s -X POST localhost:$port/api/media/release; curl -s -X POST localhost:$port/api/media/acquire; echo
+          done
+          sleep 5
+          uv run python -m spikes.two_robot_sim.prove_cameras --out-dir out/frames_after_reacquire
+      - name: Stop the world, read its log
+        if: always()
+        run: |
+          pkill -INT -f "spikes.two_robot_sim.host" || true
+          sleep 10
+          echo "--- echo cancellation, device and error lines of the host"
+          grep -E "echo cancellation|webrtcdsp|PulseAudio|No caps found|ERROR|Traceback|rendering|Daemon st" out/host.log | cut -c1-300 | sort | uniq -c | sort -rn | head -60 || true
+          echo "--- echo cancellation lines of the bridge sessions"
+          grep -E "echo cancellation|webrtcdsp|Using " out/sessions.log | sort | uniq -c || true
+          echo "--- tail of the host log"
+          tail -40 out/host.log | cut -c1-300
+      - name: Upload the frames and logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: two-robot-sim
+          path: out/
