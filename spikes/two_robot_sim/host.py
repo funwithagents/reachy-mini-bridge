@@ -629,6 +629,7 @@ def main(argv: list[str] | None = None) -> None:
     for robot in ("a", "b"):
         parser.add_argument(f"--audio-input-device-{robot}")
         parser.add_argument(f"--audio-output-device-{robot}")
+        parser.add_argument(f"--discard-audio-output-{robot}", action="store_true")
     ns = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s"
@@ -651,7 +652,8 @@ def main(argv: list[str] | None = None) -> None:
             camera_socket=f"/tmp/reachymini_camera_socket_{name}",
             audio_input=getattr(ns, f"audio_input_device_{name}"),
             audio_output=getattr(ns, f"audio_output_device_{name}"),
-            discard_audio_output=ns.discard_audio_output,
+            discard_audio_output=ns.discard_audio_output
+            or getattr(ns, f"discard_audio_output_{name}"),
         )
         host.add_camera(placement.prefix + "eye_camera", endpoints.udp_port)
         apps.append(

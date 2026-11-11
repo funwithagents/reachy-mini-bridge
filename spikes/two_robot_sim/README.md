@@ -67,6 +67,9 @@ uv run mjpython -m spikes.two_robot_sim.host --discard-audio-output             
 | Two real `ReachyMiniBridge` sessions at once, one process each | `python -m spikes.two_robot_sim.prove_bridge --port 8011 --other-port 8012 --out …/bridge_frame_a.png` and the mirror | each session: camera feed frames (`bridge_frame_*.png`), mic chunks flowing (686 in 6 s, 2084 in 20 s), motion loop breathing. Alone, bridge A moves robot A (0.505 rad range) and robot B reads 0.0000 |
 | Audio devices per robot | host with `--audio-input-device-a "Micro MacBook Pro" --audio-input-device-b "BlackHole 2ch" --discard-audio-output` | daemon log: `Using CoreAudio device BuiltInMicrophoneDevice for capture` for a, `BlackHole2ch_UID` for b; each bridge's `bridge.daemon.audio` names its own robot's input and the discard, and opens them |
 | One viewer window, both robots | `mjpython -m spikes.two_robot_sim.host` | one window titled `two_robot_scene`, both robots side on, facing each other; seen in a screenshot (not kept, see below). `side_view_offscreen.png` is the same view rendered offscreen |
+| Sound out per robot: a's speaker is the cable, b's is discarded | host with `--audio-output-device-a "BlackHole 2ch" --discard-audio-output-b --audio-input-device-a "Micro MacBook Pro" --audio-input-device-b "BlackHole 2ch"`, then `python -m spikes.two_robot_sim.prove_audio` (tone) and `… --say "Hello, I am robot A. Can you hear me over there?"` (phonon), exit 0 both. One bridge per robot and the cable's recorder, each a process of its own | **Bridge a plays:** the cable, silent before (RMS 0.00000), carries the 3 s tone at RMS 0.212 for 3.2 s, `play_sound` takes 3.15 s; `say` puts 2.9 s of speech on it at RMS 0.091 and takes 3.50 s. **Bridge b plays the same:** the cable stays at 0.00000, `play_sound` takes 3.12 s and `say` 3.55 s — as long as on the real device, so the discard consumes in real time |
+| Robot a's mouth into robot b's ear | scenario 3 of the same script: both bridges play at once, bridge b follows `bridge.audio_input()` | bridge b's microphone feed reads RMS 0.00000 before and 0.212 while a's tone plays (the cable itself: 0.212); with `say`, 0.088 on b's feed against 0.088 on the cable. Both verbs still take their sound's duration (3.17 / 3.12 s tone, 3.59 / 3.58 s speech) |
+| Media release / re-acquire with named devices | `POST /api/media/release` then `/acquire` on both ports, then `grab_frame` on each and `prove_audio` again | both cameras deliver frames, the audio proof passes again |
 | Clean stop | SIGINT to the headless host | both daemons go to sleep and stop, both sockets removed, exit |
 
 Rates, both robots awake, both cameras streaming:
@@ -97,14 +100,24 @@ the model the viewer draws is never touched).
   from a LaunchDaemon was not tested.
 - **A robot detector on the frames.** The other robot is plainly visible, 0.52 m from the
   camera, about 240 px tall without its antennas. No detector was run.
-- **Sound through a speaker.** Every run discarded the output (`fakesink`), to stay off the
-  owner's speakers. A named output device per robot goes through the same per-instance seam
-  as the input and was not exercised. `say` was not called.
-- **Two robots on one microphone.** With both daemons on the default microphone, one start
-  in eight logged webrtcsink's `No caps found for stream audio_0` and that run's clients got
-  no frames after a media release / re-acquire. With a named device per robot the release /
-  re-acquire cycle worked. Cause not established; whether a stock single daemon shows it was
-  not checked.
+- **Sound through a real speaker.** Robot a's output went to the loopback cable
+  (`BlackHole 2ch`) and robot b's was discarded; nothing was played on the Mac's speakers,
+  on purpose. Two robots each on a *named* output were not run: this Mac has one cable.
+- **The daemon's own sounds and WebRTC audio in this wiring.** A local bridge plays and
+  records in its own process; the daemon's media server only plays its wake-up and sleep
+  sounds (robot a's went to the cable: one `Using CoreAudio device BlackHole2ch_UID for
+  playback` in the log) and feeds WebRTC. In this layout robot a's daemon-side sink and
+  robot b's daemon-side source are the same cable *in one process*, which on macOS can
+  stall that process's capture. Nothing the bridges do depends on it; a WebRTC client of
+  robot b might. Not tested.
+- **Echo.** Robot a heard the built-in microphone, not a cable, so nothing checked what a
+  robot hears of its own voice. Two cables (a→b and b→a) are the end use's wiring.
+- **`No caps found for stream audio_0`.** With both daemons on the *default* microphone,
+  one start in nine logged this webrtcsink error, and that run's clients got no frames
+  after a media release / re-acquire. With a named device per robot it appeared in none
+  of five starts (one with inputs only, four in the cross-wired configuration), and
+  release / re-acquire worked each time it was tried (twice). Cause not established;
+  whether a stock single daemon shows it was not checked.
 - **WebRTC clients.** Each robot's signalling server listens on its own port (8451, 8452),
   but upstream's client hardcodes 8443 (`media_manager.py:174`), so a remote / WebRTC client
   of the second robot cannot find it. Local IPC clients, the bridge's path on one machine,
@@ -179,6 +192,13 @@ discard). It owns the physics host and serves one upstream app per robot, as her
   already follows `audio` from the same report. Absent, upstream's path: stock daemons are
   untouched. One bridge per process for the camera, which the audio substitution already
   imposes.
+- **Audio is per robot, and already the bridge's.** Each robot's entry carries its own
+  input, output and discard, reported on its own port; a bridge follows its robot's report
+  in its own process, where a local session plays and records. Proved here with the
+  bridge unchanged: robot a's speech on a cable, robot b's discarded in real time, robot
+  b's microphone hearing robot a. A conversation between two robots needs two cables, one
+  per direction; the world's config should name them per robot and refuse the same cable
+  as one robot's output and input.
 - **Lifecycle.** `daemon.spawn` stays one process per bridge. A world is started by whoever
   owns the scene (a harness fixture, a script) and both bridges borrow their port; a bridge
   spawning "the other robot's" daemon as a side effect is not worth designing.
@@ -208,5 +228,6 @@ one plan, several days.
 | `prove_isolation.py` | two upstream clients, joint-state assertions |
 | `grab_frame.py` | one upstream client, one camera frame to a PNG |
 | `prove_bridge.py` | one `ReachyMiniBridge` session on one robot |
+| `prove_audio.py` | the three sound scenarios; starts `sound_session.py` (one bridge: play, listen) per robot and `record_cable.py` (the cable's recorder), each a process |
 | `frame_*.png`, `viewer_frame_*.png`, `bridge_frame_*.png` | frames read through `get_frame()` / `bridge.camera`, headless, under the viewer, and from the bridge |
 | `side_view_offscreen.png` | both robots awake, from the viewer's camera, rendered offscreen |
