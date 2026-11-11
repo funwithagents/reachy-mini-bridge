@@ -79,9 +79,9 @@ The world file is JSON, loaded into a `WorldConfig` (`config.py`, `from_dict` / 
 - **A robot's entry is its place plus the per-robot part of a `daemon` block.** `name`, `port`, `position` and `yaw_deg` are the world's own. `audio` is `DaemonConfig`'s `audio` block, the same `SimAudioSettings`, parsed by the same code. `sim_displays` joins it once displays in a world are decided (open question 3).
 - **The file holds nothing about how the process runs.** Headless or viewer, the kinematics engine and dataset preloading are launch flags, as for the single sim, so one world file serves a viewer run on a desk and a headless run in CI.
 - **A robot is addressed by `host:port` alone**, like any daemon. Its name is for the model's prefixes, the logs and the report.
-- **Audio is per robot.** The process-wide device substitution of [audio.md](../audio/audio.md) cannot serve two robots, so each robot's media server resolves its own devices.
+- **Audio is per robot.** The daemon-side device substitution of [audio.md](../audio/audio.md) is one set of devices per process and cannot serve two robots, so each robot's media server resolves its own. The client needs nothing new: a local bridge plays and records in its own process, on the devices its robot's report names. The spike proved it with two bridges: robot a's `say` came out of its named cable, robot b's was discarded in real time, and robot b's mic feed carried robot a's voice.
 - **The camera source is the rendered one.** A host webcam as a robot's camera is not offered in a world: `camera` is not a field of a robot's entry.
-- **Rejected at load**: fewer than one robot, a duplicate name or port, a name that is not a valid prefix, an unknown key.
+- **Rejected at load**: fewer than one robot, a duplicate name or port, a name that is not a valid prefix, an unknown key, and one device named as both the input and the output of the same robot (a robot hearing its own voice through a cable).
 
 ### In a bridge's config: `daemon.world`
 
@@ -157,7 +157,7 @@ The spike's README lists every upstream assumption with its file and line.
 ### Testing
 
 - **Fast tier**: the composed model (prefixes, poses, each robot's actuators and camera); the view against a stock backend; `WorldConfig`'s validation; `daemon.world` in a bridge's config (the port among the world's, the excluded fields); the launch command built for it; `--world` beside a per-robot flag; the report's fields; the endpoints given to each robot.
-- **Live tier**: a `live_world` fixture beside `live_daemon` ([testing_support.md](../testing/testing_support.md)), yielding each robot's `host:port`. Its tests are the spike's proofs: each bridge moves only its own robot; each camera shows the other robot; each robot opens its own audio devices.
+- **Live tier**: a `live_world` fixture beside `live_daemon` ([testing_support.md](../testing/testing_support.md)), yielding each robot's `host:port`. Its tests are the spike's proofs: each bridge moves only its own robot; each camera shows the other robot; each robot opens its own audio devices. A fixture that spawns bridge processes passes them `scrubbed_env()` ([daemon.md](daemon.md), "The child's environment is scrubbed"): a Python child that inherits the parent's GStreamer paths sets them again and crashes scanning plugins, as the spike found.
 
 ### Platforms
 
@@ -179,7 +179,7 @@ The spike's README lists every upstream assumption with its file and line.
 
 ## Open questions
 
-1. **Sound out, per robot.** The spike proved each robot's own input device. Its named output device goes through the same seam but had not been exercised when this was written; a follow-up on the spike branch tests it, with one robot's voice into the other's microphone. Load-bearing for the first user.
+1. **A robot's own echo, and two cables.** The spike wired one direction, robot a's voice into robot b's microphone, on the one virtual cable of its machine. Both directions at once need two cables, and nothing yet checked what a robot hears of its own voice, which the real robot cancels in hardware and the sim does not. Whether a world offers an echo canceller per robot, or leaves it to the application, is to decide.
 2. **Props in a world.** The scene director drives props from inside the physics loop through one callback per process ([sim_scene.md](../testing/sim_scene.md)), which suits one host. Whether props are declared in the world file, and on which robot's port `/api/sim/inject` is served (each, or the first), is to decide. The interaction tester needs hand props in front of one robot.
 3. **Sim displays in a world.** `camera_overlay`, `robot_gaze` and `face_markers` each belong to one robot. Whether a world shows them for one named robot, for all, or not at first.
 4. **Two robots on the default microphone.** In the spike, one start in eight with both robots on the default input logged `No caps found for stream audio_0`, and its clients got no camera frames after a media release. With a named device per robot it did not happen. The cause is not known, nor whether a single stock daemon shows it. Until it is, a world may require a named input (or none) per robot.
