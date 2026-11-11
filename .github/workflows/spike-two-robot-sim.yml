@@ -76,6 +76,8 @@ jobs:
           if gst-inspect-1.0 webrtcechoprobe > /dev/null 2>&1; then echo "webrtcechoprobe: present"; else echo "webrtcechoprobe: absent"; fi
       - name: The model on its own (EGL render)
         run: uv run python -m spikes.two_robot_sim.check_world --render
+      - name: What a frame costs on this runner, and what would make it cheaper
+        run: uv run python -m spikes.two_robot_sim.bench_render --out-dir out/bench
       - name: Start the world (headless, each robot's mouth on the other's ear)
         run: |
           mkdir -p out
