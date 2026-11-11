@@ -83,23 +83,21 @@ The world file is JSON, loaded into a `WorldConfig` (`config.py`, `from_dict` / 
 - **The camera source is the rendered one.** A host webcam as a robot's camera is not offered in a world: `camera` is not a field of a robot's entry.
 - **Rejected at load**: fewer than one robot, a duplicate name or port, a name that is not a valid prefix, an unknown key, and one device named as both the input and the output of the same robot (a robot hearing its own voice through a cable).
 
-### In a bridge's config: `daemon.world`
+### In a bridge's config: nothing new
 
-A `ReachyMiniConfig` stays one robot. It says which world its robot lives in, and which robot it is, with what it already has:
+A `ReachyMiniConfig` stays one robot and gains no field. A bridge joins a world as it joins any daemon someone else runs:
 
 ```json
 {
   "backend": "sim",
   "robot":  { "port": 8012 },
-  "daemon": { "spawn": "auto", "world": "worlds/face-to-face.json", "headless": false }
+  "daemon": { "spawn": "never" }
 }
 ```
 
-- **`daemon.world`** (a path, `null` by default) names the world file. Like every field of the block, it applies only to a daemon the bridge spawns ([config.md](../core/config.md)).
-- **`robot.port` says which robot.** It must be the port of one of the file's robots, checked when the config is loaded.
-- **`daemon.world` excludes the block's per-robot fields**: `scene`, `camera`, `audio` and `sim_displays` beside it are a `ConfigError`, as their flags are beside `--world`. `spawn`, `headless`, `kinematics_engine`, `preload_datasets` and `startup_timeout` keep their meaning, for the whole world.
-- **`launch_command`** ([daemon.md](daemon.md)) builds `sim_daemon --world <absolute path>` with the launch flags from the block. Readiness is probed on the bridge's own port, as ever.
-- **The session follows the report, not its config**, for what the world gave its robot: the audio devices and the camera socket ("The report and the client"). That is already the rule for a borrowed daemon.
+- **`robot.port` says which robot.**
+- **The session follows the report, not its config**, for what the world gave its robot: the audio devices and the camera socket ("The report and the client"). That is already the rule for a borrowed daemon ([daemon.md](daemon.md)).
+- **A bridge does not spawn a world.** A `daemon.world` field, letting the first bridge with `spawn: "auto"` start the world for the others, is deferred (open question 10).
 
 ### What each robot's daemon needs of its own
 
@@ -130,11 +128,9 @@ Only the socket is something a client must know, and the report gives it.
 
 ### Lifecycle
 
-- **Whoever starts the world owns all of it.** That is a test fixture, a script, a person, or the first bridge to start with `spawn: "auto"` and `daemon.world`.
-- **Every other bridge borrows its robot's port**: `spawn: "auto"` finding it ready, or `spawn: "never"`. Two apps with the same `daemon.world` and `spawn: "auto"` therefore need no third process: the first starts the world, the second joins it.
-- **A bridge that owns the world stops it with its session**, every robot included, as it stops any daemon it spawned ([daemon.md](daemon.md), "Teardown stops what the bridge started"). The other bridges then lose their connection, as with any borrowed daemon whose owner leaves. Apps that must outlive one another start the world themselves and use `spawn: "never"`.
-- **`spawn: "always"`** spawns the world and fails if the bridge's own port is taken, as for a single sim.
-- **Stopping the launcher** (SIGINT or SIGTERM) puts every robot to sleep, stops every daemon, removes every socket and exits.
+- **A world is started on its own**: by a person, a script, or a test fixture. Whoever starts it owns all of it.
+- **Every bridge connects to its robot's port** with `spawn: "never"` (`auto` finding the port ready borrows it the same way).
+- **Stopping the launcher** (SIGINT or SIGTERM) puts every robot to sleep, stops every daemon, removes every socket and exits. The bridges then lose their connection, as with any daemon stopped under them.
 
 ### Rendering
 
@@ -156,7 +152,7 @@ The spike's README lists every upstream assumption with its file and line.
 
 ### Testing
 
-- **Fast tier**: the composed model (prefixes, poses, each robot's actuators and camera); the view against a stock backend; `WorldConfig`'s validation; `daemon.world` in a bridge's config (the port among the world's, the excluded fields); the launch command built for it; `--world` beside a per-robot flag; the report's fields; the endpoints given to each robot.
+- **Fast tier**: the composed model (prefixes, poses, each robot's actuators and camera); the view against a stock backend; `WorldConfig`'s validation; `--world` beside a per-robot flag; the report's fields; the endpoints given to each robot.
 - **Live tier**: a `live_world` fixture beside `live_daemon` ([testing_support.md](../testing/testing_support.md)), yielding each robot's `host:port`. Its tests are the spike's proofs: each bridge moves only its own robot; each camera shows the other robot; each robot opens its own audio devices. A fixture that spawns bridge processes passes them `scrubbed_env()` ([daemon.md](daemon.md), "The child's environment is scrubbed"): a Python child that inherits the parent's GStreamer paths sets them again and crashes scanning plugins, as the spike found.
 
 ### Platforms
@@ -170,8 +166,8 @@ The spike's README lists every upstream assumption with its file and line.
 ## Relationship to the other specs
 
 - **[sim_daemon.md](sim_daemon.md)**: the launcher gains `--world`. The view wraps its backend subclass; the render trim through geom groups may replace its alpha trim (open question 6).
-- **[config.md](../core/config.md)**: `WorldConfig`, and the `daemon` block's `world` field with what it excludes.
-- **[daemon.md](daemon.md)**: the launch command for a world; the report gains `camera.socket` and `world`; borrowing a world's port is ordinary borrowing.
+- **[config.md](../core/config.md)**: `WorldConfig`; the `daemon` block is unchanged.
+- **[daemon.md](daemon.md)**: the report gains `camera.socket` and `world`; borrowing a world's port is ordinary borrowing.
 - **[camera.md](../vision/camera.md)**: the session points the camera reader at the reported socket before the feed starts.
 - **[audio.md](../audio/audio.md)**: the devices a session follows from the report, unchanged; per-robot resolution on the daemon side is this spec's.
 - **[sim_scene.md](../testing/sim_scene.md)**, **[sim_displays.md](sim_displays.md)**: props and displays in a world are open (questions 2 and 3).
@@ -179,8 +175,8 @@ The spike's README lists every upstream assumption with its file and line.
 
 ## Open questions
 
-1. **A robot's own echo, and two cables.** The spike wired one direction, robot a's voice into robot b's microphone, on the one virtual cable of its machine. Both directions at once need two cables, and nothing yet checked what a robot hears of its own voice, which the real robot cancels in hardware and the sim does not. Whether a world offers an echo canceller per robot, or leaves it to the application, is to decide.
-2. **Props in a world.** The scene director drives props from inside the physics loop through one callback per process ([sim_scene.md](../testing/sim_scene.md)), which suits one host. Whether props are declared in the world file, and on which robot's port `/api/sim/inject` is served (each, or the first), is to decide. The interaction tester needs hand props in front of one robot.
+1. **Echo cancellation, when the robots share a real room.** On virtual cables there is no echo: each robot's voice goes into the cable the other listens on, and nothing carries it back to its own microphone. So a world on cables needs no canceller, and offers none. Through one real speaker and one real microphone (two robots heard by people in a room) each robot would hear itself. Upstream has a software canceller for that, GStreamer's `webrtcdsp` in the client's own pipeline, so one per bridge process, with that bridge's playback as its reference. It turns it on only when it finds no named audio device and falls back to the system's defaults ([audio.md](../audio/audio.md), "No echo cancellation on a named device"). Whether the bridge gains a switch to turn it on over a named device is deferred until that use exists. The spike wired one direction on the one cable of its machine; both directions at once are run in CI.
+2. **Props in a world.** Today a prop is a body written into the scene file, moved by the scene director from inside the physics loop, and driven over `/api/sim/inject` on the daemon's port, at a position in the world's frame, which is the single robot's ([sim_scene.md](../testing/sim_scene.md)). A world changes three things. The model is composed by the host, so the props are declared to the launcher (in the world file, or beside it), not in a scene file. There are several ports: proposed, every robot's port serves the route over the one shared pool, positions being in that robot's frame, so "0.45 m in front of me" keeps its meaning and `SimSceneClient(host, port)` is unchanged. And a prop in front of one robot stands between the two: with the robots 0.6 m apart, a hand 0.45 m from one is 0.15 m from the other's camera and hides the first robot from it. The distance between the robots, or a prop held to the side, is to choose with the interaction tester's scenes.
 3. **Sim displays in a world.** `camera_overlay`, `robot_gaze` and `face_markers` each belong to one robot. Whether a world shows them for one named robot, for all, or not at first.
 4. **Two robots on the default microphone.** In the spike, one start in eight with both robots on the default input logged `No caps found for stream audio_0`, and its clients got no camera frames after a media release. With a named device per robot it did not happen. The cause is not known, nor whether a single stock daemon shows it. Until it is, a world may require a named input (or none) per robot.
 5. **WebRTC clients.** Upstream's client dials signalling port 8443, so a remote client cannot reach a robot on another port. Local clients, the bridge's path on one machine, do not use it. Left unsupported.
@@ -188,4 +184,4 @@ The spike's README lists every upstream assumption with its file and line.
 7. **Upstream options.** Three options upstream (the UDP port, the socket path, the signalling port) would turn most of the overrides into configuration, and a control tick factored into a method would remove the copy. To propose.
 8. **Headless camera on macOS.** The spike rendered offscreen on macOS with no window, which [sim_daemon.md](sim_daemon.md) says a Mac cannot do. It ran inside a logged-in session; over SSH is untested. To re-check there.
 9. **More than two robots, and robots that touch.** Nothing limits the count, but two is what was measured; the camera rate falls with each robot. Collisions between robots were not exercised.
-10. **Two bridges starting at once.** Both find the world's ports closed and both spawn it; the second launcher fails on a taken port. Whether `auto` then falls back to borrowing (the port it wanted is ready a moment later), or the apps are told to start one after the other, is to decide.
+10. **A bridge spawning the world.** A `daemon.world` field would let two apps with `spawn: "auto"` run with no third process: the first starts the world, the second borrows. It brings an owner that takes the other app's robot down when it stops, and two bridges starting at once both spawning. Deferred: the expected use is a world started on its own.
