@@ -138,6 +138,7 @@ Only the socket is something a client must know, and the report gives it.
 - **The trimmed render, on every platform.** No shadows or reflections, and each camera's own robot left out. Upstream's full render cannot hold the rate with two cameras: measured on an Apple M5 Pro, 8 to 10 frames a second per robot against about 20 trimmed.
 - **A camera's own robot is hidden through a geom group**, not by writing into the model. The single sim's headless trim writes alpha 0 into the model ([sim_daemon.md](sim_daemon.md), "The headless camera"); in a shared model that would blank the robot in the viewer and in the other robot's camera.
 - **The viewer shows every robot whole**, in one window.
+- **The render is budgeted per world, not per robot.** Each camera draws the other robots, and one thread draws every camera. On a GPU that holds (about 20 frames a second per robot with two). On a software rasterizer it does not yet (open question 11).
 
 ### Kept in step with upstream
 
@@ -155,12 +156,23 @@ The spike's README lists every upstream assumption with its file and line.
 - **Fast tier**: the composed model (prefixes, poses, each robot's actuators and camera); the view against a stock backend; `WorldConfig`'s validation; `--world` beside a per-robot flag; the report's fields; the endpoints given to each robot.
 - **Live tier**: a `live_world` fixture beside `live_daemon` ([testing_support.md](../testing/testing_support.md)), yielding each robot's `host:port`. Its tests are the spike's proofs: each bridge moves only its own robot; each camera shows the other robot; each robot opens its own audio devices. A fixture that spawns bridge processes passes them `scrubbed_env()` ([daemon.md](daemon.md), "The child's environment is scrubbed"): a Python child that inherits the parent's GStreamer paths sets them again and crashes scanning plugins, as the spike found.
 
+### On Linux
+
+What the spike needed on GitHub's runner, beyond what the single sim already does:
+
+- **`MUJOCO_GL=egl` before `mujoco` is imported**, as for the single headless sim.
+- **The software-rasterizer trim**: no multisampling, skybox, haze or fog, on top of no shadows and reflections. Hiding a camera's own robot through geom groups works under EGL unchanged.
+- **A cable is a null sink plus a source remapped over its monitor**, both carrying the name in `device.description` and `device.string`: upstream's matcher skips monitor sources and takes a virtual PulseAudio device only through `device.string`.
+- **The system's default devices point at a null sink of their own**, so nothing reaches a cable unless a robot was given it by name.
+
+Two cables wired both ways carried each robot's `say` to the other's mic feed, alone and both at once, and a robot's own mic feed read exactly zero while it alone spoke.
+
 ### Platforms
 
 | | State |
 |---|---|
 | macOS, viewer and headless | proved by the spike |
-| Linux headless (EGL), CI | not run yet; to prove before the spec is `Stable` |
+| Linux headless (EGL), GitHub's hosted runner | proved by the spike, both directions of audio included; the camera rate is too low (open question 11) |
 | Windows | not considered |
 
 ## Relationship to the other specs
@@ -185,3 +197,4 @@ The spike's README lists every upstream assumption with its file and line.
 8. **Headless camera on macOS.** The spike rendered offscreen on macOS with no window, which [sim_daemon.md](sim_daemon.md) says a Mac cannot do. It ran inside a logged-in session; over SSH is untested. To re-check there.
 9. **More than two robots, and robots that touch.** Nothing limits the count, but two is what was measured; the camera rate falls with each robot. Collisions between robots were not exercised.
 10. **A bridge spawning the world.** A `daemon.world` field would let two apps with `spawn: "auto"` run with no third process: the first starts the world, the second borrows. It brings an owner that takes the other app's robot down when it stops, and two bridges starting at once both spawning. Deferred: the expected use is a world started on its own.
+11. **The camera rate on a CPU-only runner.** On GitHub's four-vCPU runner (Mesa llvmpipe) each robot's camera reached 4.5 to 4.9 frames a second, physics holding 500 Hz. [sim_daemon.md](sim_daemon.md) records that a camera at four frames a second starves the head tracker. The cost is triangles, not pixels: one camera drawing the other robot whole (940,000 triangles) took 91 ms at 1280×720 and 88 ms at 640×360. Drawing only the geoms a camera can ever see of the other robot (19 of 161) took 39 ms, which would give about 12 frames a second per robot; that figure is inferred from the benchmark, not run in the host. Beyond that, decimated meshes for the camera render, or a GPU runner. Which of these, and what rate the world's live tests need, is to decide before the spec is `Stable`.
