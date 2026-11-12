@@ -23,8 +23,12 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Iterator
+from contextlib import suppress
+from dataclasses import replace
 from typing import Any
 
+import numpy as np
+import numpy.typing as npt
 import pytest
 
 from reachy_mini_bridge import ReachyMiniConfig
@@ -33,6 +37,12 @@ from reachy_mini_bridge.config import (
     FaceDetectionSettings,
     MotionSettings,
     TrackingSettings,
+)
+from reachy_mini_bridge.face_detection import (
+    TRACK_LOST_S,
+    PixelFace,
+    UserDeparture,
+    UsersReport,
 )
 from reachy_mini_bridge.testing import BridgeLoop, LiveBridge, _daemon, requires_caps
 from reachy_mini_bridge.testing.fixtures import (
@@ -134,3 +144,178 @@ def test_custom_detector_converges_on_the_face(
     assert_tracked(aside, pitch_ahead=ahead.pitch)
     assert rate >= 5.0, f"the custom source reported {rate:.1f} times a second"
     assert attention == "engaged"
+
+
+# --- a recognising detector (specs/vision/user_perception.md "Tracks": "Recognised faces") --
+
+
+def _signature(image: npt.NDArray[np.uint8], bbox: tuple[float, ...]) -> Any:
+    """The face's crop as a 32x32 grey patch, zero-mean and unit-norm: what the test's
+    recogniser compares by correlation (no model, no OpenCV)."""
+    x, y, w, h = bbox
+    height, width = image.shape[:2]
+    x0, y0 = max(0, int(x)), max(0, int(y))
+    x1, y1 = min(width, int(x + w)), min(height, int(y + h))
+    if x1 - x0 < 8 or y1 - y0 < 8:
+        return None
+    grey = image[y0:y1, x0:x1].astype(np.float64).mean(axis=2)
+    rows = np.linspace(0, grey.shape[0] - 1, 32).astype(int)
+    cols = np.linspace(0, grey.shape[1] - 1, 32).astype(int)
+    patch = grey[np.ix_(rows, cols)]
+    patch -= patch.mean()
+    norm = float(np.linalg.norm(patch))
+    return None if norm == 0.0 else patch / norm
+
+
+class _RecognisingDetector:
+    """The shipped detector with a recogniser on top, as a developer would wrap theirs:
+    each face's crop compared with the enrolled portraits, keyed by the best one when it
+    is clearly the best (a score above `_MIN_SCORE`, ahead of the next by `_MARGIN`),
+    no key otherwise."""
+
+    _MIN_SCORE = 0.6
+    _MARGIN = 0.1
+
+    def __init__(self, gallery: dict[str, Any]) -> None:
+        self._inner = YuNetDetector()
+        self._gallery = gallery
+        self.box_height_m = self._inner.box_height_m
+
+    def detect(self, frame_bgr: npt.NDArray[np.uint8], ts: float) -> list[PixelFace]:
+        faces = self._inner.detect(frame_bgr, ts)
+        return [replace(f, identity=self.recognise(frame_bgr, f)) for f in faces]
+
+    def recognise(
+        self, frame_bgr: npt.NDArray[np.uint8], face: PixelFace
+    ) -> str | None:
+        signature = _signature(frame_bgr, face.bbox)
+        if signature is None or not self._gallery:
+            return None
+        scores = sorted(
+            (
+                (float((signature * ref).sum()), name)
+                for name, ref in self._gallery.items()
+            ),
+            reverse=True,
+        )
+        best, name = scores[0]
+        second = scores[1][0] if len(scores) > 1 else -1.0
+        return (
+            name if best >= self._MIN_SCORE and best - second >= self._MARGIN else None
+        )
+
+
+async def _enrol(
+    bridge: ReachyMiniBridge, scene: SimSceneClient, names: tuple[str, ...]
+) -> dict[str, Any]:
+    """Each portrait shown alone ahead, its face's crop from the live frame kept as its
+    reference: the recogniser learns the sim's own rendering."""
+    gallery: dict[str, Any] = {}
+    for name in names:
+        scene.spawn(DEFAULT_FACE_POS, name=name)
+        deadline = time.perf_counter() + 5.0
+        while True:
+            report = bridge.faces.value
+            if report.faces and report.frame is not None:
+                signature = _signature(report.frame.image, report.faces[0].bbox)
+                if signature is not None:
+                    gallery[name] = signature
+                    break
+            assert time.perf_counter() < deadline, f"{name}: no face to enrol"
+            await asyncio.sleep(0.05)
+        scene.despawn(name)
+        await asyncio.sleep(0.5)
+    return gallery
+
+
+async def _recognised(bridge: ReachyMiniBridge, key: str, timeout: float = 5.0) -> int:
+    """The track id of the face carrying ``key``, once a confirmed user does."""
+    deadline = time.perf_counter() + timeout
+    while True:
+        for user in bridge.users.value.users:
+            if user.seen and user.face.identity == key:
+                return user.track_id
+        assert time.perf_counter() < deadline, (
+            f"no user recognised as {key}: {bridge.faces.value.faces}"
+        )
+        await asyncio.sleep(0.05)
+
+
+@pytest.fixture
+def recognising(
+    live_bridge_custom_faces: LiveBridge, custom_face_scene: SimSceneClient
+) -> Iterator[LiveBridge]:
+    """This module's session with the recognising detector registered over the shipped
+    one, after enrolling `face_1` and `face_2` ahead with tracking off; the shipped
+    detector back after the test. The recogniser is the test's own stand-in — a
+    correlation against the enrolled crops, reliable where it enrolled (ahead), not a
+    model: the live test exercises a key's path through the bridge, the matching rules
+    themselves are tests/test_face_detection.py's."""
+    bridge, _caps = live_bridge_custom_faces
+
+    async def setup() -> None:
+        await bridge.stop_head_tracking()
+        gallery = await _enrol(bridge, custom_face_scene, ("face_1", "face_2"))
+        await bridge.set_face_detector(lambda: _RecognisingDetector(gallery))
+
+    live_bridge_custom_faces.run(setup())
+    yield live_bridge_custom_faces
+
+    async def teardown() -> None:
+        await bridge.set_face_detector(YuNetDetector)
+        await bridge.start_head_tracking()
+
+    live_bridge_custom_faces.run(teardown())
+
+
+def test_recognition_keeps_someone_stepping_in_apart(
+    recognising: LiveBridge, custom_face_scene: SimSceneClient
+) -> None:
+    """The followed person (`face_1`) leaves as another (`face_2`) steps into the same
+    spot: recognised, the newcomer arrives under their own id, the one who left leaves
+    as "left", and the head switches to the newcomer — where geometry alone would let
+    the newcomer continue the other's track."""
+    bridge, _caps = recognising
+
+    async def scenario() -> tuple[int, int, list[int], list[UserDeparture], int | None]:
+        await bridge.set_motors_state("enabled")
+        await arm_tracking(bridge)
+        custom_face_scene.spawn(DEFAULT_FACE_POS, name="face_1")
+        first = await _recognised(bridge, "face_1")
+        await track_onto(bridge, "recognised: face_1 ahead", 0.0)
+        woken: list[UsersReport] = []
+
+        async def subscribe() -> None:
+            async for report in bridge.users.changes(every=True):
+                woken.append(report)
+
+        subscriber = asyncio.create_task(subscribe())
+        await asyncio.sleep(0)
+        custom_face_scene.despawn("face_1")
+        custom_face_scene.spawn(DEFAULT_FACE_POS, name="face_2")
+        second = await _recognised(bridge, "face_2")
+        # the head switches once face_1 has been missing TRACKING_SWITCH_S; face_1
+        # leaves at the end of the miss window, TRACK_LOST_S
+        deadline = time.perf_counter() + TRACK_LOST_S + 3.0
+        while bridge.head_tracking.value.track_id != second or not any(
+            r.left for r in woken
+        ):
+            assert time.perf_counter() < deadline, (
+                f"head on {bridge.head_tracking.value.track_id}, "
+                f"departures {[d for r in woken for d in r.left]}"
+            )
+            await asyncio.sleep(0.05)
+        await asyncio.sleep(0.2)
+        subscriber.cancel()
+        with suppress(asyncio.CancelledError):
+            await subscriber
+        arrived = [a for r in woken for a in r.arrived]
+        left = [d for r in woken for d in r.left]
+        return first, second, arrived, left, bridge.head_tracking.value.track_id
+
+    first, second, arrived, left, followed = recognising.run(scenario())
+    print(f"\n[e2e] recognised: {first} -> {second}; arrived {arrived}, left {left}")
+    assert second != first  # the newcomer did not take the other's track
+    assert arrived == [second]
+    assert left == [UserDeparture(first, "left")]
+    assert followed == second

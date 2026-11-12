@@ -16,6 +16,7 @@ import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from typing import Any, cast
 
 import numpy as np
@@ -1450,3 +1451,106 @@ def test_a_detector_swap_lets_the_users_leave_as_stopped(fast_frames: None) -> N
         (True, (), (UserDeparture(1, "stopped"),)),
         (True, (2,), ()),
     ]
+
+
+# --- recognised faces (specs/vision/user_perception.md "Tracks": "Recognised faces") -----
+
+
+def _known(cx: float, cy: float, key: str | None) -> PixelFace:
+    """A face at (cx, cy) carrying the recognition key ``key``."""
+    return replace(_face(cx, cy), identity=key)
+
+
+def test_a_different_key_at_a_held_tracks_spot_opens_its_own_track() -> None:
+    """The veto: Bob stepping into the spot Alice's held track waits at is someone
+    else; Alice back beside him continues her own track."""
+    tracks = fd._FaceTracks(_counter())
+    size = (WIDTH, HEIGHT)
+    assert tracks.update([_known(20, 24, "alice")], size, ts=0.1) == [1]
+    assert tracks.update([_known(20, 24, "bob")], size, ts=0.2) == [2]
+    both = [_known(22, 24, "alice"), _known(20, 24, "bob")]
+    assert tracks.update(both, size, ts=0.3) == [1, 2]
+
+
+def test_a_face_without_a_key_continues_a_recognised_track_by_distance() -> None:
+    tracks = fd._FaceTracks(_counter())
+    size = (WIDTH, HEIGHT)
+    assert tracks.update([_known(20, 24, "alice")], size, ts=0.1) == [1]
+    assert tracks.update([_known(21, 24, None)], size, ts=0.2) == [1]
+
+
+def test_a_recognised_face_beyond_the_gate_continues_its_track() -> None:
+    """The rescue: Alice moved farther than the jump gate between two looks (44 px of a
+    12 px face) and is still Alice; without a key the same jump is someone new."""
+    tracks = fd._FaceTracks(_counter())
+    size = (WIDTH, HEIGHT)
+    assert tracks.update([_known(10, 24, "alice")], size, ts=0.1) == [1]
+    assert tracks.update([_known(54, 24, "alice")], size, ts=0.2) == [1]
+    plain = fd._FaceTracks(_counter())
+    assert plain.update([_known(10, 24, None)], size, ts=0.1) == [1]
+    assert plain.update([_known(54, 24, None)], size, ts=0.2) == [2]
+
+
+def test_a_dropped_track_is_never_rescued() -> None:
+    """Ids are never reused: Alice back after her track was dropped gets a new one."""
+    tracks = fd._FaceTracks(_counter(), min_misses=3, lost_s=0.35)
+    size = (WIDTH, HEIGHT)
+    assert tracks.update([_known(20, 24, "alice")], size, ts=0.1) == [1]
+    for i in range(4):  # missing 0.4 s in view: dropped
+        tracks.update([], size, ts=0.2 + 0.1 * i)
+    assert tracks.update([_known(20, 24, "alice")], size, ts=0.6) == [2]
+
+
+def test_recognised_faces_crossing_close_keep_their_ids() -> None:
+    """Alice and Bob swap places within the gate: nearest first would trade their
+    ids; their keys keep them."""
+    size = (WIDTH, HEIGHT)
+    for keyed, expected in ((True, [1, 2]), (False, [2, 1])):
+        tracks = fd._FaceTracks(_counter())
+        alice, bob = ("alice", "bob") if keyed else (None, None)
+        tracks.update([_known(20, 24, alice), _known(30, 24, bob)], size, ts=0.1)
+        ids = tracks.update([_known(29, 24, alice), _known(21, 24, bob)], size, ts=0.2)
+        assert ids == expected, keyed
+
+
+def test_a_frame_without_recognition_keeps_the_tracks_key() -> None:
+    """A frame where the recogniser was not confident (no key) continues Alice's track
+    without erasing her key: Bob in her spot later is still vetoed."""
+    tracks = fd._FaceTracks(_counter())
+    size = (WIDTH, HEIGHT)
+    assert tracks.update([_known(20, 24, "alice")], size, ts=0.1) == [1]
+    assert tracks.update([_known(20, 24, None)], size, ts=0.2) == [1]
+    assert tracks.update([_known(20, 24, "bob")], size, ts=0.3) == [2]
+
+
+def test_the_key_reaches_the_faces_and_the_users() -> None:
+    size = (WIDTH, HEIGHT)
+    report = report_from_pixels([_known(20, 24, "alice")], size, _frame(), [1])
+    assert report.faces[0].identity == "alice"
+    presence = _Presence()
+    for _ in range(3):
+        presence.see(_known(20, 24, "alice"))
+    users = presence.see(_known(20, 24, "alice"))  # confirmed
+    assert users.users[0].face.identity == "alice"
+
+
+def test_a_recognised_person_jumping_across_the_frame_stays_one_user(
+    fast_frames: None,
+) -> None:
+    """Over the fake's feed: Alice, recognised, jumps from one side of the frame to the
+    other between two frames — the same track id in `faces`, and `users` publishes no
+    departure and no new arrival."""
+    scene = _Scene([_known(8, 24, "alice")])
+
+    async def run() -> tuple[int, int, list[UsersReport]]:
+        async with _running_custom(scene) as loop:
+            await _wait_for(lambda: bool(loop.users.value.users))
+            before = loop.faces.value.faces[0].track_id
+            scene.faces[:] = [_known(56, 24, "alice")]
+            await _wait_for(lambda: loop.faces.value.faces[0].x > 0.5)
+            await asyncio.sleep(0.3)
+            return before, loop.faces.value.faces[0].track_id, list(loop.users_woken)
+
+    before, after, woken = _run(run)
+    assert after == before
+    assert [(r.arrived, r.left) for r in woken] == [((), ()), ((before,), ())]

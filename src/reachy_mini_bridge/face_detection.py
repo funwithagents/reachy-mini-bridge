@@ -137,6 +137,8 @@ class Face:
     # how far the face is from the robot's camera along its line of sight, in metres
     # (the face's size against the detector's box height); None without a camera model
     distance_m: float | None = None
+    # the detector's recognition key for this face (PixelFace.identity), None without one
+    identity: str | None = None
 
 
 @dataclass(frozen=True)
@@ -303,6 +305,10 @@ class PixelFace:
     # roll, pitch, yaw in radians from a detector that fits a head, in the report's
     # convention (specs/vision/user_perception.md "The face report"); preferred over the eyes
     orientation: tuple[float, float, float] | None = None
+    # an opaque key from a detector that recognises people — a name, a gallery id — set
+    # only when it is confident; the tracks never interpret it, only compare it
+    # (specs/vision/user_perception.md "Tracks": "Recognised faces")
+    identity: str | None = None
 
 
 class FaceDetector(Protocol):
@@ -394,6 +400,9 @@ class _Track:
     # (specs/vision/user_perception.md "Tracks": the anchor the expected pixel follows)
     direction: npt.NDArray[np.float64] | None = None
     seen_at: float = 0.0
+    # the last recognition key a face of this track carried; kept through frames without
+    # one (specs/vision/user_perception.md "Tracks": "Recognised faces")
+    identity: str | None = None
 
 
 def _pixel_size(face: PixelFace) -> float:
@@ -474,27 +483,55 @@ class _FaceTracks:
         # Fresh tracks first: a track missed on the last observation (a face that left)
         # never takes a face its own fresh track could continue — the image centre, where
         # the head brings every followed face, is where a departed face's track waits.
-        pairs = sorted(
-            (track.misses > 0, d2, t, f)
-            for t, track in enumerate(self._tracks)
-            if (at := expected[t]) is not None
-            for f, centre in enumerate(centres)
-            if (d2 := _dist2(at, centre)) <= (max_jump * min(track.size, sizes[f])) ** 2
-        )
+        # Recognised faces: two different keys never match (the veto), and a face
+        # carrying its track's key is taken before any other pair.
+        keys = [face.identity for face in faces]
+        pairs: list[tuple[bool, bool, float, int, int]] = []
+        for t, track in enumerate(self._tracks):
+            at = expected[t]
+            if at is None:
+                continue
+            for f, centre in enumerate(centres):
+                if track.identity is not None and keys[f] not in (None, track.identity):
+                    continue  # the veto: someone else
+                d2 = _dist2(at, centre)
+                if d2 > (max_jump * min(track.size, sizes[f])) ** 2:
+                    continue
+                recognised = track.identity is not None and keys[f] == track.identity
+                pairs.append((not recognised, track.misses > 0, d2, t, f))
+        pairs.sort()
         ids: list[int | None] = [None] * len(faces)
         matched: set[int] = set()
-        for _stale, _d2, t, f in pairs:
-            if t in matched or ids[f] is not None:
-                continue
+
+        def take(t: int, f: int) -> None:
             track = self._tracks[t]
             track.centre, track.size, track.misses = centres[f], sizes[f], 0
             track.missing_s = 0.0
             track.seen_at = track.updated_at = ts
+            if keys[f] is not None:
+                track.identity = keys[f]
             if geometry is not None:
                 u, v = centres[f]
                 track.direction = geometry.direction(u, v, size, ts, head_pose)
             ids[f] = track.track_id
             matched.add(t)
+
+        for _recognised, _stale, _d2, t, f in pairs:
+            if t in matched or ids[f] is not None:
+                continue
+            take(t, f)
+        # The rescue: a recognised face no track took by distance continues the held
+        # track carrying its key — the person moved farther than the gate while unseen.
+        for f, key in enumerate(keys):
+            if key is None or ids[f] is not None:
+                continue
+            same = [
+                t
+                for t, track in enumerate(self._tracks)
+                if t not in matched and track.identity == key
+            ]
+            if same:
+                take(max(same, key=lambda t: self._tracks[t].seen_at), f)
         survivors: list[_Track] = []
         verdicts: dict[int, bool] = {}
         missing: dict[int, float] = {}
@@ -518,7 +555,12 @@ class _FaceTracks:
             if track_id is None:
                 u, v = centres[f]
                 track = _Track(
-                    self._new_id(), centres[f], sizes[f], seen_at=ts, updated_at=ts
+                    self._new_id(),
+                    centres[f],
+                    sizes[f],
+                    seen_at=ts,
+                    updated_at=ts,
+                    identity=keys[f],
                 )
                 if geometry is not None:
                     track.direction = geometry.direction(u, v, size, ts, head_pose)
@@ -575,6 +617,7 @@ def report_from_pixels(
                 ),
                 pitch=pitch,
                 yaw=yaw,
+                identity=face.identity,
             )
         )
     if camera is not None:
