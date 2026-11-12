@@ -153,7 +153,7 @@ async for state in bridge.head_tracking.changes():
 report = await bridge.faces.wait_for(lambda r: r.active and len(r.faces) > 0)
 ```
 
-A subscriber that falls behind gets the latest value, not a backlog; the count's drop is published once it has held for 0.3 s, so a detector's blink does not fire *left*. A face **moving** never wakes a subscriber: a graph that wants every observation samples `faces.value` at its own rate and skips repeats on `frame_id`, the way it would any latest-value upstream.
+A subscriber that falls behind gets the latest value, not a backlog — `changes(every=True)` gives it every published report in order instead ([../reference/api.md](../reference/api.md) "Reading and subscribing"); the count's drop is published once it has held for 0.3 s, so a detector's blink does not fire *left*. A face **moving** never wakes a subscriber: a graph that wants every observation samples `faces.value` at its own rate and skips repeats on `frame_id`, the way it would any latest-value upstream.
 
 ### Enriching a face
 

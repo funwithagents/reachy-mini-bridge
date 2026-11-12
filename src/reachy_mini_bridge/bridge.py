@@ -66,7 +66,7 @@ from .fake_reachy_mini import FakeReachyMini
 from .head_tracking import CameraModel, HeadTracker, HeadTrackingReport
 from .microphone import MicFeed
 from .motion import NEUTRAL_ANTENNAS, NEUTRAL_BODY_YAW, NEUTRAL_HEAD, MotionSession
-from .observable import Observable
+from .observable import CHANGE_HISTORY, Observable
 from .robot import build_robot
 from .sim_displays import FaceMarkerPublisher, face_markers_url
 
@@ -412,14 +412,16 @@ class ReachyMiniBridge:
         self._daemon_info: DaemonInfo | None = None
         # The tracker's state (specs/motion/head_tracking.md "The head tracking report"):
         # readable at any time and outliving sessions, published by the tracker.
+        # It keeps CHANGE_HISTORY so an `every` subscriber reads each change in order.
         self._head_tracking: Observable[HeadTrackingReport] = Observable(
-            HeadTrackingReport.inactive()
+            HeadTrackingReport.inactive(), history=CHANGE_HISTORY
         )
         # Faces (specs/vision/user_perception.md): the report, readable at any time and
         # outliving sessions; the caller's detection switch (config default, reset on
         # exit); and the detection loop while entered.
         self._faces: Observable[FaceReport] = Observable(
-            FaceReport.inactive(self._config.face_detection.detector)
+            FaceReport.inactive(self._config.face_detection.detector),
+            history=CHANGE_HISTORY,
         )
         self._face_detection_wanted = self._config.face_detection.enabled
         self._detection: FaceDetection | None = None

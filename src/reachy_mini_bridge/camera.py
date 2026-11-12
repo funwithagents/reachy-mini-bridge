@@ -130,7 +130,7 @@ class CameraFeed:
         # The followers' channel (specs/vision/camera.md "Followers"): the thread publishes
         # every frame into it through the session's loop, a hop behind ``latest()``; the
         # ``None`` published at ``stop()`` ends every ``frames()`` of the session.
-        self._frames: Observable[CameraFrame | None] = Observable(None)
+        self._frames: Observable[CameraFrame | None] = Observable(None, history=1)
         self._loop: asyncio.AbstractEventLoop | None = None
         self._session = 0  # bumped at each start(): a follower ends with its session
 
