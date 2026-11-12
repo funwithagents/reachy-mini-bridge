@@ -277,6 +277,11 @@ class _FaceTracks:
         self._geometry = geometry
         self._tracks: list[_Track] = []
 
+    def ids(self) -> frozenset[int]:
+        """The ids of every track held: seen on the last observation or waiting through
+        its misses."""
+        return frozenset(track.track_id for track in self._tracks)
+
     def update(
         self,
         faces: Sequence[PixelFace],
@@ -509,6 +514,13 @@ class FaceDetection:
     def running(self) -> bool:
         """Whether the loop's task is running."""
         return self._task is not None and not self._task.done()
+
+    def held_track_ids(self) -> frozenset[int]:
+        """The ids of every track the loop holds — the faces of its latest observation
+        and the tracks waiting through their misses — empty while it is not running
+        (specs/vision/user_perception.md "Tracks": "The held tracks"); what a pinned
+        ``track_id`` is checked against."""
+        return self._tracks.ids() if self.running else frozenset()
 
     def _factory(self) -> FaceDetectorFactory:
         """The factory of the configured detector, or ``ValueError`` when the loop

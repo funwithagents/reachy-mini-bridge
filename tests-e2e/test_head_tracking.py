@@ -747,6 +747,64 @@ def test_a_face_gone_for_good_hands_over_to_the_other_then_the_head_is_released(
     assert lost_after >= TRACKING_LOST_S - 0.2
 
 
+def test_a_pinned_face_is_followed_and_its_loss_leaves_the_other_face_alone(
+    live_bridge: LiveBridge, face_scene: SimSceneClient
+) -> None:
+    """A pinned face (specs/motion/head_tracking.md "A pinned face"): the caller pins the
+    farther, smaller of two portraits, and the head converges on it — not on the nearer
+    one the automatic target would take; despawned, the pin ends in the loss, the head
+    is released, and the nearer face, still in view, is not acquired."""
+    bridge, _caps = live_bridge
+
+    async def scenario() -> tuple[
+        Track, int, HeadTrackingReport, HeadTrackingReport, float, list[Any]
+    ]:
+        await _prepare(bridge)
+        far = face_scene.spawn((FAR_X, -LATERAL_M, FACE_Z))
+        face_scene.spawn((NEAR_X, LATERAL_M, FACE_Z))
+        await _both_in_view(bridge)
+        pinned = min(bridge.faces.value.faces, key=lambda f: f.size).track_id
+        await bridge.start_head_tracking(track_id=pinned)
+        track = await track_onto(
+            bridge,
+            "the far face, pinned",
+            -LATERAL_M,
+            expected_yaw_deg=_yaw_to(FAR_X, -LATERAL_M),
+            min_seconds=4.5,
+        )
+        engaged = bridge.head_tracking.value
+        changes = _Changes(bridge)
+        face_scene.despawn(far)
+        lost_after = await _until(
+            lambda: bridge.head_tracking.value.attention == "watching",
+            TRACKING_LOST_S + 3.0,
+        )
+        await asyncio.sleep(TRACKING_SWITCH_S + 1.0)  # the nearer face stays in view
+        await changes.stop()
+        return (
+            track,
+            pinned,
+            engaged,
+            bridge.head_tracking.value,
+            lost_after,
+            changes.woken,
+        )
+
+    track, pinned, engaged, end, lost_after, woken = live_bridge.run(scenario())
+    print(
+        f"\n[e2e] pinned {pinned}; released after {lost_after:.2f} s; changes "
+        f"{[(r.attention, r.track_id, r.pinned_track_id) for r in woken]}"
+    )
+    assert_tracked(track)
+    assert (engaged.track_id, engaged.pinned_track_id) == (pinned, pinned)
+    assert (end.attention, end.track_id, end.pinned_track_id) == (
+        "watching",
+        None,
+        pinned,
+    )
+    assert [(r.attention, r.track_id) for r in woken] == [("watching", None)]
+
+
 # --- the posture (specs/motion/head_tracking.md "The posture") ---------------------------
 #
 # The life-size portraits (specs/testing/sim_scene.md "Geometry") read their true distance,

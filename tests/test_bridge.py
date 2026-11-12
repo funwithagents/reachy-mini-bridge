@@ -4055,6 +4055,99 @@ def test_set_tracking_starts_stops_and_refuses_what_it_cannot_apply() -> None:
     assert recorded is True
 
 
+# --- a pinned face (specs/motion/head_tracking.md "A pinned face") ------------------------
+
+
+def _two_people() -> tuple[_Scene, PixelFace, PixelFace]:
+    """A bigger face on the left, a smaller one on the right, for detection alone: the
+    motors stay off, so the head never moves and the tracks hold."""
+    big = _pixel_face(-0.6)
+    big = PixelFace(bbox=(big.bbox[0] - 3, big.bbox[1] - 4, 16, 24), nose=big.nose)
+    small = _pixel_face(0.6)
+    return _Scene([big, small]), big, small
+
+
+def _ids_by_side(bridge: ReachyMiniBridge) -> tuple[int, int]:
+    faces = sorted(bridge.faces.value.faces, key=lambda f: f.x)
+    return faces[0].track_id, faces[-1].track_id
+
+
+type _PinState = tuple[str | None, int | None, int | None]  # attention, track, pin
+
+
+def test_a_pinned_face_is_followed_alone_and_its_loss_leaves_tracking_watching(
+    fast_attention: None,
+) -> None:
+    scene, big, _small = _two_people()
+    bridge = ReachyMiniBridge(_custom_config(scene, tracking=False))
+
+    async def run() -> tuple[list[_PinState], int, int]:
+        states: list[_PinState] = []
+
+        def state() -> _PinState:
+            report = bridge.head_tracking.value
+            return report.attention, report.track_id, report.pinned_track_id
+
+        async with bridge:
+            await _wait_until(lambda: len(bridge.faces.value.faces) == 2)
+            left, right = _ids_by_side(bridge)
+            await bridge.start_head_tracking(track_id=right)  # the smaller face
+            await _wait_until(lambda: bridge.attention == "engaged")
+            await asyncio.sleep(0.4)  # beside the bigger face, past the switch time
+            states.append(state())
+            scene.faces[:] = [big]  # the pinned person leaves
+            await _wait_until(lambda: bridge.attention == "watching")
+            await asyncio.sleep(0.4)  # the other face stays in view, not acquired
+            states.append(state())
+            await bridge.start_head_tracking()  # back to the automatic target
+            await _wait_until(lambda: bridge.attention == "engaged")
+            states.append(state())
+        return states, left, right
+
+    (pinned, lost, automatic), left, right = asyncio.run(run())
+    assert pinned == ("engaged", right, right)
+    assert lost == ("watching", None, right)
+    assert automatic == ("engaged", left, None)
+
+
+def test_a_pin_is_checked_against_the_held_tracks_and_kept_or_cleared_by_the_verbs(
+    fast_attention: None,
+) -> None:
+    scene, _big, _small = _two_people()
+    bridge = ReachyMiniBridge(_custom_config(scene, tracking=False, detection=False))
+
+    async def run() -> list[Any]:
+        seen: list[Any] = []
+        async with bridge:
+            with pytest.raises(ValueError, match="no face track 1"):  # detection off
+                await bridge.start_head_tracking(track_id=1)
+            seen.append(bridge.tracking.enabled)
+            await bridge.set_face_detection(True)
+            await _wait_until(lambda: len(bridge.faces.value.faces) == 2)
+            _left, right = _ids_by_side(bridge)
+            for wrong in (right + 100, True, "2"):
+                with pytest.raises(ValueError, match="track"):
+                    await bridge.start_head_tracking(track_id=wrong)  # type: ignore[arg-type]
+            seen.append(bridge.tracking.enabled)
+            await bridge.start_head_tracking(track_id=right)
+            await bridge.set_tracking(replace(bridge.tracking, focus=True))
+            seen.append(bridge.head_tracking.value.pinned_track_id)  # kept
+            await bridge.start_head_tracking(focus=False)  # no id: automatic
+            seen.append(bridge.head_tracking.value.pinned_track_id)
+            await bridge.start_head_tracking(focus=True, track_id=right)
+            seen.append(
+                (bridge.tracking_focus, bridge.head_tracking.value.pinned_track_id)
+            )
+            await bridge.stop_head_tracking()
+            seen.append(bridge.head_tracking.value.pinned_track_id)
+            await bridge.start_head_tracking()  # a new start: no pin left behind
+            seen.append(bridge.head_tracking.value.pinned_track_id)
+        return [*seen, right]
+
+    *seen, right = asyncio.run(run())
+    assert seen == [False, False, right, None, (True, right), None, None]
+
+
 # --- the robot's own moves: a face the camera does not frame is not gone -------------------
 # (specs/motion/head_tracking.md "Whom the head follows", specs/vision/user_perception.md
 # "Tracks": the projecting stub of both specs' fake support)

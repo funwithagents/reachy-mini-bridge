@@ -655,6 +655,44 @@ async def _wait_for(predicate: Callable[[], bool], timeout: float = 2.0) -> None
         await asyncio.sleep(0.01)
 
 
+def test_the_held_tracks_are_the_faces_seen_and_those_waiting_through_misses(
+    fast_frames: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`held_track_ids()` — what a pinned track_id is checked against
+    (specs/vision/user_perception.md "Tracks": "The held tracks") — names a face's track
+    while it is seen and through its misses, and no longer once the track is dropped or
+    the loop stops."""
+    monkeypatch.setattr(fd, "TRACK_MAX_MISSES", 4)
+    scene = _Scene()
+
+    async def run() -> list[frozenset[int]]:
+        held: list[frozenset[int]] = []
+        async with _running_custom(scene) as loop:
+            detection = loop.detection
+            held.append(detection.held_track_ids())  # nobody yet
+            scene.show(0.2)
+            await _wait_for(lambda: bool(loop.faces.value.faces))
+            held.append(detection.held_track_ids())
+            scene.hide()
+            calls = len(scene.calls)
+            await _wait_for(lambda: len(scene.calls) >= calls + 2)  # two misses
+            held.append(detection.held_track_ids())
+            await _wait_for(lambda: not detection.held_track_ids())  # dropped
+            scene.show(0.2)
+            await _wait_for(lambda: bool(detection.held_track_ids()))
+            held.append(detection.held_track_ids())  # a new track: ids never reused
+        held.append(detection.held_track_ids())  # the loop stopped
+        return held
+
+    assert _run(run) == [
+        frozenset(),
+        frozenset({1}),
+        frozenset({1}),
+        frozenset({2}),
+        frozenset(),
+    ]
+
+
 def test_the_custom_source_reports_the_detectors_faces_on_the_frame() -> None:
     scene = _Scene([_face(10, 10, 6, 6), _face(47.25, 23.5, 10, 24)])
 

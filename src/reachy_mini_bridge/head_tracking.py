@@ -4,7 +4,7 @@ into the aim the motion loop composes (specs/motion/head_tracking.md).
 The tracker takes the detection loop's every report and chooses whom to follow by
 ``track_id`` — the biggest face, held while it is reported; a face gone missing held
 toward its last position for ``TRACKING_SWITCH_S`` before switching to the biggest other
-one. It turns the followed face into a look-at head pose with upstream's geometry — the face's pixel through a camera model,
+one — or the one face the caller pinned, followed alone. It turns the followed face into a look-at head pose with upstream's geometry — the face's pixel through a camera model,
 rotated into the world by the head pose its frame was taken from (or the rest pose, for
 a camera that does not turn with the head) — and hands that aim to the motion loop's
 gaze layer, which eases, fades and composes it. That pose is the report's own when the
@@ -394,6 +394,8 @@ class HeadTrackingReport:
     offset_mm: float = 0.0  # along the look direction: + toward the person, - back
     # the followed person is inside the personal space ("The personal space event")
     in_personal_space: bool = False
+    # the track the caller pinned ("A pinned face"); None: the tracker chooses
+    pinned_track_id: int | None = None
 
     @classmethod
     def inactive(cls) -> HeadTrackingReport:
@@ -408,12 +410,14 @@ class HeadTrackingReport:
             self.attention,
             self.track_id,
             self.in_personal_space,
+            self.pinned_track_id,
         ) == (
             other.active,
             other.focus,
             other.attention,
             other.track_id,
             other.in_personal_space,
+            other.pinned_track_id,
         )
 
 
@@ -440,6 +444,9 @@ class HeadTracker:
     _active: bool = field(default=False, init=False)
     # whom the head follows, by track_id, and when an observation last showed that face
     _following: int | None = field(default=None, init=False)
+    # the track the caller pinned (specs/motion/head_tracking.md "A pinned face"), the
+    # only face followed while set; None: the automatic target
+    _pinned: int | None = field(default=None, init=False)
     _seen_at: float | None = field(default=None, init=False)
     # the followed face's direction in the world on its last sighting, and the time
     # since then the camera did not frame it (specs/motion/head_tracking.md "Whom the
@@ -480,6 +487,11 @@ class HeadTracker:
         return self._following
 
     @property
+    def pinned(self) -> int | None:
+        """The ``track_id`` the caller pinned, or ``None`` for the automatic target."""
+        return self._pinned
+
+    @property
     def fixed_delay_s(self) -> float | None:
         """The fixed delay in force (specs/motion/head_tracking.md "The frame delay"): the
         settings' number, ``None`` while it is ``"estimate"``."""
@@ -513,12 +525,29 @@ class HeadTracker:
         self.settings = settings
         self._publish()
 
+    def pin(self, track_id: int | None) -> None:
+        """Follow ``track_id`` alone, or return to the automatic target with ``None``
+        (specs/motion/head_tracking.md "A pinned face"). A pin takes the follow at once:
+        from another face, the pinned one is followed as missing since now — the
+        previous aim stands until its first sighting, the loss counts from here; from
+        nobody, the tracker watches until it shows. ``None`` keeps the face followed.
+        Published while running."""
+        self._pinned = track_id
+        if track_id is not None and self._following not in (None, track_id):
+            self._following = track_id
+            self._forget_sighting()
+            self._seen_at = self._polled_at = time.perf_counter()
+            self._in_space = False  # a new person: their own entry, not the last one's
+        if self._active:
+            self._publish()
+
     def observe(self, report: FaceReport) -> None:
         """One report of the detection loop: choose whom to follow
         (specs/motion/head_tracking.md "Whom the head follows") and aim that face — or hold
         the previous aim while the followed face is missing, switch after
         ``TRACKING_SWITCH_S``, withdraw after ``TRACKING_LOST_S`` with nobody to switch
-        to. A face is missing from the last observation that showed it."""
+        to. A face is missing from the last observation that showed it. While a face is
+        pinned, only that face is followed: no switch, no size gate ("A pinned face")."""
         now = time.perf_counter()
         face: Face | None = None
         if self._following is not None:
@@ -528,14 +557,14 @@ class HeadTracker:
             if face is None:
                 self._note_poll(now, self._in_view(report.ts, report.head_pose, now))
                 missing = self._missing_for(now)
-                if missing >= TRACKING_SWITCH_S:
+                if missing >= TRACKING_SWITCH_S and self._pinned is None:
                     face = self._biggest(report)
                 if face is None:
                     if missing >= TRACKING_LOST_S:
                         self._lose()
                     return  # the previous aim stands: the head holds toward the face
         else:
-            face = self._biggest(report)
+            face = self._acquirable(report)
             if face is None:
                 return
         if face.track_id != self._following:
@@ -623,10 +652,11 @@ class HeadTracker:
         self._publish()
 
     def stop(self) -> None:
-        """Withdraw the aim (the gaze layer fades out), follow nobody, and publish the
-        inactive report."""
+        """Withdraw the aim (the gaze layer fades out), follow nobody, clear the pin, and
+        publish the inactive report."""
         self._active = False
         self._following = None
+        self._pinned = None
         self._forget_sighting()
         self._reset_posture()
         self.set_gaze(None, focus=self.focus)
@@ -663,6 +693,13 @@ class HeadTracker:
         self._roll = self._offset = 0.0
         self._posture_at = None
 
+    def _acquirable(self, report: FaceReport) -> Face | None:
+        """The face to follow when following nobody: the pinned one, whatever its size,
+        while a face is pinned; the biggest eligible one otherwise."""
+        if self._pinned is None:
+            return self._biggest(report)
+        return next((f for f in report.faces if f.track_id == self._pinned), None)
+
     @staticmethod
     def _biggest(report: FaceReport) -> Face | None:
         """The largest face at least ``TRACKING_MIN_SIZE`` tall, or ``None``."""
@@ -681,6 +718,7 @@ class HeadTracker:
             roll_deg=math.degrees(self._roll) if self._following is not None else 0.0,
             offset_mm=self._offset * 1000.0 if self._following is not None else 0.0,
             in_personal_space=self._in_space and self._following is not None,
+            pinned_track_id=self._pinned,
         )
 
     def _publish(self) -> None:
