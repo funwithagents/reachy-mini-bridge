@@ -61,7 +61,12 @@ from .errors import (
     GravityCompensationUnsupportedError,
     MotorsNotEnabledError,
 )
-from .face_detection import FaceDetection, FaceReport, check_face_detector_factory
+from .face_detection import (
+    FaceDetection,
+    FaceReport,
+    UsersReport,
+    check_face_detector_factory,
+)
 from .fake_reachy_mini import FakeReachyMini
 from .head_tracking import CameraModel, HeadTracker, HeadTrackingReport
 from .microphone import MicFeed
@@ -423,6 +428,11 @@ class ReachyMiniBridge:
             FaceReport.inactive(self._config.face_detection.detector),
             history=CHANGE_HISTORY,
         )
+        # The users present (specs/vision/user_perception.md "The users present"), built
+        # by the detection loop from its tracks; outliving sessions like the faces.
+        self._users: Observable[UsersReport] = Observable(
+            UsersReport.inactive(), history=CHANGE_HISTORY
+        )
         self._face_detection_wanted = self._config.face_detection.enabled
         self._detection: FaceDetection | None = None
         # One mode verb at a time syncs the loop to the two switches (made per session:
@@ -655,6 +665,7 @@ class ReachyMiniBridge:
             detection = FaceDetection(
                 detector=cfg.face_detection.detector,
                 faces=self._faces,
+                users=self._users,
                 on_observation=self._on_face_observation,
                 feed=camera,
                 detector_factory=self._face_detector,
@@ -766,6 +777,8 @@ class ReachyMiniBridge:
                 self._faces.set(
                     FaceReport.inactive(self._config.face_detection.detector)
                 )
+            if self._users.value.active or self._users.value.users:
+                self._users.set(UsersReport.inactive())
             self._reset_head_tracking()
         if interrupted:
             raise asyncio.CancelledError()
@@ -1215,14 +1228,33 @@ class ReachyMiniBridge:
     def faces(self) -> Observable[FaceReport]:
         """The faces in front of the robot as the detection loop last saw them
         (specs/vision/user_perception.md): ``faces.value`` is the current :class:`FaceReport`;
-        ``async for report in faces.changes()`` wakes when the number of faces changes
-        (debounced) or detection starts or stops — never on a face merely moving.
+        ``async for report in faces.changes()`` wakes when the set of faces in view
+        changes — a new ``track_id`` at once, one gone from the frame after a debounce —
+        or detection starts or stops; never on a face merely moving. Who is *present*,
+        through the robot's own moves, is :attr:`users`.
 
         Readable at any time: outside a session, and while no detector is looking, the
         value is the inactive, empty report (``active=False`` means *unknown*, not
         *nobody*).
         """
         return self._faces
+
+    @property
+    def users(self) -> Observable[UsersReport]:
+        """The users in front of the robot (specs/vision/user_perception.md "The users
+        present"): ``users.value`` is the current :class:`UsersReport` — every
+        confirmed track the detection loop holds, kept through a move of the robot's
+        own that takes them out of view. ``changes()`` wakes on an arrival (``arrived``),
+        a departure (``left``, with its reason) or detection starting or stopping —
+        never on a face moving or going out of view; ``changes(every=True)`` misses
+        none of them. A ``User.track_id`` is what ``start_head_tracking(track_id=...)``
+        pins and what ``faces`` and ``head_tracking`` name.
+
+        Readable at any time: outside a session, and while no detector is looking, the
+        value is the inactive, empty report (``active=False`` means *unknown*, not
+        *nobody*).
+        """
+        return self._users
 
     async def set_face_detection(self, enabled: bool) -> None:
         """Whether the detection loop runs for the caller's sake.

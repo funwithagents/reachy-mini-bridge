@@ -29,6 +29,7 @@ from typing import Any
 import pytest
 
 from reachy_mini_bridge.bridge import ReachyMiniBridge
+from reachy_mini_bridge.face_detection import UsersReport
 from reachy_mini_bridge.head_tracking import (
     TRACKING_LOST_S,
     TRACKING_SWITCH_S,
@@ -317,7 +318,9 @@ def test_an_emotion_that_turns_the_head_away_keeps_the_person(
     `TRACKING_LOST_S` and the miss window, with detection running on — the faces report
     empties — yet the tracker neither hands the head back nor loses the person's track:
     engaged throughout with nothing published, the same `track_id` after the move, and
-    the head back up on the portrait."""
+    the head back up on the portrait. The person stays present on `bridge.users`:
+    no departure and no arrival published through the move (specs/vision/user_perception.md
+    "The users present")."""
     bridge, _caps = live_bridge
 
     async def scenario() -> tuple[
@@ -349,7 +352,14 @@ def test_an_emotion_that_turns_the_head_away_keeps_the_person(
                     empties += 1
                 await asyncio.sleep(0.1)
 
+        assert await wait_for(lambda: bool(bridge.users.value.users), 3.0)
+
+        async def watch_users() -> None:
+            async for report in bridge.users.changes(every=True):
+                users_woken.append(report)
+
         watcher = asyncio.create_task(watch_faces())
+        users_watcher = asyncio.create_task(watch_users())
         changes = _Changes(bridge)
         try:
             await bridge.play_emotion(AWAY_EMOTION)
@@ -364,6 +374,10 @@ def test_an_emotion_that_turns_the_head_away_keeps_the_person(
         )
         await asyncio.sleep(2.0)  # the gaze fades back in, the head returns
         await changes.stop()
+        users_watcher.cancel()
+        with suppress(asyncio.CancelledError):
+            await users_watcher
+        present.extend(p.track_id for p in bridge.users.value.users)
         pitch_after = yaw_pitch_deg(
             await asyncio.to_thread(bridge.robot.get_current_head_pose)
         )[1]
@@ -375,6 +389,8 @@ def test_an_emotion_that_turns_the_head_away_keeps_the_person(
             pitch_after,
         )
 
+    users_woken: list[UsersReport] = []
+    present: list[int] = []
     before, after, woken, empties, pitch_after = live_bridge.run(scenario())
     print(
         f"[e2e] {AWAY_EMOTION!r} over a high portrait: track {before} -> {after}; "
@@ -385,6 +401,8 @@ def test_an_emotion_that_turns_the_head_away_keeps_the_person(
     )  # out of view longer than the loss time
     assert woken == []  # engaged on the same person throughout
     assert before is not None and after == before
+    assert users_woken == []  # present throughout: no departure, no re-arrival
+    assert present == [before]
     assert bridge.attention == "engaged"
     assert pitch_after < -10.0  # looking up at it again (pitch negative is up)
 

@@ -31,6 +31,8 @@ from reachy_mini_bridge.face_detection import (
     FaceDetection,
     FaceReport,
     PixelFace,
+    UserDeparture,
+    UsersReport,
     check_face_detector_factory,
     report_from_pixels,
 )
@@ -586,6 +588,8 @@ class _CustomLoop(_Loop):
         self.feed = feed
         self.scene = scene
         self.detection = detection
+        self.users: Observable[UsersReport] = Observable(UsersReport.inactive())
+        self.users_woken: list[UsersReport] = []
 
 
 POSE = np.eye(4)
@@ -603,22 +607,30 @@ async def _running_custom(
     robot = FakeReachyMini()
     feed = CameraFeed(frame_reader(robot), lambda _t: POSE.copy())
     faces: Observable[FaceReport] = Observable(FaceReport.inactive("custom"))
+    users: Observable[UsersReport] = Observable(UsersReport.inactive(), history=64)
     detection = FaceDetection(
         detector="custom",
         faces=faces,
+        users=users,
         on_observation=None,
         feed=feed,
         detector_factory=scene.factory if factory is None else factory,
         target_fps=target_fps,
     )
     loop = _CustomLoop(robot, faces, feed, scene, detection)
+    loop.users = users
     detection._on_observation = loop.hear
 
     async def subscribe() -> None:
         async for report in faces.changes():
             loop.woken.append(report)
 
+    async def subscribe_users() -> None:
+        async for report in users.changes(every=True):
+            loop.users_woken.append(report)
+
     subscriber = asyncio.create_task(subscribe())
+    users_subscriber = asyncio.create_task(subscribe_users())
     await asyncio.sleep(0)
     await feed.start()
     if start:
@@ -630,6 +642,7 @@ async def _running_custom(
         await feed.stop()
         await asyncio.sleep(0)
         subscriber.cancel()
+        users_subscriber.cancel()
 
 
 async def _heard(loop: _Loop) -> None:
@@ -1181,3 +1194,257 @@ def test_a_stop_during_a_start_stops_the_loop_it_built() -> None:
     assert waited
     assert not running
     assert closed_after == ["built"]
+
+
+# --- the faces in view: published on the set of track ids ---------------------------------
+# (specs/vision/user_perception.md "The report is an observable")
+
+
+def test_someone_replacing_someone_at_the_same_count_wakes_the_faces(
+    fast_frames: None,
+) -> None:
+    """One face leaves as another, far from it, arrives: the count stays at one, and
+    the new track id is published at once."""
+    scene = _Scene()
+
+    async def run() -> list[tuple[int, ...]]:
+        async with _running_custom(scene) as loop:
+            scene.faces[:] = [_face(10, 24)]
+            await _wait_for(lambda: bool(loop.faces.value.faces))
+            await _heard(loop)
+            loop.woken.clear()
+            scene.faces[:] = [_face(54, 24)]  # beyond the gate: someone else
+            await _wait_for(lambda: bool(loop.woken))
+            await asyncio.sleep(0.1)
+            return [tuple(f.track_id for f in r.faces) for r in loop.woken]
+
+    woken = _run(run)
+    assert woken[0] == (2,)  # the newcomer, at once, though the count did not change
+    assert all(ids == (2,) for ids in woken)
+
+
+# --- the users present (specs/vision/user_perception.md "The users present") -----------
+
+
+class _Presence:
+    """The tracks and the users present, driven observation by observation — every
+    ``dt`` seconds of frame time, an eighth by default (exact in binary, so the
+    confirmation time is crossed on a known sighting) — with the reports that are
+    changes collected."""
+
+    def __init__(self, *, geometry: Any = None, max_misses: int = 3) -> None:
+        self.tracks = fd._FaceTracks(
+            _counter(), max_misses=max_misses, geometry=geometry
+        )
+        self.users = fd._Users()
+        self.ts = 0.0
+        self.changes: list[UsersReport] = []
+
+    def see(self, *faces: PixelFace, dt: float = 0.125) -> UsersReport:
+        self.ts += dt
+        size = (WIDTH, HEIGHT)
+        ids = self.tracks.update(list(faces), size, ts=self.ts)
+        report = report_from_pixels(faces, size, _frame(self.ts), ids)
+        users, changed = self.users.observe(report, self.tracks)
+        if changed:
+            self.changes.append(users)
+        return users
+
+
+def test_a_person_arrives_once_seen_three_times_over_the_confirmation_time() -> None:
+    presence = _Presence()
+    face = _face(30, 24)
+    for _ in range(3):
+        assert presence.see(face).users == ()  # 3 sightings over 0.25 s: not yet
+    report = presence.see(face)  # 0.375 s after the first
+    assert report.arrived == (1,)
+    assert [p.track_id for p in report.users] == [1]
+    assert report.users[0].seen and report.users[0].in_view
+    for _ in range(5):
+        assert presence.see(face).arrived == ()  # an arrival is published once
+    assert [r.arrived for r in presence.changes] == [(1,)]
+
+
+def test_a_blink_of_the_detector_does_not_restart_the_confirmation() -> None:
+    presence = _Presence()
+    face = _face(30, 24)
+    presence.see(face)
+    presence.see()  # missed on one frame
+    presence.see(face)
+    report = presence.see(face)  # third sighting, 0.375 s after the first
+    assert report.arrived == (1,)
+
+
+def test_a_one_frame_ghost_publishes_nothing() -> None:
+    presence = _Presence()
+    presence.see(_face(30, 24))
+    for _ in range(10):  # its track is dropped meanwhile
+        presence.see()
+    assert presence.changes == []
+    assert presence.tracks.ids() == frozenset()
+
+
+def test_a_person_hidden_in_view_leaves_after_the_miss_window() -> None:
+    presence = _Presence(max_misses=3)
+    face = _face(30, 24)
+    for _ in range(4):
+        presence.see(face)
+    for _ in range(3):
+        report = presence.see()
+        assert [p.track_id for p in report.users] == [1]  # held through its misses
+        assert not report.users[0].seen and report.users[0].in_view
+    report = presence.see()  # one miss past the window
+    assert report.left == (UserDeparture(1, "left"),)
+    assert report.users == ()
+
+
+def test_someone_replacing_someone_is_one_departure_and_one_arrival() -> None:
+    presence = _Presence(max_misses=3)
+    for _ in range(4):
+        presence.see(_face(10, 24))
+    for _ in range(6):
+        presence.see(_face(54, 24))  # someone else, beyond the gate
+    # The newcomer confirmed on their fourth sighting, the one who left dropped on
+    # their fourth miss: the same observation, one report.
+    assert [(r.arrived, r.left) for r in presence.changes] == [
+        ((1,), ()),
+        ((2,), (UserDeparture(1, "left"),)),
+    ]
+
+
+def test_a_person_out_of_view_stays_present_and_keeps_their_id() -> None:
+    """The robot's own move takes the camera off the person for longer than the miss
+    window: they stay present, out of view, and nothing is published."""
+    geometry = _Shift()
+    presence = _Presence(geometry=geometry, max_misses=3)
+    face = _face(20, 24)
+    for _ in range(4):
+        presence.see(face)
+    changes = len(presence.changes)
+    geometry.shift = 100.0  # the head turned away
+    for _ in range(19):
+        presence.see()
+    report = presence.see()
+    person = report.users[0]
+    assert (person.track_id, person.seen, person.in_view) == (1, False, False)
+    assert person.last_seen_ts == pytest.approx(0.5)
+    geometry.shift = 0.0
+    report = presence.see(face)  # the head back on them
+    assert [p.track_id for p in report.users] == [1] and report.users[0].in_view
+    assert len(presence.changes) == changes
+
+
+def test_a_person_unseen_past_the_net_leaves_as_unseen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ht, "UNOBSERVABLE_MAX_S", 2.0)
+    geometry = _Shift()
+    presence = _Presence(geometry=geometry)
+    for _ in range(4):
+        presence.see(_face(20, 24))
+    geometry.shift = 100.0
+    presence.see(dt=1.9)
+    assert presence.changes[-1].arrived == (1,)  # still present at 1.9 s
+    report = presence.see(dt=0.2)
+    assert report.left == (UserDeparture(1, "unseen"),)
+
+
+def test_clearing_the_tracks_lets_every_person_leave_as_stopped() -> None:
+    presence = _Presence()
+    for _ in range(4):
+        presence.see(_face(10, 24), _face(54, 24))
+    report = presence.users.clear(9.0, active=False)
+    assert report.left == (
+        UserDeparture(1, "stopped"),
+        UserDeparture(2, "stopped"),
+    )
+    assert (report.users, report.active) == ((), False)
+
+
+def test_the_loop_publishes_arrivals_and_departures_on_users(
+    fast_frames: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Over the camera feed: active at the first observation, an arrival once confirmed,
+    a departure after the miss window, every person leaving as stopped at the stop — and
+    a face moving publishes nothing."""
+    monkeypatch.setattr(fd, "TRACK_MAX_MISSES", 4)
+    scene = _Scene()
+
+    async def run() -> tuple[list[UsersReport], UsersReport, UsersReport]:
+        async with _running_custom(scene) as loop:
+            await _wait_for(lambda: loop.users.value.active)
+            scene.show(-0.2)
+            await _wait_for(lambda: bool(loop.users.value.users))
+            for x in (-0.15, -0.1, -0.05):
+                scene.show(x)  # moving: an update, no change
+                await asyncio.sleep(2 * FRAME_S)
+            scene.hide()
+            await _wait_for(lambda: not loop.users.value.users)
+            scene.show(0.5)
+            await _wait_for(lambda: bool(loop.users.value.users))
+            await asyncio.sleep(0.05)
+            present = loop.users.value
+        await asyncio.sleep(0.05)
+        return loop.users_woken, present, loop.users.value
+
+    woken, present, after = _run(run)
+    assert [(r.active, r.arrived, r.left) for r in woken] == [
+        (True, (), ()),
+        (True, (1,), ()),
+        (True, (), (UserDeparture(1, "left"),)),
+        (True, (2,), ()),
+        (False, (), (UserDeparture(2, "stopped"),)),
+    ]
+    assert [p.track_id for p in present.users] == [2]
+    assert after == UsersReport(
+        users=(),
+        arrived=(),
+        left=(UserDeparture(2, "stopped"),),
+        ts=after.ts,
+        active=False,
+    )
+
+
+def test_a_detector_down_lets_the_users_leave_and_confirms_them_afresh(
+    fast_frames: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(fd, "FACE_SOURCE_DOWN_S", 0.3)
+    scene = _Scene([_face(30, 24)])
+
+    async def run() -> list[tuple[bool, tuple[int, ...], tuple[UserDeparture, ...]]]:
+        async with _running_custom(scene) as loop:
+            await _wait_for(lambda: bool(loop.users.value.users))
+            scene.raises = True
+            await _wait_for(lambda: not loop.users.value.active)
+            scene.raises = False
+            await _wait_for(lambda: bool(loop.users.value.users))
+            await asyncio.sleep(0.05)
+            return [(r.active, r.arrived, r.left) for r in loop.users_woken]
+
+    assert _run(run) == [
+        (True, (), ()),
+        (True, (1,), ()),
+        (False, (), (UserDeparture(1, "stopped"),)),
+        (True, (), ()),
+        (True, (2,), ()),  # the same face, a new track: nobody was watching
+    ]
+
+
+def test_a_detector_swap_lets_the_users_leave_as_stopped(fast_frames: None) -> None:
+    first = _Scene([_face(8, 24)])
+    second = _Scene([_face(56, 24)])
+
+    async def run() -> list[tuple[bool, tuple[int, ...], tuple[UserDeparture, ...]]]:
+        async with _running_custom(first) as loop:
+            await _wait_for(lambda: bool(loop.users.value.users))
+            loop.detection.restart(second.factory)
+            await _wait_for(lambda: [p.track_id for p in loop.users.value.users] == [2])
+            await asyncio.sleep(0.05)
+            return [(r.active, r.arrived, r.left) for r in loop.users_woken]
+
+    assert _run(run) == [
+        (True, (), ()),
+        (True, (1,), ()),
+        (True, (), (UserDeparture(1, "stopped"),)),
+        (True, (2,), ()),
+    ]

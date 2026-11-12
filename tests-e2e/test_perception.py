@@ -20,11 +20,17 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncIterator
+from contextlib import suppress
 
 import numpy as np
 import pytest
 
-from reachy_mini_bridge.face_detection import FACE_ABSENT_S, FaceReport
+from reachy_mini_bridge.face_detection import (
+    FACE_ABSENT_S,
+    FaceReport,
+    UserDeparture,
+    UsersReport,
+)
 from reachy_mini_bridge.testing import LiveBridge
 from reachy_mini_bridge.testing.gaze import (
     LATERAL_M,
@@ -172,3 +178,46 @@ def test_faces_report_two_portraits_spawned_side_by_side(
     xs = sorted(face.x for face in both.faces)
     assert xs[0] < 0.0 < xs[1], "the two portraits are not on either side of the image"
     assert len(one.faces) == 1
+
+
+@pytest.mark.requires("props:face")
+def test_users_report_someone_arriving_and_leaving(
+    live_bridge: LiveBridge, face_scene: SimSceneClient
+) -> None:
+    """specs/vision/user_perception.md "The users present": a subscriber of
+    `bridge.users.changes(every=True)` reads the portrait arriving once its track is
+    confirmed, then leaving with the reason "left" once the camera, still looking at
+    where it was, has missed it for the miss window. Tracking stays off."""
+    bridge, _caps = live_bridge
+
+    async def scenario() -> list[UsersReport]:
+        await bridge.set_motors_state("enabled")
+        await bridge.set_face_detection(True)
+        woken: list[UsersReport] = []
+
+        async def subscribe() -> None:
+            async for report in bridge.users.changes(every=True):
+                woken.append(report)
+
+        subscriber = asyncio.create_task(subscribe())
+        try:
+            await asyncio.sleep(0)
+            face = face_scene.spawn(DEFAULT_FACE_POS)
+            assert await wait_for(lambda: any(r.arrived for r in woken), 5.0), (
+                "no arrival published"
+            )
+            face_scene.despawn(face)
+            assert await wait_for(lambda: any(r.left for r in woken), 6.0), (
+                "no departure published"
+            )
+        finally:
+            subscriber.cancel()
+            with suppress(asyncio.CancelledError):
+                await subscriber
+        return [r for r in woken if r.arrived or r.left]
+
+    changes = live_bridge.run(scenario())
+    print(f"\n[e2e] users changes: {[(r.arrived, r.left) for r in changes]}")
+    assert len(changes) == 2, "one arrival and one departure, nothing else"
+    (arrived,), departure = changes[0].arrived, changes[1].left
+    assert departure == (UserDeparture(arrived, "left"),)

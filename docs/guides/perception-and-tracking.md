@@ -100,13 +100,15 @@ await bridge.set_base_following(replace(bridge.base_following, enabled=False))
 
 `bridge.body_yaw_deg` reads where the base points, in degrees, positive to the left.
 
-## The two reports
+## The three reports
 
-**`bridge.faces`** — a `FaceReport`: every face the detector reports, in `track_id` order (oldest track first), each with its normalised position (`x`, `y` in [-1, 1], the nose when known), its `size` (box height as a fraction of the frame), its `distance_m` from the camera, its pixel `bbox`, its head angles in **radians** (`roll`; `pitch` and `yaw` from a detector that fits a head), and its `track_id`; plus `active` (a detector is looking), `source` (`"yunet"` / `"custom"`), `ts`, and `frame` — the `CameraFrame` the faces were found in. The report is about detection: it singles nobody out.
+**`bridge.faces`** — a `FaceReport`: every face the detector reports, in `track_id` order (oldest track first), each with its normalised position (`x`, `y` in [-1, 1], the nose when known), its `size` (box height as a fraction of the frame), its `distance_m` from the camera, its pixel `bbox`, its head angles in **radians** (`roll`; `pitch` and `yaw` from a detector that fits a head), and its `track_id`; plus `active` (a detector is looking), `source` (`"yunet"` / `"custom"`), `ts`, and `frame` — the `CameraFrame` the faces were found in. The report is about detection: it singles nobody out, and it follows the frame — a person the robot's own move turned the camera away from is not in it.
+
+**`bridge.users`** — a `UsersReport`: the people in front of the robot, whether or not the camera sees them right now. Each `User` is a confirmed track the detection loop holds — its `track_id`, whether it was `seen` on the latest frame, whether the camera was looking where they were (`in_view`), `last_seen_ts`, and the `face` of their last sighting. A track joins once seen three times over 0.3 s, so a one-frame false detection never arrives; it leaves when the camera has looked where the person was and missed them for about 2 s (`"left"`), when nobody has seen them for 20 s (`"unseen"`), or when detection stops (`"stopped"`). An emotion that turns the head away keeps everyone present.
 
 **`bridge.head_tracking`** — a `HeadTrackingReport`: `active`, `focus`, `attention`, the `track_id` of the face the head follows (`None` unless engaged), the `pinned_track_id` you pinned (`None` while the tracker chooses), and the posture it holds (`roll_deg`, `offset_mm`).
 
-Both are `Observable`s, readable at any time and outliving the session — their inactive values before it starts and after it ends ([../reference/api.md](../reference/api.md) "Reading and subscribing").
+All three are `Observable`s, readable at any time and outliving the session — their inactive values before it starts and after it ends ([../reference/api.md](../reference/api.md) "Reading and subscribing").
 
 ### Consuming them
 
@@ -120,14 +122,24 @@ if report.active:
     print(f"{len(report.faces)} people in view")
 ```
 
-**Be told when someone appears or leaves**, or detection starts or stops — never "a face moved":
+**Be told when someone arrives or leaves** — `every=True`, so a greeting that takes seconds misses no one who arrived meanwhile:
+
+```python
+async for report in bridge.users.changes(every=True):
+    for track_id in report.arrived:
+        print(f"hello, {track_id}")
+    for departure in report.left:
+        print(f"goodbye, {departure.track_id} ({departure.reason})")
+```
+
+**Be told when the frame's faces change** — a face entering or leaving the frame, someone replacing someone, detection starting or stopping — never "a face moved". The robot's own moves count here: an emotion turning the head away empties the frame.
 
 ```python
 async for report in bridge.faces.changes():
     if not report.active:
         print("not looking")
     else:
-        print(f"now {len(report.faces)} in view")
+        print(f"now {len(report.faces)} in the frame")
 ```
 
 **Be told whom the head follows** — the tracker's event, not the detection's:
@@ -147,13 +159,13 @@ async for state in bridge.head_tracking.changes():
         print("too close" if close else "back at a comfortable distance")
 ```
 
-**Wait until somebody is there** — reacts to publications, a count change, not a refresh:
+**Wait until somebody is there** — reacts to publications, an arrival, not a refresh:
 
 ```python
-report = await bridge.faces.wait_for(lambda r: r.active and len(r.faces) > 0)
+report = await bridge.users.wait_for(lambda r: r.active and len(r.users) > 0)
 ```
 
-A subscriber that falls behind gets the latest value, not a backlog — `changes(every=True)` gives it every published report in order instead ([../reference/api.md](../reference/api.md) "Reading and subscribing"); the count's drop is published once it has held for 0.3 s, so a detector's blink does not fire *left*. A face **moving** never wakes a subscriber: a graph that wants every observation samples `faces.value` at its own rate and skips repeats on `frame_id`, the way it would any latest-value upstream.
+A subscriber that falls behind gets the latest value, not a backlog — `changes(every=True)` gives it every published report in order instead ([../reference/api.md](../reference/api.md) "Reading and subscribing"); a face gone from the frame is published once its absence has held for 0.3 s, so a detector's blink does not fire *left the frame*. A face **moving** never wakes a subscriber: a graph that wants every observation samples `faces.value` at its own rate and skips repeats on `frame_id`, the way it would any latest-value upstream.
 
 ### Enriching a face
 

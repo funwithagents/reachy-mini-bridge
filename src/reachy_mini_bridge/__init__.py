@@ -33,7 +33,15 @@ from .errors import (
     SoundInterruptedError,
     SpeechInterruptedError,
 )
-from .face_detection import Face, FaceDetector, FaceReport, PixelFace
+from .face_detection import (
+    Face,
+    FaceDetector,
+    FaceReport,
+    PixelFace,
+    User,
+    UserDeparture,
+    UsersReport,
+)
 from .head_tracking import HeadTrackingReport
 from .microphone import MicChunk
 from .motion import IdleMove, IdleOffsets
@@ -66,4 +74,7 @@ __all__ = [
     "SpeechSynthesizer",
     "TTSEngineSynthesizer",
     "TrackingSettings",
+    "User",
+    "UserDeparture",
+    "UsersReport",
 ]
