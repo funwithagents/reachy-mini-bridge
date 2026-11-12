@@ -24,6 +24,7 @@ import pytest
 from reachy_mini.vision.look_at import default_head_to_camera_transform
 from scipy.spatial.transform import Rotation
 
+from reachy_mini_bridge import face_detection as fd
 from reachy_mini_bridge import head_tracking
 from reachy_mini_bridge.config import (
     ApproachSettings,
@@ -32,7 +33,7 @@ from reachy_mini_bridge.config import (
     SimCameraSettings,
     TrackingSettings,
 )
-from reachy_mini_bridge.face_detection import Face, FaceReport
+from reachy_mini_bridge.face_detection import Face, FaceReport, User, UsersReport
 from reachy_mini_bridge.fake_reachy_mini import FakeReachyMini
 from reachy_mini_bridge.head_tracking import (
     SIM_EYE_CAMERA_FOVY_DEG,
@@ -54,6 +55,111 @@ if TYPE_CHECKING:
     import numpy.typing as npt
 
 DETECT_HZ = 10.0  # upstream's detector sees the camera feed at 10 fps
+
+
+def _present(report: FaceReport) -> UsersReport:
+    """Every face of ``report`` a user present and seen: the users the detection loop
+    reports beside a frame whose faces have all been confirmed."""
+    return UsersReport(
+        users=tuple(
+            User(
+                track_id=f.track_id,
+                seen=True,
+                in_view=True,
+                last_seen_ts=report.ts,
+                missing_s=0.0,
+                face=f,
+            )
+            for f in report.faces
+        ),
+        arrived=(),
+        left=(),
+        ts=report.ts,
+        active=True,
+    )
+
+
+def _observe(tracker: HeadTracker, report: FaceReport) -> None:
+    """An observation whose faces are all users present (the geometry tests' feed)."""
+    tracker.observe(report, _present(report))
+
+
+class _Tracks:
+    """A stand-in for the detection loop's tracks and users (specs/vision/user_perception.md
+    "Tracks", "The users present") over faces scripted with their track ids: a face is a
+    user from its first sighting — the confirmation is test_face_detection's to pin —
+    missing while the camera frames where it was seen, gone once missing
+    ``TRACK_LOST_S`` over ``TRACK_MIN_MISSES`` observations, or unseen
+    ``UNOBSERVABLE_MAX_S`` whatever the view. A fixed camera frames every direction."""
+
+    def __init__(self, camera: CameraModel) -> None:
+        self.camera = camera
+        self.users: dict[int, dict[str, Any]] = {}
+
+    def _direction(
+        self, face: Face, pose: npt.NDArray[np.float64] | None
+    ) -> npt.NDArray[np.float64] | None:
+        if self.camera.fixed or pose is None:
+            return None
+        width, height = self.camera.size
+        u = (face.x + 1.0) / 2.0 * (width - 1)
+        v = (face.y + 1.0) / 2.0 * (height - 1)
+        return world_direction(u, v, pose, self.camera)
+
+    def _in_view(self, direction: npt.NDArray[np.float64] | None, pose: Any) -> bool:
+        if direction is None or pose is None:
+            return True
+        pixel = expected_pixel(direction, pose, self.camera)
+        return pixel is not None and in_frame(pixel, self.camera.size)
+
+    def observe(
+        self, faces: tuple[Face, ...], ts: float, pose: Any = None
+    ) -> UsersReport:
+        seen = {f.track_id: f for f in faces}
+        for track_id, user in list(self.users.items()):
+            if track_id in seen:
+                continue
+            if self._in_view(user["direction"], pose):
+                user["misses"] += 1
+                user["missing"] += ts - user["updated"]
+            user["updated"] = ts
+            if (
+                user["misses"] >= fd.TRACK_MIN_MISSES
+                and user["missing"] >= fd.TRACK_LOST_S
+            ) or ts - user["seen"] > fd.UNOBSERVABLE_MAX_S:
+                del self.users[track_id]
+        for track_id, face in seen.items():
+            self.users[track_id] = {
+                "face": face,
+                "seen": ts,
+                "updated": ts,
+                "misses": 0,
+                "missing": 0.0,
+                "direction": self._direction(face, pose),
+            }
+        return UsersReport(
+            users=tuple(
+                User(
+                    track_id=track_id,
+                    seen=track_id in seen,
+                    in_view=True,
+                    last_seen_ts=user["seen"],
+                    missing_s=user["missing"],
+                    face=user["face"],
+                )
+                for track_id, user in sorted(self.users.items())
+            ),
+            arrived=(),
+            left=(),
+            ts=ts,
+            active=True,
+        )
+
+    def clear(self, ts: float) -> UsersReport:
+        self.users.clear()
+        return UsersReport(users=(), arrived=(), left=(), ts=ts, active=False)
+
+
 # The posture's defaults, which the posture tests expect (specs/core/config.md "`motion.tracking`").
 DEFAULTS = TrackingSettings()
 # The online delay estimate, which the estimate's own tests opt into.
@@ -150,7 +256,7 @@ async def _closed_loop(
                 frame_pose = session.head_pose_at(now - frame_delay_s)
                 x, y = _project(face, frame_pose, camera)
                 report = _report(x, y, ts=now)
-            tracker.observe(report)
+            _observe(tracker, report)
             yaws.append(_yaw_deg(robot.last_target[0]))
             await asyncio.sleep(1.0 / POLL_HZ)
         return yaws, _project(face, robot.last_target[0], camera), tracker.delay_s
@@ -234,7 +340,7 @@ def test_the_delay_is_zero_by_default_a_number_fixes_it_and_estimate_fits_it() -
     tracker.configure(TrackingSettings(frame_delay_s=0.12))
     tracker.start()
     for k in range(20):
-        tracker.observe(_report(0.1 * math.sin(k), 0.0, ts=time.perf_counter()))
+        _observe(tracker, _report(0.1 * math.sin(k), 0.0, ts=time.perf_counter()))
     assert tracker.delay_s == 0.12
     assert not tracker._detections  # the fit is not fed while the delay is fixed
     tracker.configure(ESTIMATE)
@@ -255,7 +361,7 @@ def _jumping_face_while_turning() -> float:
         settings=ESTIMATE,
     )
     for k in range(20):
-        tracker.observe(_report(0.5 if k % 2 else -0.5, 0.0, ts=now - 2.0 + 0.1 * k))
+        _observe(tracker, _report(0.5 if k % 2 else -0.5, 0.0, ts=now - 2.0 + 0.1 * k))
     return tracker.delay_s
 
 
@@ -286,7 +392,7 @@ def test_the_estimate_holds_while_the_head_is_still() -> None:
         settings=ESTIMATE,
     )
     for k in range(20):
-        tracker.observe(_report(0.1 * math.sin(k), 0.0, ts=time.perf_counter()))
+        _observe(tracker, _report(0.1 * math.sin(k), 0.0, ts=time.perf_counter()))
         time.sleep(0.01)
     assert tracker.delay_s == head_tracking.DELAY_PRIOR_S
 
@@ -304,7 +410,7 @@ def test_a_report_carrying_its_frame_pose_is_aimed_against_it() -> None:
     pose = np.eye(4)
     pose[:3, :3] = turned
     report = replace(_report(0.0, 0.0, ts=time.perf_counter()), head_pose=pose)
-    tracker.observe(report)
+    _observe(tracker, report)
     assert _yaw_deg(sent[-1]) == pytest.approx(20.0, abs=0.5)
 
 
@@ -365,7 +471,7 @@ async def _constant_observation(camera: CameraModel, seconds: float) -> list[flo
         yaws: list[float] = []
         deadline = time.perf_counter() + seconds
         while time.perf_counter() < deadline:
-            tracker.observe(_report(0.3, 0.0, ts=time.perf_counter()))
+            _observe(tracker, _report(0.3, 0.0, ts=time.perf_counter()))
             yaws.append(_yaw_deg(robot.last_target[0]))
             await asyncio.sleep(1.0 / POLL_HZ)
         return yaws
@@ -399,9 +505,9 @@ def test_focus_goes_with_every_aim_and_stop_withdraws_it() -> None:
         history=lambda: (np.array([time.perf_counter()]), np.eye(4)[np.newaxis]),
         set_gaze=lambda aim, *, focus=False: sent.append((_pose(aim), focus)),
     )
-    tracker.observe(_report(0.0, 0.0, ts=time.perf_counter()))
+    _observe(tracker, _report(0.0, 0.0, ts=time.perf_counter()))
     tracker.focus = True
-    tracker.observe(_report(0.0, 0.0, ts=time.perf_counter()))
+    _observe(tracker, _report(0.0, 0.0, ts=time.perf_counter()))
     tracker.stop()
     assert [f for _, f in sent] == [False, True, True]
     assert sent[-1][0] is None and not tracker.engaged
@@ -455,6 +561,7 @@ class _Chooser:
         self.pose: npt.NDArray[np.float64] = np.eye(4)
         camera = camera or CameraModel.for_sim(SimCameraSettings(source="webcam"))
         self.mounted = not camera.fixed
+        self.tracks = _Tracks(camera)
         self.tracker = HeadTracker(
             camera,
             history=lambda: (np.array([self.clock.now]), self.pose[np.newaxis]),
@@ -466,34 +573,42 @@ class _Chooser:
 
     def see(self, *faces: Face, after: float = 0.1) -> None:
         self.clock.now += after
+        pose = self.pose if self.mounted else None
         self.tracker.observe(
             FaceReport(
                 faces=tuple(faces),
                 ts=self.clock.now,
                 source="custom",
                 active=True,
-                head_pose=self.pose if self.mounted else None,
-            )
+                head_pose=pose,
+            ),
+            self.tracks.observe(tuple(faces), self.clock.now, pose),
         )
 
     def tick(self, after: float = 0.1) -> None:
-        """A poll of the detection loop without an observation."""
+        """Time passing without an observation: the camera silent."""
         self.clock.now += after
-        self.tracker.tick()
+
+    def clear(self) -> None:
+        """The detection loop clearing its tracks (stopped, its detector down or
+        swapped): every user leaves."""
+        self.tracker.observe(None, self.tracks.clear(self.clock.now))
 
     def aim_at(self, face: Face) -> Any:
         """The aim a tracker gives this face alone."""
         aims: list[Any] = []
-        HeadTracker(
+        fresh = HeadTracker(
             self.tracker.camera,
             history=lambda: (np.zeros(0), np.zeros((0, 4, 4))),
             set_gaze=lambda aim, *, focus=False: aims.append(_pose(aim)),
             settings=NO_POSTURE,
-        ).observe(
-            # the aim depends on the position alone; sized so a fresh tracker acquires it
+        )
+        # the aim depends on the position alone; sized so a fresh tracker acquires it
+        _observe(
+            fresh,
             FaceReport(
                 faces=(replace(face, size=1.0),), ts=0.0, source="custom", active=True
-            )
+            ),
         )
         return aims[0]
 
@@ -510,6 +625,22 @@ def _person(track_id: int, x: float, size: float) -> Face:
 NEAR = 0.30  # sizes: a face at desk range...
 FAR = 0.12  # ...one further back, still above TRACKING_MIN_SIZE (0.07)
 SPECK = 0.05  # below it
+
+
+def test_a_face_not_yet_a_user_is_not_acquired(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The tracker chooses among the users present: a face the detection loop has not
+    confirmed — a one-frame false detection, a newcomer's first sightings — never turns
+    the head, however big; once it is a user, it is acquired at once."""
+    chooser = _Chooser(monkeypatch)
+    ghost = _person(1, 0.4, NEAR)
+    report = FaceReport(faces=(ghost,), ts=0.1, source="custom", active=True)
+    empty = UsersReport(users=(), arrived=(), left=(), ts=0.1, active=True)
+    chooser.tracker.observe(report, empty)  # seen, not a user
+    assert chooser.tracker.following is None and chooser.aims == []
+    chooser.see(ghost)  # confirmed: a user now
+    assert chooser.tracker.following == 1 and chooser.aiming_at(ghost)
 
 
 def test_the_biggest_eligible_face_is_followed_first(
@@ -572,7 +703,7 @@ def test_only_specks_in_view_hold_until_the_loss(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(head_tracking, "TRACKING_SWITCH_S", 1.0)
-    monkeypatch.setattr(head_tracking, "TRACKING_LOST_S", 2.0)
+    monkeypatch.setattr(fd, "TRACK_LOST_S", 2.0)
     chooser = _Chooser(monkeypatch)
     followed, speck = _person(1, 0.0, NEAR), _person(2, 0.5, SPECK)
     chooser.see(followed)
@@ -590,45 +721,47 @@ def test_only_specks_in_view_hold_until_the_loss(
     )
 
 
-def test_ticks_alone_release_the_aim_after_the_loss_time(
+def test_silence_holds_the_aim_until_the_tracks_are_cleared(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """No observation at all after a sighting — a dead camera, a detector that keeps
-    raising — still ends in the loss, measured by the loop's ticks
-    (specs/motion/head_tracking.md "Easing, loss, focus")."""
-    monkeypatch.setattr(head_tracking, "TRACKING_LOST_S", 2.0)
+    raising — leaves the users as they stood, and the aim with them, until the
+    detection loop reads its detector down and clears its tracks: the followed user
+    leaves, and the loss is published once (specs/motion/head_tracking.md "Easing, loss,
+    focus")."""
     chooser = _Chooser(monkeypatch)
     chooser.see(_person(1, 0.0, NEAR))
     sets = len(chooser.published)
-    chooser.tick(after=1.9)
+    chooser.tick(after=4.0)  # silence
     assert chooser.tracker.following == 1 and chooser.aims[-1] is not None
-    chooser.tick(after=0.2)  # 2.1 s since the last sighting
+    chooser.clear()  # the detector down: every user leaves
     assert chooser.tracker.following is None and chooser.aims[-1] is None
     assert len(chooser.published) == sets + 1
     assert chooser.published[-1].attention == "watching"
-    chooser.tick(after=1.0)  # nothing left to release
-    assert len(chooser.published) == sets + 1 and chooser.aims[-1] is None
 
 
 def test_the_loss_counts_from_the_last_sighting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(head_tracking, "TRACKING_LOST_S", 2.0)
+    """The followed user leaves once the tracks have missed them ``TRACK_LOST_S`` in
+    view over ``TRACK_MIN_MISSES`` observations — counted from their last sighting,
+    however few observations came in between."""
+    monkeypatch.setattr(fd, "TRACK_LOST_S", 2.0)
     chooser = _Chooser(monkeypatch)
     chooser.see(_person(1, 0.0, NEAR))
     chooser.see(
         after=1.5
     )  # the first report without the face, 1.5 s after the sighting
-    chooser.tick(after=0.4)  # 1.9 s: held
+    chooser.see(after=0.4)  # 1.9 s: held
     assert chooser.tracker.following == 1
-    chooser.tick(after=0.2)  # 2.1 s since the sighting, 0.6 s since the empty report
+    chooser.see(after=0.2)  # 2.1 s since the sighting, the third miss
     assert chooser.tracker.following is None and chooser.aims[-1] is None
 
 
 def test_the_aim_is_withdrawn_once_nobody_is_seen_and_returns_with_a_face(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(head_tracking, "TRACKING_LOST_S", 0.2)
+    monkeypatch.setattr(fd, "TRACK_LOST_S", 0.2)
     chooser = _Chooser(monkeypatch)
     chooser.see(_person(1, 0.0, NEAR))
     assert chooser.tracker.engaged
@@ -730,7 +863,7 @@ def test_a_pinned_face_never_switches_and_its_loss_keeps_the_pin(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(head_tracking, "TRACKING_SWITCH_S", 1.0)
-    monkeypatch.setattr(head_tracking, "TRACKING_LOST_S", 2.0)
+    monkeypatch.setattr(fd, "TRACK_LOST_S", 2.0)
     chooser = _Chooser(monkeypatch)
     pinned, other = _person(1, 0.0, NEAR), _person(2, 0.5, NEAR)
     chooser.tracker.pin(1)
@@ -755,23 +888,24 @@ def test_a_pinned_face_never_switches_and_its_loss_keeps_the_pin(
     assert chooser.tracker.following == 1 and chooser.aiming_at(pinned)
 
 
-def test_a_pin_from_another_face_holds_its_aim_and_loses_from_the_call(
+def test_a_pin_on_a_user_missing_holds_the_aim_until_they_leave(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Pinning a face that does not show: the head holds where it looked — no step, no
-    fade — and the loss counts from the pin."""
-    monkeypatch.setattr(head_tracking, "TRACKING_LOST_S", 2.0)
+    """Pinning a user present but not seen: the head holds where it looked — no step,
+    no fade — and lets go when the tracks drop them, the pin kept."""
+    monkeypatch.setattr(fd, "TRACK_LOST_S", 2.0)
     chooser = _Chooser(monkeypatch)
-    seen = _person(1, 0.3, NEAR)
-    chooser.see(seen)
+    seen, missing = _person(1, 0.3, NEAR), _person(2, -0.3, FAR)
+    chooser.see(seen, missing)
+    chooser.see(seen, after=0.5)  # user 2 missing since their sighting
     aims = len(chooser.aims)
-    chooser.clock.now += 5.0
-    chooser.tracker.pin(7)  # a face waiting through its misses, say
-    assert chooser.report.value.track_id == 7
-    chooser.see(seen, after=1.9)
+    chooser.tracker.pin(2)
+    assert chooser.report.value.track_id == 2
+    chooser.see(seen, after=1.3)  # 1.8 s missing: held
     assert len(chooser.aims) == aims  # the previous aim stands
-    chooser.see(seen, after=0.2)  # 2.1 s since the pin
+    chooser.see(seen, after=0.3)  # 2.1 s missing, the third miss: they left
     assert chooser.tracker.following is None and chooser.aims[-1] is None
+    assert chooser.report.value.pinned_track_id == 2
 
 
 def test_returning_to_automatic_keeps_the_face_and_switches_again(
@@ -869,6 +1003,7 @@ class _Posture:
             settings=settings or TrackingSettings(enabled=True),
             report=self.report,  # type: ignore[arg-type]
         )
+        self.tracks = _Tracks(self.tracker.camera)
         self.tracker.start()
 
     def see(
@@ -897,14 +1032,16 @@ class _Posture:
                     source="custom",
                     active=True,
                     head_pose=head_pose,
-                )
+                ),
+                self.tracks.observe((face,), self.clock.now),
             )
 
     def nobody(self, seconds: float) -> None:
         for _ in range(round(seconds * 10)):
             self.clock.now += 0.1
             self.tracker.observe(
-                FaceReport(faces=(), ts=self.clock.now, source="custom", active=True)
+                FaceReport(faces=(), ts=self.clock.now, source="custom", active=True),
+                self.tracks.observe((), self.clock.now),
             )
 
     @property
@@ -1041,7 +1178,7 @@ def test_the_posture_holds_while_the_face_is_missing_and_resets_after_the_loss(
     assert posture.aims[-1] is held
     posture.see(0.1, roll_deg=10.0, distance_m=1.0)  # back: continues, no step
     assert _forward_mm(posture.aims[-1]) == pytest.approx(_forward_mm(held), abs=0.5)
-    posture.nobody(head_tracking.TRACKING_LOST_S + 0.2)
+    posture.nobody(fd.TRACK_LOST_S + 0.2)
     assert posture.aims[-1] is None
     assert (posture.state.roll_deg, posture.state.offset_mm) == (0.0, 0.0)
     posture.see(0.1, roll_deg=10.0, distance_m=1.0)  # acquired afresh: look-at alone
@@ -1164,7 +1301,7 @@ def test_the_personal_space_resets_with_the_person(
     posture = _Posture(monkeypatch)
     posture.see(1.0, distance_m=0.3)
     assert posture.state.in_personal_space
-    posture.nobody(head_tracking.TRACKING_LOST_S + 0.2)
+    posture.nobody(fd.TRACK_LOST_S + 0.2)
     assert not posture.state.in_personal_space
     assert posture.report.sets[-1].attention == "watching"
     posture.see(1.0, distance_m=0.42)  # someone new, inside the old margin
@@ -1224,7 +1361,7 @@ def test_a_face_the_camera_does_not_frame_is_not_missing(
     observations and ticks meanwhile count for nothing — the head stays engaged on the
     same face, no change published, the aim held — and once the camera frames their
     direction again, a real absence is counted as ever."""
-    monkeypatch.setattr(head_tracking, "TRACKING_LOST_S", 2.0)
+    monkeypatch.setattr(fd, "TRACK_LOST_S", 2.0)
     chooser = _mounted(monkeypatch)
     chooser.see(_person(1, 0.0, NEAR))
     sets, aims = len(chooser.published), len(chooser.aims)
@@ -1267,17 +1404,16 @@ def test_the_camera_sweeping_over_someone_else_does_not_switch(
 
 
 def test_the_out_of_view_hold_is_capped(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``UNOBSERVABLE_MAX_S`` without a sighting, the face counts as missing whatever
-    the view: the loss follows ``TRACKING_LOST_S`` later."""
-    monkeypatch.setattr(head_tracking, "TRACKING_LOST_S", 2.0)
-    monkeypatch.setattr(head_tracking, "UNOBSERVABLE_MAX_S", 3.0)
+    """``UNOBSERVABLE_MAX_S`` without a sighting, the tracks drop the user whatever the
+    view, and the head lets them go."""
+    monkeypatch.setattr(fd, "UNOBSERVABLE_MAX_S", 3.0)
     chooser = _mounted(monkeypatch)
     chooser.see(_person(1, 0.0, NEAR))
     chooser.pose = _turned(AWAY)
-    for _ in range(49):
-        chooser.tick()  # 4.9 s away: 3 s not counted, 1.9 s counted
+    for _ in range(29):
+        chooser.see()  # 2.9 s away, out of view: no miss counted
     assert chooser.tracker.following == 1
-    chooser.tick(after=0.2)  # 5.1 s: 2.1 s counted
+    chooser.see(after=0.2)  # 3.1 s unseen: the net
     assert chooser.tracker.following is None and chooser.aims[-1] is None
 
 
@@ -1286,7 +1422,7 @@ def test_a_face_last_seen_at_the_frame_s_edge_is_lost_as_any_other(
 ) -> None:
     """A departing person's last sighting is near the edge, inside the frame: with the
     head still, their direction stays in view and the loss counts as ever."""
-    monkeypatch.setattr(head_tracking, "TRACKING_LOST_S", 2.0)
+    monkeypatch.setattr(fd, "TRACK_LOST_S", 2.0)
     chooser = _mounted(monkeypatch)
     chooser.see(_person(1, 0.95, NEAR))
     for _ in range(19):

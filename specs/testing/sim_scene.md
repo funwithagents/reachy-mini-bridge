@@ -148,7 +148,7 @@ With several portraits it also pins **whom the head follows** ([head_tracking.md
 - **Stickiness.** Following a far portrait alone, a nearer one spawned beside it: the head stays on the far one, the `track_id` unchanged, for longer than `TRACKING_SWITCH_S`.
 - **The hold.** Following one of two, the followed one despawned and spawned back at the same place within half of `TRACKING_SWITCH_S`: the head holds its direction meanwhile (yaw within a couple of degrees), the same `track_id` is followed afterwards, and `bridge.head_tracking.changes()` publishes nothing.
 - **The switch.** Following one of two, the followed one despawned for good: the head holds for about `TRACKING_SWITCH_S`, then one change names the other face's `track_id` and the head converges on it.
-- **The loss.** The last portrait despawned: after `TRACKING_LOST_S`, `attention` reads `watching` and the head hands back to the idle move, as with one face.
+- **The loss.** The last portrait despawned: once its user has left (`TRACK_LOST_S`), `attention` reads `watching` and the head hands back to the idle move, as with one face.
 
 ## Open questions
 
