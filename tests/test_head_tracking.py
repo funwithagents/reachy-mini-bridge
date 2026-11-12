@@ -691,6 +691,126 @@ def test_the_report_wakes_on_state_changes_and_updates_on_aims(
     assert chooser.report.value == HeadTrackingReport.inactive()
 
 
+# --- a pinned face (specs/motion/head_tracking.md "A pinned face") ------------------------
+
+
+def test_a_pinned_face_is_followed_over_a_bigger_one_at_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chooser = _Chooser(monkeypatch)
+    far, near = _person(1, -0.4, FAR), _person(2, 0.4, NEAR)
+    chooser.see(far, near)
+    assert chooser.tracker.following == 2  # automatic: the biggest
+    chooser.tracker.pin(1)
+    assert chooser.tracker.following == 1  # the pin takes the follow at once
+    chooser.see(far, near)
+    assert chooser.aiming_at(far)
+    for _ in range(30):  # three seconds beside the bigger face
+        chooser.see(far, near)
+    assert chooser.tracker.following == 1 and chooser.aiming_at(far)
+    assert (chooser.report.value.track_id, chooser.report.value.pinned_track_id) == (
+        1,
+        1,
+    )
+
+
+def test_a_pinned_face_below_the_acquisition_gate_is_followed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chooser = _Chooser(monkeypatch)
+    chooser.tracker.pin(3)
+    speck = _person(3, 0.3, SPECK)
+    chooser.see(_person(1, -0.4, NEAR))  # someone else, bigger: not acquired
+    assert chooser.tracker.following is None and chooser.aims == []
+    chooser.see(speck, _person(1, -0.4, NEAR))
+    assert chooser.tracker.following == 3 and chooser.aiming_at(speck)
+
+
+def test_a_pinned_face_never_switches_and_its_loss_keeps_the_pin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(head_tracking, "TRACKING_SWITCH_S", 1.0)
+    monkeypatch.setattr(head_tracking, "TRACKING_LOST_S", 2.0)
+    chooser = _Chooser(monkeypatch)
+    pinned, other = _person(1, 0.0, NEAR), _person(2, 0.5, NEAR)
+    chooser.tracker.pin(1)
+    chooser.see(pinned, other)
+    chooser.see(other)  # the pinned face goes missing
+    chooser.see(other, after=1.2)  # past the switch time: held, no switch
+    assert chooser.tracker.following == 1 and chooser.aims[-1] is not None
+    chooser.see(other, after=0.8)  # 2.0 s: the loss
+    assert chooser.tracker.following is None and chooser.aims[-1] is None
+    assert chooser.report.value == HeadTrackingReport(
+        active=True,
+        focus=False,
+        attention="watching",
+        track_id=None,
+        ts=chooser.report.value.ts,
+        pinned_track_id=1,
+    )
+    for _ in range(10):  # nobody else is acquired
+        chooser.see(other)
+    assert chooser.tracker.following is None and chooser.aims[-1] is None
+    chooser.see(pinned, other)  # the pinned face back under its id
+    assert chooser.tracker.following == 1 and chooser.aiming_at(pinned)
+
+
+def test_a_pin_from_another_face_holds_its_aim_and_loses_from_the_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pinning a face that does not show: the head holds where it looked — no step, no
+    fade — and the loss counts from the pin."""
+    monkeypatch.setattr(head_tracking, "TRACKING_LOST_S", 2.0)
+    chooser = _Chooser(monkeypatch)
+    seen = _person(1, 0.3, NEAR)
+    chooser.see(seen)
+    aims = len(chooser.aims)
+    chooser.clock.now += 5.0
+    chooser.tracker.pin(7)  # a face waiting through its misses, say
+    assert chooser.report.value.track_id == 7
+    chooser.see(seen, after=1.9)
+    assert len(chooser.aims) == aims  # the previous aim stands
+    chooser.see(seen, after=0.2)  # 2.1 s since the pin
+    assert chooser.tracker.following is None and chooser.aims[-1] is None
+
+
+def test_returning_to_automatic_keeps_the_face_and_switches_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(head_tracking, "TRACKING_SWITCH_S", 1.0)
+    chooser = _Chooser(monkeypatch)
+    pinned, other = _person(1, 0.0, FAR), _person(2, 0.5, NEAR)
+    chooser.tracker.pin(1)
+    chooser.see(pinned, other)
+    chooser.tracker.pin(None)
+    chooser.see(pinned, other)
+    assert chooser.tracker.following == 1  # kept: a bigger face does not take the head
+    assert chooser.report.value.pinned_track_id is None
+    chooser.see(other)
+    chooser.see(other, after=1.0)
+    assert chooser.tracker.following == 2  # the automatic rules again
+
+
+def test_the_pin_is_published_and_cleared_by_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chooser = _Chooser(monkeypatch)
+    chooser.see(_person(1, 0.0, NEAR))
+    chooser.tracker.pin(1)  # the face followed already: only the pin changes
+    chooser.tracker.pin(1)  # again: nothing new
+    chooser.tracker.stop()
+    assert [
+        (r.attention, r.track_id, r.pinned_track_id) for r in chooser.published
+    ] == [
+        ("watching", None, None),  # started
+        ("engaged", 1, None),  # automatic, on the face
+        ("engaged", 1, 1),  # pinned
+        (None, None, None),  # stopped: the pin cleared
+    ]
+    chooser.tracker.start()
+    assert chooser.report.value.pinned_track_id is None
+
+
 def test_the_sim_eye_camera_pinhole() -> None:
     # MuJoCo's fovy is vertical: 80 deg at 16:9 is ~112 deg horizontally, and both give
     # the same focal length in pixels (square pixels).

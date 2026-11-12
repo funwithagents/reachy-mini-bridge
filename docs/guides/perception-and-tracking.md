@@ -23,6 +23,28 @@ Two things, and both are needed: a **detector** and a **switch**. `face_detectio
 
 The tracker follows **one** face by its `track_id` and holds on to it: the biggest face in view, of at least a minimum size, taken when nobody is followed; kept while it is seen, whatever other faces appear. A followed face that disappears is waited for one second, the head holding toward where it was, and if it is not back the head turns to the biggest other face. After two seconds with no face at all the aim is withdrawn: the head eases back into the idle move, and the next face is acquired at once. `focus=False` (the default) composes the aim into the idle move — the head breathes and the antennas flick while it looks; `focus=True` holds the head exactly on the face, antennas still moving. Emotions play as recorded over all of it; the gaze fades back in afterwards.
 
+### Choosing whom to follow
+
+When your code knows whom the robot should look at — a person your recogniser named, the one an agent was told about — pin their face by its `track_id`:
+
+```python
+faces = bridge.faces.value.faces
+leftmost = min(faces, key=lambda f: f.x)
+await bridge.start_head_tracking(track_id=leftmost.track_id)
+```
+
+The head turns to that face and follows it alone: it never switches to anyone else, a bigger face included. When the pinned face has been gone for two seconds the head eases back into the idle move and tracking stays on, **watching**, the pin kept — nobody else is taken. Called again while tracking runs, `start_head_tracking` switches the target: another `track_id` pins that face, no `track_id` returns to the automatic choice above. Leaving `track_id` out always means automatic (where leaving `focus` out keeps focus), so a focus change while pinned names the face again: `start_head_tracking(focus=True, track_id=7)`. `stop_head_tracking()` clears the pin. An id the detection loop holds no track for — never issued, or already dropped — raises `ValueError`; detection has to be running for an id to be held.
+
+A pin follows a **track**, not a person: if the person's track breaks (hidden longer than the miss window, a jump the tracker could not follow) they come back under a new `track_id` and the pin ends in the loss. Watch the report and re-pin:
+
+```python
+async for state in bridge.head_tracking.changes():
+    if state.pinned_track_id is not None and state.attention == "watching":
+        face = find_my_person(bridge.faces.value)  # your recognition, by crop
+        if face is not None:
+            await bridge.start_head_tracking(track_id=face.track_id)
+```
+
 ## The posture toward the person
 
 While the head follows someone it also stands toward them, three behaviours each switched in `motion.tracking` (fields: [../reference/configuration.md](../reference/configuration.md#motion--what-the-robot-does-at-rest)), all on by default:
@@ -82,7 +104,7 @@ await bridge.set_base_following(replace(bridge.base_following, enabled=False))
 
 **`bridge.faces`** — a `FaceReport`: every face the detector reports, in `track_id` order (oldest track first), each with its normalised position (`x`, `y` in [-1, 1], the nose when known), its `size` (box height as a fraction of the frame), its `distance_m` from the camera, its pixel `bbox`, its head angles in **radians** (`roll`; `pitch` and `yaw` from a detector that fits a head), and its `track_id`; plus `active` (a detector is looking), `source` (`"yunet"` / `"custom"`), `ts`, and `frame` — the `CameraFrame` the faces were found in. The report is about detection: it singles nobody out.
 
-**`bridge.head_tracking`** — a `HeadTrackingReport`: `active`, `focus`, `attention`, the `track_id` of the face the head follows (`None` unless engaged), and the posture it holds (`roll_deg`, `offset_mm`).
+**`bridge.head_tracking`** — a `HeadTrackingReport`: `active`, `focus`, `attention`, the `track_id` of the face the head follows (`None` unless engaged), the `pinned_track_id` you pinned (`None` while the tracker chooses), and the posture it holds (`roll_deg`, `offset_mm`).
 
 Both are `Observable`s, readable at any time and outliving the session — their inactive values before it starts and after it ends ([../reference/api.md](../reference/api.md) "Reading and subscribing").
 
@@ -147,7 +169,7 @@ if report.active and report.frame is not None:
         ...  # recognise, read an expression — your model, joined to the bridge's faces by face.track_id
 ```
 
-Who it is stays yours: keep a map from `track_id` to the identity your model found, and read `bridge.head_tracking.value.track_id` to know which of them the head is looking at.
+Who it is stays yours: keep a map from `track_id` to the identity your model found, read `bridge.head_tracking.value.track_id` to know which of them the head is looking at, and pin the one it should look at ("Choosing whom to follow" above).
 
 ## What the values promise, and what they do not
 

@@ -1078,7 +1078,9 @@ class ReachyMiniBridge:
             )
         return self._tracker
 
-    async def start_head_tracking(self, *, focus: bool | None = None) -> None:
+    async def start_head_tracking(
+        self, *, focus: bool | None = None, track_id: int | None = None
+    ) -> None:
         """Have the robot autonomously keep the tracked face in view
         (specs/motion/head_tracking.md): the bridge's tracker aims the face the detection loop
         reports, and the motion loop composes that aim into the idle move — the head
@@ -1089,16 +1091,43 @@ class ReachyMiniBridge:
         two; ``None`` keeps the settings' value. The settings in force
         (:attr:`tracking`) with ``enabled`` on: :meth:`set_tracking`'s common case.
 
+        ``track_id`` chooses whom (specs/motion/head_tracking.md "A pinned face"): a face's
+        ``track_id`` from :attr:`faces` pins it — the head follows that face alone, never
+        switches to another, and on its loss tracking stays on and watching, the pin kept
+        (``head_tracking.value.pinned_track_id``) until the caller pins another id or
+        returns to the automatic target by leaving ``track_id`` out. Called while
+        tracking runs, it switches the target in place. Left out, ``track_id`` means
+        automatic — unlike ``focus`` — so changing focus while pinned passes the id
+        again. An id the detection loop holds no track for (never issued, or dropped) is
+        a ``ValueError``, nothing changed.
+
         A mode, not a move: it holds until changed and needs no motors (the motion loop
         is paused without them, so the aim shows once they are enabled). Starts the
         detection loop if it is not already running — so it needs a configured detector
         (``face_detection.detector``; ``ValueError`` with none), and a detector that cannot be
         built raises ``BridgeError`` and leaves tracking off.
         """
+        if track_id is not None:
+            self._require_held_track(track_id)
         settings = replace(self._tracking, enabled=True)
         if focus is not None:
             settings = replace(settings, focus=focus)
         await self.set_tracking(settings)
+        self._require_tracker().pin(track_id)
+
+    def _require_held_track(self, track_id: object) -> None:
+        if isinstance(track_id, bool) or not isinstance(track_id, int):
+            raise ValueError(  # noqa: TRY004 - ValueError is the bridge's bad-input error
+                f"track_id must be a face's track_id (an int), got {track_id!r}"
+            )
+        self._require_tracker()
+        detection = self._detection
+        held = detection.held_track_ids() if detection is not None else frozenset()
+        if track_id not in held:
+            raise ValueError(
+                f"no face track {track_id} is held by the detection loop: pin a "
+                f"track_id from bridge.faces (held now: {sorted(held) or 'none'})"
+            )
 
     async def stop_head_tracking(self) -> None:
         """Stop the head tracker: the aim is withdrawn and the head eases back onto the
@@ -1170,9 +1199,10 @@ class ReachyMiniBridge:
     def head_tracking(self) -> Observable[HeadTrackingReport]:
         """The head tracker's state (specs/motion/head_tracking.md "The head tracking
         report"): ``head_tracking.value`` is the current :class:`HeadTrackingReport` —
-        ``active``, ``focus``, ``attention`` and the ``track_id`` of the face the head
-        follows, the link to :attr:`faces`. ``changes()`` wakes when tracking starts or
-        stops, focus switches, attention changes, or the head passes to another person —
+        ``active``, ``focus``, ``attention``, the ``track_id`` of the face the head
+        follows — the link to :attr:`faces` — and the ``pinned_track_id`` the caller
+        pinned. ``changes()`` wakes when tracking starts or stops, focus switches,
+        attention changes, the pin changes, or the head passes to another person —
         never on a face merely moving. Readable at any time: outside a session it is the
         inactive report."""
         return self._head_tracking
