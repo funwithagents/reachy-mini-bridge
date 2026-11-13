@@ -1081,6 +1081,8 @@ def test_an_aim_eases_the_head_onto_it_and_withdrawing_it_eases_it_back() -> Non
 
 
 def test_breathing_keeps_breathing_on_the_aim_with_its_roaming_toned_down() -> None:
+    roam = math.degrees(HEAD_YAW_RAD) * BREATHING_GAZE_ROTATION_SCALE
+
     async def run() -> list[npt.NDArray[np.float64]]:
         robot = FakeReachyMini()
         seeded = lambda: BreathingMove(random.Random(3))
@@ -1090,6 +1092,15 @@ def test_breathing_keeps_breathing_on_the_aim_with_its_roaming_toned_down() -> N
             session.set_gaze(GazeAim(_yaw_pose(AIM_YAW_DEG)))  # before the loop runs
             session.resume()
             await asyncio.sleep(BLEND_S + 0.5)  # entered, faded in, eased on
+            # The aim eases on a fraction a tick: on a host whose ticks run late (CI's
+            # macOS runner) it can still be on its way after that, so the window opens
+            # once the head is within the roam of the aim.
+            deadline = time.perf_counter() + 5.0
+            while time.perf_counter() < deadline:
+                yaws = _yaws(robot)
+                if yaws and abs(yaws[-1] - AIM_YAW_DEG) <= roam + 1.0:
+                    break
+                await asyncio.sleep(0.02)
             before = len(robot.targets)
             await asyncio.sleep(2.5)  # the first breath peaks 2.5 s in
             return [h for h, _, _ in robot.targets[before:] if h is not None]
@@ -1099,7 +1110,6 @@ def test_breathing_keeps_breathing_on_the_aim_with_its_roaming_toned_down() -> N
     yaws = [_yaw_pitch_deg(h)[0] for h in heads]
     assert max(zs) - min(zs) >= 0.004  # still breathing
     assert sum(yaws) / len(yaws) == pytest.approx(AIM_YAW_DEG, abs=3.0)
-    roam = math.degrees(HEAD_YAW_RAD) * BREATHING_GAZE_ROTATION_SCALE
     assert max(abs(y - AIM_YAW_DEG) for y in yaws) <= roam + 1.0
 
 

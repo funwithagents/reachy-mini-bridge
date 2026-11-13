@@ -2396,8 +2396,21 @@ def _settled_yaw(config: ReachyMiniConfig, x: float) -> float:
         async with ReachyMiniBridge(config) as bridge:
             await bridge.set_motors_state("enabled")
             await asyncio.sleep(2.5)
-            heads = [h for h, _, _ in _fake(bridge).targets if h is not None]
-            return [_yaw_deg(h) for h in heads[-30:]]
+
+            def last_yaws() -> list[float]:
+                heads = [h for h, _, _ in _fake(bridge).targets if h is not None]
+                return [_yaw_deg(h) for h in heads[-30:]]
+
+            # The head converges in ticks and detection frames: on a host whose timers
+            # run long (CI's macOS runner) it can still be on its way after 2.5 s, so
+            # the reading waits for the last 30 targets to be still. A head run away
+            # by its own motion stops only at a limit, which the angle checks reject.
+            deadline = time.perf_counter() + 7.5
+            yaws = last_yaws()
+            while max(yaws) - min(yaws) >= 0.5 and time.perf_counter() < deadline:
+                await asyncio.sleep(0.1)
+                yaws = last_yaws()
+            return yaws
 
     yaws = asyncio.run(run())
     assert max(yaws) - min(yaws) < 0.5  # it settled: no feedback runs it away

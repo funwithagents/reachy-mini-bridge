@@ -1676,9 +1676,10 @@ class MotionSession:
 
     @staticmethod
     def _fail_primary(primary: _Primary, error: Exception) -> None:
+        # Acknowledged before the failure resolves: the verb woken by it reads it set.
+        primary.dropped.set()
         if not primary.done.done():
             primary.done.set_exception(error)
-        primary.dropped.set()
 
     def _on_custom_idle_failure(self, error: Exception) -> None:
         """The caller's idle move misbehaved (specs/motion/motion.md "Custom idle moves"): one
@@ -1707,8 +1708,8 @@ class MotionSession:
             pending.append(self._playing.primary)
         self._playing = None
         for primary in pending:
+            primary.dropped.set()  # the daemon is gone: no sound left to stop
             if not primary.done.done():
                 failure = BridgeError(_LOST_CONNECTION_MESSAGE)
                 failure.__cause__ = error
                 primary.done.set_exception(failure)
-            primary.dropped.set()  # the daemon is gone: no sound left to stop
