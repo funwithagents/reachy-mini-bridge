@@ -736,7 +736,7 @@ def test_a_slow_detector_skips_frames_and_never_queues_them() -> None:
 
     async def run() -> tuple[int, int, float]:
         async with _running_custom(scene) as loop:
-            await asyncio.sleep(1.2)
+            await _wait_for(lambda: len(scene.calls) >= 4, timeout=5.0)
             calls = len(scene.calls)
             frames = loop.feed.published_count
             frame_ts = [ts for ts, _ in scene.calls]
@@ -744,8 +744,12 @@ def test_a_slow_detector_skips_frames_and_never_queues_them() -> None:
             return calls, frames, min(gaps)
 
     calls, frames, min_gap = _run(run)
-    assert calls <= 6 and frames >= 10  # more frames than calls: frames were dropped
-    assert min_gap >= 0.2  # each call saw a frame at least two periods newer
+    # at least two frames published per call after the first: the ones in between dropped
+    assert frames >= 2 * (calls - 1) + 1
+    # Each call saw a frame at least two periods newer. A frame's time is stamped when
+    # its read returns, a few ms past the fake's exact period, so two frames two periods
+    # apart read within half a period of it; a queued frame would be one period on.
+    assert min_gap >= 1.5 * FRAME_S
 
 
 def test_a_detector_raising_on_every_frame_reads_inactive_then_recovers(

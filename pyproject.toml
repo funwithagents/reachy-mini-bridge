@@ -165,14 +165,17 @@ target-version = "py312"  # keep in sync with requires-python
 # Only the fast, deterministic tier is collected by default; tests-e2e/ is opt-in.
 testpaths = ["tests"]
 # The fast tier runs in parallel (pytest-xdist): it is sleep-bound — the motion loop and
-# the fake run at real time, so most tests wait through real blends and breaths — and
-# spread over eight workers its ~3 min of waiting takes ~30 s. Capped at eight: each
-# worker is a whole interpreter with the package imported. `logical` counts logical
-# cores: `auto` counts physical ones when psutil is importable (it is, through
-# reachy-mini), which on a hyperthreaded CI runner halves the workers for a tier that
-# sleeps, not computes. `-n 0` on the command line runs it serially.
+# the fake run at real time, so most tests wait through real blends, turns and breaths —
+# and spread over eight workers its ~8 min of waiting takes about a minute and a half.
+# Capped at eight: each worker is a whole interpreter with the package imported.
+# `logical` counts logical cores: `auto` counts physical ones when psutil is importable
+# (it is, through reachy-mini), which on a hyperthreaded CI runner halves the workers for
+# a tier that sleeps, not computes. `worksteal`: an idle worker takes tests still queued
+# on a busy one, so the long base-following tests, adjacent in test_motion.py, spread
+# over every worker instead of running one after another on the worker they were queued
+# to. `-n 0` on the command line runs it serially.
 # tests-e2e/conftest.py forces the live tier serial (one shared daemon).
-addopts = ["-n", "logical", "--maxprocesses", "8"]
+addopts = ["-n", "logical", "--maxprocesses", "8", "--dist", "worksteal"]
 # A `realtime` test bounds a rate, a step or a latency the host's timers must keep —
 # the motion loop's per-tick step, the fake capture's 100 chunks a second. A host whose
 # sleeps run long fails it by the host, not the bridge; CI's macOS runner, a virtual M1

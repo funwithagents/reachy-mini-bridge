@@ -85,14 +85,17 @@ jobs:
       # from reachy_mini's wheels, so they skip the apt step; Windows syncs without the placo
       # extra, which has no Windows wheel (pyproject.toml's dev group). The macOS runner, a
       # virtual M1 whose 10 ms sleep takes 34, deselects the `realtime` tests — the bounds on
-      # rates and per-tick steps its timers cannot keep (specs/testing/ci.md).
+      # rates and per-tick steps its timers cannot keep (specs/testing/ci.md). The Linux and
+      # Windows entries run eight workers on their four vCPUs: the tier sleeps rather than
+      # computes (about 5 % CPU), so twice the workers wait out twice the tests at once;
+      # macOS keeps its three, its timers already running long.
       fail-fast: false
       matrix:
         include:
-          - {label: ubuntu-24.04, os: ubuntu-24.04}
-          - {label: ubuntu-24.04-arm, os: ubuntu-24.04-arm}
+          - {label: ubuntu-24.04, os: ubuntu-24.04, addopts: '-n 8'}
+          - {label: ubuntu-24.04-arm, os: ubuntu-24.04-arm, addopts: '-n 8'}
           - {label: macos-15, os: macos-15, addopts: '-m "not realtime"'}
-          - {label: windows-2025, os: windows-2025}
+          - {label: windows-2025, os: windows-2025, addopts: '-n 8'}
     steps:
       - uses: actions/checkout@v7
       - name: System packages
