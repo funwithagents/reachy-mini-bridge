@@ -665,6 +665,22 @@ def test_a_face_hidden_briefly_is_waited_for_and_followed_again(
         float, list[float], int | None, int | None, list[Any], float
     ]:
         await _prepare(bridge)
+        # The scene's faces stand about 0.4 m from the camera, on the personal space's
+        # default boundary, where the distance's frame-to-frame noise can carry the
+        # followed person in at any moment and publish it; the boundary is moved well
+        # inside for this test, whose claim is that nothing changes while the face hides.
+        space = bridge.tracking.personal_space
+        await bridge.set_tracking(
+            replace(bridge.tracking, personal_space=replace(space, distance_m=0.2))
+        )
+        try:
+            return await _hold_scenario(bridge, robot, face_scene)
+        finally:
+            await bridge.set_tracking(replace(bridge.tracking, personal_space=space))
+
+    async def _hold_scenario(
+        bridge: ReachyMiniBridge, robot: Any, face_scene: SimSceneClient
+    ) -> tuple[float, list[float], int | None, int | None, list[Any], float]:
         await bridge.start_head_tracking()
         followed_name = face_scene.spawn(face_at(LATERAL_M))
         await track_onto(bridge, "the first face", LATERAL_M)
