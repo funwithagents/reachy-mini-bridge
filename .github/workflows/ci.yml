@@ -89,10 +89,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {label: ubuntu-24.04, os: ubuntu-24.04}
-          - {label: ubuntu-24.04-arm, os: ubuntu-24.04-arm}
+          - {label: ubuntu-24.04, os: ubuntu-24.04, addopts: '-n 8'}
+          - {label: ubuntu-24.04-arm, os: ubuntu-24.04-arm, addopts: '-n 8'}
           - {label: macos-15, os: macos-15, addopts: '-m "not realtime"'}
-          - {label: windows-2025, os: windows-2025}
+          - {label: windows-2025, os: windows-2025, addopts: '-n 8'}
     steps:
       - uses: actions/checkout@v7
       - name: System packages
