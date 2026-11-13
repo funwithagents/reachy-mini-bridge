@@ -4143,6 +4143,54 @@ def test_a_pinned_face_is_followed_alone_and_its_loss_leaves_tracking_watching(
     assert automatic == ("engaged", left, None)
 
 
+@pytest.mark.parametrize("keyed", [False, True])
+def test_someone_stepping_into_the_followed_persons_spot(
+    fast_attention: None, keyed: bool
+) -> None:
+    """Alice, followed, leaves as Bob steps into her spot in the same frame
+    (specs/vision/user_perception.md "Tracks": "Recognised faces"). Without recognition
+    the tracks cannot tell them apart: Bob continues Alice's track, the head stays on
+    the same id and `users` says nothing. With a detector giving keys, Bob is someone
+    else: he arrives under his own id, Alice leaves after the miss window, and the head
+    switches to him."""
+    alice = replace(_pixel_face(0.0), identity="alice" if keyed else None)
+    bob = replace(_pixel_face(0.0), identity="bob" if keyed else None)
+    scene = _Scene([alice])
+    bridge = ReachyMiniBridge(_custom_config(scene, idle="hold"))
+
+    async def run() -> tuple[int | None, int | None, list[UsersReport]]:
+        woken: list[UsersReport] = []
+        async with bridge:
+            await _until(lambda: bridge.attention == "engaged")
+            alice_id = bridge.head_tracking.value.track_id
+
+            async def subscribe() -> None:
+                async for report in bridge.users.changes(every=True):
+                    woken.append(report)
+
+            subscriber = asyncio.create_task(subscribe())
+            await asyncio.sleep(0)
+            scene.faces[:] = [bob]
+            await asyncio.sleep(1.5)  # confirmation, miss window, switch: all past
+            subscriber.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await subscriber
+            return alice_id, bridge.head_tracking.value.track_id, woken
+
+    alice_id, followed, woken = asyncio.run(run())
+    changes = [(r.arrived, r.left) for r in woken]
+    assert alice_id is not None
+    if not keyed:
+        assert followed == alice_id  # Bob took Alice's track
+        assert changes == []
+    else:
+        assert followed is not None and followed != alice_id  # the head is on Bob
+        # Bob's confirmation and Alice's miss window end about together (0.3 s each
+        # here): either may be published first
+        assert [a for r in woken for a in r.arrived] == [followed]
+        assert [d for r in woken for d in r.left] == [UserDeparture(alice_id, "left")]
+
+
 def test_a_pin_is_checked_against_the_users_and_kept_or_cleared_by_the_verbs(
     fast_attention: None,
 ) -> None:

@@ -29,12 +29,26 @@ PixelFace(
     nose=(u, v),                    # the point the head aims at; the bbox centre when None
     eyes=((ur, vr), (ul, vl)),      # right, left: gives the roll; None when unknown
     orientation=(roll, pitch, yaw), # radians, from a detector that fits a head; optional
+    identity="alice",               # a recognition key, only when confident; optional
 )
 ```
 
 `orientation` follows the report's convention — roll positive when the eye line turns
 clockwise in the image, pitch positive when the face tilts down, yaw positive when it
 turns toward the image's right — and is preferred over the eye-line roll when given.
+
+`identity` is for a detector that **recognises** people as it detects them: any string
+that names the person (a name, a gallery id), set only when your recogniser is confident,
+`None` otherwise. The bridge never reads its meaning; its tracks only compare keys, and
+use them to keep people apart: two different keys never share a track (someone stepping
+into an absent person's spot gets their own id), a face whose key matches a track is
+matched to it first (two people crossing keep their ids), and a recognised face that
+moved too far while unseen still continues its track. A frame without a key changes
+nothing; a wrong key splits a person or lets someone take another's id, so keep the
+threshold strict. The key comes back on `bridge.faces` as `Face.identity`, and on
+`bridge.users` as `User.identity` — the key the person's track holds, kept through frames
+your recogniser was unsure on. A person recognised only after they arrived is named in
+that report's `recognised`, which wakes `users.changes()` as an arrival does.
 
 The shipped detector is the worked example —
 [src/reachy_mini_bridge/yunet.py](../../src/reachy_mini_bridge/yunet.py) is a class whose
