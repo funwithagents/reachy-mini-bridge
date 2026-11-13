@@ -233,7 +233,7 @@ async def _recognised(bridge: ReachyMiniBridge, key: str, timeout: float = 5.0) 
     deadline = time.perf_counter() + timeout
     while True:
         for user in bridge.users.value.users:
-            if user.seen and user.face.identity == key:
+            if user.seen and user.identity == key:
                 return user.track_id
         assert time.perf_counter() < deadline, (
             f"no user recognised as {key}: {bridge.faces.value.faces}"

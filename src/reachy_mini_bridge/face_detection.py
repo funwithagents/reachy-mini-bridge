@@ -202,6 +202,9 @@ class User:
     missing_s: float
     # their face at that last sighting; its bbox is in pixels of that sighting's frame
     face: Face
+    # the recognition key their track holds (specs/vision/user_perception.md "Tracks":
+    # "Recognised faces"): kept through sightings without one; None until recognised
+    identity: str | None = None
 
 
 @dataclass(frozen=True)
@@ -213,6 +216,9 @@ class UsersReport:
     left: tuple[UserDeparture, ...]  # the users dropped on this report; empty on most
     ts: float  # the observation's frame time; 0.0 before any
     active: bool  # a detector is looking; False means "unknown", not "nobody"
+    # the track_ids of users present whose recognition key appeared on this report
+    # (an arrival already recognised is in `arrived` only); empty on most
+    recognised: tuple[int, ...] = ()
 
     @classmethod
     def inactive(cls) -> UsersReport:
@@ -223,25 +229,27 @@ class UsersReport:
 class _Users:
     """The users present, built from the tracks after each observation: a track joins
     once confirmed (``USER_CONFIRM_OBSERVATIONS`` sightings, ``USER_CONFIRM_S`` after
-    its first), leaves when the tracks drop it — with the reason they give — and every
-    person leaves as ``"stopped"`` when the tracks are cleared. Pure state; the loop
-    publishes."""
+    its first), is recognised when its track gains a key, leaves when the tracks drop
+    it — with the reason they give — and every person leaves as ``"stopped"`` when the
+    tracks are cleared. Pure state; the loop publishes."""
 
     def __init__(self) -> None:
         self._confirmed: set[int] = set()
         self._candidates: dict[int, tuple[float, int]] = {}  # first sighting, count
         self._last: dict[int, tuple[Face, float]] = {}  # last face and its frame time
+        self._identity: dict[int, str | None] = {}  # each confirmed user's key
 
     def observe(
         self, report: FaceReport, tracks: _FaceTracks
     ) -> tuple[UsersReport, bool]:
         """The report after ``report``'s observation, ``tracks`` just updated with it,
-        and whether it is a change (an arrival or a departure)."""
+        and whether it is a change (an arrival, a recognition or a departure)."""
         ts = report.ts
         left: list[UserDeparture] = []
         for track_id, reason in tracks.dropped:
             self._candidates.pop(track_id, None)
             self._last.pop(track_id, None)
+            self._identity.pop(track_id, None)
             if track_id in self._confirmed:
                 self._confirmed.discard(track_id)
                 left.append(UserDeparture(track_id, reason))
@@ -264,6 +272,12 @@ class _Users:
         held = tracks.ids()
         for track_id in [t for t in self._candidates if t not in held]:
             del self._candidates[track_id]  # dropped before it was confirmed: nothing
+        recognised: list[int] = []
+        for track_id in sorted(self._confirmed):
+            key = tracks.identity.get(track_id)
+            if track_id not in arrived and key != self._identity.get(track_id):
+                recognised.append(track_id)
+            self._identity[track_id] = key
         users = tuple(
             User(
                 track_id=track_id,
@@ -272,11 +286,15 @@ class _Users:
                 last_seen_ts=self._last[track_id][1],
                 missing_s=tracks.missing_s.get(track_id, 0.0),
                 face=self._last[track_id][0],
+                identity=self._identity[track_id],
             )
             for track_id in sorted(self._confirmed)
         )
-        changed = bool(arrived or left)
-        return UsersReport(users, tuple(arrived), tuple(left), ts, True), changed
+        changed = bool(arrived or left or recognised)
+        users_report = UsersReport(
+            users, tuple(arrived), tuple(left), ts, True, tuple(recognised)
+        )
+        return users_report, changed
 
     def clear(self, ts: float, *, active: bool) -> UsersReport:
         """Every person leaves as ``"stopped"``: the tracks were cleared."""
@@ -284,6 +302,7 @@ class _Users:
         self._confirmed.clear()
         self._candidates.clear()
         self._last.clear()
+        self._identity.clear()
         return UsersReport(users=(), arrived=(), left=left, ts=ts, active=active)
 
     @property
@@ -441,9 +460,11 @@ class _FaceTracks:
         self._geometry = geometry
         self._tracks: list[_Track] = []
         # The latest update's verdicts, for the users present: whether the camera framed
-        # each held track, and the tracks it dropped with the rule that dropped them.
+        # each held track, its missing time, its recognition key, and the tracks it
+        # dropped with the rule that dropped them.
         self.in_view: dict[int, bool] = {}
         self.missing_s: dict[int, float] = {}
+        self.identity: dict[int, str | None] = {}
         self.dropped: list[tuple[int, Literal["left", "unseen"]]] = []
 
     def ids(self) -> frozenset[int]:
@@ -535,6 +556,7 @@ class _FaceTracks:
         survivors: list[_Track] = []
         verdicts: dict[int, bool] = {}
         missing: dict[int, float] = {}
+        identity: dict[int, str | None] = {}
         dropped: list[tuple[int, Literal["left", "unseen"]]] = []
         for t, track in enumerate(self._tracks):
             if t not in matched:
@@ -550,6 +572,7 @@ class _FaceTracks:
                     continue  # the net: unseen this long, in view or not
             verdicts[track.track_id] = t in matched or in_view[t]
             missing[track.track_id] = track.missing_s
+            identity[track.track_id] = track.identity
             survivors.append(track)
         for f, track_id in enumerate(ids):
             if track_id is None:
@@ -568,8 +591,10 @@ class _FaceTracks:
                 ids[f] = track.track_id
                 verdicts[track.track_id] = True
                 missing[track.track_id] = 0.0
+                identity[track.track_id] = track.identity
         self._tracks = survivors
         self.in_view, self.missing_s, self.dropped = verdicts, missing, dropped
+        self.identity = identity
         return [track_id for track_id in ids if track_id is not None]
 
 

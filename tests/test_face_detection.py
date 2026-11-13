@@ -1532,6 +1532,27 @@ def test_the_key_reaches_the_faces_and_the_users() -> None:
         presence.see(_known(20, 24, "alice"))
     users = presence.see(_known(20, 24, "alice"))  # confirmed
     assert users.users[0].face.identity == "alice"
+    assert users.users[0].identity == "alice"
+    assert [(r.arrived, r.recognised) for r in presence.changes] == [((1,), ())]
+
+
+def test_a_user_recognised_after_arriving_is_published_once() -> None:
+    """The recogniser is confident only once Alice is already present: the report it
+    happens on is published, naming her in `recognised`; a later sighting without a key
+    keeps her identity and publishes nothing."""
+    presence = _Presence()
+    for _ in range(4):
+        presence.see(_known(20, 24, None))
+    assert [r.arrived for r in presence.changes] == [(1,)]
+    assert presence.see(_known(20, 24, None)).users[0].identity is None
+    users = presence.see(_known(20, 24, "alice"))
+    assert users.recognised == (1,)
+    assert users.users[0].identity == "alice"
+    unsure = presence.see(_known(20, 24, None))
+    assert unsure.recognised == ()
+    assert unsure.users[0].identity == "alice"
+    assert unsure.users[0].face.identity is None
+    assert len(presence.changes) == 2
 
 
 def test_a_recognised_person_jumping_across_the_frame_stays_one_user(
