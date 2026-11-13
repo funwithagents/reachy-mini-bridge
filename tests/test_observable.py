@@ -230,3 +230,105 @@ def test_set_threadsafe_on_a_closed_loop_raises() -> None:
     with pytest.raises(RuntimeError):
         obs.set_threadsafe(loop, 1)
     assert obs.value == 0
+
+
+def test_an_every_subscriber_reads_a_whole_burst_in_order() -> None:
+    async def run() -> list[int]:
+        obs = Observable(0, history=8)
+        changes = obs.changes(every=True)
+        first = asyncio.ensure_future(_next_within(changes))
+        await asyncio.sleep(0)
+        obs.set(1)
+        got = [await first]
+        for value in (2, 3, 4):  # the subscriber is busy meanwhile
+            obs.set(value)
+        for _ in range(3):
+            got.append(await _next_within(changes))
+        with pytest.raises(TimeoutError):
+            await _next_within(changes, timeout=0.05)  # nothing more than was published
+        return got
+
+    assert asyncio.run(run()) == [1, 2, 3, 4]
+
+
+def test_every_on_a_history_of_one_reads_the_newest() -> None:
+    async def run() -> list[int]:
+        obs = Observable(0)  # the default history: the owner keeps nothing older
+        changes = obs.changes(every=True)
+        first = asyncio.ensure_future(_next_within(changes))
+        await asyncio.sleep(0)
+        obs.set(1)
+        got = [await first]
+        for value in (2, 3, 4):
+            obs.set(value)
+        got.append(await _next_within(changes))
+        with pytest.raises(TimeoutError):
+            await _next_within(changes, timeout=0.05)
+        return got
+
+    assert asyncio.run(run()) == [1, 4]
+
+
+def test_a_burst_past_the_history_loses_its_oldest_with_one_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def run() -> list[int]:
+        obs = Observable(0, history=3)
+        changes = obs.changes(every=True)
+        first = asyncio.ensure_future(_next_within(changes))
+        await asyncio.sleep(0)
+        obs.set(1)
+        got = [await first]
+        for value in range(2, 8):  # 6 values into a history of 3
+            obs.set(value)
+        for _ in range(3):
+            got.append(await _next_within(changes))
+        obs.set(8)  # the subscriber reads on after the gap
+        got.append(await _next_within(changes))
+        return got
+
+    with caplog.at_level("WARNING", logger="reachy_mini_bridge.observable"):
+        got = asyncio.run(run())
+    assert got == [1, 5, 6, 7, 8]
+    gaps = [r for r in caplog.records if r.name == "reachy_mini_bridge.observable"]
+    assert len(gaps) == 1
+    assert "3 oldest" in gaps[0].getMessage()
+
+
+def test_a_default_and_an_every_subscriber_each_get_their_own_policy() -> None:
+    async def run() -> tuple[list[int], list[int]]:
+        obs = Observable(0, history=8)
+        newest = obs.changes()
+        every = obs.changes(every=True)
+        firsts = [asyncio.ensure_future(_next_within(it)) for it in (newest, every)]
+        await asyncio.sleep(0)
+        obs.set(1)
+        a = [await firsts[0]]
+        b = [await firsts[1]]
+        for value in (2, 3, 4):
+            obs.set(value)
+        a.append(await _next_within(newest))
+        for _ in range(3):
+            b.append(await _next_within(every))
+        return a, b
+
+    a, b = asyncio.run(run())
+    assert a == [1, 4]
+    assert b == [1, 2, 3, 4]
+
+
+def test_a_history_below_one_is_refused() -> None:
+    with pytest.raises(ValueError, match="at least 1"):
+        Observable(0, history=0)
+
+
+def test_wait_for_finds_a_match_overwritten_in_the_same_step() -> None:
+    async def run() -> int:
+        obs = Observable(0, history=4)
+        waiter = asyncio.ensure_future(obs.wait_for(lambda v: v == 2))
+        await asyncio.sleep(0)
+        obs.set(2)  # matches...
+        obs.set(3)  # ...and is replaced before the waiter runs
+        return await asyncio.wait_for(waiter, 0.5)
+
+    assert asyncio.run(run()) == 2
