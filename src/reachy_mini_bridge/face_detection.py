@@ -45,8 +45,10 @@ __all__ = [
     "FACE_DETECTOR_NAMES",
     "FACE_POLL_HZ",
     "FACE_SOURCE_DOWN_S",
+    "TRACK_LOST_S",
     "TRACK_MAX_JUMP_FACES",
-    "TRACK_MAX_MISSES",
+    "TRACK_MIN_MISSES",
+    "UNOBSERVABLE_MAX_S",
     "USER_CONFIRM_OBSERVATIONS",
     "USER_CONFIRM_S",
     "Face",
@@ -86,13 +88,21 @@ FACE_BOX_HEIGHT_M = 0.18
 # The detector's cost (mean detect time, observations per second) is logged once per run,
 # this long after its first observation — the numbers `width` / `target_fps` are tuned by.
 FACE_COST_LOG_S = 10.0
-# The tracks' gates (specs/vision/user_perception.md "Tracks"), upstream's association values:
-# a face continues a track whose last centre lies within this many face sizes of its
-# own (the smaller of the two boxes' larger sides, in pixels); a track is dropped after
-# this many consecutive observations without its face. Whom the head follows is the head tracker's choice
-# (specs/motion/head_tracking.md "Whom the head follows").
+# The tracks' gates (specs/vision/user_perception.md "Tracks"): a face continues a track
+# whose expected pixel lies within this many face sizes of its own centre (the smaller of
+# the two boxes' larger sides, in pixels) — about 0.27 m of movement between two
+# observations at any distance; a track whose face the camera framed and did not show is
+# dropped once it has been missing in view this long, over at least this many
+# observations — a time, so the window is the same at any frame rate, and a count, so a
+# camera that barely looked does not decide. Whom the head follows is the head tracker's
+# choice (specs/motion/head_tracking.md "Whom the head follows").
 TRACK_MAX_JUMP_FACES = 1.5  # a face continues a track within this many of its sizes
-TRACK_MAX_MISSES = 20
+TRACK_LOST_S = 2.0  # missing in view this long (upstream's lost-face timeout)...
+TRACK_MIN_MISSES = 3  # ...and on at least this many observations: the track is dropped
+# A track unseen this long is dropped whatever the view — the net under a direction the
+# camera cannot be brought onto; longer than the longest recording of the emotions
+# library (16 s), so a move of the robot's own never ends a track.
+UNOBSERVABLE_MAX_S = 20.0
 # A new track joins the users present once it has been seen on this many observations,
 # and at least this long after its first sighting (specs/vision/user_perception.md "The
 # users present"): a one-frame false detection never arrives, a detector's blink on a
@@ -184,6 +194,10 @@ class User:
     # rule); False while a move of the robot's own has the camera looking elsewhere
     in_view: bool
     last_seen_ts: float  # the frame time of their last sighting (the bridge's clock)
+    # how long the camera has framed where they were without seeing them, since their
+    # last sighting (the time out of view not counted); 0.0 while seen. They leave as
+    # "left" at TRACK_LOST_S
+    missing_s: float
     # their face at that last sighting; its bbox is in pixels of that sighting's frame
     face: Face
 
@@ -254,6 +268,7 @@ class _Users:
                 seen=track_id in seen,
                 in_view=tracks.in_view.get(track_id, True),
                 last_seen_ts=self._last[track_id][1],
+                missing_s=tracks.missing_s.get(track_id, 0.0),
                 face=self._last[track_id][0],
             )
             for track_id in sorted(self._confirmed)
@@ -371,6 +386,10 @@ class _Track:
     centre: tuple[float, float]  # in pixels, on its last observation
     size: float  # the larger side of its box, in pixels, on its last observation
     misses: int = 0
+    # the time the camera framed its direction without its face, since its last sighting,
+    # and the frame time of the last observation it took part in
+    missing_s: float = 0.0
+    updated_at: float = 0.0
     # its face's direction in the world on its last observation, and that frame's time
     # (specs/vision/user_perception.md "Tracks": the anchor the expected pixel follows)
     direction: npt.NDArray[np.float64] | None = None
@@ -391,8 +410,9 @@ class _FaceTracks:
     tracks first (a track seen on the previous observation before one with misses),
     nearest first within each, each track and face used once; an unmatched face opens a
     track with ``new_id()``; an unmatched track **in view** (its expected pixel on the
-    frame) counts a miss and is dropped after ``TRACK_MAX_MISSES``, one out of view keeps
-    its count — the camera is not framing where its face was — until
+    frame) counts a miss and the time since the previous observation, and is dropped
+    once missing ``TRACK_LOST_S`` over at least ``TRACK_MIN_MISSES``; one out of view
+    counts neither — the camera is not framing where its face was — until
     ``UNOBSERVABLE_MAX_S`` without a sighting drops it whatever the view. Pure
     geometry, no smoothing, no face singled out — whom the head follows is the head
     tracker's choice."""
@@ -401,17 +421,20 @@ class _FaceTracks:
         self,
         new_id: Callable[[], int],
         max_jump: float | None = None,
-        max_misses: int | None = None,
+        min_misses: int | None = None,
+        lost_s: float | None = None,
         geometry: TrackGeometry | None = None,
     ) -> None:
         self._new_id = new_id
         self._max_jump = max_jump
-        self._max_misses = max_misses
+        self._min_misses = min_misses
+        self._lost_s = lost_s
         self._geometry = geometry
         self._tracks: list[_Track] = []
         # The latest update's verdicts, for the users present: whether the camera framed
         # each held track, and the tracks it dropped with the rule that dropped them.
         self.in_view: dict[int, bool] = {}
+        self.missing_s: dict[int, float] = {}
         self.dropped: list[tuple[int, Literal["left", "unseen"]]] = []
 
     def ids(self) -> frozenset[int]:
@@ -429,10 +452,11 @@ class _FaceTracks:
     ) -> list[int]:
         """The ``track_id`` of each of ``faces``, in their order, on a frame of ``size``
         (width, height) taken at ``ts`` — stamped ``head_pose`` when the feed knows it."""
-        from .head_tracking import UNOBSERVABLE_MAX_S, in_frame
+        from .head_tracking import in_frame
 
         max_jump = TRACK_MAX_JUMP_FACES if self._max_jump is None else self._max_jump
-        max_misses = TRACK_MAX_MISSES if self._max_misses is None else self._max_misses
+        min_misses = TRACK_MIN_MISSES if self._min_misses is None else self._min_misses
+        lost_s = TRACK_LOST_S if self._lost_s is None else self._lost_s
         geometry = self._geometry
         centres = [_pixel_centre(face) for face in faces]
         sizes = [_pixel_size(face) for face in faces]
@@ -464,7 +488,8 @@ class _FaceTracks:
                 continue
             track = self._tracks[t]
             track.centre, track.size, track.misses = centres[f], sizes[f], 0
-            track.seen_at = ts
+            track.missing_s = 0.0
+            track.seen_at = track.updated_at = ts
             if geometry is not None:
                 u, v = centres[f]
                 track.direction = geometry.direction(u, v, size, ts, head_pose)
@@ -472,30 +497,37 @@ class _FaceTracks:
             matched.add(t)
         survivors: list[_Track] = []
         verdicts: dict[int, bool] = {}
+        missing: dict[int, float] = {}
         dropped: list[tuple[int, Literal["left", "unseen"]]] = []
         for t, track in enumerate(self._tracks):
             if t not in matched:
                 if in_view[t]:
                     track.misses += 1
-                    if track.misses > max_misses:
-                        dropped.append((track.track_id, "left"))
-                        continue
+                    track.missing_s += max(0.0, ts - track.updated_at)
+                track.updated_at = ts
+                if track.misses >= min_misses and track.missing_s >= lost_s:
+                    dropped.append((track.track_id, "left"))
+                    continue
                 if ts > 0.0 and ts - track.seen_at > UNOBSERVABLE_MAX_S:
                     dropped.append((track.track_id, "unseen"))
                     continue  # the net: unseen this long, in view or not
             verdicts[track.track_id] = t in matched or in_view[t]
+            missing[track.track_id] = track.missing_s
             survivors.append(track)
         for f, track_id in enumerate(ids):
             if track_id is None:
                 u, v = centres[f]
-                track = _Track(self._new_id(), centres[f], sizes[f], seen_at=ts)
+                track = _Track(
+                    self._new_id(), centres[f], sizes[f], seen_at=ts, updated_at=ts
+                )
                 if geometry is not None:
                     track.direction = geometry.direction(u, v, size, ts, head_pose)
                 survivors.append(track)
                 ids[f] = track.track_id
                 verdicts[track.track_id] = True
+                missing[track.track_id] = 0.0
         self._tracks = survivors
-        self.in_view, self.dropped = verdicts, dropped
+        self.in_view, self.missing_s, self.dropped = verdicts, missing, dropped
         return [track_id for track_id in ids if track_id is not None]
 
 
@@ -583,9 +615,10 @@ class FaceDetection:
 
     ``detector`` names what runs — ``"yunet"`` (the shipped detector), ``"custom"`` (the
     factory registered through ``detector_factory``) or ``None`` (nothing: ``start``
-    refuses). ``on_observation`` hears every poll, undebounced — the observation's
-    report, or ``None`` for a poll that produced none (the head tracker's feed, and
-    its clock while the camera is silent). The detector is built from its factory when
+    refuses). ``on_observation(faces, users)`` hears every observation, undebounced —
+    its face report and the users report built from it — and every clearing of the
+    tracks, with ``None`` for the faces and the users leaving as ``"stopped"``: the
+    head tracker's feed. The detector is built from its factory when
     the loop starts, on a worker thread (a build may load a model), and validated
     then; the daemon's own tracking is never touched.
     """
@@ -596,7 +629,7 @@ class FaceDetection:
         detector: str | None,
         faces: Observable[FaceReport],
         users: Observable[UsersReport] | None = None,
-        on_observation: Callable[[FaceReport | None], None] | None = None,
+        on_observation: Callable[[FaceReport | None, UsersReport], None] | None = None,
         feed: CameraFeed | None = None,
         detector_factory: FaceDetectorFactory | None = None,
         width: int | None = DETECT_WIDTH,
@@ -662,13 +695,6 @@ class FaceDetection:
         """Whether the loop's task is running."""
         return self._task is not None and not self._task.done()
 
-    def held_track_ids(self) -> frozenset[int]:
-        """The ids of every track the loop holds — the faces of its latest observation
-        and the tracks waiting through their misses — empty while it is not running
-        (specs/vision/user_perception.md "Tracks": "The held tracks"); what a pinned
-        ``track_id`` is checked against."""
-        return self._tracks.ids() if self.running else frozenset()
-
     def _users_active(self) -> bool:
         return self._users is not None and self._users.value.active
 
@@ -684,18 +710,20 @@ class FaceDetection:
         users = self._users
         if users is not None and (present or users.value.active != active):
             users.set(report)
+        if present and self._on_observation is not None:
+            self._on_observation(None, report)  # the tracker's followed user left
 
-    def _observe_users(self, report: FaceReport) -> None:
+    def _observe_users(self, report: FaceReport) -> UsersReport:
         """The users present after an observation: ``set`` on an arrival, a departure
-        or detection becoming active; ``update`` otherwise."""
+        or detection becoming active; ``update`` otherwise. Returns the report."""
         users_report, changed = self._present.observe(report, self._tracks)
         users = self._users
-        if users is None:
-            return
-        if changed or not users.value.active:
-            users.set(users_report)
-        else:
-            users.update(users_report)
+        if users is not None:
+            if changed or not users.value.active:
+                users.set(users_report)
+            else:
+                users.update(users_report)
+        return users_report
 
     def _factory(self) -> FaceDetectorFactory:
         """The factory of the configured detector, or ``ValueError`` when the loop
@@ -953,16 +981,14 @@ class FaceDetection:
                     # Nobody is watching: the users present leave, and whoever is
                     # there when frames return is confirmed afresh, under new ids.
                     self._new_tracks(active=False)
-                if self._on_observation is not None:
-                    self._on_observation(None)  # the tracker keeps time
                 await asyncio.sleep(1.0 / FACE_POLL_HZ)
                 continue
             failing_since = None
             down = False
+            users_report = self._observe_users(report)
             if self._on_observation is not None:
-                self._on_observation(report)
+                self._on_observation(report, users_report)
             published, lower_since = self._publish(report, published, lower_since)
-            self._observe_users(report)
             await asyncio.sleep(1.0 / FACE_POLL_HZ)
 
     def _publish(

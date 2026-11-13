@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import pytest
 
-from reachy_mini_bridge.head_tracking import TRACKING_LOST_S
+from reachy_mini_bridge.face_detection import TRACK_LOST_S
 from reachy_mini_bridge.motion import unframed
 from reachy_mini_bridge.testing.sim_scene import DEFAULT_FACE_POS
 
@@ -366,12 +366,13 @@ def assert_tracked(track: Track, *, pitch_ahead: float | None = None) -> None:
 
 async def arm_tracking(bridge: ReachyMiniBridge, *, focus: bool = False) -> None:
     """Tracking on (``live_bridge`` starts with it off) and no aim held — ``attention``
-    at ``watching`` within ``TRACKING_LOST_S`` of nobody in view, which the tracker only
-    reaches if the detection loop ticks it: the check that the loop is alive."""
+    at ``watching`` once nobody is present — within ``TRACK_LOST_S`` of a user from a
+    previous test leaving, which the tracker only learns if the detection loop runs: the
+    check that the loop is alive."""
     await bridge.start_head_tracking(focus=focus)
-    assert await wait_for(
-        lambda: bridge.attention == "watching", TRACKING_LOST_S + 2.0
-    ), "an aim held with nobody in view: is the detection loop alive?"
+    assert await wait_for(lambda: bridge.attention == "watching", TRACK_LOST_S + 2.0), (
+        "an aim held with nobody in view: is the detection loop alive?"
+    )
 
 
 async def sample_idle(robot: Any, seconds: float) -> tuple[float, float]:

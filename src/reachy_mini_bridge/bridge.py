@@ -850,17 +850,16 @@ class ReachyMiniBridge:
         self._daemon_info = info
         return info
 
-    def _on_face_observation(self, report: FaceReport | None) -> None:
-        """The detection loop's every poll, undebounced: the tracker's feed while
-        tracking is on — an observation, or ``None`` for a poll without one, which
-        keeps the tracker's loss clock running while the camera is silent."""
+    def _on_face_observation(
+        self, report: FaceReport | None, users: UsersReport
+    ) -> None:
+        """The detection loop's every observation, undebounced — the faces and the users
+        present — and every clearing of its tracks: the tracker's feed while tracking
+        is on."""
         tracker = self._tracker
         if tracker is None or not self._tracking.enabled:
             return
-        if report is None:
-            tracker.tick()
-        else:
-            tracker.observe(report)
+        tracker.observe(report, users)
 
     async def _sync_detection(self) -> None:
         """Run the detection loop while anyone needs faces (the caller's switch, or
@@ -1123,25 +1122,25 @@ class ReachyMiniBridge:
         built raises ``BridgeError`` and leaves tracking off.
         """
         if track_id is not None:
-            self._require_held_track(track_id)
+            self._require_user(track_id)
         settings = replace(self._tracking, enabled=True)
         if focus is not None:
             settings = replace(settings, focus=focus)
         await self.set_tracking(settings)
         self._require_tracker().pin(track_id)
 
-    def _require_held_track(self, track_id: object) -> None:
+    def _require_user(self, track_id: object) -> None:
         if isinstance(track_id, bool) or not isinstance(track_id, int):
             raise ValueError(  # noqa: TRY004 - ValueError is the bridge's bad-input error
                 f"track_id must be a face's track_id (an int), got {track_id!r}"
             )
         self._require_tracker()
-        detection = self._detection
-        held = detection.held_track_ids() if detection is not None else frozenset()
-        if track_id not in held:
+        users = self._users.value
+        present = sorted(user.track_id for user in users.users) if users.active else []
+        if track_id not in present:
             raise ValueError(
-                f"no face track {track_id} is held by the detection loop: pin a "
-                f"track_id from bridge.faces (held now: {sorted(held) or 'none'})"
+                f"no user {track_id} is present: pin a track_id from bridge.users "
+                f"(present now: {present or 'none'})"
             )
 
     async def stop_head_tracking(self) -> None:

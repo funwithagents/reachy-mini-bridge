@@ -1,17 +1,20 @@
 """Head tracking: the bridge's own tracker, choosing whom to follow and turning that face
 into the aim the motion loop composes (specs/motion/head_tracking.md).
 
-The tracker takes the detection loop's every report and chooses whom to follow by
-``track_id`` — the biggest face, held while it is reported; a face gone missing held
-toward its last position for ``TRACKING_SWITCH_S`` before switching to the biggest other
-one — or the one face the caller pinned, followed alone. It turns the followed face into a look-at head pose with upstream's geometry — the face's pixel through a camera model,
+The tracker takes the detection loop's every observation — the faces of the frame and
+the users present — and chooses among the users whom to follow by ``track_id``: the
+biggest one seen, held while they are present; one missing in view held toward their
+last position for ``TRACKING_SWITCH_S`` before switching to the biggest other one seen —
+or the one user the caller pinned, followed alone. Whether someone is still there is the
+tracks' rule, not the tracker's: the followed user leaving the users present is the
+loss. It turns the followed face into a look-at head pose with upstream's geometry — the face's pixel through a camera model,
 rotated into the world by the head pose its frame was taken from (or the rest pose, for
 a camera that does not turn with the head) — and hands that aim to the motion loop's
 gaze layer, which eases, fades and composes it. That pose is the report's own when the
 source knows it; otherwise the robot's reported pose at the observation's time minus a
 delay the tracker estimates online, from how the face's world direction holds still
-while the head turns. It never touches the robot; after ``TRACKING_LOST_S`` without the
-followed face and nobody to switch to, it withdraws the aim and the robot idles in full.
+while the head turns. It never touches the robot; once the followed user has left and nobody
+else is there to follow, it withdraws the aim and the robot idles in full.
 While it follows a face the aim also carries a posture toward the person — the head's
 roll mirroring theirs, a lean toward them, a retreat from someone too close — filtered
 on the tracker's clock so it reads as a stance, not a motion. Its state is published as
@@ -44,7 +47,7 @@ if TYPE_CHECKING:
     import numpy.typing as npt
 
     from .config import SimCameraSettings
-    from .face_detection import Face, FaceReport
+    from .face_detection import Face, FaceReport, User, UsersReport
     from .observable import Observable
     from .robot import AnyReachyMini
 
@@ -61,10 +64,8 @@ __all__ = [
     "ROLL_SMOOTHING_S",
     "SIM_CAMERA_SIZE",
     "SIM_EYE_CAMERA_FOVY_DEG",
-    "TRACKING_LOST_S",
     "TRACKING_MIN_SIZE",
     "TRACKING_SWITCH_S",
-    "UNOBSERVABLE_MAX_S",
     "CameraModel",
     "HeadTracker",
     "HeadTrackingReport",
@@ -84,20 +85,13 @@ _logger = logging.getLogger(__name__)
 # The tracker's timing (specs/motion/head_tracking.md "Easing, loss, focus"). Module constants,
 # read at run time so tests can shorten them.
 # Whom the head follows (specs/motion/head_tracking.md "Whom the head follows"): a followed
-# face missing this long is replaced by the biggest face in view at least this tall (a
-# fraction of the frame's height — about upstream's acquisition gate, 0.3 % of a 16:9
-# frame's area for a square face); missing TRACKING_LOST_S with nobody that large, the
-# aim is withdrawn (upstream's own timeout).
+# user missing in view this long (`User.missing_s`, the tracks' clock) is replaced by the
+# biggest user seen at least this tall (a fraction of the frame's height — about
+# upstream's acquisition gate, 0.3 % of a 16:9 frame's area for a square face). The
+# loss is the followed user leaving the users present (specs/vision/user_perception.md
+# "The users present").
 TRACKING_SWITCH_S = 1.0
 TRACKING_MIN_SIZE = 0.07
-TRACKING_LOST_S = 2.0
-# A face the camera is not framing — the head turned away by an emotion, the base swung
-# under it — is out of view, not missing: the polls meanwhile count toward neither the
-# switch nor the loss, for at most this long without a sighting (specs/motion/head_tracking.md
-# "Whom the head follows"); the detection loop drops a track unseen this long whatever
-# the view (specs/vision/user_perception.md "Tracks"). Longer than the longest recording
-# of the emotions library (16 s).
-UNOBSERVABLE_MAX_S = 20.0
 # The online delay estimate (specs/motion/head_tracking.md "The aim"): the delay L between an
 # observation's time — the frame's arrival at the bridge — and the head pose its frame
 # was taken from, fitted over the new detections of the last DELAY_WINDOW_S by the L in
@@ -430,10 +424,10 @@ class HeadTracker:
     (``head_pose_history``: monotonic times and 4x4 poses), ``set_gaze(aim, focus=)``
     its gaze command. A report's ``ts`` is its frame's time on this process's monotonic
     clock (specs/vision/camera.md). ``focus`` is the caller's, handed over with every aim.
-    :meth:`observe` is fed every report of the detection loop while :meth:`start` has
-    it running, :meth:`tick` every poll of it that produced none, so the tracker keeps
-    time while the camera is silent; its state is published on ``report`` when one is
-    given.
+    :meth:`observe` is fed every observation of the detection loop — its face report
+    and the users report built from it — and every clearing of the tracks (no faces,
+    the users gone) while :meth:`start` has it running; its state is published on
+    ``report`` when one is given.
     """
 
     camera: CameraModel
@@ -442,18 +436,11 @@ class HeadTracker:
     settings: TrackingSettings = field(default_factory=TrackingSettings)
     report: Observable[HeadTrackingReport] | None = None
     _active: bool = field(default=False, init=False)
-    # whom the head follows, by track_id, and when an observation last showed that face
+    # whom the head follows, by track_id
     _following: int | None = field(default=None, init=False)
     # the track the caller pinned (specs/motion/head_tracking.md "A pinned face"), the
     # only face followed while set; None: the automatic target
     _pinned: int | None = field(default=None, init=False)
-    _seen_at: float | None = field(default=None, init=False)
-    # the followed face's direction in the world on its last sighting, and the time
-    # since then the camera did not frame it (specs/motion/head_tracking.md "Whom the
-    # head follows": out of view, not missing), measured poll to poll
-    _direction: npt.NDArray[np.float64] | None = field(default=None, init=False)
-    _unobservable_s: float = field(default=0.0, init=False)
-    _polled_at: float | None = field(default=None, init=False)
     _aimed_ts: float = field(default=0.0, init=False)
     _delay: float = field(default=DELAY_PRIOR_S, init=False)
     _detections: deque[_Detection] = field(default_factory=deque, init=False)
@@ -528,105 +515,61 @@ class HeadTracker:
     def pin(self, track_id: int | None) -> None:
         """Follow ``track_id`` alone, or return to the automatic target with ``None``
         (specs/motion/head_tracking.md "A pinned face"). A pin takes the follow at once:
-        from another face, the pinned one is followed as missing since now — the
-        previous aim stands until its first sighting, the loss counts from here; from
-        nobody, the tracker watches until it shows. ``None`` keeps the face followed.
-        Published while running."""
+        from another user, the pinned one is followed from now — the previous aim stands
+        until their first sighting; from nobody, the tracker watches until they show.
+        ``None`` keeps the user followed. Published while running."""
         self._pinned = track_id
         if track_id is not None and self._following not in (None, track_id):
             self._following = track_id
-            self._forget_sighting()
-            self._seen_at = self._polled_at = time.perf_counter()
             self._in_space = False  # a new person: their own entry, not the last one's
         if self._active:
             self._publish()
 
-    def observe(self, report: FaceReport) -> None:
-        """One report of the detection loop: choose whom to follow
-        (specs/motion/head_tracking.md "Whom the head follows") and aim that face — or hold
-        the previous aim while the followed face is missing, switch after
-        ``TRACKING_SWITCH_S``, withdraw after ``TRACKING_LOST_S`` with nobody to switch
-        to. A face is missing from the last observation that showed it. While a face is
-        pinned, only that face is followed: no switch, no size gate ("A pinned face")."""
+    def observe(self, report: FaceReport | None, users: UsersReport) -> None:
+        """One observation of the detection loop — its face report and the users
+        present after it — or a clearing of the tracks (``report`` ``None``): choose
+        whom to follow among the users (specs/motion/head_tracking.md "Whom the head
+        follows") and aim their face — or hold the previous aim while the followed user
+        is present but not seen, switch once they have been missing in view
+        ``TRACKING_SWITCH_S``, and lose them when they leave the users present. While a
+        user is pinned, only that user is followed: no switch, no size gate ("A pinned
+        face")."""
         now = time.perf_counter()
+        present = {user.track_id: user for user in users.users}
+        seen = {} if report is None else {f.track_id: f for f in report.faces}
+        lost = False
         face: Face | None = None
         if self._following is not None:
-            face = next(
-                (f for f in report.faces if f.track_id == self._following), None
-            )
-            if face is None:
-                self._note_poll(now, self._in_view(report.ts, report.head_pose, now))
-                missing = self._missing_for(now)
-                if missing >= TRACKING_SWITCH_S and self._pinned is None:
-                    face = self._biggest(report)
+            user = present.get(self._following)
+            if user is None:  # they left: the tracks dropped them
+                self._following = None
+                self._reset_posture()
+                lost = True
+            else:
+                face = seen.get(user.track_id)
                 if face is None:
-                    if missing >= TRACKING_LOST_S:
-                        self._lose()
-                    return  # the previous aim stands: the head holds toward the face
-        else:
-            face = self._acquirable(report)
+                    if self._pinned is None and user.missing_s >= TRACKING_SWITCH_S:
+                        face = self._biggest(present, seen)
+                    if face is None:
+                        return  # the previous aim stands: the head holds toward them
+        if self._following is None and face is None:
+            face = self._acquirable(present, seen)
             if face is None:
+                if lost:
+                    self.set_gaze(None, focus=self.focus)
+                    self._publish()
                 return
+        if report is None or face is None:
+            return
         if face.track_id != self._following:
             self._in_space = False  # a new person: their own entry, not the last one's
         self._following = face.track_id
-        self._seen_at = self._polled_at = now
-        self._unobservable_s = 0.0
         self._note_personal_space(face)
         aim = self._aim(face, report, now)
         if aim is not None:
             self._aimed_ts = report.ts
             self.set_gaze(aim, focus=self.focus)
         self._publish()
-
-    def tick(self, now: float | None = None) -> None:
-        """A poll of the detection loop that produced no observation (no new frame, a
-        failed ``detect``): the followed face has been missing since the last
-        observation that showed it — the time the camera did not frame it, judged on
-        the latest reported head pose, not counted — and ``TRACKING_LOST_S`` of that
-        withdraws the aim as on an observation (specs/motion/head_tracking.md "Easing,
-        loss, focus")."""
-        if self._following is None:
-            return
-        if now is None:
-            now = time.perf_counter()
-        self._note_poll(now, self._in_view(now, None, now))
-        if self._missing_for(now) >= TRACKING_LOST_S:
-            self._lose()
-
-    def _missing_for(self, now: float) -> float:
-        """How long the followed face has been missing: since the observation that last
-        showed it, less the time the camera did not frame its direction."""
-        if self._seen_at is None:
-            return 0.0
-        return now - self._seen_at - self._unobservable_s
-
-    def _note_poll(self, now: float, in_view: bool) -> None:
-        """A poll without the followed face: the time since the previous poll joins the
-        unobservable time when the camera was not framing the face, up to
-        ``UNOBSERVABLE_MAX_S`` — after which the face counts as missing whatever the
-        view (specs/motion/head_tracking.md "Whom the head follows")."""
-        elapsed = 0.0 if self._polled_at is None else max(0.0, now - self._polled_at)
-        self._polled_at = now
-        if not in_view:
-            self._unobservable_s = min(
-                self._unobservable_s + elapsed, UNOBSERVABLE_MAX_S
-            )
-
-    def _in_view(
-        self, ts: float, head_pose: npt.NDArray[np.float64] | None, now: float
-    ) -> bool:
-        """Whether the camera, from the head pose a frame at ``ts`` (stamped
-        ``head_pose``) was taken from, frames the followed face's direction — its
-        expected pixel on the model's frame (specs/vision/user_perception.md "Tracks");
-        a face without a direction yet is taken as in view."""
-        if self._direction is None:
-            return True
-        head = frame_head_pose(
-            ts, head_pose, self.camera, self.history, self.delay_s, now
-        )
-        pixel = expected_pixel(self._direction, head, self.camera)
-        return pixel is not None and in_frame(pixel, self.camera.size)
 
     def track_geometry(self) -> TrackGeometry:
         """The detection loop's anchor of its tracks in the world: this tracker's camera
@@ -643,29 +586,15 @@ class HeadTracker:
             ),
         )
 
-    def _lose(self) -> None:
-        """Follow nobody and withdraw the aim (the gaze layer fades out); published."""
-        self._following = None
-        self._forget_sighting()
-        self._reset_posture()
-        self.set_gaze(None, focus=self.focus)
-        self._publish()
-
     def stop(self) -> None:
         """Withdraw the aim (the gaze layer fades out), follow nobody, clear the pin, and
         publish the inactive report."""
         self._active = False
         self._following = None
         self._pinned = None
-        self._forget_sighting()
         self._reset_posture()
         self.set_gaze(None, focus=self.focus)
         self._publish()
-
-    def _forget_sighting(self) -> None:
-        self._seen_at = self._polled_at = None
-        self._direction = None
-        self._unobservable_s = 0.0
 
     def _note_personal_space(self, face: Face) -> None:
         """Whether the followed person is inside the personal space
@@ -693,17 +622,25 @@ class HeadTracker:
         self._roll = self._offset = 0.0
         self._posture_at = None
 
-    def _acquirable(self, report: FaceReport) -> Face | None:
-        """The face to follow when following nobody: the pinned one, whatever its size,
-        while a face is pinned; the biggest eligible one otherwise."""
+    def _acquirable(
+        self, present: dict[int, User], seen: dict[int, Face]
+    ) -> Face | None:
+        """The face to follow when following nobody: the pinned user's, whatever its
+        size, while a user is pinned and seen; the biggest eligible one otherwise."""
         if self._pinned is None:
-            return self._biggest(report)
-        return next((f for f in report.faces if f.track_id == self._pinned), None)
+            return self._biggest(present, seen)
+        return seen.get(self._pinned) if self._pinned in present else None
 
     @staticmethod
-    def _biggest(report: FaceReport) -> Face | None:
-        """The largest face at least ``TRACKING_MIN_SIZE`` tall, or ``None``."""
-        eligible = [f for f in report.faces if f.size >= TRACKING_MIN_SIZE]
+    def _biggest(present: dict[int, User], seen: dict[int, Face]) -> Face | None:
+        """The largest face at least ``TRACKING_MIN_SIZE`` tall among the users seen on
+        this observation, or ``None``: a face not yet confirmed as a user is not
+        followed."""
+        eligible = [
+            f
+            for track_id, f in seen.items()
+            if track_id in present and f.size >= TRACKING_MIN_SIZE
+        ]
         return max(eligible, key=lambda f: f.size) if eligible else None
 
     def _state(self) -> HeadTrackingReport:
@@ -752,7 +689,6 @@ class HeadTracker:
             look = look_at_image_pose(
                 u, v, camera.K, camera.D, head, default_head_to_camera_transform()
             )
-            self._direction = world_direction(u, v, head, camera)
             return self._posture(face, look, head, now)
         except Exception as e:  # noqa: BLE001 - one bad pixel keeps the previous aim
             _logger.debug("head tracking: no aim for the face at (%s, %s): %s", u, v, e)

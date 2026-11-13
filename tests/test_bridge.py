@@ -1376,7 +1376,7 @@ def test_a_detector_that_cannot_be_built_leaves_a_switch_as_it_was(
 
 @pytest.fixture
 def fast_attention(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(head_tracking_module, "TRACKING_LOST_S", 0.3)
+    monkeypatch.setattr(face_detection_module, "TRACK_LOST_S", 0.3)
     monkeypatch.setattr(head_tracking_module, "TRACKING_SWITCH_S", 0.15)
     monkeypatch.setattr(face_detection_module, "FACE_POLL_HZ", 20.0)
 
@@ -1434,7 +1434,8 @@ def test_the_head_tracking_report_wakes_on_each_change_of_state(
         attention: list[str | None] = []
 
         async def subscribe() -> None:
-            async for report in bridge.head_tracking.changes():
+            # every change in order: the stop follows the loss within a loop step
+            async for report in bridge.head_tracking.changes(every=True):
                 woken.append(report)
 
         subscriber = asyncio.create_task(subscribe())
@@ -1443,7 +1444,7 @@ def test_the_head_tracking_report_wakes_on_each_change_of_state(
             await bridge.start_head_tracking()
             attention.append(bridge.attention)
             scene.show(0.0)
-            await asyncio.sleep(0.4)
+            await _until(lambda: bridge.attention == "engaged")  # once a user
             attention.append(bridge.attention)
             face_id = bridge.faces.value.faces[0].track_id
             ts_before = bridge.head_tracking.value.ts
@@ -1454,7 +1455,7 @@ def test_the_head_tracking_report_wakes_on_each_change_of_state(
             await bridge.start_head_tracking(focus=True)
             await asyncio.sleep(0.05)
             scene.hide()
-            await asyncio.sleep(0.3 + 0.3)  # TRACKING_LOST_S, and a few frames
+            await _until(lambda: bridge.attention == "watching")  # they left
             attention.append(bridge.attention)
             await bridge.stop_head_tracking()
             attention.append(bridge.attention)
@@ -2911,7 +2912,7 @@ def test_clearing_the_custom_detector_while_tracking_is_refused(
     ]:
         async with ReachyMiniBridge(_custom_config(scene, detection=False)) as bridge:
             await _wait_for_face_x(bridge, 0.3)
-            await asyncio.sleep(0.1)
+            await _until(lambda: bridge.attention == "engaged")  # once a user
             engaged = bridge.attention
             with pytest.raises(
                 ValueError, match="stop head tracking and face detection"
@@ -2941,10 +2942,10 @@ def test_clearing_the_custom_detector_while_tracking_is_refused(
 def test_a_silent_detector_releases_the_head_reads_inactive_and_re_engages(
     monkeypatch: pytest.MonkeyPatch, fast_attention: None
 ) -> None:
-    """The detector fails on every frame, so no observation reaches the tracker at all:
-    the aim is withdrawn after TRACKING_LOST_S anyway (the loop's ticks keep the
-    tracker's clock), the report turns inactive and empty after FACE_SOURCE_DOWN_S, and
-    the head re-engages once observations return."""
+    """The detector fails on every frame, so no observation reaches the tracks at all:
+    the user stands and the head holds on them until FACE_SOURCE_DOWN_S, when the loop
+    reads its detector down — the report inactive and empty, the users leaving, the aim
+    withdrawn — and the head re-engages once observations return."""
     monkeypatch.setattr(face_detection_module, "FACE_SOURCE_DOWN_S", 0.8)
     scene = _Scene([_pixel_face(0.5)])
 
@@ -2956,21 +2957,19 @@ def test_a_silent_detector_releases_the_head_reads_inactive_and_re_engages(
             await asyncio.sleep(1.0)
             engaged = (bridge.attention, _yaw_deg(_fake(bridge).last_target[0]))
             scene.raises = True
-            await asyncio.sleep(
-                0.5
-            )  # past TRACKING_LOST_S (0.3), before the source-down
-            lost = (bridge.attention, bridge.faces.value.active)
+            await asyncio.sleep(0.5)  # past TRACK_LOST_S (0.3), before the source-down
+            held = (bridge.attention, bridge.faces.value.active)
             await asyncio.sleep(0.5)  # past FACE_SOURCE_DOWN_S
             down = bridge.faces.value
             await asyncio.sleep(0.8)  # the gaze layer faded out onto the neutral hold
             released = _yaw_deg(_fake(bridge).last_target[0])
             scene.raises = False
             await asyncio.sleep(0.6)
-            return engaged, lost, down, released, bridge.attention
+            return engaged, held, down, released, bridge.attention
 
-    engaged, lost, down, released, again = asyncio.run(run())
+    engaged, held, down, released, again = asyncio.run(run())
     assert engaged[0] == "engaged" and engaged[1] < -5.0
-    assert lost == ("watching", True)
+    assert held == ("engaged", True)  # no observation: no evidence they left
     assert down == FaceReport.inactive("custom")  # no stale face while nobody looks
     assert abs(released) < 1.0
     assert again == "engaged"
@@ -4123,7 +4122,7 @@ def test_a_pinned_face_is_followed_alone_and_its_loss_leaves_tracking_watching(
             return report.attention, report.track_id, report.pinned_track_id
 
         async with bridge:
-            await _wait_until(lambda: len(bridge.faces.value.faces) == 2)
+            await _wait_until(lambda: len(bridge.users.value.users) == 2)
             left, right = _ids_by_side(bridge)
             await bridge.start_head_tracking(track_id=right)  # the smaller face
             await _wait_until(lambda: bridge.attention == "engaged")
@@ -4144,7 +4143,7 @@ def test_a_pinned_face_is_followed_alone_and_its_loss_leaves_tracking_watching(
     assert automatic == ("engaged", left, None)
 
 
-def test_a_pin_is_checked_against_the_held_tracks_and_kept_or_cleared_by_the_verbs(
+def test_a_pin_is_checked_against_the_users_and_kept_or_cleared_by_the_verbs(
     fast_attention: None,
 ) -> None:
     scene, _big, _small = _two_users()
@@ -4153,14 +4152,14 @@ def test_a_pin_is_checked_against_the_held_tracks_and_kept_or_cleared_by_the_ver
     async def run() -> list[Any]:
         seen: list[Any] = []
         async with bridge:
-            with pytest.raises(ValueError, match="no face track 1"):  # detection off
+            with pytest.raises(ValueError, match="no user 1"):  # detection off
                 await bridge.start_head_tracking(track_id=1)
             seen.append(bridge.tracking.enabled)
             await bridge.set_face_detection(True)
-            await _wait_until(lambda: len(bridge.faces.value.faces) == 2)
+            await _wait_until(lambda: len(bridge.users.value.users) == 2)
             _left, right = _ids_by_side(bridge)
             for wrong in (right + 100, True, "2"):
-                with pytest.raises(ValueError, match="track"):
+                with pytest.raises(ValueError, match="track_id|no user"):
                     await bridge.start_head_tracking(track_id=wrong)  # type: ignore[arg-type]
             seen.append(bridge.tracking.enabled)
             await bridge.start_head_tracking(track_id=right)
@@ -4278,7 +4277,7 @@ def test_an_emotion_that_turns_the_head_away_keeps_the_person(
     nobody, the tracker holds — engaged throughout, nothing published — the person
     stays present on `users`, no departure published, and once the head is back the
     person continues their track, the head on them again."""
-    monkeypatch.setattr(face_detection_module, "TRACK_MAX_MISSES", 2)
+    monkeypatch.setattr(face_detection_module, "TRACK_LOST_S", 0.2)
     _turning_emotions(monkeypatch, yaw_deg=-80.0, seconds=1.2)
     scene = _ProjectingScene(_person_at(20.0))
     config = _custom_config(scene, idle="hold")
@@ -4344,7 +4343,7 @@ def test_a_person_who_leaves_during_an_emotion_is_lost_once_the_head_is_back(
     monkeypatch: pytest.MonkeyPatch, fast_attention: None
 ) -> None:
     """Gone while the camera could not see them: nothing says so until the head is back
-    on their direction, and the loss follows ``TRACKING_LOST_S`` of that — not sooner."""
+    on their direction, and the loss follows the miss window (``TRACK_LOST_S``) of that — not sooner."""
     _turning_emotions(monkeypatch, yaw_deg=-80.0, seconds=1.2)
     scene = _ProjectingScene(_person_at(20.0))
     config = _custom_config(scene, idle="hold")
@@ -4378,6 +4377,6 @@ def test_a_person_who_leaves_during_an_emotion_is_lost_once_the_head_is_back(
     lost_after = asyncio.run(run())
     # Nothing says they left while the camera was away: the head frames their direction
     # again only in the move's last tenth of a second, and the loss follows
-    # TRACKING_LOST_S (0.3 here) of that — after the move, where counting from the
+    # the miss window (TRACK_LOST_S, 0.3 here) of that — after the move, where counting from the
     # departure would have lost them 0.3 s into the head's absence.
     assert lost_after >= 1.2

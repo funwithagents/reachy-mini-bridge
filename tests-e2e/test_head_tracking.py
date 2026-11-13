@@ -29,9 +29,8 @@ from typing import Any
 import pytest
 
 from reachy_mini_bridge.bridge import ReachyMiniBridge
-from reachy_mini_bridge.face_detection import UsersReport
+from reachy_mini_bridge.face_detection import TRACK_LOST_S, UsersReport
 from reachy_mini_bridge.head_tracking import (
-    TRACKING_LOST_S,
     TRACKING_SWITCH_S,
     HeadTrackingReport,
 )
@@ -214,7 +213,7 @@ def test_attention_hands_the_head_back_and_reengages_on_the_face(
         assert await wait_for(lambda: bridge.attention == "engaged", 6.0)
         first = await track_onto(bridge, "engaged on the face", LATERAL_M)
         face_scene.despawn(face)
-        hand_back = TRACKING_LOST_S + BLEND_S + 4.0
+        hand_back = TRACK_LOST_S + BLEND_S + 4.0
         assert await wait_for(lambda: bridge.attention == "watching", hand_back), (
             f"attention still {bridge.attention!r} {hand_back:.0f}s after the face left"
         )
@@ -315,7 +314,7 @@ def test_an_emotion_that_turns_the_head_away_keeps_the_person(
 ) -> None:
     """specs/motion/head_tracking.md "Whom the head follows", specs/vision/user_perception.md
     "Tracks": the move takes the portrait out of the camera's view for longer than
-    `TRACKING_LOST_S` and the miss window, with detection running on — the faces report
+    the miss window (`TRACK_LOST_S`), with detection running on — the faces report
     empties — yet the tracker neither hands the head back nor loses the person's track:
     engaged throughout with nothing published, the same `track_id` after the move, and
     the head back up on the portrait. The person stays present on `bridge.users`:
@@ -396,9 +395,7 @@ def test_an_emotion_that_turns_the_head_away_keeps_the_person(
         f"[e2e] {AWAY_EMOTION!r} over a high portrait: track {before} -> {after}; "
         f"head pitch after {pitch_after:.1f} deg"
     )
-    assert empties >= int(
-        TRACKING_LOST_S / 0.1
-    )  # out of view longer than the loss time
+    assert empties >= int(TRACK_LOST_S / 0.1)  # out of view longer than the loss time
     assert woken == []  # engaged on the same person throughout
     assert before is not None and after == before
     assert users_woken == []  # present throughout: no departure, no re-arrival
@@ -455,7 +452,7 @@ def test_the_base_turns_onto_a_face_far_to_one_side_and_stays_after_it_leaves(
         relative, _ = await asyncio.to_thread(head_on_base, robot)
         square = yaw_pitch_deg(relative)[0]
         face_scene.despawn(face)
-        hand_back = TRACKING_LOST_S + BLEND_S + 4.0
+        hand_back = TRACK_LOST_S + BLEND_S + 4.0
         assert await wait_for(lambda: bridge.attention == "watching", hand_back)
         await asyncio.sleep(2.0)  # the gaze layer faded out onto the idle move
         _z_range, at_rest = await sample_idle(robot, 3.0)
@@ -530,12 +527,23 @@ def _followed_centred(bridge: ReachyMiniBridge) -> bool:
 
 
 async def _both_in_view(bridge: ReachyMiniBridge, count: int = 2) -> None:
-    """Poll the report's value: a face returning within the absence window is a silent
-    `update` (the published count never dropped), which `wait_for` would not see."""
+    """Until ``count`` faces are in view and each is a user — confirmed, so the tracker
+    may follow it and a caller pin it. Polls the values: a face returning within the
+    absence window is a silent `update`, which `wait_for` would not see."""
     deadline = time.perf_counter() + 5.0
-    while not (bridge.faces.value.active and len(bridge.faces.value.faces) == count):
+
+    def ready() -> bool:
+        faces = bridge.faces.value
+        users = {u.track_id for u in bridge.users.value.users if u.seen}
+        return (
+            faces.active
+            and len(faces.faces) == count
+            and all(f.track_id in users for f in faces.faces)
+        )
+
+    while not ready():
         assert time.perf_counter() < deadline, (
-            f"not {count} faces in view after 5 s: {bridge.faces.value.faces}"
+            f"not {count} users in view after 5 s: {bridge.faces.value.faces}"
         )
         await asyncio.sleep(0.05)
 
@@ -715,7 +723,7 @@ def test_a_face_gone_for_good_hands_over_to_the_other_then_the_head_is_released(
 ) -> None:
     """The switch, then the loss: the followed face despawned, the head holds for about
     `TRACKING_SWITCH_S`, then follows the other face (one change naming it) and turns
-    onto it; that one despawned too, attention reads `watching` after `TRACKING_LOST_S`."""
+    onto it; that one despawned too, attention reads `watching` once its user has left (`TRACK_LOST_S`)."""
     bridge, _caps = live_bridge
 
     async def scenario() -> tuple[float, Track, int, list[Any], float, tuple[Any, Any]]:
@@ -737,7 +745,7 @@ def test_a_face_gone_for_good_hands_over_to_the_other_then_the_head_is_released(
         face_scene.despawn(second)
         lost_after = await _until(
             lambda: bridge.head_tracking.value.attention == "watching",
-            TRACKING_LOST_S + 3.0,
+            TRACK_LOST_S + 3.0,
         )
         await changes.stop()
         # What the detector and the tracker hold at the end — the evidence when a face
@@ -762,7 +770,7 @@ def test_a_face_gone_for_good_hands_over_to_the_other_then_the_head_is_released(
     assert states[0] == ("engaged", other_id)
     assert states[-1] == ("watching", None)
     assert all(attention == "engaged" for attention, _ in states[:-1])
-    assert lost_after >= TRACKING_LOST_S - 0.2
+    assert lost_after >= TRACK_LOST_S - 0.2
 
 
 def test_a_pinned_face_is_followed_and_its_loss_leaves_the_other_face_alone(
@@ -795,7 +803,7 @@ def test_a_pinned_face_is_followed_and_its_loss_leaves_the_other_face_alone(
         face_scene.despawn(far)
         lost_after = await _until(
             lambda: bridge.head_tracking.value.attention == "watching",
-            TRACKING_LOST_S + 3.0,
+            TRACK_LOST_S + 3.0,
         )
         await asyncio.sleep(TRACKING_SWITCH_S + 1.0)  # the nearer face stays in view
         await changes.stop()

@@ -28,12 +28,12 @@ The tracker follows **one** face by its `track_id` and holds on to it: the bigge
 When your code knows whom the robot should look at — a person your recogniser named, the one an agent was told about — pin their face by its `track_id`:
 
 ```python
-faces = bridge.faces.value.faces
-leftmost = min(faces, key=lambda f: f.x)
+users = [u for u in bridge.users.value.users if u.seen]
+leftmost = min(users, key=lambda u: u.face.x)
 await bridge.start_head_tracking(track_id=leftmost.track_id)
 ```
 
-The head turns to that face and follows it alone: it never switches to anyone else, a bigger face included. When the pinned face has been gone for two seconds the head eases back into the idle move and tracking stays on, **watching**, the pin kept — nobody else is taken. Called again while tracking runs, `start_head_tracking` switches the target: another `track_id` pins that face, no `track_id` returns to the automatic choice above. Leaving `track_id` out always means automatic (where leaving `focus` out keeps focus), so a focus change while pinned names the face again: `start_head_tracking(focus=True, track_id=7)`. `stop_head_tracking()` clears the pin. An id the detection loop holds no track for — never issued, or already dropped — raises `ValueError`; detection has to be running for an id to be held.
+The head turns to that face and follows it alone: it never switches to anyone else, a bigger face included. When the pinned user leaves — two seconds missing while the camera looks where they were — the head eases back into the idle move and tracking stays on, **watching**, the pin kept — nobody else is taken. Called again while tracking runs, `start_head_tracking` switches the target: another `track_id` pins that face, no `track_id` returns to the automatic choice above. Leaving `track_id` out always means automatic (where leaving `focus` out keeps focus), so a focus change while pinned names the face again: `start_head_tracking(focus=True, track_id=7)`. `stop_head_tracking()` clears the pin. An id that is not a user on `bridge.users` — never issued, not confirmed yet, or gone — raises `ValueError`; detection has to be running for anyone to be a user.
 
 A pin follows a **track**, not a person: if the person's track breaks (hidden longer than the miss window, a jump the tracker could not follow) they come back under a new `track_id` and the pin ends in the loss. Watch the report and re-pin:
 

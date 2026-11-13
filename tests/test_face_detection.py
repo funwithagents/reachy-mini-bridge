@@ -24,7 +24,6 @@ import pytest
 
 from reachy_mini_bridge import face_detection as fd
 from reachy_mini_bridge import fake_reachy_mini as fake_module
-from reachy_mini_bridge import head_tracking as ht
 from reachy_mini_bridge.camera import CameraFeed, CameraFrame, frame_reader
 from reachy_mini_bridge.errors import BridgeError
 from reachy_mini_bridge.face_detection import (
@@ -59,11 +58,11 @@ class _Loop:
         self.faces = faces
         self.woken: list[FaceReport] = []
         self.observed: list[FaceReport] = []
-        self.silent = 0  # polls the observer heard nothing from
+        self.cleared = 0  # clearings of the tracks the observer heard
 
-    def hear(self, report: FaceReport | None) -> None:
+    def hear(self, report: FaceReport | None, users: UsersReport) -> None:
         if report is None:
-            self.silent += 1
+            self.cleared += 1
         else:
             self.observed.append(report)
 
@@ -427,14 +426,40 @@ def test_two_faces_crossing_in_small_steps_keep_their_ids() -> None:
 
 def test_a_gap_within_the_miss_window_keeps_the_id_and_a_longer_one_does_not() -> None:
     size = (WIDTH, HEIGHT)
-    tracks = fd._FaceTracks(_counter(), max_misses=3)
-    assert tracks.update([_face(30, 24)], size) == [1]
-    for _ in range(3):
-        assert tracks.update([], size) == []
-    assert tracks.update([_face(32, 22)], size) == [1]  # back within the window
-    for _ in range(4):  # one miss more than the window
-        tracks.update([], size)
-    assert tracks.update([_face(32, 22)], size) == [2]  # a new id, 1 never reused
+    tracks = fd._FaceTracks(_counter(), min_misses=3, lost_s=0.35)
+    assert tracks.update([_face(30, 24)], size, ts=0.1) == [1]
+    for i in range(3):  # missing 0.3 s in view: within the window
+        assert tracks.update([], size, ts=0.2 + 0.1 * i) == []
+    assert tracks.update([_face(32, 22)], size, ts=0.5) == [1]  # back within it
+    for i in range(4):  # missing 0.4 s: past it
+        tracks.update([], size, ts=0.6 + 0.1 * i)
+    assert tracks.update([_face(32, 22)], size, ts=1.0) == [
+        2
+    ]  # a new id, 1 never reused
+
+
+def test_the_miss_window_is_a_time_with_a_floor_of_misses() -> None:
+    """The window lasts its time whatever the frame rate — at 30 observations a second
+    as at 10 — and at a slow rate the floor of misses holds it past its time: one late
+    look is not evidence enough."""
+    size = (WIDTH, HEIGHT)
+    for rate in (10.0, 30.0):
+        tracks = fd._FaceTracks(_counter(), min_misses=3, lost_s=1.0)
+        tracks.update([_face(30, 24)], size, ts=1.0)
+        n = round(rate * 0.9)  # 0.9 s of misses
+        for i in range(1, n + 1):
+            tracks.update([], size, ts=1.0 + i / rate)
+        assert tracks.ids() == frozenset({1}), rate
+        for i in range(n + 1, round(rate * 1.1) + 1):  # past 1.0 s
+            tracks.update([], size, ts=1.0 + i / rate)
+        assert tracks.ids() == frozenset(), rate
+    slow = fd._FaceTracks(_counter(), min_misses=3, lost_s=1.0)
+    slow.update([_face(30, 24)], size, ts=1.0)
+    slow.update([], size, ts=2.5)  # one miss, 1.5 s missing
+    slow.update([], size, ts=4.0)  # two
+    assert slow.ids() == frozenset({1})
+    slow.update([], size, ts=5.5)  # the third: dropped
+    assert slow.ids() == frozenset()
 
 
 def test_a_jump_beyond_the_gate_opens_a_new_track() -> None:
@@ -452,13 +477,19 @@ def test_a_lone_face_a_few_sizes_away_does_not_continue_a_vanished_track() -> No
     view 2.5 face sizes away must not inherit its id — the head would swing onto it."""
     tracks = fd._FaceTracks(_counter())
     size = (WIDTH, HEIGHT)
-    assert tracks.update([_face(20, 24), _face(50, 24)], size) == [1, 2]
-    for _ in range(3):
-        assert tracks.update([_face(20, 24)], size) == [1]  # the other flickers out
-    assert tracks.update([_face(50, 24)], size) == [2]  # back: its own track, not 1
-    for _ in range(fd.TRACK_MAX_MISSES + 1):
-        tracks.update([_face(20, 24)], size)  # long enough to drop track 2
-    assert tracks.update([_face(50, 24)], size) == [3]  # 30 px = 2.5 sizes: a new id
+    clock = itertools.count(1)
+
+    def at() -> float:
+        return next(clock) * 0.1
+
+    assert tracks.update([_face(20, 24), _face(50, 24)], size, ts=at()) == [1, 2]
+    for _ in range(3):  # the other flickers out
+        assert tracks.update([_face(20, 24)], size, ts=at()) == [1]
+    assert tracks.update([_face(50, 24)], size, ts=at()) == [2]  # its own track, not 1
+    for _ in range(round(fd.TRACK_LOST_S / 0.1) + 1):
+        tracks.update([_face(20, 24)], size, ts=at())  # long enough to drop track 2
+    # 30 px = 2.5 sizes: a new id
+    assert tracks.update([_face(50, 24)], size, ts=at()) == [3]
 
 
 def test_the_jump_gate_scales_with_the_face() -> None:
@@ -541,7 +572,7 @@ def test_a_track_the_camera_does_not_frame_keeps_its_misses() -> None:
     """Expected off the frame, a track is out of view: the observations without it are
     no misses, however many; back in view, the miss window runs as ever."""
     geometry = _Shift()
-    tracks = fd._FaceTracks(_counter(), max_misses=3, geometry=geometry)  # type: ignore[arg-type]
+    tracks = fd._FaceTracks(_counter(), min_misses=3, lost_s=0.35, geometry=geometry)  # type: ignore[arg-type]
     size = (WIDTH, HEIGHT)
     assert tracks.update([_face(20, 24)], size, ts=1.0) == [1]
     geometry.shift = 100.0  # expected at 120 px: off the 64 px frame
@@ -549,7 +580,7 @@ def test_a_track_the_camera_does_not_frame_keeps_its_misses() -> None:
         assert tracks.update([], size, ts=1.1 + 0.1 * i) == []
     geometry.shift = 0.0
     assert tracks.update([_face(20, 24)], size, ts=2.2) == [1]
-    for i in range(4):  # one miss more than the window, in view
+    for i in range(4):  # missing 0.4 s in view: past the window
         tracks.update([], size, ts=2.3 + 0.1 * i)
     assert tracks.update([_face(20, 24)], size, ts=2.8) == [2]
 
@@ -557,7 +588,7 @@ def test_a_track_the_camera_does_not_frame_keeps_its_misses() -> None:
 def test_a_track_unseen_past_the_net_is_dropped_whatever_the_view(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(ht, "UNOBSERVABLE_MAX_S", 2.0)
+    monkeypatch.setattr(fd, "UNOBSERVABLE_MAX_S", 2.0)
     geometry = _Shift()
     tracks = fd._FaceTracks(_counter(), geometry=geometry)  # type: ignore[arg-type]
     size = (WIDTH, HEIGHT)
@@ -668,44 +699,6 @@ async def _wait_for(predicate: Callable[[], bool], timeout: float = 2.0) -> None
         await asyncio.sleep(0.01)
 
 
-def test_the_held_tracks_are_the_faces_seen_and_those_waiting_through_misses(
-    fast_frames: None, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """`held_track_ids()` — what a pinned track_id is checked against
-    (specs/vision/user_perception.md "Tracks": "The held tracks") — names a face's track
-    while it is seen and through its misses, and no longer once the track is dropped or
-    the loop stops."""
-    monkeypatch.setattr(fd, "TRACK_MAX_MISSES", 4)
-    scene = _Scene()
-
-    async def run() -> list[frozenset[int]]:
-        held: list[frozenset[int]] = []
-        async with _running_custom(scene) as loop:
-            detection = loop.detection
-            held.append(detection.held_track_ids())  # nobody yet
-            scene.show(0.2)
-            await _wait_for(lambda: bool(loop.faces.value.faces))
-            held.append(detection.held_track_ids())
-            scene.hide()
-            calls = len(scene.calls)
-            await _wait_for(lambda: len(scene.calls) >= calls + 2)  # two misses
-            held.append(detection.held_track_ids())
-            await _wait_for(lambda: not detection.held_track_ids())  # dropped
-            scene.show(0.2)
-            await _wait_for(lambda: bool(detection.held_track_ids()))
-            held.append(detection.held_track_ids())  # a new track: ids never reused
-        held.append(detection.held_track_ids())  # the loop stopped
-        return held
-
-    assert _run(run) == [
-        frozenset(),
-        frozenset({1}),
-        frozenset({1}),
-        frozenset({2}),
-        frozenset(),
-    ]
-
-
 def test_the_custom_source_reports_the_detectors_faces_on_the_frame() -> None:
     scene = _Scene([_face(10, 10, 6, 6), _face(47.25, 23.5, 10, 24)])
 
@@ -762,21 +755,26 @@ def test_a_detector_raising_on_every_frame_reads_inactive_then_recovers(
 
     async def run() -> tuple[FaceReport, int, bool, list[bool]]:
         async with _running_custom(scene) as loop:
-            await _wait_for(lambda: bool(loop.faces.value.faces))
+            await _wait_for(lambda: bool(loop.users.value.users))  # a user, confirmed
             await _heard(loop)
             loop.woken.clear()
             scene.raises = True
             await asyncio.sleep(0.6)
             down = loop.faces.value
-            silent = loop.silent
+            cleared = loop.cleared
             scene.raises = False
             await _wait_for(lambda: loop.faces.value.active)
             await _heard(loop)
-            return down, silent, loop.faces.value.active, [r.active for r in loop.woken]
+            return (
+                down,
+                cleared,
+                loop.faces.value.active,
+                [r.active for r in loop.woken],
+            )
 
-    down, silent, up, woken = _run(run)
+    down, cleared, up, woken = _run(run)
     assert down == FaceReport.inactive("custom")  # no stale face survives the outage
-    assert silent > 0  # the observer heard the empty polls (the tracker's clock)
+    assert cleared == 1  # the observer heard its user leave (the tracker's loss)
     assert up is True
     assert woken == [False, True]
 
@@ -1232,9 +1230,11 @@ class _Presence:
     confirmation time is crossed on a known sighting) — with the reports that are
     changes collected."""
 
-    def __init__(self, *, geometry: Any = None, max_misses: int = 3) -> None:
+    def __init__(self, *, geometry: Any = None) -> None:
+        # three misses at the eighth of a second are within the window, the fourth
+        # past it
         self.tracks = fd._FaceTracks(
-            _counter(), max_misses=max_misses, geometry=geometry
+            _counter(), min_misses=3, lost_s=0.5, geometry=geometry
         )
         self.users = fd._Users()
         self.ts = 0.0
@@ -1285,21 +1285,23 @@ def test_a_one_frame_ghost_publishes_nothing() -> None:
 
 
 def test_a_person_hidden_in_view_leaves_after_the_miss_window() -> None:
-    presence = _Presence(max_misses=3)
+    presence = _Presence()
     face = _face(30, 24)
     for _ in range(4):
         presence.see(face)
-    for _ in range(3):
+    for k in range(1, 4):
         report = presence.see()
         assert [p.track_id for p in report.users] == [1]  # held through its misses
-        assert not report.users[0].seen and report.users[0].in_view
+        user = report.users[0]
+        assert not user.seen and user.in_view
+        assert user.missing_s == pytest.approx(0.125 * k)  # missing in view, timed
     report = presence.see()  # one miss past the window
     assert report.left == (UserDeparture(1, "left"),)
     assert report.users == ()
 
 
 def test_someone_replacing_someone_is_one_departure_and_one_arrival() -> None:
-    presence = _Presence(max_misses=3)
+    presence = _Presence()
     for _ in range(4):
         presence.see(_face(10, 24))
     for _ in range(6):
@@ -1316,7 +1318,7 @@ def test_a_person_out_of_view_stays_present_and_keeps_their_id() -> None:
     """The robot's own move takes the camera off the person for longer than the miss
     window: they stay present, out of view, and nothing is published."""
     geometry = _Shift()
-    presence = _Presence(geometry=geometry, max_misses=3)
+    presence = _Presence(geometry=geometry)
     face = _face(20, 24)
     for _ in range(4):
         presence.see(face)
@@ -1337,7 +1339,7 @@ def test_a_person_out_of_view_stays_present_and_keeps_their_id() -> None:
 def test_a_person_unseen_past_the_net_leaves_as_unseen(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(ht, "UNOBSERVABLE_MAX_S", 2.0)
+    monkeypatch.setattr(fd, "UNOBSERVABLE_MAX_S", 2.0)
     geometry = _Shift()
     presence = _Presence(geometry=geometry)
     for _ in range(4):
@@ -1367,7 +1369,7 @@ def test_the_loop_publishes_arrivals_and_departures_on_users(
     """Over the camera feed: active at the first observation, an arrival once confirmed,
     a departure after the miss window, every person leaving as stopped at the stop — and
     a face moving publishes nothing."""
-    monkeypatch.setattr(fd, "TRACK_MAX_MISSES", 4)
+    monkeypatch.setattr(fd, "TRACK_LOST_S", 0.3)
     scene = _Scene()
 
     async def run() -> tuple[list[UsersReport], UsersReport, UsersReport]:
