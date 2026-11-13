@@ -59,7 +59,12 @@ from reachy_mini_bridge.errors import (
     SoundInterruptedError,
     SpeechInterruptedError,
 )
-from reachy_mini_bridge.face_detection import FaceReport, PixelFace
+from reachy_mini_bridge.face_detection import (
+    FaceReport,
+    PixelFace,
+    UserDeparture,
+    UsersReport,
+)
 from reachy_mini_bridge.fake_reachy_mini import FAKE_FRAME_HZ, FakeReachyMini
 from reachy_mini_bridge.head_tracking import CameraModel, HeadTrackingReport
 from reachy_mini_bridge.motion import (
@@ -206,6 +211,9 @@ def test_package_front_door_drives_the_fake() -> None:
         "Observable",
         "SoundInterruptedError",
         "SpeechInterruptedError",
+        "UsersReport",
+        "User",
+        "UserDeparture",
         "PixelFace",
         "ReachyMiniBridge",
         "ReachyMiniConfig",
@@ -1602,6 +1610,32 @@ def test_faces_are_inactive_outside_a_session_and_active_inside(
     assert before == FaceReport.inactive("custom")
     assert inside is True
     assert bridge.faces.value == FaceReport.inactive("custom")
+
+
+def test_users_arrive_inside_a_session_and_leave_as_stopped_at_its_exit(
+    fast_faces: None,
+) -> None:
+    """`bridge.users` (specs/vision/user_perception.md "The users present"): inactive
+    outside a session; the stub's face arrives once confirmed under the track id
+    `faces` names; the exit lets them leave as stopped and resets the report."""
+    scene = _Scene([_pixel_face(0.2)])
+    bridge = ReachyMiniBridge(_custom_config(scene, tracking=False))
+    before = bridge.users.value
+
+    async def run() -> tuple[UsersReport, int]:
+        async with bridge:
+            report = await asyncio.wait_for(
+                bridge.users.wait_for(lambda r: bool(r.users)), 3.0
+            )
+            return report, bridge.faces.value.faces[0].track_id
+
+    present, face_id = asyncio.run(run())
+    assert before == UsersReport.inactive()
+    assert present.active and [p.track_id for p in present.users] == [face_id]
+    assert present.arrived == (face_id,)
+    after = bridge.users.value
+    assert (after.active, after.users) == (False, ())
+    assert after.left == (UserDeparture(face_id, "stopped"),)
 
 
 def test_set_face_detection_off_without_tracking_stops_the_loop(
@@ -4058,7 +4092,7 @@ def test_set_tracking_starts_stops_and_refuses_what_it_cannot_apply() -> None:
 # --- a pinned face (specs/motion/head_tracking.md "A pinned face") ------------------------
 
 
-def _two_people() -> tuple[_Scene, PixelFace, PixelFace]:
+def _two_users() -> tuple[_Scene, PixelFace, PixelFace]:
     """A bigger face on the left, a smaller one on the right, for detection alone: the
     motors stay off, so the head never moves and the tracks hold."""
     big = _pixel_face(-0.6)
@@ -4078,7 +4112,7 @@ type _PinState = tuple[str | None, int | None, int | None]  # attention, track, 
 def test_a_pinned_face_is_followed_alone_and_its_loss_leaves_tracking_watching(
     fast_attention: None,
 ) -> None:
-    scene, big, _small = _two_people()
+    scene, big, _small = _two_users()
     bridge = ReachyMiniBridge(_custom_config(scene, tracking=False))
 
     async def run() -> tuple[list[_PinState], int, int]:
@@ -4113,7 +4147,7 @@ def test_a_pinned_face_is_followed_alone_and_its_loss_leaves_tracking_watching(
 def test_a_pin_is_checked_against_the_held_tracks_and_kept_or_cleared_by_the_verbs(
     fast_attention: None,
 ) -> None:
-    scene, _big, _small = _two_people()
+    scene, _big, _small = _two_users()
     bridge = ReachyMiniBridge(_custom_config(scene, tracking=False, detection=False))
 
     async def run() -> list[Any]:
@@ -4241,8 +4275,9 @@ def test_an_emotion_that_turns_the_head_away_keeps_the_person(
 ) -> None:
     """The person 20 degrees to the left, the emotion turning the head 80 degrees to the
     right for longer than the loss time and the miss window: detection runs on and sees
-    nobody, the tracker holds — engaged throughout, nothing published — and once the
-    head is back the person continues their track, the head on them again."""
+    nobody, the tracker holds — engaged throughout, nothing published — the person
+    stays present on `users`, no departure published, and once the head is back the
+    person continues their track, the head on them again."""
     monkeypatch.setattr(face_detection_module, "TRACK_MAX_MISSES", 2)
     _turning_emotions(monkeypatch, yaw_deg=-80.0, seconds=1.2)
     scene = _ProjectingScene(_person_at(20.0))
@@ -4258,6 +4293,7 @@ def test_an_emotion_that_turns_the_head_away_keeps_the_person(
             await asyncio.wait_for(
                 bridge.head_tracking.wait_for(lambda r: r.attention == "engaged"), 5.0
             )
+            await asyncio.wait_for(bridge.users.wait_for(lambda r: bool(r.users)), 5.0)
             await asyncio.sleep(1.0)  # the head settles on the person
             before = bridge.head_tracking.value.track_id
             yaw_before = _yaw_deg(_fake(bridge).last_target[0])
@@ -4267,14 +4303,21 @@ def test_an_emotion_that_turns_the_head_away_keeps_the_person(
                 async for report in bridge.head_tracking.changes():
                     woken.append(report)
 
+            async def subscribe_users() -> None:
+                async for report in bridge.users.changes(every=True):
+                    users_woken.append(report)
+
             subscriber = asyncio.create_task(subscribe())
+            users_subscriber = asyncio.create_task(subscribe_users())
             await asyncio.sleep(0)
             await bridge.play_emotion("sad")
             unseen = scene.unseen - unseen_before
             await asyncio.sleep(1.0)  # the gaze fades back in, the head returns
-            subscriber.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await subscriber
+            for task in (subscriber, users_subscriber):
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            present.extend(p.track_id for p in bridge.users.value.users)
             return (
                 before,
                 bridge.head_tracking.value.track_id,
@@ -4285,9 +4328,13 @@ def test_an_emotion_that_turns_the_head_away_keeps_the_person(
                 _yaw_deg(_fake(bridge).last_target[0]),
             )
 
+    users_woken: list[UsersReport] = []
+    present: list[int] = []
     before, after, seen_as, woken, unseen, yaw_before, yaw_after = asyncio.run(run())
     assert unseen > 3  # the camera lost the person for longer than the miss window
     assert woken == []  # engaged on the same person throughout
+    assert users_woken == []  # present throughout: no departure, no re-arrival
+    assert present == [before]
     assert before is not None and after == before and seen_as == before
     assert yaw_before == pytest.approx(20.0, abs=3.0)
     assert yaw_after == pytest.approx(yaw_before, abs=3.0)

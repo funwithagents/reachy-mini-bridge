@@ -18,10 +18,11 @@ From `reachy_mini_bridge`:
 | `CameraFrame` | A camera frame: `frame_id`, `ts`, `image`, `head_pose` |
 | `MicChunk` | A mic capture chunk: `seq`, `ts`, `samples` |
 | `Face`, `FaceReport`, `PixelFace`, `FaceDetector` | The perception values, and the two types a custom detector works with |
+| `User`, `UserDeparture`, `UsersReport` | The users present: `bridge.users` |
 | `HeadTrackingReport` | The head tracker's state |
 | `TrackingSettings`, `MirroringSettings`, `ApproachSettings`, `PersonalSpaceSettings` | The tracking behaviour: `bridge.tracking`, `set_tracking`, the config's `motion.tracking` |
 | `BaseFollowingSettings` | The base toward the person: `bridge.base_following`, `set_base_following`, the config's `motion.base_following` |
-| `Observable` | The type of `bridge.faces` and `bridge.head_tracking` |
+| `Observable` | The type of `bridge.faces`, `bridge.users` and `bridge.head_tracking` |
 | `IdleMove`, `IdleOffsets` | The base class and the value type of a custom idle move |
 | `BridgeError`, `MotorsNotEnabledError`, `GravityCompensationUnsupportedError`, `SpeechInterruptedError`, `SoundInterruptedError`, `ConfigError` | The errors a caller catches |
 
@@ -119,7 +120,8 @@ Tracking implies detection, and needs a `face_detection.detector` in the config:
 |---|---|---|
 | `camera` | `CameraFeed` | The one reader of the robot's camera. `camera.latest()` is the newest `CameraFrame`, or `None` before the first frame — sample it at your own rate; `camera.frames()` follows it instead, each frame from the event loop, the newest when you fall behind, ending with the session; `camera.wait_for(predicate)` waits for one frame; `camera.running`, `camera.published_count` |
 | `mic` | `MicFeed` | The one reader of the robot's microphone. `mic.latest()` is the newest `MicChunk`, or `None` outside a session; `mic.running`, `mic.published_count` |
-| `faces` | `Observable[FaceReport]` | The faces in front of the robot as the detection loop last saw them |
+| `faces` | `Observable[FaceReport]` | The faces in the frame as the detection loop last saw them |
+| `users` | `Observable[UsersReport]` | The people in front of the robot: confirmed tracks, kept through the robot's own moves |
 | `head_tracking` | `Observable[HeadTrackingReport]` | Whom the head follows, and whether it does |
 | `tracking`, `tracking_focus`, `attention` | `TrackingSettings`, `bool`, `str \| None` | The tracking settings in force (`tracking.enabled`: whether it runs); its focus flag; `"engaged"` while a face is followed, `"watching"` while tracking is on and nobody is, `None` when tracking is off |
 | `base_following`, `body_yaw_deg` | `BaseFollowingSettings`, `float` | The base-following settings in force; where the base points, in degrees (positive left), eased — the body yaw the loop sends, `0.0` outside a session |
@@ -186,8 +188,8 @@ class HeadTrackingReport:
 An `Observable[T]` is a value you read and subscribe to ([specs/core/observable.md](../../specs/core/observable.md)):
 
 - **`.value`** is the current state, read from any thread with no await. The face report is refreshed on every detection (fresh coordinates), so `faces.value` is always the newest.
-- **`.changes()`** is an async iterator of *published* values from the moment it is driven. The producer decides what counts as a change: `faces.changes()` wakes when the **number of faces changes** (a rise at once; a drop once it has held for 0.3 s), and when detection starts or stops — **never when a face moves**. `head_tracking.changes()` wakes when the head engages someone, hands the head back, switches to someone else, or when tracking, focus or the pin is switched. A subscriber that falls behind gets the latest value, not every intermediate one — what a client reacting to the present state wants after a slow step. Cancelling the task blocked in `async for` detaches it.
-- **`.changes(every=True)`** yields every published value in order instead, one per pass of `async for`, so a client that records or counts changes misses none while it is busy. `faces` and `head_tracking` keep the last 64 values for it; a subscriber further behind loses the oldest, with a `WARNING` naming how many. The camera's `frames()` always gives the newest: a frame superseded is one to skip.
+- **`.changes()`** is an async iterator of *published* values from the moment it is driven. The producer decides what counts as a change: `faces.changes()` wakes when the **set of faces in the frame changes** (a new `track_id` at once; one gone once its absence has held for 0.3 s), and when detection starts or stops — **never when a face moves**. `users.changes()` wakes when someone **arrives** (`arrived`) or **leaves** (`left`, with the reason), and when detection starts or stops — not when the robot's own move takes someone out of the frame. `head_tracking.changes()` wakes when the head engages someone, hands the head back, switches to someone else, or when tracking, focus or the pin is switched. A subscriber that falls behind gets the latest value, not every intermediate one — what a client reacting to the present state wants after a slow step. Cancelling the task blocked in `async for` detaches it.
+- **`.changes(every=True)`** yields every published value in order instead, one per pass of `async for`, so a client that records or counts changes misses none while it is busy. `faces`, `users` and `head_tracking` keep the last 64 values for it; a subscriber further behind loses the oldest, with a `WARNING` naming how many. The camera's `frames()` always gives the newest: a frame superseded is one to skip.
 - **`.wait_for(predicate)`** returns the current value if it already matches, else the first *published* value that does — so it reacts to publications, like `changes()`, not to every silent refresh of `.value`. It checks every published value, so a match is found even when a later publication replaced it at once.
 
 ```python
@@ -195,8 +197,8 @@ report = bridge.faces.value                                   # the newest state
 if report.active and report.faces:
     person = report.faces[0]                                  # by track_id, not by importance
 
-async for report in bridge.faces.changes():                   # someone appeared / left; detection on / off
-    print(len(report.faces) if report.active else "not looking")
+async for report in bridge.users.changes(every=True):       # someone arrived / left; detection on / off
+    print(report.arrived, report.left)
 
 followed = bridge.head_tracking.value.track_id                # whom the head follows (None: nobody)
 ```

@@ -4,10 +4,14 @@ observable face report (specs/vision/user_perception.md).
 The loop samples the camera feed ([camera](camera.py)) at ``FACE_POLL_HZ``, hands each
 new frame to its detector — the shipped ``yunet`` ([yunet](yunet.py), upstream's model)
 or a developer's ``custom`` ``FaceDetector`` — carries every face's ``track_id`` from
-frame to frame, turns the result into a ``FaceReport``, ``update``s the bridge's ``Observable[FaceReport]`` on every
-observation and ``set``s it (wakes subscribers) only when the face count changes — a rise
-at once, a drop once it has held for ``FACE_ABSENT_S`` — or when ``active`` flips.
-Detection is opt-in: a config names the detector, and with none nothing runs.
+frame to frame, turns the result into a ``FaceReport``, ``update``s the bridge's
+``Observable[FaceReport]`` on every observation and ``set``s it (wakes subscribers) only
+when the set of faces in view changes — a new ``track_id`` at once, one gone from the
+frame once its absence has held for ``FACE_ABSENT_S`` — or when ``active`` flips. From
+the same tracks it keeps the users present — ``Observable[UsersReport]``, ``set`` on an
+arrival (a track confirmed), a departure (a track dropped, with its reason) or an
+``active`` flip. Detection is opt-in: a config names the detector, and with none nothing
+runs.
 """
 
 from __future__ import annotations
@@ -18,7 +22,7 @@ import math
 import threading
 import time
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Literal, NamedTuple, Protocol, cast
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -43,12 +47,17 @@ __all__ = [
     "FACE_SOURCE_DOWN_S",
     "TRACK_MAX_JUMP_FACES",
     "TRACK_MAX_MISSES",
+    "USER_CONFIRM_OBSERVATIONS",
+    "USER_CONFIRM_S",
     "Face",
     "FaceDetection",
     "FaceDetector",
     "FaceDetectorFactory",
     "FaceReport",
     "PixelFace",
+    "User",
+    "UserDeparture",
+    "UsersReport",
     "check_face_detector_factory",
     "report_from_pixels",
 ]
@@ -84,6 +93,12 @@ FACE_COST_LOG_S = 10.0
 # (specs/motion/head_tracking.md "Whom the head follows").
 TRACK_MAX_JUMP_FACES = 1.5  # a face continues a track within this many of its sizes
 TRACK_MAX_MISSES = 20
+# A new track joins the users present once it has been seen on this many observations,
+# and at least this long after its first sighting (specs/vision/user_perception.md "The
+# users present"): a one-frame false detection never arrives, a detector's blink on a
+# real face does not restart the count.
+USER_CONFIRM_OBSERVATIONS = 3
+USER_CONFIRM_S = 0.3
 
 # The detectors a config names (specs/vision/user_perception.md "Detectors"); `None` is none.
 FACE_DETECTOR_NAMES = ("yunet", "custom")
@@ -140,6 +155,124 @@ class FaceReport:
     def inactive(cls, source: str | None) -> FaceReport:
         """The report while no detector is looking (before entry, after exit)."""
         return cls(faces=(), ts=0.0, source=source, active=False)
+
+
+# --- the users present (specs/vision/user_perception.md "The users present") -----------------
+
+# Why a person left the users present: "left" — the camera framed where they were and
+# did not see them for the miss window; "unseen" — not seen for UNOBSERVABLE_MAX_S, the
+# camera not looking (they may still be there); "stopped" — detection stopped, went down,
+# or its detector was swapped, and every track with it.
+DepartureReason = Literal["left", "unseen", "stopped"]
+
+
+class UserDeparture(NamedTuple):
+    """One person dropped from the users present, and why."""
+
+    track_id: int
+    reason: DepartureReason
+
+
+@dataclass(frozen=True)
+class User:
+    """One person present: a confirmed track the detection loop holds — a track, not an
+    identity (specs/vision/user_perception.md "The users present")."""
+
+    track_id: int
+    seen: bool  # detected on the latest observation
+    # the camera framed where they were on the latest observation (the tracks' in-view
+    # rule); False while a move of the robot's own has the camera looking elsewhere
+    in_view: bool
+    last_seen_ts: float  # the frame time of their last sighting (the bridge's clock)
+    # their face at that last sighting; its bbox is in pixels of that sighting's frame
+    face: Face
+
+
+@dataclass(frozen=True)
+class UsersReport:
+    """Who is in front of the robot: the value of ``bridge.users``."""
+
+    users: tuple[User, ...]  # every confirmed held track, in track_id order
+    arrived: tuple[int, ...]  # the track_ids confirmed on this report; empty on most
+    left: tuple[UserDeparture, ...]  # the users dropped on this report; empty on most
+    ts: float  # the observation's frame time; 0.0 before any
+    active: bool  # a detector is looking; False means "unknown", not "nobody"
+
+    @classmethod
+    def inactive(cls) -> UsersReport:
+        """The report while no detector is looking (before entry, after exit)."""
+        return cls(users=(), arrived=(), left=(), ts=0.0, active=False)
+
+
+class _Users:
+    """The users present, built from the tracks after each observation: a track joins
+    once confirmed (``USER_CONFIRM_OBSERVATIONS`` sightings, ``USER_CONFIRM_S`` after
+    its first), leaves when the tracks drop it — with the reason they give — and every
+    person leaves as ``"stopped"`` when the tracks are cleared. Pure state; the loop
+    publishes."""
+
+    def __init__(self) -> None:
+        self._confirmed: set[int] = set()
+        self._candidates: dict[int, tuple[float, int]] = {}  # first sighting, count
+        self._last: dict[int, tuple[Face, float]] = {}  # last face and its frame time
+
+    def observe(
+        self, report: FaceReport, tracks: _FaceTracks
+    ) -> tuple[UsersReport, bool]:
+        """The report after ``report``'s observation, ``tracks`` just updated with it,
+        and whether it is a change (an arrival or a departure)."""
+        ts = report.ts
+        left: list[UserDeparture] = []
+        for track_id, reason in tracks.dropped:
+            self._candidates.pop(track_id, None)
+            self._last.pop(track_id, None)
+            if track_id in self._confirmed:
+                self._confirmed.discard(track_id)
+                left.append(UserDeparture(track_id, reason))
+        arrived: list[int] = []
+        seen: set[int] = set()
+        for face in report.faces:
+            track_id = face.track_id
+            seen.add(track_id)
+            self._last[track_id] = (face, ts)
+            if track_id in self._confirmed:
+                continue
+            first, count = self._candidates.get(track_id, (ts, 0))
+            count += 1
+            if count >= USER_CONFIRM_OBSERVATIONS and ts - first >= USER_CONFIRM_S:
+                self._candidates.pop(track_id, None)
+                self._confirmed.add(track_id)
+                arrived.append(track_id)
+            else:
+                self._candidates[track_id] = (first, count)
+        held = tracks.ids()
+        for track_id in [t for t in self._candidates if t not in held]:
+            del self._candidates[track_id]  # dropped before it was confirmed: nothing
+        users = tuple(
+            User(
+                track_id=track_id,
+                seen=track_id in seen,
+                in_view=tracks.in_view.get(track_id, True),
+                last_seen_ts=self._last[track_id][1],
+                face=self._last[track_id][0],
+            )
+            for track_id in sorted(self._confirmed)
+        )
+        changed = bool(arrived or left)
+        return UsersReport(users, tuple(arrived), tuple(left), ts, True), changed
+
+    def clear(self, ts: float, *, active: bool) -> UsersReport:
+        """Every person leaves as ``"stopped"``: the tracks were cleared."""
+        left = tuple(UserDeparture(t, "stopped") for t in sorted(self._confirmed))
+        self._confirmed.clear()
+        self._candidates.clear()
+        self._last.clear()
+        return UsersReport(users=(), arrived=(), left=left, ts=ts, active=active)
+
+    @property
+    def present(self) -> bool:
+        """Whether anyone is confirmed."""
+        return bool(self._confirmed)
 
 
 # --- custom detectors (specs/vision/user_perception.md "Custom detectors") ---------------------
@@ -276,6 +409,10 @@ class _FaceTracks:
         self._max_misses = max_misses
         self._geometry = geometry
         self._tracks: list[_Track] = []
+        # The latest update's verdicts, for the users present: whether the camera framed
+        # each held track, and the tracks it dropped with the rule that dropped them.
+        self.in_view: dict[int, bool] = {}
+        self.dropped: list[tuple[int, Literal["left", "unseen"]]] = []
 
     def ids(self) -> frozenset[int]:
         """The ids of every track held: seen on the last observation or waiting through
@@ -334,14 +471,19 @@ class _FaceTracks:
             ids[f] = track.track_id
             matched.add(t)
         survivors: list[_Track] = []
+        verdicts: dict[int, bool] = {}
+        dropped: list[tuple[int, Literal["left", "unseen"]]] = []
         for t, track in enumerate(self._tracks):
             if t not in matched:
                 if in_view[t]:
                     track.misses += 1
                     if track.misses > max_misses:
+                        dropped.append((track.track_id, "left"))
                         continue
                 if ts > 0.0 and ts - track.seen_at > UNOBSERVABLE_MAX_S:
+                    dropped.append((track.track_id, "unseen"))
                     continue  # the net: unseen this long, in view or not
+            verdicts[track.track_id] = t in matched or in_view[t]
             survivors.append(track)
         for f, track_id in enumerate(ids):
             if track_id is None:
@@ -351,7 +493,9 @@ class _FaceTracks:
                     track.direction = geometry.direction(u, v, size, ts, head_pose)
                 survivors.append(track)
                 ids[f] = track.track_id
+                verdicts[track.track_id] = True
         self._tracks = survivors
+        self.in_view, self.dropped = verdicts, dropped
         return [track_id for track_id in ids if track_id is not None]
 
 
@@ -451,6 +595,7 @@ class FaceDetection:
         *,
         detector: str | None,
         faces: Observable[FaceReport],
+        users: Observable[UsersReport] | None = None,
         on_observation: Callable[[FaceReport | None], None] | None = None,
         feed: CameraFeed | None = None,
         detector_factory: FaceDetectorFactory | None = None,
@@ -469,6 +614,8 @@ class FaceDetection:
         self._width = width
         self._target_fps = target_fps
         self._faces = faces
+        self._users = users
+        self._present = _Users()
         self._on_observation = on_observation
         self._feed = feed
         self._detector_factory = detector_factory
@@ -522,6 +669,34 @@ class FaceDetection:
         ``track_id`` is checked against."""
         return self._tracks.ids() if self.running else frozenset()
 
+    def _users_active(self) -> bool:
+        return self._users is not None and self._users.value.active
+
+    def _new_tracks(self, *, active: bool) -> None:
+        """Start the tracks afresh — a run's start or stop, the detector swapped or down
+        — and publish every person present leaving as ``"stopped"``, with ``active`` as
+        given; nothing is published when nobody was present and ``active`` is unchanged
+        (specs/vision/user_perception.md "The users present")."""
+        self._tracks = _FaceTracks(self._allocate_track_id, geometry=self._geometry)
+        self._tracks_since = time.perf_counter()
+        present = self._present.present
+        report = self._present.clear(time.perf_counter(), active=active)
+        users = self._users
+        if users is not None and (present or users.value.active != active):
+            users.set(report)
+
+    def _observe_users(self, report: FaceReport) -> None:
+        """The users present after an observation: ``set`` on an arrival, a departure
+        or detection becoming active; ``update`` otherwise."""
+        users_report, changed = self._present.observe(report, self._tracks)
+        users = self._users
+        if users is None:
+            return
+        if changed or not users.value.active:
+            users.set(users_report)
+        else:
+            users.update(users_report)
+
     def _factory(self) -> FaceDetectorFactory:
         """The factory of the configured detector, or ``ValueError`` when the loop
         cannot run: no detector named, ``custom`` with none registered, no feed."""
@@ -564,8 +739,7 @@ class FaceDetection:
                 return
             factory = self._factory()
             self._detector = await self._acquire(factory)
-            self._tracks = _FaceTracks(self._allocate_track_id, geometry=self._geometry)
-            self._tracks_since = time.perf_counter()
+            self._new_tracks(active=False)
             self._last_detect_at = None
             self._cost_since, self._cost_calls, self._cost_total_s = None, 0, 0.0
             self._cost_logged = False
@@ -607,6 +781,7 @@ class FaceDetection:
                     await self._release(released)
             if task is not None or self._faces.value.active:
                 self._faces.set(FaceReport.inactive(self._name))
+            self._new_tracks(active=False)
 
     async def _acquire(self, factory: FaceDetectorFactory) -> FaceDetector:
         build = asyncio.create_task(asyncio.to_thread(factory))
@@ -708,8 +883,7 @@ class FaceDetection:
                 await self._release(detector)
                 return None
             self._detector = detector
-            self._tracks = _FaceTracks(self._allocate_track_id, geometry=self._geometry)
-            self._tracks_since = time.perf_counter()
+            self._new_tracks(active=self._users_active())
         frame = feed.latest()
         if frame is None or frame.frame_id == self._last_frame_id:
             return None  # nothing new: the detector runs once per frame
@@ -776,6 +950,9 @@ class FaceDetection:
                     published = FaceReport.inactive(self._name)
                     self._faces.set(published)
                     lower_since = None
+                    # Nobody is watching: the users present leave, and whoever is
+                    # there when frames return is confirmed afresh, under new ids.
+                    self._new_tracks(active=False)
                 if self._on_observation is not None:
                     self._on_observation(None)  # the tracker keeps time
                 await asyncio.sleep(1.0 / FACE_POLL_HZ)
@@ -785,6 +962,7 @@ class FaceDetection:
             if self._on_observation is not None:
                 self._on_observation(report)
             published, lower_since = self._publish(report, published, lower_since)
+            self._observe_users(report)
             await asyncio.sleep(1.0 / FACE_POLL_HZ)
 
     def _publish(
@@ -793,17 +971,20 @@ class FaceDetection:
         published: FaceReport | None,
         lower_since: float | None,
     ) -> tuple[FaceReport | None, float | None]:
-        """The debounce: ``set`` on an ``active`` flip or a rise in the count, on a drop
-        once it has held ``FACE_ABSENT_S``; ``update`` otherwise. Returns the new
-        ``(published, lower_since)``."""
-        if (
-            published is None
-            or published.active != report.active
-            or len(report.faces) > len(published.faces)
-        ):
+        """The debounce, on the set of faces in view (their ``track_id``s): ``set`` on an
+        ``active`` flip or a face new to the set, at once; on a face gone from it once
+        its absence has held ``FACE_ABSENT_S``; ``update`` otherwise. Returns the new
+        ``(published, lower_since)`` — ``lower_since`` when a face of the published set
+        first went missing."""
+        if published is None or published.active != report.active:
             self._faces.set(report)
             return report, None
-        if len(report.faces) < len(published.faces):
+        now_ids = {face.track_id for face in report.faces}
+        published_ids = {face.track_id for face in published.faces}
+        if now_ids - published_ids:
+            self._faces.set(report)
+            return report, None
+        if published_ids - now_ids:
             now = time.perf_counter()
             if lower_since is None:
                 lower_since = now

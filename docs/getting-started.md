@@ -118,10 +118,10 @@ One event loop owns a session: start it, await its verbs and stop it on the same
 
 ## Waiting for what you need
 
-The perception values are readable at any time and tell you whether they are live: `bridge.faces.value.active` is `False` while no detector is looking, `bridge.camera.latest()` is `None` before the first frame. An application that depends on them waits rather than assumes — with a detector configured, this returns once somebody is in view:
+The perception values are readable at any time and tell you whether they are live: `bridge.faces.value.active` is `False` while no detector is looking, `bridge.camera.latest()` is `None` before the first frame. An application that depends on them waits rather than assumes — with a detector configured, this returns once somebody is there:
 
 ```python
-report = await bridge.faces.wait_for(lambda r: r.active and len(r.faces) > 0)
+report = await bridge.users.wait_for(lambda r: r.active and len(r.users) > 0)
 ```
 
 A frame on a fresh session can take a couple of seconds on a live daemon; `await bridge.camera.wait_for(lambda frame: True)` returns the first one, or read it when a face report hands it to you (`report.frame`). A voice that failed to build is on `bridge.synthesizer_error` right after construction, so a host that wants hard failure raises there rather than at the first `say`.
