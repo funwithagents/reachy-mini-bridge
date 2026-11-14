@@ -148,4 +148,4 @@ uv run pytest tests-e2e -rs   # the e2e tier against a sim the harness spawns (o
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Apache-2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).

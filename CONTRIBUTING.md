@@ -23,4 +23,4 @@ Issues are the way in, and every kind of feedback is welcome at [github.com/funw
 
 ## Working with the code anyway
 
-The code is MIT-licensed, so forking it and building on it is welcome. The commands to lint, type check and run the two test tiers are in [AGENTS.md](AGENTS.md) ("Commands", "Running the live e2e tests"), which also explains how the specs, plans and their statuses fit together; the consumer documentation starts at [docs/index.md](docs/index.md). If your fork grows something you think belongs upstream, open an issue describing it: that is the conversation that will lead to accepting pull requests later.
+The code is Apache-2.0-licensed, so forking it and building on it is welcome. The commands to lint, type check and run the two test tiers are in [AGENTS.md](AGENTS.md) ("Commands", "Running the live e2e tests"), which also explains how the specs, plans and their statuses fit together; the consumer documentation starts at [docs/index.md](docs/index.md). If your fork grows something you think belongs upstream, open an issue describing it: that is the conversation that will lead to accepting pull requests later.

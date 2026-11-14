@@ -3,8 +3,8 @@ name = "reachy-mini-bridge"
 version = "0.1.0"
 description = "A bridge to the Reachy Mini robot's API plus management/APIs between them, for humans, services and agents/LLMs to drive it."
 readme = "README.md"
-license = "MIT"
-license-files = ["LICENSE"]
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 authors = [
     { name = "Thibault Hervier", email = "thibault@fr2g.io" }
 ]
