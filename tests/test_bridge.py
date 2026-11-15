@@ -2967,17 +2967,28 @@ def test_a_silent_detector_releases_the_head_reads_inactive_and_re_engages(
     ]:
         async with ReachyMiniBridge(_custom_config(scene, idle="hold")) as bridge:
             await bridge.set_motors_state("enabled")
-            await asyncio.sleep(1.0)
+            # Each step waits for its outcome rather than a fixed time, so a slow machine
+            # only makes the run longer; a step that never comes fails the wait.
+            await _until(
+                lambda: (
+                    bridge.attention == "engaged"
+                    and _yaw_deg(_fake(bridge).last_target[0]) < -5.0
+                ),
+                5.0,
+            )
             engaged = (bridge.attention, _yaw_deg(_fake(bridge).last_target[0]))
             scene.raises = True
             await asyncio.sleep(0.5)  # past TRACK_LOST_S (0.3), before the source-down
             held = (bridge.attention, bridge.faces.value.active)
-            await asyncio.sleep(0.5)  # past FACE_SOURCE_DOWN_S
+            await _until(
+                lambda: not bridge.faces.value.active, 5.0
+            )  # FACE_SOURCE_DOWN_S
             down = bridge.faces.value
-            await asyncio.sleep(0.8)  # the gaze layer faded out onto the neutral hold
+            # The gaze layer fades out onto the neutral hold.
+            await _until(lambda: abs(_yaw_deg(_fake(bridge).last_target[0])) < 1.0, 5.0)
             released = _yaw_deg(_fake(bridge).last_target[0])
             scene.raises = False
-            await asyncio.sleep(0.6)
+            await _until(lambda: bridge.attention == "engaged", 5.0)
             return engaged, held, down, released, bridge.attention
 
     engaged, held, down, released, again = asyncio.run(run())
@@ -4271,12 +4282,11 @@ class _ProjectingScene:
             return []
         robot = _fake(bridge)
         camera = CameraModel.for_robot(robot)
-        frame = bridge.camera.latest()
-        pose = (
-            frame.head_pose
-            if frame is not None and frame.ts == ts and frame.head_pose is not None
-            else robot.get_current_head_pose()
-        )
+        # The pose the feed stamped the frame with: the motion session's pose at ``ts``.
+        # Not the current pose: on a slow machine the head has moved on by the time the
+        # detector runs, and a person drawn from where the head is *now* disagrees with
+        # the frame's pose the tracker judges by.
+        pose = bridge._require_motion().head_pose_at(ts)
         cam = pose @ default_head_to_camera_transform()
         p = np.linalg.inv(cam) @ np.array([*self.point, 1.0])
         if p[2] <= 0.0:
