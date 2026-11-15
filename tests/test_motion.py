@@ -1588,16 +1588,23 @@ def test_upstream_kinematics_solve_every_pose_the_gaze_layer_sends() -> None:
 
 def test_a_share_given_up_returns_gradually_once_it_fits() -> None:
     """The offset out of reach for the first second, then within it: the lean comes
-    back at REACH_RECOVER_PER_S of its share a second — bounded by the time since it
-    fit, whatever the tick rate — never in a step."""
+    back at REACH_RECOVER_PER_S of its share a second — bounded by the time since the
+    loop last found it out of reach, whatever the tick rate — never in a step.
+
+    The loop only learns that the offset fits on a tick, so it counts the recovery from
+    its last check, the last moment it knew the offset did not fit. On a slow machine
+    that check can be well before the opening; the bound is measured from it."""
     opened_at: list[float] = []
+    checked_at: list[float] = []  # every reach check the loop made, in order
 
     def reachable(pose: npt.NDArray[np.float64], _body_yaw: float) -> bool:
-        if opened_at and time.perf_counter() >= opened_at[0]:
+        now = time.perf_counter()
+        checked_at.append(now)
+        if opened_at and now >= opened_at[0]:
             return True
         return float(np.linalg.norm(pose[:2, 3])) < 1e-6
 
-    async def run() -> tuple[float, list[tuple[float, float]]]:
+    async def run() -> tuple[float, float, list[tuple[float, float]]]:
         robot = FakeReachyMini()
         async with _running(
             MotionSession(robot, presence=True, idle="hold", reachable=reachable)
@@ -1614,14 +1621,17 @@ def test_a_share_given_up_returns_gradually_once_it_fits() -> None:
                 if head is not None:
                     samples.append((t, _along_look_mm(head, 0.0)))
                 await asyncio.sleep(0.01)
-            return held, samples
+            # How long before the opening the loop last found the offset out of reach.
+            last_refused = max(c for c in checked_at if c < opened_at[0])
+            return held, opened_at[0] - last_refused, samples
 
-    held, samples = asyncio.run(run())
+    held, since_check, samples = asyncio.run(run())
     assert held == pytest.approx(0.0, abs=0.05)
     assert samples[-1][1] == pytest.approx(12.0, abs=0.3)
-    # never ahead of the recovery rate (a tick of slack for when the lean was read)
+    # Never ahead of the recovery rate, counted from the loop's last refusal (0.05 mm of
+    # rounding slack). A recovery that jumped or ignored the rate would break it.
     rate_mm_s = 12.0 * REACH_RECOVER_PER_S
-    assert all(lean <= rate_mm_s * (t + 0.1) + 0.05 for t, lean in samples)
+    assert all(lean <= rate_mm_s * (t + since_check) + 0.05 for t, lean in samples)
 
 
 def test_at_the_edge_of_reach_the_head_holds_still() -> None:
