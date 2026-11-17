@@ -7,7 +7,9 @@ daemon-owned pipeline with the XVF3800 voice processor in the middle:
   teardown, so the on-board acoustic echo cancellation has the far-end reference it
   needs (TTS out through the same pipeline the mic-in stream is cancelled against).
 - ``say`` routes a pluggable :class:`SpeechSynthesizer`'s float32 mono PCM to the
-  robot speaker, resampling to the speaker rate and fanning mono out to its channels.
+  robot speaker, resampling to the speaker rate and fanning mono out to its channels;
+  ``say_stream`` does the same for text that arrives piece by piece, speaking it as it
+  is produced through a :class:`StreamingSpeechSynthesizer`.
 - ``play_sound`` plays a sound file on the robot's one file player, to its end; the
   session owns that player, so every start — the verb's, an emotion's — is recorded
   and a stop ends only the file it started.
@@ -34,6 +36,7 @@ import time
 import urllib.error
 import urllib.request
 import wave
+from collections.abc import AsyncIterable
 from contextlib import AsyncExitStack, suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
@@ -46,7 +49,7 @@ from .errors import BridgeError, SoundInterruptedError, SpeechInterruptedError
 from .fake_reachy_mini import FakeReachyMini
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable
+    from collections.abc import AsyncIterator, Callable, Coroutine
 
     from .microphone import MicFeed
     from .robot import AnyReachyMini
@@ -55,6 +58,7 @@ __all__ = [
     "MediaSession",
     "SoundToken",
     "SpeechSynthesizer",
+    "StreamingSpeechSynthesizer",
     "TTSEngineSynthesizer",
     "cancel_safe_step",
     "downmix_to_mono",
@@ -125,16 +129,40 @@ class SpeechSynthesizer(Protocol):
 
     Deliberately minimal: text in, PCM out. Voices / rate / SSML stay inside the
     concrete synthesizer's own config. Chunks are **float32 mono in ``[-1, 1]``, shape
-    ``(n,)``** at :attr:`sample_rate` Hz.
+    ``(n,)``** at :attr:`sample_rate` Hz. The synthesizer produces audio and plays
+    nothing: the media session plays it (``say`` / ``say_stream``).
     """
 
     @property
     def sample_rate(self) -> int:
-        """Hz of the PCM chunks :meth:`stream` yields. Fixed for the synth's lifetime."""
+        """Hz of the PCM chunks :meth:`synthesize` yields. Fixed for the synth's
+        lifetime."""
         ...
 
-    def stream(self, text: str) -> AsyncIterator[npt.NDArray[np.float32]]:
+    def synthesize(self, text: str) -> AsyncIterator[npt.NDArray[np.float32]]:
         """Yield float32 mono ``[-1, 1]`` chunks, shape ``(n,)``, as they synthesize."""
+        ...
+
+
+@runtime_checkable
+class StreamingSpeechSynthesizer(SpeechSynthesizer, Protocol):
+    """A :class:`SpeechSynthesizer` that also takes its text as a stream, so speech
+    starts on the first words of a text still being produced (``say_stream``).
+
+    Declare an implementation with this type so the type checker checks
+    :meth:`synthesize_stream`; ``say_stream`` speaks the whole text through
+    :meth:`synthesize` for a synthesizer that is not one.
+    """
+
+    def synthesize_stream(
+        self, text_stream: AsyncIterator[str]
+    ) -> AsyncIterator[npt.NDArray[np.float32]]:
+        """Yield the chunks :meth:`synthesize` would, as the text arrives.
+
+        The pieces are concatenated verbatim (no separator inserted), empty pieces
+        are skipped, a stream that ends with no text yields no audio, and an
+        exception raised by ``text_stream`` propagates unchanged.
+        """
         ...
 
 
@@ -175,6 +203,8 @@ class MediaSession:
         self._exit_stack: AsyncExitStack | None = None
         # The utterance in flight: a new `say` interrupts it (the newest wins).
         self._saying: _Utterance | None = None
+        # Synthesizers `say_stream` already logged as speaking the whole text, by id.
+        self._whole_text_noted: set[int] = set()
         # The start that holds the robot's one sound file player (specs/audio/audio.md
         # "Sound files"). Started from the motion loop's thread and from worker threads,
         # so the start and this record change together under the lock.
@@ -291,6 +321,64 @@ class MediaSession:
         :class:`SpeechInterruptedError` in its own task, then plays.
         """
         self._require_open("say")
+        await self._utter(lambda: synth.synthesize(text), synth.sample_rate)
+
+    async def say_stream(
+        self, text_stream: AsyncIterable[str], synth: SpeechSynthesizer
+    ) -> None:
+        """Speak text as it arrives from ``text_stream`` and wait until it is heard.
+
+        ``text_stream`` is an async iterable of text pieces, concatenated verbatim. A
+        :class:`StreamingSpeechSynthesizer` starts speaking on the first words; any
+        other synthesizer speaks the whole text once the stream ends (logged once per
+        synthesizer). Everything :meth:`say` guarantees holds — completes when heard,
+        flushes on an early exit, the newest utterance of either verb wins — and the
+        text stream is closed when this returns or raises; its own exception
+        propagates unchanged. ``TypeError`` for a ``str`` (use :meth:`say`) or a
+        stream that is not async; :class:`BridgeError` when the session is not open.
+        See specs/audio/audio.md "`say_stream`".
+        """
+        if isinstance(text_stream, str):
+            raise TypeError(
+                "say_stream takes an async iterable of text pieces; use say"
+            )
+        if not isinstance(text_stream, AsyncIterable):
+            raise TypeError(
+                "say_stream takes an async iterable of text pieces, "
+                f"not {type(text_stream).__name__}"
+            )
+        self._require_open("say_stream")
+        source = text_stream.__aiter__()
+        if isinstance(synth, StreamingSpeechSynthesizer):
+
+            def chunks() -> AsyncIterator[npt.NDArray[np.float32]]:
+                return synth.synthesize_stream(source)
+        else:
+            if id(synth) not in self._whole_text_noted:
+                self._whole_text_noted.add(id(synth))
+                _logger.info(
+                    "say_stream: %s takes no streamed text; it speaks the whole text "
+                    "once the stream ends",
+                    type(synth).__name__,
+                )
+
+            def chunks() -> AsyncIterator[npt.NDArray[np.float32]]:
+                return _whole_text(source, synth)
+
+        failed = True
+        try:
+            await self._utter(chunks, synth.sample_rate)
+            failed = False
+        finally:
+            await _close_text_stream(source, failed=failed)
+
+    async def _utter(
+        self,
+        chunks: Callable[[], AsyncIterator[npt.NDArray[np.float32]]],
+        rate: int,
+    ) -> None:
+        """Play one utterance: the newest wins, an early exit leaves the speaker
+        silent (specs/audio/audio.md "TTS out")."""
         previous, utterance = self._saying, _Utterance()
         self._saying = utterance
         if previous is not None:
@@ -298,7 +386,7 @@ class MediaSession:
             previous.interrupted.set()
             self.clear_player()  # the speaker is silent before the new one is queued
         try:
-            await self._speak(text, synth, utterance)
+            await self._speak(chunks, rate, utterance)
         except BaseException:
             if self._saying is utterance:  # ours to flush; an interrupted one is not
                 self.clear_player()
@@ -308,11 +396,15 @@ class MediaSession:
                 self._saying = None
 
     async def _speak(
-        self, text: str, synth: SpeechSynthesizer, utterance: _Utterance
+        self,
+        chunks: Callable[[], AsyncIterator[npt.NDArray[np.float32]]],
+        rate: int,
+        utterance: _Utterance,
     ) -> None:
-        """Stream ``text`` to the speaker and wait until it is heard, unless a later
-        ``say`` interrupts this one: then stop at once with ``SpeechInterruptedError``."""
-        work = asyncio.ensure_future(self._stream_to_speaker(text, synth))
+        """Stream the chunks to the speaker and wait until they are heard, unless a
+        later utterance interrupts this one: then stop at once with
+        ``SpeechInterruptedError``."""
+        work = asyncio.ensure_future(self._stream_to_speaker(chunks(), rate))
         interrupted = asyncio.ensure_future(utterance.interrupted.wait())
         try:
             done, _pending = await asyncio.wait(
@@ -327,15 +419,24 @@ class MediaSession:
                 task.cancel()
             await asyncio.gather(work, interrupted, return_exceptions=True)
 
-    async def _stream_to_speaker(self, text: str, synth: SpeechSynthesizer) -> None:
+    async def _stream_to_speaker(
+        self, chunks: AsyncIterator[npt.NDArray[np.float32]], rate: int
+    ) -> None:
         media = self._robot.media
         out_rate = media.get_output_audio_samplerate()
         out_channels = media.get_output_channels()
-        resampler = _StreamResampler(synth.sample_rate, out_rate)
+        resampler = _StreamResampler(rate, out_rate)
         tracker = _PlaybackTracker(out_rate)
-        async for chunk in synth.stream(text):
-            mono = resampler.process(np.asarray(chunk, dtype=np.float32).reshape(-1))
-            tracker.push(self._push(mono, out_channels))
+        try:
+            async for chunk in chunks:
+                mono = resampler.process(
+                    np.asarray(chunk, dtype=np.float32).reshape(-1)
+                )
+                tracker.push(self._push(mono, out_channels))
+        finally:
+            # Closed before anything else ends: the synthesizer's own cleanup (and,
+            # for `say_stream`, its hold on the text stream) runs first.
+            await _aclose(chunks)
         tracker.push(self._push(resampler.flush(), out_channels))
         remaining = tracker.remaining()
         if remaining > 0:
@@ -678,6 +779,41 @@ async def _finish_and_undo[T](
     return None
 
 
+async def _whole_text(
+    source: AsyncIterator[str], synth: SpeechSynthesizer
+) -> AsyncIterator[npt.NDArray[np.float32]]:
+    """The chunks of ``synth.synthesize`` over the whole text of ``source``, read to its
+    end first: ``say_stream`` with a synthesizer that takes no streamed text."""
+    text = "".join([piece async for piece in source])
+    if not text:
+        return
+    chunks = synth.synthesize(text)
+    try:
+        async for chunk in chunks:
+            yield chunk
+    finally:
+        await _aclose(chunks)
+
+
+async def _aclose(iterator: object) -> None:
+    """Await ``iterator.aclose()`` when it has one (an async generator's ``finally``
+    runs then); idempotent on a generator already closed."""
+    aclose = getattr(iterator, "aclose", None)
+    if aclose is not None:
+        await aclose()
+
+
+async def _close_text_stream(source: AsyncIterator[str], *, failed: bool) -> None:
+    """Close ``say_stream``'s text stream at the end of its utterance; after a failure
+    its own error is only logged, never hiding the utterance's."""
+    try:
+        await _aclose(source)
+    except Exception:
+        if not failed:
+            raise
+        _logger.warning("say_stream: closing the text stream failed", exc_info=True)
+
+
 class _Utterance:
     """A ``say`` in flight: set ``interrupted`` and it ends at once."""
 
@@ -778,7 +914,9 @@ def _missing_provider_error(
 
 
 class TTSEngineSynthesizer:
-    """Default :class:`SpeechSynthesizer`, adapting our first-party ``tts-engine``.
+    """Default :class:`StreamingSpeechSynthesizer`, adapting our first-party
+    ``tts-engine``: :meth:`synthesize` over ``TTSEngine.say``,
+    :meth:`synthesize_stream` over ``TTSEngine.say_stream``.
 
     ``tts-engine`` is a base dependency; the provider the block's ``module.type``
     names comes from the matching ``reachy-mini-bridge[tts-<module.type>]`` extra. A
@@ -817,12 +955,26 @@ class TTSEngineSynthesizer:
     def sample_rate(self) -> int:
         return self._engine.sample_rate
 
-    async def stream(self, text: str) -> AsyncIterator[npt.NDArray[np.float32]]:
+    def synthesize(self, text: str) -> AsyncIterator[npt.NDArray[np.float32]]:
+        """The chunks of ``TTSEngine.say(text)``."""
+        return self._run(lambda: self._engine.say(text))
+
+    def synthesize_stream(
+        self, text_stream: AsyncIterator[str]
+    ) -> AsyncIterator[npt.NDArray[np.float32]]:
+        """The chunks of ``TTSEngine.say_stream(text_stream)``, produced as the text
+        arrives."""
+        return self._run(lambda: self._engine.say_stream(text_stream))
+
+    async def _run(
+        self, produce: Callable[[], Coroutine[Any, Any, None]]
+    ) -> AsyncIterator[npt.NDArray[np.float32]]:
+        """Run one engine utterance into the sink and yield its chunks as float32."""
         await self._stream_lock.acquire()
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[bytes | None] = asyncio.Queue()
         self._sink.bind(loop, queue)
-        say_task = asyncio.create_task(self._engine.say(text))
+        say_task = asyncio.create_task(produce())
         try:
             while True:
                 chunk = await queue.get()

@@ -52,7 +52,7 @@ class _ToneSynth:
         self._blocks = round(seconds * 10)
         self._amplitude = amplitude
 
-    async def stream(self, text: str) -> AsyncIterator[npt.NDArray[np.float32]]:
+    async def synthesize(self, text: str) -> AsyncIterator[npt.NDArray[np.float32]]:
         for _ in range(self._blocks):
             yield np.full(1600, self._amplitude, dtype=np.float32)
 
@@ -480,3 +480,48 @@ def test_say_with_real_tts_speaks_through_the_robot(
     # Phonon emits 24 kHz, so the say sink resamples to the speaker's 16 kHz.
     assert synth.sample_rate == 24000
     live_bridge.run(bridge.say("Hello, I am Reachy Mini.", synth))
+
+
+def test_say_stream_with_real_tts_speaks_before_the_text_ends(
+    live_bridge: LiveBridge,
+) -> None:
+    """Streamed text end-to-end: `say_stream` over `TTSEngineSynthesizer` on the local
+    phonon model, which groups the pieces into sentences as they arrive — the first
+    sentence reaches the speaker while the text stream is still open, and the stream
+    is closed once the utterance has been heard (specs/audio/audio.md "`say_stream`").
+    Gated like the whole-text test above.
+    """
+    pytest.importorskip("ptts", reason="the tts dependency group is not installed")
+    bridge, _caps = live_bridge
+    synth = TTSEngineSynthesizer({"module": {"type": "phonon", "voice": "Micah"}})
+    media = bridge.robot.media
+    push = media.push_audio_sample
+    first_push: list[float] = []
+    stream_end: list[float] = []
+    closed: list[bool] = []
+
+    def timed_push(data: Any) -> None:
+        if not first_push:
+            first_push.append(time.perf_counter())
+        push(data)
+
+    async def reply() -> AsyncIterator[str]:
+        try:
+            yield "Hello, I am Reachy Mini."
+            yield " I speak"
+            await asyncio.sleep(2.0)  # the rest of the reply is still being generated
+            stream_end.append(time.perf_counter())
+            yield " while the text arrives."
+        finally:
+            closed.append(True)
+
+    media.push_audio_sample = timed_push  # type: ignore[method-assign]
+    try:
+        live_bridge.run(bridge.say_stream(reply(), synth))
+    finally:
+        del media.push_audio_sample
+    assert closed == [True]
+    assert first_push and stream_end
+    assert first_push[0] < stream_end[0], (
+        "no audio reached the speaker before the text stream ended"
+    )

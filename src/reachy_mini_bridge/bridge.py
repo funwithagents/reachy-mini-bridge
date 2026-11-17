@@ -76,7 +76,7 @@ from .robot import build_robot
 from .sim_displays import FaceMarkerPublisher, face_markers_url
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable
+    from collections.abc import AsyncIterable, AsyncIterator, Callable
 
     import numpy as np
     import numpy.typing as npt
@@ -1374,19 +1374,47 @@ class ReachyMiniBridge:
         explicit ``synthesizer=`` or the config's ``tts`` block). Raises
         :class:`BridgeError` if neither is available. Needs no motors.
         """
-        chosen = synth or self._synthesizer
-        if chosen is None:
-            if self._synthesizer_error is not None:
-                raise BridgeError(
-                    "say requires a SpeechSynthesizer: the configured `tts` block "
-                    f"could not be built: {self._synthesizer_error}"
-                ) from self._synthesizer_error
-            raise BridgeError(
-                "say requires a SpeechSynthesizer: pass one, configure a default "
-                "synthesizer at construction, or set the config's `tts` block "
-                "(the tts-engine adapter, TTSEngineSynthesizer)"
-            )
+        chosen = self._resolve_synthesizer("say", synth)
         await self._require_media().say(text, chosen)
+
+    async def say_stream(
+        self,
+        text_stream: AsyncIterable[str],
+        synth: SpeechSynthesizer | None = None,
+    ) -> None:
+        """Speak text as it arrives — a language model's response read as it is
+        generated — and wait until it has been heard.
+
+        ``text_stream`` is an async iterable of text pieces, concatenated verbatim.
+        With a :class:`StreamingSpeechSynthesizer` (the shipped
+        :class:`TTSEngineSynthesizer` is one) speech starts on the first words; any
+        other synthesizer speaks the whole text once the stream ends. The synthesizer
+        is chosen as for :meth:`say`, and :meth:`say`'s guarantees hold: completes
+        when heard, cancelling stops the speech, one utterance at a time across both
+        verbs, the newest wins. The text stream is closed when this returns or
+        raises, and its own exception propagates unchanged. ``TypeError`` for a
+        ``str`` (use :meth:`say`). Needs no motors.
+        """
+        chosen = self._resolve_synthesizer("say_stream", synth)
+        await self._require_media().say_stream(text_stream, chosen)
+
+    def _resolve_synthesizer(
+        self, verb: str, synth: SpeechSynthesizer | None
+    ) -> SpeechSynthesizer:
+        """``synth``, else the configured default; :class:`BridgeError` when neither."""
+        chosen = synth or self._synthesizer
+        if chosen is not None:
+            return chosen
+        if self._synthesizer_error is not None:
+            raise BridgeError(
+                f"{verb} requires a SpeechSynthesizer: the configured `tts` block "
+                f"could not be built: {self._synthesizer_error}"
+            ) from self._synthesizer_error
+        raise BridgeError(
+            f"{verb} requires a SpeechSynthesizer: pass one, configure a default "
+            "synthesizer at construction, or set the config's `tts` block "
+            "(the tts-engine adapter, TTSEngineSynthesizer)"
+        )
 
     async def play_sound(self, sound_file: str) -> None:
         """Play a sound file through the robot speaker and wait until it has been heard.

@@ -27,6 +27,7 @@ import pytest
 from reachy_mini_bridge import audio as audio_module
 from reachy_mini_bridge.audio import (
     MediaSession,
+    StreamingSpeechSynthesizer,
     TTSEngineSynthesizer,
     _PlaybackTracker,
     cancel_safe_step,
@@ -64,7 +65,7 @@ class _ToneSynth:
     def sample_rate(self) -> int:
         return self._sample_rate
 
-    async def stream(self, text: str) -> AsyncIterator[npt.NDArray[np.float32]]:
+    async def synthesize(self, text: str) -> AsyncIterator[npt.NDArray[np.float32]]:
         for _ in range(self._chunks):
             yield np.full(self._block, 0.25, dtype=np.float32)
 
@@ -74,7 +75,7 @@ class _SilentSynth:
 
     sample_rate = 16000
 
-    async def stream(self, text: str) -> AsyncIterator[npt.NDArray[np.float32]]:
+    async def synthesize(self, text: str) -> AsyncIterator[npt.NDArray[np.float32]]:
         return
         yield  # an async generator that yields nothing
 
@@ -84,7 +85,7 @@ class _StallingSynth:
 
     sample_rate = 16000
 
-    async def stream(self, text: str) -> AsyncIterator[npt.NDArray[np.float32]]:
+    async def synthesize(self, text: str) -> AsyncIterator[npt.NDArray[np.float32]]:
         yield np.full(800, 0.25, dtype=np.float32)
         await asyncio.Event().wait()
 
@@ -94,7 +95,7 @@ class _FailingSynth:
 
     sample_rate = 16000
 
-    async def stream(self, text: str) -> AsyncIterator[npt.NDArray[np.float32]]:
+    async def synthesize(self, text: str) -> AsyncIterator[npt.NDArray[np.float32]]:
         yield np.full(800, 0.25, dtype=np.float32)
         raise RuntimeError("boom")
 
@@ -873,6 +874,264 @@ def test_a_new_say_interrupts_one_still_synthesizing() -> None:
     names = asyncio.run(run())
     assert names.count("audio.clear_player") == 1
     assert names.count("media.push_audio_sample") == 2
+
+
+# --- say_stream: text spoken as it is produced (specs/audio/audio.md "`say_stream`") ---
+
+
+class _PieceSynth:
+    """A StreamingSpeechSynthesizer: 80 samples (5 ms) of tone per character of every
+    piece, yielded as the piece arrives; records the text it received."""
+
+    sample_rate = 16000
+
+    def __init__(self) -> None:
+        self.received: list[str] = []
+
+    async def synthesize(self, text: str) -> AsyncIterator[npt.NDArray[np.float32]]:
+        self.received.append(text)
+        yield np.full(80 * len(text), 0.25, dtype=np.float32)
+
+    async def synthesize_stream(
+        self, text_stream: AsyncIterator[str]
+    ) -> AsyncIterator[npt.NDArray[np.float32]]:
+        async for piece in text_stream:
+            if piece:
+                self.received.append(piece)
+                yield np.full(80 * len(piece), 0.25, dtype=np.float32)
+
+
+class _WholeTextSynth:
+    """A SpeechSynthesizer with no streamed text: records each whole text."""
+
+    sample_rate = 16000
+
+    def __init__(self) -> None:
+        self.received: list[str] = []
+
+    async def synthesize(self, text: str) -> AsyncIterator[npt.NDArray[np.float32]]:
+        self.received.append(text)
+        yield np.full(80 * len(text), 0.25, dtype=np.float32)
+
+
+class _Text:
+    """A caller's text stream: yields ``pieces``, then waits on ``gate`` before the
+    ``tail`` pieces (or forever when no tail is due), optionally raising at the end;
+    ``closed`` is set when its ``finally`` has run."""
+
+    def __init__(
+        self,
+        pieces: list[str],
+        *,
+        tail: list[str] | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self.pieces, self.tail, self.error = pieces, tail, error
+        self.gate = asyncio.Event()
+        self.closed = False
+
+    async def __call__(self) -> AsyncIterator[str]:
+        try:
+            for piece in self.pieces:
+                yield piece
+            if self.tail is not None:
+                await self.gate.wait()
+                for piece in self.tail:
+                    yield piece
+            elif self.error is None:
+                await asyncio.Event().wait()
+            if self.error is not None:
+                raise self.error
+        finally:
+            self.closed = True
+
+
+def test_say_stream_speaks_before_the_text_ends_and_completes_when_heard() -> None:
+    robot = FakeReachyMini()
+    synth = _PieceSynth()
+    text = _Text(["Hello", "", " there"], tail=[" again"])
+
+    async def run() -> float:
+        async with _open(MediaSession(robot)) as session:
+            assert isinstance(synth, StreamingSpeechSynthesizer)
+            task = asyncio.create_task(session.say_stream(text(), synth))
+            while len(_pushed_frames(robot)) < 2:
+                await asyncio.sleep(0)
+            assert not task.done()  # spoken while the text is still being produced
+            start = time.perf_counter()
+            text.gate.set()
+            await task
+            return time.perf_counter() - start
+
+    elapsed = asyncio.run(run())
+    assert synth.received == ["Hello", " there", " again"]  # verbatim, empty skipped
+    assert _pushed_frames(robot) == [400, 480, 480]
+    assert elapsed >= 0.06  # at least the last piece's audio, heard
+    assert text.closed
+    assert "audio.clear_player" not in _command_names(robot)
+
+
+def test_say_stream_with_a_whole_text_synthesizer_speaks_once_the_text_ends(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    robot = FakeReachyMini()
+    synth = _WholeTextSynth()
+
+    async def run() -> None:
+        async with _open(MediaSession(robot)) as session:
+            assert not isinstance(synth, StreamingSpeechSynthesizer)
+            text = _Text(["Hel", "", "lo"], tail=[" there"])
+            task = asyncio.create_task(session.say_stream(text(), synth))
+            for _ in range(20):
+                await asyncio.sleep(0)
+            assert _pushed_frames(robot) == []  # nothing before the text is complete
+            text.gate.set()
+            await task
+            await session.say_stream(_pieces("again"), synth)
+
+    with caplog.at_level(logging.INFO, logger="reachy_mini_bridge.audio"):
+        asyncio.run(run())
+    assert synth.received == ["Hello there", "again"]
+    assert _pushed_frames(robot) == [880, 400]
+    notes = [r for r in caplog.records if "takes no streamed text" in r.getMessage()]
+    assert len(notes) == 1  # once per synthesizer
+
+
+@pytest.mark.parametrize("synth", [_PieceSynth, _WholeTextSynth])
+def test_say_stream_of_no_text_returns_at_once(synth: type) -> None:
+    robot = FakeReachyMini()
+    text = _Text(["", ""], tail=[])
+
+    async def run() -> float:
+        async with _open(MediaSession(robot)) as session:
+            text.gate.set()
+            start = time.perf_counter()
+            await session.say_stream(text(), synth())
+            return time.perf_counter() - start
+
+    assert asyncio.run(run()) < 0.05
+    assert _pushed_frames(robot) == []
+    assert text.closed
+
+
+@pytest.mark.parametrize("synth", [_PieceSynth, _WholeTextSynth])
+def test_cancelled_say_stream_flushes_closes_the_text_and_keeps_the_session(
+    synth: type,
+) -> None:
+    robot = FakeReachyMini()
+    text = _Text(["Hello"])  # then stalls: the reply is still being generated
+
+    async def run() -> None:
+        async with _open(MediaSession(robot)) as session:
+            task = asyncio.create_task(session.say_stream(text(), synth()))
+            if synth is _PieceSynth:
+                while not _pushed_frames(robot):
+                    await asyncio.sleep(0)
+            else:
+                for _ in range(20):
+                    await asyncio.sleep(0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert text.closed
+            before = len(_pushed_frames(robot))
+            await session.say("next", _ToneSynth(16000, chunks=1, block=160))
+            assert len(_pushed_frames(robot)) == before + 1
+
+    asyncio.run(run())
+    assert "audio.clear_player" in _command_names(robot)
+    if synth is _PieceSynth:
+        assert _clear_after_first_push(robot)
+
+
+def test_say_and_say_stream_interrupt_each_other() -> None:
+    robot = FakeReachyMini()
+
+    async def run() -> None:
+        async with _open(MediaSession(robot)) as session:
+            stalled = _Text(["Hello"])
+            streaming = asyncio.create_task(
+                session.say_stream(stalled(), _PieceSynth())
+            )
+            while not _pushed_frames(robot):
+                await asyncio.sleep(0)
+            spoken = asyncio.create_task(session.say("hi", _StallingSynth()))
+            with pytest.raises(SpeechInterruptedError):
+                await streaming
+            assert stalled.closed
+            while len(_pushed_frames(robot)) < 2:
+                await asyncio.sleep(0)
+            await session.say_stream(_pieces("bye"), _PieceSynth())
+            with pytest.raises(SpeechInterruptedError):
+                await spoken
+
+    asyncio.run(run())
+    names = _command_names(robot)
+    assert names.count("audio.clear_player") == 2  # once per interruption
+    assert _pushed_frames(robot) == [400, 800, 240]
+
+
+def test_a_failing_text_stream_propagates_flushed_and_closed() -> None:
+    robot = FakeReachyMini()
+    text = _Text(["Hello"], error=ValueError("the model failed"))
+
+    async def run() -> None:
+        async with _open(MediaSession(robot)) as session:
+            with pytest.raises(ValueError, match="the model failed"):
+                await session.say_stream(text(), _PieceSynth())
+
+    asyncio.run(run())
+    assert text.closed
+    assert _clear_after_first_push(robot)
+
+
+def test_say_stream_refuses_a_str_a_sync_iterable_and_a_closed_session() -> None:
+    robot = FakeReachyMini()
+    session = MediaSession(robot)
+
+    async def run() -> None:
+        with pytest.raises(BridgeError):
+            await session.say_stream(_pieces(), _PieceSynth())
+        async with _open(session):
+            with pytest.raises(TypeError, match="use say"):
+                await session.say_stream(cast("Any", "hello"), _PieceSynth())
+            with pytest.raises(TypeError, match="list"):
+                await session.say_stream(cast("Any", ["hello"]), _PieceSynth())
+
+    asyncio.run(run())
+    assert _pushed_frames(robot) == []
+
+
+def test_adapter_speaks_streamed_text_as_it_arrives() -> None:
+    """The shipped adapter over tts-engine's ``tone`` module, a tone per piece."""
+    synth = TTSEngineSynthesizer({"module": {"type": "tone"}})
+    robot = FakeReachyMini()
+    text = _Text(["Hello"], tail=[" there"])
+
+    async def run() -> None:
+        async with _open(MediaSession(robot)) as session:
+            assert isinstance(synth, StreamingSpeechSynthesizer)
+            task = asyncio.create_task(session.say_stream(text(), synth))
+            await asyncio.wait_for(_until(lambda: bool(_pushed_frames(robot))), 2)
+            assert not task.done()
+            pushed = len(_pushed_frames(robot))
+            text.gate.set()
+            await asyncio.wait_for(task, 5)
+            assert len(_pushed_frames(robot)) > pushed
+            await asyncio.wait_for(session.say("whole", synth), 5)  # still usable
+
+    asyncio.run(run())
+    assert text.closed
+
+
+async def _pieces(*pieces: str) -> AsyncIterator[str]:
+    for piece in pieces:
+        yield piece
+
+
+async def _until(condition: Callable[[], bool]) -> None:
+    while not condition():
+        await asyncio.sleep(0.001)
 
 
 # --- sound files (specs/audio/audio.md "Sound files") ---

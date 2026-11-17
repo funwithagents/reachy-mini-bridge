@@ -81,7 +81,7 @@ from reachy_mini_bridge.sim_displays import FACE_BOX_HEIGHT_M
 class _ToneSynth:
     sample_rate = 16000
 
-    async def stream(self, text: str) -> AsyncIterator[npt.NDArray[np.float32]]:
+    async def synthesize(self, text: str) -> AsyncIterator[npt.NDArray[np.float32]]:
         yield np.full(400, 0.2, dtype=np.float32)
 
 
@@ -218,6 +218,7 @@ def test_package_front_door_drives_the_fake() -> None:
         "ReachyMiniBridge",
         "ReachyMiniConfig",
         "SpeechSynthesizer",
+        "StreamingSpeechSynthesizer",
         "TTSEngineSynthesizer",
         "MirroringSettings",
         "PersonalSpaceSettings",
@@ -1006,6 +1007,36 @@ def test_say_without_any_synthesizer_raises_bridge_error() -> None:
     asyncio.run(run())
 
 
+async def _pieces(*pieces: str) -> AsyncIterator[str]:
+    for piece in pieces:
+        yield piece
+
+
+def test_say_stream_resolves_its_synthesizer_like_say() -> None:
+    async def run() -> list[int]:
+        async with ReachyMiniBridge("fake") as bridge:
+            with pytest.raises(
+                BridgeError, match="say_stream requires a SpeechSynthesizer"
+            ):
+                await bridge.say_stream(_pieces("hello"))
+            await bridge.say_stream(_pieces("hel", "lo"), _ToneSynth())
+            pushed = [
+                args["frames"]
+                for name, args in _fake(bridge).commands
+                if name == "media.push_audio_sample"
+            ]
+        async with ReachyMiniBridge("fake", synthesizer=_ToneSynth()) as bridge:
+            await bridge.say_stream(_pieces("hello"))  # the default synthesizer
+            pushed += [
+                args["frames"]
+                for name, args in _fake(bridge).commands
+                if name == "media.push_audio_sample"
+            ]
+        return pushed
+
+    assert asyncio.run(run()) == [400, 400]
+
+
 def test_a_cancelled_play_sound_stops_the_sound_and_keeps_the_session(
     tmp_path: Path,
 ) -> None:
@@ -1079,7 +1110,7 @@ def test_an_emotion_cancelled_during_a_say_leaves_the_utterance_playing() -> Non
     class _LongTone:
         sample_rate = 16000
 
-        async def stream(self, text: str) -> AsyncIterator[npt.NDArray[np.float32]]:
+        async def synthesize(self, text: str) -> AsyncIterator[npt.NDArray[np.float32]]:
             yield np.full(16000, 0.2, dtype=np.float32)  # one second
 
     async def run() -> tuple[list[str], int]:
@@ -3026,7 +3057,7 @@ class _SecondSynth:
 
     sample_rate = 16000
 
-    async def stream(self, text: str) -> AsyncIterator[npt.NDArray[np.float32]]:
+    async def synthesize(self, text: str) -> AsyncIterator[npt.NDArray[np.float32]]:
         yield np.full(16000, 0.1, dtype=np.float32)
 
 
@@ -3121,7 +3152,9 @@ def test_motor_pause_stops_emotion_sound_without_flushing_concurrent_speech() ->
         class Synth:
             sample_rate = 16000
 
-            async def stream(self, text: str) -> AsyncIterator[npt.NDArray[np.float32]]:
+            async def synthesize(
+                self, text: str
+            ) -> AsyncIterator[npt.NDArray[np.float32]]:
                 yield np.full(400, 0.2, dtype=np.float32)
                 first_chunk.set()
                 await continue_speech.wait()
