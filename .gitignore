@@ -21,3 +21,6 @@ dist/
 
 # OS cruft
 .DS_Store
+
+# Local design analyses: working notes, never committed
+analysis/

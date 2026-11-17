@@ -2,13 +2,15 @@
 "Custom detectors", specs/vision/camera.md).
 
 It registers the bridge's shipped detector class through the `custom` path — as a
-developer registers a wrapper of their own — on the camera feed of the viewer sim, and
+developer registers a wrapper of their own — on the sim's camera feed, and
 checks that the head converges on the test scene's portrait as it does with the detector
 named in the config (tests-e2e/test_head_tracking.py), through the same convergence kit
 (reachy_mini_bridge.testing.gaze). It tests the registration and the runner, not the
-model. Run it with
+model. It runs wherever the sim has a camera — headless on Linux (CI), the viewer
+elsewhere:
 
-    REACHY_MINI_E2E_SIM_VIEWER=1 uv run pytest tests-e2e -rs -k custom
+    uv run pytest tests-e2e -rs -k custom                            # Linux
+    REACHY_MINI_E2E_SIM_VIEWER=1 uv run pytest tests-e2e -rs -k custom   # macOS
 
 It has its own bridge session (`live_bridge_custom_faces`, below): the detector is
 config-only, and a second session on a daemon another module's `live_bridge` drives would
