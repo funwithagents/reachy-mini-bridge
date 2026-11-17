@@ -41,12 +41,12 @@ from reachy_mini_bridge import ReachyMiniBridge
 
 class Beep:
     """A stand-in voice: 0.3 s of a 440 Hz tone per utterance. Any object with these two
-    members — `sample_rate`, and `stream(text)` yielding float32 mono chunks in [-1, 1] —
+    members — `sample_rate`, and `synthesize(text)` yielding float32 mono chunks in [-1, 1] —
     is a SpeechSynthesizer; a real one streams a text-to-speech engine's audio instead."""
 
     sample_rate = 16_000
 
-    async def stream(self, text: str):
+    async def synthesize(self, text: str):
         t = np.arange(int(0.3 * self.sample_rate)) / self.sample_rate
         yield (0.2 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
 

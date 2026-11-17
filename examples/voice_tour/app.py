@@ -93,9 +93,9 @@ class TimedSynthesizer:
     def sample_rate(self) -> int:
         return self._inner.sample_rate
 
-    async def stream(self, text: str) -> AsyncIterator[npt.NDArray[np.float32]]:
+    async def synthesize(self, text: str) -> AsyncIterator[npt.NDArray[np.float32]]:
         self.first_chunk_at = None
-        async for chunk in self._inner.stream(text):
+        async for chunk in self._inner.synthesize(text):
             if self.first_chunk_at is None:
                 self.first_chunk_at = time.perf_counter()
             yield chunk
@@ -143,7 +143,7 @@ async def _build_voice(voice_file: Path) -> TimedSynthesizer:
     # A relative model path is the voice file's, wherever the tour is run from.
     config = TTSEngineConfig.from_dict(block, base_dir=voice_file.parent)
     synth = TimedSynthesizer(await asyncio.to_thread(TTSEngineSynthesizer, config))
-    async for _ in synth.stream("Warming up."):
+    async for _ in synth.synthesize("Warming up."):
         pass
     return synth
 

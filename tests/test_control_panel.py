@@ -44,7 +44,7 @@ class _SlowSynth:
 
     sample_rate = 16000
 
-    async def stream(self, text: str) -> AsyncIterator[npt.NDArray[np.float32]]:
+    async def synthesize(self, text: str) -> AsyncIterator[npt.NDArray[np.float32]]:
         for _ in range(10):
             yield np.full(1600, 0.2, dtype=np.float32)
             await asyncio.sleep(0.01)

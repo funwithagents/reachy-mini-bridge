@@ -13,7 +13,7 @@ JSON string, or a JSON file — and drive it through ``ReachyMiniBridge``::
 See specs/_overview.md for the architecture and specs/_index.md for each concept.
 """
 
-from .audio import SpeechSynthesizer, TTSEngineSynthesizer
+from .audio import SpeechSynthesizer, StreamingSpeechSynthesizer, TTSEngineSynthesizer
 from .bridge import ReachyMiniBridge
 from .camera import CameraFrame
 from .config import (
@@ -72,6 +72,7 @@ __all__ = [
     "SoundInterruptedError",
     "SpeechInterruptedError",
     "SpeechSynthesizer",
+    "StreamingSpeechSynthesizer",
     "TTSEngineSynthesizer",
     "TrackingSettings",
     "User",

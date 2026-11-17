@@ -1,6 +1,6 @@
 # Audio — a voice, speech, sound files, the microphone
 
-How to make the robot talk and listen through the bridge: setting up the default voice, bringing your own synthesizer, what `say` and `play_sound` guarantee, head wobbling, and feeding the robot's echo-cancelled microphone to your own speech recognizer. Contracts: [../reference/api.md](../reference/api.md); design: [specs/audio/audio.md](../../specs/audio/audio.md).
+How to make the robot talk and listen through the bridge: setting up the default voice, bringing your own synthesizer, what `say` and `play_sound` guarantee, speaking a reply while it is still being generated (`say_stream`), head wobbling, and feeding the robot's echo-cancelled microphone to your own speech recognizer. Contracts: [../reference/api.md](../reference/api.md); design: [specs/audio/audio.md](../../specs/audio/audio.md).
 
 ## The one media session
 
@@ -14,7 +14,7 @@ The bridge opens the robot's audio once per session, for both directions: speech
 
 The bridge resamples whatever rate arrives to the speaker's 16 kHz and fans mono out to its channels, so the provider's rate is its own business. A block that fails to build — extra not installed (the error names the `tts-*` extra to add), key unset — leaves the robot fully usable without a voice: the session starts, `say` raises `BridgeError` chained to the cause, and the cause sits on `bridge.synthesizer_error` right after construction for a host that wants to fail hard.
 
-**Your own synthesizer** is any object with a fixed `sample_rate` (Hz) and a `stream(text)` returning an async iterator of float32 mono chunks in [-1, 1], shape `(n,)`. Pass it to `ReachyMiniBridge(config, synthesizer=...)` as the default voice (it wins over the `tts` block), or per call: `say(text, synth)`. The smallest complete one — a beep — is in [../getting-started.md](../getting-started.md); an engine that emits int16 converts each chunk with `reachy_mini_bridge.audio.int16_to_float32`. Keep the protocol minimal: voices, speed and SSML belong to your synthesizer's own config.
+**Your own synthesizer** is any object with a fixed `sample_rate` (Hz) and a `synthesize(text)` returning an async iterator of float32 mono chunks in [-1, 1], shape `(n,)`. Pass it to `ReachyMiniBridge(config, synthesizer=...)` as the default voice (it wins over the `tts` block), or per call: `say(text, synth)`. The smallest complete one — a beep — is in [../getting-started.md](../getting-started.md); an engine that emits int16 converts each chunk with `reachy_mini_bridge.audio.int16_to_float32`. Keep the protocol minimal: voices, speed and SSML belong to your synthesizer's own config. To speak text as it is produced, add `synthesize_stream(text_stream)` and declare the class a `StreamingSpeechSynthesizer` (next section).
 
 ## What `say` guarantees
 
@@ -23,6 +23,22 @@ The bridge resamples whatever rate arrives to the speaker's 16 kHz and fans mono
 - **The newest `say` wins.** A `say` called while another is in flight interrupts it: the speaker is flushed and the interrupted call raises `SpeechInterruptedError` in its own task; the new utterance plays from silence. Serialise your own `say` calls if you want them queued.
 - **It needs a running session** and a synthesizer, and raises `BridgeError` otherwise. It needs no motors.
 - **The fake keeps the timing**: `say` on `"fake"` takes the utterance's duration, so turn-taking logic tested against the fake behaves as on a robot.
+
+## Speaking while the text is produced — `say_stream`
+
+A language model's reply arrives token by token. `say_stream(text_stream)` takes it as an async iterable of text pieces and speaks it as it comes, so the robot starts talking on the first words instead of after the whole reply:
+
+```python
+async def reply_pieces():  # e.g. your LLM client's streamed response
+    for piece in ["Hello", ", I am", " Reachy", "."]:
+        yield piece
+
+await bridge.say_stream(reply_pieces())
+```
+
+The pieces are joined as they are, with nothing inserted between them — a model's token stream carries its own spaces. Speech starts early when the synthesizer is a `StreamingSpeechSynthesizer`, a `SpeechSynthesizer` that also has `synthesize_stream(text_stream)`: the voice from the config's `tts` block is one, every tts-engine provider taking streamed text. A synthesizer with only `synthesize` works too: the bridge reads the stream to its end and speaks the whole text, logging once that it does.
+
+Everything `say` guarantees holds, and the newest utterance wins across both verbs — a `say` interrupts a `say_stream` and the reverse. The text stream belongs to the utterance: when `say_stream` returns or raises — finished, cancelled, interrupted — the bridge has closed it, so your generator's `finally` runs and the request behind it can stop. An exception your stream raises comes out of `say_stream` unchanged, the speaker silenced. Text that arrives slower than speech is heard with pauses. `say_stream` takes async iterables only; a `str` raises `TypeError` (use `say`).
 
 ## Sound files
 
