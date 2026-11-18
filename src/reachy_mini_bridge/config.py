@@ -443,6 +443,9 @@ class FaceDetectionSettings:
     # The width the shipped detector works at (face_detection.DETECT_WIDTH: twice upstream's
     # 320, where YuNet's roll becomes usable for the tracker's mirror); None = the full frame.
     width: int | None = DEFAULT_DETECT_WIDTH
+    # The confidence the shipped detector keeps a face from, strictly between 0 and 1;
+    # None = upstream's own default (0.6 in reachy_mini 1.11).
+    score_threshold: float | None = None
     # A ceiling on detections per second; None = once per new camera frame.
     target_fps: float | None = None
     # Python only: the custom detector's factory, used when detector is "custom".
@@ -458,11 +461,14 @@ class FaceDetectionSettings:
                 "set_face_detector(...)"
             )
         _reject_unknown_keys(
-            block, "face_detection", {"detector", "enabled", "width", "target_fps"}
+            block,
+            "face_detection",
+            {"detector", "enabled", "width", "score_threshold", "target_fps"},
         )
         detector = block.get("detector")
         enabled = block.get("enabled", False)
         width = block.get("width", DEFAULT_DETECT_WIDTH)
+        score_threshold = block.get("score_threshold")
         target_fps = block.get("target_fps")
         if detector is not None and detector not in FACE_DETECTORS:
             raise ConfigError(
@@ -478,6 +484,15 @@ class FaceDetectionSettings:
                 "'face_detection.width' must be null or a positive integer, "
                 f"got {width!r}"
             )
+        if score_threshold is not None and (
+            isinstance(score_threshold, bool)
+            or not isinstance(score_threshold, int | float)
+            or not 0.0 < score_threshold < 1.0
+        ):
+            raise ConfigError(
+                "'face_detection.score_threshold' must be null or a number strictly "
+                f"between 0 and 1, got {score_threshold!r}"
+            )
         if target_fps is not None and (
             isinstance(target_fps, bool)
             or not isinstance(target_fps, int | float)
@@ -492,6 +507,7 @@ class FaceDetectionSettings:
             detector=detector,
             enabled=enabled,
             width=width,
+            score_threshold=None if score_threshold is None else float(score_threshold),
             target_fps=None if target_fps is None else float(target_fps),
         )
 

@@ -884,7 +884,9 @@ def test_the_shipped_detector_is_resolved_by_name(
     real one loads upstream's model) and labels its reports."""
     scene = _Scene([_face(30, 24)])
 
-    def shipped(width: int | None = None) -> _StubDetector:
+    def shipped(
+        width: int | None = None, score_threshold: float | None = None
+    ) -> _StubDetector:
         return scene.factory()
 
     monkeypatch.setattr(fd, "_yunet_factory", shipped)

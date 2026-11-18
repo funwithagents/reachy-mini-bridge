@@ -43,6 +43,7 @@
     "detector": "yunet",
     "enabled": true,
     "width": 1280,
+    "score_threshold": null,
     "target_fps": null
   },
   "motion": {

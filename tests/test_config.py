@@ -474,18 +474,30 @@ def test_face_detection_block_sets_the_detector_the_switch_and_the_knobs() -> No
     )
     yunet = ReachyMiniConfig.from_json(
         '{"face_detection": {"detector": "yunet", "enabled": true, "width": 640,'
-        ' "target_fps": 2.5}}'
+        ' "score_threshold": 0.75, "target_fps": 2.5}}'
     )
     assert yunet.face_detection == FaceDetectionSettings(
-        detector="yunet", enabled=True, width=640, target_fps=2.5
+        detector="yunet",
+        enabled=True,
+        width=640,
+        score_threshold=0.75,
+        target_fps=2.5,
     )
     whole = ReachyMiniConfig.from_dict({"face_detection": {"target_fps": 5}})
     assert whole.face_detection.target_fps == 5.0
     nulls = ReachyMiniConfig.from_dict(
-        {"face_detection": {"detector": None, "width": None, "target_fps": None}}
+        {
+            "face_detection": {
+                "detector": None,
+                "width": None,
+                "score_threshold": None,
+                "target_fps": None,
+            }
+        }
     )
     assert nulls.face_detection.detector is None
     assert nulls.face_detection.width is None
+    assert nulls.face_detection.score_threshold is None
     assert nulls.face_detection.target_fps is None
 
 
@@ -534,6 +546,12 @@ def test_a_switch_on_without_a_detector_is_a_config_error(data: dict[str, Any]) 
         ({"width": 320.0}, r"face_detection\.width"),
         ({"width": True}, r"face_detection\.width"),
         ({"width": "320"}, r"face_detection\.width"),
+        ({"score_threshold": 0}, r"face_detection\.score_threshold"),
+        ({"score_threshold": 1}, r"face_detection\.score_threshold"),
+        ({"score_threshold": -0.5}, r"face_detection\.score_threshold"),
+        ({"score_threshold": float("nan")}, r"face_detection\.score_threshold"),
+        ({"score_threshold": True}, r"face_detection\.score_threshold"),
+        ({"score_threshold": "0.7"}, r"face_detection\.score_threshold"),
         ({"target_fps": 0}, r"face_detection\.target_fps"),
         ({"target_fps": -2}, r"face_detection\.target_fps"),
         ({"target_fps": float("nan")}, r"face_detection\.target_fps"),

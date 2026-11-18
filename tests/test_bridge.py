@@ -1412,23 +1412,28 @@ def fast_attention(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(face_detection_module, "FACE_POLL_HZ", 20.0)
 
 
-def test_the_configured_width_reaches_the_shipped_detector(
-    monkeypatch: pytest.MonkeyPatch, fast_faces: None
+@pytest.mark.parametrize("score_threshold", [None, 0.8])
+def test_the_configured_width_and_threshold_reach_the_shipped_detector(
+    monkeypatch: pytest.MonkeyPatch, fast_faces: None, score_threshold: float | None
 ) -> None:
-    """`face_detection.width` is handed to the shipped detector's constructor
-    (specs/vision/user_perception.md "Configuration"); the `target_fps` ceiling is
-    test_face_detection's to pin."""
+    """`face_detection.width` and `face_detection.score_threshold` are handed to the
+    shipped detector's constructor (specs/vision/user_perception.md "Configuration"); the
+    `target_fps` ceiling is test_face_detection's to pin."""
     scene = _Scene([_pixel_face(0.0)])
-    widths: list[int | None] = []
+    built: list[tuple[int | None, float | None]] = []
 
-    def shipped(width: int | None = None) -> _StubDetector:
-        widths.append(width)
+    def shipped(
+        width: int | None = None, score_threshold: float | None = None
+    ) -> _StubDetector:
+        built.append((width, score_threshold))
         return _StubDetector(scene)
 
     monkeypatch.setattr(face_detection_module, "_yunet_factory", shipped)
     config = ReachyMiniConfig(
         backend="fake",
-        face_detection=FaceDetectionSettings(detector="yunet", enabled=True, width=640),
+        face_detection=FaceDetectionSettings(
+            detector="yunet", enabled=True, width=640, score_threshold=score_threshold
+        ),
     )
 
     async def run() -> None:
@@ -1436,7 +1441,7 @@ def test_the_configured_width_reaches_the_shipped_detector(
             await bridge.faces.wait_for(lambda r: bool(r.faces))
 
     asyncio.run(run())
-    assert widths == [640]
+    assert built == [(640, score_threshold)]
 
 
 # --- the head tracking report (specs/motion/head_tracking.md "The head tracking report") ----
