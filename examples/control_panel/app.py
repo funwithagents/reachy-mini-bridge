@@ -12,7 +12,7 @@ import dataclasses
 import logging
 import math
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +22,7 @@ import numpy.typing as npt
 
 from examples.control_panel.controller import (
     ControlPanelController,
+    FaceView,
     PanelState,
     UsersView,
     draw_faces,
@@ -90,64 +91,47 @@ def _posture(posture: tuple[float, float, bool] | None) -> str:
     return f"{text}, in personal space" if inside else text
 
 
-def faces_line(
-    positions: list[tuple[float, float]] | None,
-    rate: float | None,
-    rolls: Sequence[float | None] = (),
-    distances: Sequence[float | None] = (),
-    track_ids: Sequence[int] = (),
-) -> str:
-    """The line under the camera: the faces — their track id, their position and, when
-    known, their roll in degrees and their distance — and their update rate.
-    ``positions`` is ``None`` while no detector is looking."""
-    if positions is None:
-        return "**Faces:** — (no detector is looking)"
+def faces_markdown(view: FaceView, rate: float | None) -> str:
+    """The Faces heading, with their update rate in it, over the faces in view as a
+    table, one row per face: its track id (``●`` on the one the head follows), position,
+    size and, when known, roll in degrees and distance."""
+    heading = "### Faces" if rate is None else f"### Faces ({rate:.1f} updates/s)"
+    if not view.active:
+        return f"{heading}\n\n— (no detector is looking)"
+    if not view.positions:
+        return f"{heading}\n\nnobody in view"
+    lines = [
+        heading,
+        "",
+        "| face | position | size | roll | distance |",
+        "|---|---|---|---|---|",
+    ]
+    for i, (x, y) in enumerate(view.positions):
+        track = f"**#{view.track_ids[i]}**" if i < len(view.track_ids) else "—"
+        mark = " ●" if i == view.target else ""
+        size = f"{view.sizes[i]:.2f}" if i < len(view.sizes) else "—"
+        roll = view.rolls[i] if i < len(view.rolls) else None
+        tilt = "—" if roll is None else f"{math.degrees(roll):+.0f}°"
+        distance = view.distances[i] if i < len(view.distances) else None
+        away = "—" if distance is None else f"{distance:.2f} m"
+        lines.append(
+            f"| {track}{mark} | ({x:+.2f}, {y:+.2f}) | {size} | {tilt} | {away} |"
+        )
+    return "\n".join(lines)
 
-    def face(i: int, x: float, y: float) -> str:
-        roll = rolls[i] if i < len(rolls) else None
-        tilt = "" if roll is None else f", roll {math.degrees(roll):+.0f}°"
-        distance = distances[i] if i < len(distances) else None
-        away = "" if distance is None else f", {distance:.2f} m"
-        track = f"#{track_ids[i]} " if i < len(track_ids) else ""
-        return f"{track}({x:+.2f}, {y:+.2f}{tilt}{away})"
 
-    where = ", ".join(face(i, x, y) for i, (x, y) in enumerate(positions))
-    faces = f"{len(positions)} at {where}" if where else "0"
-    updates = "—" if rate is None else f"{rate:.1f}/s"
-    return f"**Faces:** {faces} · **updates:** {updates}"
-
-
-def head_line(view: UsersView) -> str:
-    """Whom the head follows: ``follows #4``, ``watching`` (with the pin a lost pinned
-    user leaves), or ``tracking off``; with focus when it is on."""
-    if not view.tracking:
-        return "**Head:** tracking off"
-    if view.track_id is not None:
-        what = f"follows #{view.track_id}"
-        if view.pinned_track_id == view.track_id:
-            what += ", pinned"
-    else:
-        what = "watching"
-        if view.pinned_track_id is not None:
-            what += f", pinned #{view.pinned_track_id} (lost)"
-    return f"**Head:** {what}" + (" · focus" if view.focus else "")
+def _yes(flag: bool) -> str:
+    return "yes" if flag else "**no**"
 
 
 def users_markdown(view: UsersView) -> str:
-    """The head line and the users present as a table: one row per user, ``●`` on the
-    one the head follows."""
-    head = head_line(view)
+    """The users present as a table: one row per user, ``●`` on the one the head
+    follows, ``📌`` on the pinned one."""
     if not view.active:
-        return f"{head}\n\n**Users:** — (no detector is looking)"
+        return "— (no detector is looking)"
     if not view.users:
-        return f"{head}\n\n**Users:** nobody present"
-
-    def yes(flag: bool) -> str:
-        return "yes" if flag else "**no**"
-
+        return "nobody present"
     lines = [
-        head,
-        "",
         "| user | seen | in view | missing | position | size | distance | identity |",
         "|---|---|---|---|---|---|---|---|",
     ]
@@ -158,17 +142,38 @@ def users_markdown(view: UsersView) -> str:
         distance = "—" if face.distance_m is None else f"{face.distance_m:.2f} m"
         missing = f"{user.missing_s:.1f} s" if user.missing_s else "—"
         lines.append(
-            f"| **#{user.track_id}**{mark}{pin} | {yes(user.seen)} | {yes(user.in_view)}"
-            f" | {missing} | ({face.x:+.2f}, {face.y:+.2f}) | {face.size:.2f}"
-            f" | {distance} | {user.identity or '—'} |"
+            f"| **#{user.track_id}**{mark}{pin} | {_yes(user.seen)}"
+            f" | {_yes(user.in_view)} | {missing} | ({face.x:+.2f}, {face.y:+.2f})"
+            f" | {face.size:.2f} | {distance} | {user.identity or '—'} |"
         )
     return "\n".join(lines)
 
 
-def refresh_users(controller: ControlPanelController) -> tuple[str, str]:
-    """One users tick: the head line and the users table, the tracking events."""
-    return users_markdown(controller.users_view()), "\n".join(
-        controller.tracking_events()
+def head_tracking_markdown(view: UsersView) -> str:
+    """The Head tracking heading, with whom the head follows in it: ``#4`` (pinned or not), nobody while
+    watching (with the pin a lost pinned user leaves), or tracking off; focus when on.
+    The followed user's state is their row in the users table."""
+    if not view.tracking:
+        return "### Head tracking: off"
+    focus = " · focus" if view.focus else ""
+    if view.track_id is None:
+        lost = (
+            ""
+            if view.pinned_track_id is None
+            else f", pinned #{view.pinned_track_id} lost"
+        )
+        return f"### Head tracking: following nobody (watching{lost}){focus}"
+    pinned = " · pinned" if view.pinned_track_id == view.track_id else ""
+    return f"### Head tracking: following #{view.track_id}{pinned}{focus}"
+
+
+def refresh_users(controller: ControlPanelController) -> tuple[str, str, str]:
+    """One users tick: the users table, the head tracking, the tracking events."""
+    view = controller.users_view()
+    return (
+        users_markdown(view),
+        head_tracking_markdown(view),
+        "\n".join(controller.tracking_events()),
     )
 
 
@@ -182,15 +187,9 @@ def refresh_camera(
     controller: ControlPanelController, log: Log
 ) -> tuple[npt.NDArray[np.uint8] | None, str]:
     """One camera tick: the frame with a marker on each reported face (mirrored when
-    ``MIRROR_CAMERA``), and the faces line under it."""
+    ``MIRROR_CAMERA``), and the faces table."""
     view = controller.face_view()  # one report: markers, tilts and the target agree
-    text = faces_line(
-        view.positions if view.active else None,
-        controller.face_rate,
-        view.rolls,
-        view.distances,
-        view.track_ids,
-    )
+    text = faces_markdown(view, controller.face_rate)
     try:
         frame = controller.camera_frame_rgb()
     except BridgeError as exc:
@@ -310,20 +309,23 @@ def build_app(controller: ControlPanelController) -> gr.Blocks:
             )
             apply_motors = gr.Button("Apply", scale=1)
 
-        # Then what the robot sees and hears (left) beside who is present and whom
-        # the head follows (right).
+        # Then what the robot sees and hears (left) beside what it detects: the faces
+        # in view, the users present, whom the head follows (right), each heading
+        # carrying its live summary.
         with gr.Row():
             with gr.Column():
                 gr.Markdown("## Camera")
                 camera = gr.Image(label="Camera", interactive=False, height=240)
-                faces_md = gr.Markdown()
                 mic_level = gr.Slider(
                     0, 1, value=0, step=0.001, label="Mic level", interactive=False
                 )
 
             with gr.Column():
-                gr.Markdown("## Users")
+                gr.Markdown("## Detection and tracking")
+                faces_md = gr.Markdown("### Faces")
+                gr.Markdown("### Users")
                 users_md = gr.Markdown()
+                head_md = gr.Markdown("### Head tracking")
 
         # Last, the state (left) and the logs (right): the verbs' outcomes in one
         # tab, how the ids went in the other.
@@ -360,7 +362,7 @@ def build_app(controller: ControlPanelController) -> gr.Blocks:
         )
         camera_timer.tick(
             lambda: refresh_users(controller),
-            outputs=[users_md, events_box],
+            outputs=[users_md, head_md, events_box],
             show_progress="hidden",
             api_name="refresh_users",
         )

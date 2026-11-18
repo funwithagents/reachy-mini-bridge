@@ -86,7 +86,7 @@ class FaceView:
     looking), each face's normalised ``(x, y)`` in the report's order, its roll in radians
     (``None`` when unknown) at the same index, and ``target``, the index of the face the
     head follows (``None`` while it follows none, or that face is not reported), each
-    face's ``distance_m`` (``None`` when unknown) and each face's ``track_id``."""
+    face's ``distance_m`` (``None`` when unknown), ``track_id`` and ``size``."""
 
     active: bool
     positions: list[tuple[float, float]]
@@ -94,6 +94,7 @@ class FaceView:
     target: int | None
     distances: list[float | None] = field(default_factory=list)
     track_ids: list[int] = field(default_factory=list)
+    sizes: list[float] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -537,6 +538,7 @@ class ControlPanelController:
             target=self._face_target(report),
             distances=[f.distance_m for f in report.faces],
             track_ids=[f.track_id for f in report.faces],
+            sizes=[f.size for f in report.faces],
         )
 
     def users_view(self) -> UsersView:

@@ -359,6 +359,7 @@ def test_build_app_constructs_the_blocks_and_refresh_reads_the_state() -> None:
         assert isinstance(demo, gr.Blocks)
         scene.show(0.5, -0.5)
         _wait_until(lambda: controller.snapshot().faces == 1)
+        _wait_until(lambda: controller.face_rate is not None)  # the meter's first look
         table, mic_level, log_text = refresh(controller, [])
         assert "fake" in table and "presence" in table
         assert "faces" not in table  # under the camera instead
@@ -366,9 +367,14 @@ def test_build_app_constructs_the_blocks_and_refresh_reads_the_state() -> None:
         assert log_text == ""
         frame, faces_text = refresh_camera(controller, [])
         tid = controller.bridge.faces.value.faces[0].track_id
-        assert f"1 at #{tid} (+0.50, -0.50, " in faces_text
-        assert "updates" in faces_text
-        assert " m)" in faces_text  # the face's distance, from the fake's camera model
+        # the ● joins the id once the head engages the face: either is right here
+        assert any(
+            f"| **#{tid}**{mark} | (+0.50, -0.50) |" in faces_text
+            for mark in ("", " ●")
+        )
+        assert faces_text.startswith("### Faces (")
+        assert "updates/s)" in faces_text.splitlines()[0]
+        assert " m |" in faces_text  # the face's distance, from the fake's camera model
         assert frame is not None and frame.shape == (48, 64, 3)
         # Mirrored for display: the fake's left-to-right ramp (RGB channel 2) now falls,
         # and the face on the right of the image (x=+0.5) is marked on the left.
@@ -376,9 +382,9 @@ def test_build_app_constructs_the_blocks_and_refresh_reads_the_state() -> None:
         marked_cols = np.nonzero((frame == FACE_MARKER_RGB).all(axis=2))[1]
         assert marked_cols.size and marked_cols.max() < 32
         _wait_until(lambda: controller.users_view().track_id == tid, timeout=5)
-        users_text, events_text = refresh_users(controller)
-        assert users_text.startswith(f"**Head:** follows #{tid}")
+        users_text, head_text, events_text = refresh_users(controller)
         assert f"| **#{tid}** ● | yes | yes |" in users_text
+        assert head_text == f"### Head tracking: following #{tid}"
         assert f"#{tid} arrived" in events_text
 
 
@@ -414,18 +420,29 @@ def test_snapshot_reports_face_positions_and_the_update_rate() -> None:
         assert (state.faces, state.face_positions, state.face_rate) == (-1, [], None)
 
 
-def test_the_faces_line_shows_each_faces_roll_in_degrees() -> None:
+def test_the_faces_table_shows_each_face_by_track_id() -> None:
     pytest.importorskip("gradio")
-    from examples.control_panel.app import faces_line
+    from examples.control_panel.app import faces_markdown
+    from examples.control_panel.controller import FaceView
 
-    line = faces_line([(0.25, -0.1), (-0.5, 0.2)], 10.0, [math.radians(-12.4), None])
-    assert "2 at (+0.25, -0.10, roll -12°), (-0.50, +0.20)" in line
-    assert faces_line([(0.25, -0.1)], None) == (
-        "**Faces:** 1 at (+0.25, -0.10) · **updates:** —"
+    view = FaceView(
+        active=True,
+        positions=[(0.25, -0.1), (-0.5, 0.2)],
+        rolls=[math.radians(-12.4), None],
+        target=1,
+        distances=[0.456, None],
+        track_ids=[3, 4],
+        sizes=[0.31, 0.2],
     )
-    # each face's distance, when the report gives one
-    away = faces_line([(0.25, -0.1), (0.0, 0.0)], None, [None, None], [0.456, None])
-    assert "(+0.25, -0.10, 0.46 m), (+0.00, +0.00)" in away
+    rows = faces_markdown(view, 10.0).splitlines()
+    # one row per face: id (● on the followed one), position, size, roll, distance
+    assert "| **#3** | (+0.25, -0.10) | 0.31 | -12° | 0.46 m |" in rows
+    assert "| **#4** ● | (-0.50, +0.20) | 0.20 | — | — |" in rows
+    assert rows[0] == "### Faces (10.0 updates/s)"
+    empty = FaceView(active=True, positions=[], rolls=[], target=None)
+    assert faces_markdown(empty, 9.5) == "### Faces (9.5 updates/s)\n\nnobody in view"
+    off = FaceView(active=False, positions=[], rolls=[], target=None)
+    assert faces_markdown(off, None) == "### Faces\n\n— (no detector is looking)"
 
 
 def test_the_posture_readout_says_when_the_person_is_in_the_personal_space() -> None:
@@ -693,7 +710,7 @@ def _events(controller: ControlPanelController) -> list[str]:
 
 def test_the_users_table_marks_the_followed_user_and_who_is_out_of_view() -> None:
     pytest.importorskip("gradio")
-    from examples.control_panel.app import faces_line, users_markdown
+    from examples.control_panel.app import head_tracking_markdown, users_markdown
     from examples.control_panel.controller import UsersView
     from reachy_mini_bridge import Face, User
 
@@ -718,7 +735,6 @@ def test_the_users_table_marks_the_followed_user_and_who_is_out_of_view() -> Non
         pinned_track_id=None,
     )
     table = users_markdown(view)
-    assert table.startswith("**Head:** follows #3\n")
     rows = [line for line in table.splitlines() if line.startswith("| **#")]
     assert rows[0].startswith("| **#3** ● | **no** | **no** | — |")
     assert rows[1].startswith("| **#4** | **no** | yes | 0.6 s | (+0.10, -0.20) |")
@@ -732,13 +748,13 @@ def test_the_users_table_marks_the_followed_user_and_who_is_out_of_view() -> Non
         track_id=None,
         pinned_track_id=3,
     )
-    assert users_markdown(lost) == (
-        "**Head:** watching, pinned #3 (lost) · focus\n\n**Users:** nobody present"
+    assert users_markdown(lost) == "nobody present"
+    off = UsersView(False, (), False, False, None, None, None)
+    assert users_markdown(off) == "— (no detector is looking)"
+
+    # the head tracking: whom it follows and that user's state, a lost pin, off
+    assert head_tracking_markdown(view) == "### Head tracking: following #3"
+    assert head_tracking_markdown(lost) == (
+        "### Head tracking: following nobody (watching, pinned #3 lost) · focus"
     )
-    assert "no detector is looking" in users_markdown(
-        UsersView(False, (), False, False, None, None, None)
-    )
-    # the faces line names each face's track id
-    assert "2 at #3 (+0.25, -0.10), #4 (-0.50, +0.20)" in faces_line(
-        [(0.25, -0.1), (-0.5, 0.2)], None, track_ids=[3, 4]
-    )
+    assert head_tracking_markdown(off) == "### Head tracking: off"
