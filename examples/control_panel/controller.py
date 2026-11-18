@@ -29,11 +29,14 @@ import numpy.typing as npt
 
 from reachy_mini_bridge import (
     BridgeError,
+    HeadTrackingReport,
     ReachyMiniBridge,
     ReachyMiniConfig,
     SoundInterruptedError,
     SpeechInterruptedError,
     SpeechSynthesizer,
+    User,
+    UsersReport,
 )
 from reachy_mini_bridge.face_detection import FaceReport
 
@@ -54,6 +57,26 @@ FACE_RATE_WINDOW_S = 2.0
 # `draw_faces`: the marker's side as a fraction of the frame height, and its colour (RGB).
 FACE_MARKER_SIZE = 0.15
 FACE_MARKER_RGB = (0, 255, 0)
+# The labels' plate behind the glyphs (RGB), and the frame height per glyph pixel.
+FACE_LABEL_PLATE_RGB = (0, 0, 0)
+FACE_LABEL_SCALE_DIV = 80
+# How many tracking events the panel keeps.
+TRACKING_EVENTS = 50
+
+# A 3x5 bitmap font, enough for a track id label ("#12").
+_GLYPHS: dict[str, tuple[str, ...]] = {
+    "0": ("###", "#.#", "#.#", "#.#", "###"),
+    "1": (".#.", "##.", ".#.", ".#.", "###"),
+    "2": ("###", "..#", "###", "#..", "###"),
+    "3": ("###", "..#", ".##", "..#", "###"),
+    "4": ("#.#", "#.#", "###", "..#", "..#"),
+    "5": ("###", "#..", "###", "..#", "###"),
+    "6": ("###", "#..", "###", "#.#", "###"),
+    "7": ("###", "..#", ".#.", ".#.", ".#."),
+    "8": ("###", "#.#", "###", "#.#", "###"),
+    "9": ("###", "#.#", "###", "..#", "###"),
+    "#": ("#.#", "###", "#.#", "###", "#.#"),
+}
 
 
 @dataclass(frozen=True)
@@ -62,14 +85,33 @@ class FaceView:
     tilt and the highlighted one belong to the same frame: ``active`` (a detector is
     looking), each face's normalised ``(x, y)`` in the report's order, its roll in radians
     (``None`` when unknown) at the same index, and ``target``, the index of the face the
-    head follows (``None`` while it follows none, or that face is not reported), and each
-    face's ``distance_m`` (``None`` when unknown)."""
+    head follows (``None`` while it follows none, or that face is not reported), each
+    face's ``distance_m`` (``None`` when unknown), ``track_id`` and ``size``."""
 
     active: bool
     positions: list[tuple[float, float]]
     rolls: list[float | None]
     target: int | None
     distances: list[float | None] = field(default_factory=list)
+    track_ids: list[int] = field(default_factory=list)
+    sizes: list[float] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class UsersView:
+    """The users present and whom the head follows, read together by
+    :meth:`ControlPanelController.users_view`: ``active`` (a detector is looking), the
+    ``users`` of ``bridge.users`` in ``track_id`` order, and from ``bridge.head_tracking``
+    whether ``tracking`` is on, its ``focus``, its ``attention``, the ``track_id`` the head
+    follows and the ``pinned_track_id``."""
+
+    active: bool
+    users: tuple[User, ...]
+    tracking: bool
+    focus: bool
+    attention: str | None
+    track_id: int | None
+    pinned_track_id: int | None
 
 
 @dataclass
@@ -146,6 +188,8 @@ class ControlPanelController:
         self._mic_level = 0.0
         self._emotions: list[str] = []
         self._face_rate: float | None = None
+        self._events: deque[str] = deque(maxlen=TRACKING_EVENTS)
+        self._events_lock = threading.Lock()  # appended on the loop, read by handlers
 
     # --- lifecycle -----------------------------------------------------------------
 
@@ -246,6 +290,8 @@ class ControlPanelController:
                 meters = [
                     asyncio.create_task(self._mic_meter(bridge)),
                     asyncio.create_task(self._face_meter(bridge)),
+                    asyncio.create_task(self._users_events(bridge)),
+                    asyncio.create_task(self._head_events(bridge)),
                 ]
                 ready.set_result(None)
                 try:
@@ -305,6 +351,30 @@ class ControlPanelController:
                     arrivals.popleft()
                 self._face_rate = len(arrivals) / FACE_RATE_WINDOW_S
             await asyncio.sleep(1.0 / FACE_METER_HZ)
+
+    def _event(self, message: str) -> None:
+        now = time.time()
+        stamp = time.strftime("%H:%M:%S", time.localtime(now))
+        with self._events_lock:
+            self._events.appendleft(f"{stamp}.{int(now % 1 * 1000):03d}  {message}")
+
+    async def _users_events(self, bridge: ReachyMiniBridge) -> None:
+        """Log every arrival, departure, recognition and detection flip on
+        ``bridge.users`` (specs/examples/control_panel.md "The tracking events")."""
+        previous = bridge.users.value
+        async for report in bridge.users.changes(every=True):
+            for line in describe_users_change(previous, report):
+                self._event(line)
+            previous = report
+
+    async def _head_events(self, bridge: ReachyMiniBridge) -> None:
+        """Log every published change of ``bridge.head_tracking``: whom the head
+        follows, the pin, focus, the personal space, tracking on and off."""
+        previous = bridge.head_tracking.value
+        async for report in bridge.head_tracking.changes(every=True):
+            for line in describe_tracking_change(previous, report):
+                self._event(line)
+            previous = report
 
     # --- submitting to the loop ------------------------------------------------------
 
@@ -467,7 +537,30 @@ class ControlPanelController:
             rolls=[f.roll for f in report.faces],
             target=self._face_target(report),
             distances=[f.distance_m for f in report.faces],
+            track_ids=[f.track_id for f in report.faces],
+            sizes=[f.size for f in report.faces],
         )
+
+    def users_view(self) -> UsersView:
+        """The users present (``bridge.users``) and whom the head follows
+        (``bridge.head_tracking``), read together — no robot round trip."""
+        users = self._bridge.users.value
+        head = self._bridge.head_tracking.value
+        return UsersView(
+            active=users.active,
+            users=users.users if users.active else (),
+            tracking=head.active,
+            focus=head.focus,
+            attention=head.attention,
+            track_id=head.track_id,
+            pinned_track_id=head.pinned_track_id,
+        )
+
+    def tracking_events(self) -> list[str]:
+        """The last ``TRACKING_EVENTS`` arrivals, departures and head changes, newest
+        first, each stamped with the time the panel received it."""
+        with self._events_lock:
+            return list(self._events)
 
     def _face_target(self, report: FaceReport) -> int | None:
         followed = self._bridge.head_tracking.value.track_id
@@ -580,11 +673,61 @@ class ControlPanelController:
         return self._stop_slot("emotion")
 
 
+def describe_users_change(previous: UsersReport, report: UsersReport) -> list[str]:
+    """The events one published ``bridge.users`` report carries, as panel lines:
+    detection on / off, arrivals, departures with their reason, recognitions."""
+    lines: list[str] = []
+    if report.active and not previous.active:
+        lines.append("detection on")
+    for track_id in report.arrived:
+        lines.append(f"#{track_id} arrived")
+    identities = {user.track_id: user.identity for user in report.users}
+    for track_id in report.recognised:
+        lines.append(f"#{track_id} recognised as {identities.get(track_id)}")
+    for departure in report.left:
+        lines.append(f"#{departure.track_id} left ({departure.reason})")
+    if previous.active and not report.active:
+        lines.append("detection off")
+    return lines
+
+
+def describe_tracking_change(
+    previous: HeadTrackingReport, report: HeadTrackingReport
+) -> list[str]:
+    """What changed between two ``bridge.head_tracking`` reports, as panel lines."""
+    if report.active != previous.active:
+        if not report.active:
+            return ["tracking off"]
+        lines = ["tracking on" + (" (focus)" if report.focus else "")]
+    else:
+        lines = []
+        if report.focus != previous.focus:
+            lines.append(f"focus {'on' if report.focus else 'off'}")
+    if report.pinned_track_id != previous.pinned_track_id:
+        pinned = report.pinned_track_id
+        lines.append("unpinned" if pinned is None else f"pinned #{pinned}")
+    before, now = previous.track_id, report.track_id
+    if now != before:
+        if before is None:
+            lines.append(f"head follows #{now}")
+        elif now is None:
+            lines.append(f"head lets go of #{before} ({report.attention or 'off'})")
+        else:
+            lines.append(f"head #{before} → #{now}")
+    if report.in_personal_space != previous.in_personal_space and now is not None:
+        verb = "entered" if report.in_personal_space else "left"
+        lines.append(f"#{now} {verb} personal space")
+    return lines
+
+
 def draw_faces(
     frame: npt.NDArray[np.uint8],
     positions: Sequence[tuple[float, float]],
     rolls: Sequence[float | None] = (),
     target: int | None = None,
+    *,
+    labels: Sequence[str] = (),
+    mirror: bool = False,
 ) -> npt.NDArray[np.uint8]:
     """A copy of the RGB ``frame`` with a square outline on each face.
 
@@ -592,15 +735,19 @@ def draw_faces(
     ``bridge.faces`` reports them; the face at index ``target`` — the one the head
     follows — is drawn thicker, none when ``None``. ``rolls`` (radians, per face,
     ``None`` when unknown) tilt each square with the face's eye line, in the frame's
-    own coordinates.
+    own coordinates. With ``mirror`` the copy is flipped left to right, and ``labels``
+    (per face, digits and ``#``) are stamped above each square after the flip, so they
+    read the right way round.
     """
     out = frame.copy()
     height, width = out.shape[:2]
     half = max(2, round(FACE_MARKER_SIZE * height / 2))
+    centres: list[tuple[int, int]] = []
     for i, (x, y) in enumerate(positions):
         roll = rolls[i] if i < len(rolls) else None
         cx = round((x + 1.0) * 0.5 * (width - 1))
         cy = round((y + 1.0) * 0.5 * (height - 1))
+        centres.append((cx, cy))
         thick = max(1, height // (120 if i == target else 240))
         reach = math.ceil(half * math.sqrt(2)) + 1  # the tilted square's bounding box
         x0, x1 = max(cx - reach, 0), min(cx + reach, width - 1)
@@ -615,4 +762,49 @@ def draw_faces(
         edge = np.maximum(np.abs(u), np.abs(v))
         mask = (edge <= half + 0.5) & (edge > half + 0.5 - thick)
         out[y0 : y1 + 1, x0 : x1 + 1][mask] = FACE_MARKER_RGB
+    if mirror:
+        out = np.ascontiguousarray(out[:, ::-1])
+    for i, (cx, cy) in enumerate(centres):
+        if i < len(labels) and labels[i]:
+            if mirror:
+                cx = width - 1 - cx
+            _stamp_label(out, labels[i], cx, cy, half)
     return out
+
+
+def _stamp_label(
+    out: npt.NDArray[np.uint8], text: str, cx: int, cy: int, half: int
+) -> None:
+    """Stamp ``text`` centred on ``cx``, above the square of half-side ``half`` at
+    ``cy`` (below it when there is no room above), on a plate; clipped to the frame."""
+    height, width = out.shape[:2]
+    scale = max(1, height // FACE_LABEL_SCALE_DIV)
+    glyphs = [_GLYPHS[c] for c in text if c in _GLYPHS]
+    if not glyphs:
+        return
+    # the label as a boolean bitmap: 3-pixel glyphs, one blank column between them
+    rows = [
+        ".".join(glyph[r] for glyph in glyphs)  # one row across every glyph
+        for r in range(5)
+    ]
+    bitmap = np.array([[c == "#" for c in row] for row in rows], dtype=bool)
+    bitmap = bitmap.repeat(scale, axis=0).repeat(scale, axis=1)
+    pad = scale
+    plate_h, plate_w = bitmap.shape[0] + 2 * pad, bitmap.shape[1] + 2 * pad
+    top = cy - half - 1 - plate_h
+    if top < 0:
+        top = cy + half + 2  # no room above: below the square
+    left = cx - plate_w // 2
+    # the plate's rectangle clipped to the frame, and the bitmap's matching part
+    y0, y1 = max(top, 0), min(top + plate_h, height)
+    x0, x1 = max(left, 0), min(left + plate_w, width)
+    if y0 >= y1 or x0 >= x1:
+        return
+    out[y0:y1, x0:x1] = FACE_LABEL_PLATE_RGB
+    by0, bx0 = top + pad, left + pad
+    gy0, gy1 = max(by0, 0), min(by0 + bitmap.shape[0], height)
+    gx0, gx1 = max(bx0, 0), min(bx0 + bitmap.shape[1], width)
+    if gy0 >= gy1 or gx0 >= gx1:
+        return
+    mask = bitmap[gy0 - by0 : gy1 - by0, gx0 - bx0 : gx1 - bx0]
+    out[gy0:gy1, gx0:gx1][mask] = FACE_MARKER_RGB

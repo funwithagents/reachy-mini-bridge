@@ -23,13 +23,18 @@ import pytest
 from examples.control_panel.controller import (
     FACE_MARKER_RGB,
     ControlPanelController,
+    describe_tracking_change,
+    describe_users_change,
     draw_faces,
 )
 from reachy_mini_bridge import (
     BridgeError,
+    HeadTrackingReport,
     MotorsNotEnabledError,
     PixelFace,
     ReachyMiniConfig,
+    UserDeparture,
+    UsersReport,
 )
 from reachy_mini_bridge.config import (
     FaceDetectionSettings,
@@ -341,7 +346,12 @@ def test_stop_cancels_the_verbs_in_flight() -> None:
 
 def test_build_app_constructs_the_blocks_and_refresh_reads_the_state() -> None:
     gr = pytest.importorskip("gradio")
-    from examples.control_panel.app import build_app, refresh, refresh_camera
+    from examples.control_panel.app import (
+        build_app,
+        refresh,
+        refresh_camera,
+        refresh_users,
+    )
 
     scene = _Scene()
     with ControlPanelController(_faces_config(scene)) as controller:
@@ -349,20 +359,33 @@ def test_build_app_constructs_the_blocks_and_refresh_reads_the_state() -> None:
         assert isinstance(demo, gr.Blocks)
         scene.show(0.5, -0.5)
         _wait_until(lambda: controller.snapshot().faces == 1)
+        _wait_until(lambda: controller.face_rate is not None)  # the meter's first look
         table, mic_level, log_text = refresh(controller, [])
         assert "fake" in table and "presence" in table
         assert "faces" not in table  # under the camera instead
         assert mic_level == 0.0
         assert log_text == ""
         frame, faces_text = refresh_camera(controller, [])
-        assert "1 at (+0.50, -0.50, " in faces_text and "updates" in faces_text
-        assert " m)" in faces_text  # the face's distance, from the fake's camera model
+        tid = controller.bridge.faces.value.faces[0].track_id
+        # the ● joins the id once the head engages the face: either is right here
+        assert any(
+            f"| **#{tid}**{mark} | (+0.50, -0.50) |" in faces_text
+            for mark in ("", " ●")
+        )
+        assert faces_text.startswith("### Faces (")
+        assert "updates/s)" in faces_text.splitlines()[0]
+        assert " m |" in faces_text  # the face's distance, from the fake's camera model
         assert frame is not None and frame.shape == (48, 64, 3)
         # Mirrored for display: the fake's left-to-right ramp (RGB channel 2) now falls,
         # and the face on the right of the image (x=+0.5) is marked on the left.
         assert frame[40, 0, 2] > frame[40, -1, 2]
         marked_cols = np.nonzero((frame == FACE_MARKER_RGB).all(axis=2))[1]
         assert marked_cols.size and marked_cols.max() < 32
+        _wait_until(lambda: controller.users_view().track_id == tid, timeout=5)
+        users_text, head_text, events_text = refresh_users(controller)
+        assert f"| **#{tid}** ● | yes | yes |" in users_text
+        assert head_text == f"### Head tracking: following #{tid}"
+        assert f"#{tid} arrived" in events_text
 
 
 # --- faces ----------------------------------------------------------------------------
@@ -397,18 +420,29 @@ def test_snapshot_reports_face_positions_and_the_update_rate() -> None:
         assert (state.faces, state.face_positions, state.face_rate) == (-1, [], None)
 
 
-def test_the_faces_line_shows_each_faces_roll_in_degrees() -> None:
+def test_the_faces_table_shows_each_face_by_track_id() -> None:
     pytest.importorskip("gradio")
-    from examples.control_panel.app import faces_line
+    from examples.control_panel.app import faces_markdown
+    from examples.control_panel.controller import FaceView
 
-    line = faces_line([(0.25, -0.1), (-0.5, 0.2)], 10.0, [math.radians(-12.4), None])
-    assert "2 at (+0.25, -0.10, roll -12°), (-0.50, +0.20)" in line
-    assert faces_line([(0.25, -0.1)], None) == (
-        "**Faces:** 1 at (+0.25, -0.10) · **updates:** —"
+    view = FaceView(
+        active=True,
+        positions=[(0.25, -0.1), (-0.5, 0.2)],
+        rolls=[math.radians(-12.4), None],
+        target=1,
+        distances=[0.456, None],
+        track_ids=[3, 4],
+        sizes=[0.31, 0.2],
     )
-    # each face's distance, when the report gives one
-    away = faces_line([(0.25, -0.1), (0.0, 0.0)], None, [None, None], [0.456, None])
-    assert "(+0.25, -0.10, 0.46 m), (+0.00, +0.00)" in away
+    rows = faces_markdown(view, 10.0).splitlines()
+    # one row per face: id (● on the followed one), position, size, roll, distance
+    assert "| **#3** | (+0.25, -0.10) | 0.31 | -12° | 0.46 m |" in rows
+    assert "| **#4** ● | (-0.50, +0.20) | 0.20 | — | — |" in rows
+    assert rows[0] == "### Faces (10.0 updates/s)"
+    empty = FaceView(active=True, positions=[], rolls=[], target=None)
+    assert faces_markdown(empty, 9.5) == "### Faces (9.5 updates/s)\n\nnobody in view"
+    off = FaceView(active=False, positions=[], rolls=[], target=None)
+    assert faces_markdown(off, None) == "### Faces\n\n— (no detector is looking)"
 
 
 def test_the_posture_readout_says_when_the_person_is_in_the_personal_space() -> None:
@@ -542,3 +576,185 @@ def test_draw_faces_thickens_the_target_only() -> None:
     assert left > right * 1.5
     left, right = green_per_side(draw_faces(frame, positions))
     assert left == right  # no target: both thin
+
+
+def _green(marked: npt.NDArray[np.uint8]) -> npt.NDArray[np.bool_]:
+    return (marked == FACE_MARKER_RGB).all(axis=2)
+
+
+def _crop(mask: npt.NDArray[np.bool_]) -> npt.NDArray[np.bool_]:
+    rows, cols = np.nonzero(mask)
+    return mask[rows.min() : rows.max() + 1, cols.min() : cols.max() + 1]
+
+
+def test_draw_faces_stamps_each_label_upright_on_a_mirrored_frame() -> None:
+    frame = np.zeros((100, 200, 3), dtype=np.uint8)
+    # one face in the middle: its square's top edge is row 42, its label above it
+    plain = _green(draw_faces(frame, [(0.0, 0.0)], labels=["#7"]))
+    mirrored = _green(draw_faces(frame, [(0.0, 0.0)], labels=["#7"], mirror=True))
+    label, label_mirrored = _crop(plain[:41]), _crop(mirrored[:41])
+    assert label.shape == (5, 7)  # "#" and "7", 3x5 each, one column apart
+    # the label reads the same way round on the mirrored frame — not flipped with it
+    assert np.array_equal(label, label_mirrored)
+    assert not np.array_equal(label, label[:, ::-1])  # "#7" is not symmetric
+    assert not plain[45:55, 95:105].any()  # nothing stamped inside the square
+
+    # a face on the right of the image: its label over it, on the left once mirrored
+    right = _green(draw_faces(frame, [(0.5, 0.0)], labels=["#12"]))
+    left = _green(draw_faces(frame, [(0.5, 0.0)], labels=["#12"], mirror=True))
+    assert np.nonzero(right[:41])[1].min() > 100
+    assert np.nonzero(left[:41])[1].max() < 100
+    assert np.array_equal(_crop(right[:41]), _crop(left[:41]))
+
+    # a face at the top edge: the label goes below its square, inside the frame
+    top = _green(draw_faces(frame, [(0.0, -1.0)], labels=["#3"]))
+    assert top[9:20, 90:110].any()
+
+
+def test_describe_tracking_change_names_each_transition() -> None:
+    off = HeadTrackingReport.inactive()
+    watching = HeadTrackingReport(
+        active=True, focus=False, attention="watching", track_id=None, ts=1.0
+    )
+    on_3 = HeadTrackingReport(
+        active=True, focus=False, attention="engaged", track_id=3, ts=2.0
+    )
+    on_4 = HeadTrackingReport(
+        active=True, focus=True, attention="engaged", track_id=4, ts=3.0
+    )
+    near_4 = HeadTrackingReport(
+        active=True,
+        focus=True,
+        attention="engaged",
+        track_id=4,
+        ts=4.0,
+        in_personal_space=True,
+    )
+    pinned_lost = HeadTrackingReport(
+        active=True,
+        focus=True,
+        attention="watching",
+        track_id=None,
+        ts=5.0,
+        pinned_track_id=4,
+    )
+
+    assert describe_tracking_change(off, watching) == ["tracking on"]
+    assert describe_tracking_change(watching, on_3) == ["head follows #3"]
+    assert describe_tracking_change(on_3, on_4) == ["focus on", "head #3 → #4"]
+    assert describe_tracking_change(on_4, near_4) == ["#4 entered personal space"]
+    assert describe_tracking_change(near_4, on_4) == ["#4 left personal space"]
+    assert describe_tracking_change(on_4, pinned_lost) == [
+        "pinned #4",
+        "head lets go of #4 (watching)",
+    ]
+    assert describe_tracking_change(on_3, off) == ["tracking off"]
+    assert describe_tracking_change(on_3, on_3) == []
+
+
+def test_describe_users_change_names_arrivals_and_departures() -> None:
+    idle = UsersReport.inactive()
+    started = UsersReport(users=(), arrived=(), left=(), ts=1.0, active=True)
+    swap = UsersReport(
+        users=(),
+        arrived=(5,),
+        left=(UserDeparture(3, "left"),),
+        ts=2.0,
+        active=True,
+    )
+    stopped = UsersReport(
+        users=(), arrived=(), left=(UserDeparture(5, "stopped"),), ts=0.0, active=False
+    )
+    assert describe_users_change(idle, started) == ["detection on"]
+    assert describe_users_change(started, swap) == ["#5 arrived", "#3 left (left)"]
+    assert describe_users_change(swap, stopped) == [
+        "#5 left (stopped)",
+        "detection off",
+    ]
+
+
+def test_the_users_view_and_the_tracking_events_follow_a_face() -> None:
+    """A stub face arrives, the head engages it, and a stop lets it go: the users view
+    shows it present and followed, the events record each step by its track id
+    (specs/examples/control_panel.md "The tracking events")."""
+    scene = _Scene()
+    with ControlPanelController(_faces_config(scene)) as controller:
+        view = controller.users_view()
+        assert view.tracking and view.track_id is None
+        scene.show(0.2, 0.0)
+        _wait_until(lambda: controller.users_view().track_id is not None, timeout=5)
+        view = controller.users_view()
+        assert view.active and view.attention == "engaged"
+        (user,) = view.users
+        assert user.track_id == view.track_id and user.seen and user.in_view
+        tid = user.track_id
+        _wait_until(lambda: f"head follows #{tid}" in "\n".join(_events(controller)))
+        assert any(line.endswith(f"#{tid} arrived") for line in _events(controller))
+
+        controller.stop_head_tracking()
+        controller.set_face_detection(False)
+        _wait_until(lambda: any("detection off" in e for e in _events(controller)))
+        events = _events(controller)
+        assert any(line.endswith("tracking off") for line in events)
+        assert any(line.endswith(f"#{tid} left (stopped)") for line in events)
+        view = controller.users_view()
+        assert (view.active, view.users, view.tracking) == (False, (), False)
+        # newest first, each line stamped to the millisecond
+        assert events[0].endswith("detection off")
+        assert all(line[8] == "." and line[12:14] == "  " for line in events)
+
+
+def _events(controller: ControlPanelController) -> list[str]:
+    return controller.tracking_events()
+
+
+def test_the_users_table_marks_the_followed_user_and_who_is_out_of_view() -> None:
+    pytest.importorskip("gradio")
+    from examples.control_panel.app import head_tracking_markdown, users_markdown
+    from examples.control_panel.controller import UsersView
+    from reachy_mini_bridge import Face, User
+
+    def user(track_id: int, *, in_view: bool, missing_s: float = 0.0) -> User:
+        face = Face(x=0.1, y=-0.2, roll=None, size=0.3, track_id=track_id)
+        return User(
+            track_id=track_id,
+            seen=in_view and not missing_s,
+            in_view=in_view,
+            last_seen_ts=1.0,
+            missing_s=missing_s,
+            face=face,
+        )
+
+    view = UsersView(
+        active=True,
+        users=(user(3, in_view=False), user(4, in_view=True, missing_s=0.6)),
+        tracking=True,
+        focus=False,
+        attention="engaged",
+        track_id=3,
+        pinned_track_id=None,
+    )
+    table = users_markdown(view)
+    rows = [line for line in table.splitlines() if line.startswith("| **#")]
+    assert rows[0].startswith("| **#3** ● | **no** | **no** | — |")
+    assert rows[1].startswith("| **#4** | **no** | yes | 0.6 s | (+0.10, -0.20) |")
+
+    lost = UsersView(
+        active=True,
+        users=(),
+        tracking=True,
+        focus=True,
+        attention="watching",
+        track_id=None,
+        pinned_track_id=3,
+    )
+    assert users_markdown(lost) == "nobody present"
+    off = UsersView(False, (), False, False, None, None, None)
+    assert users_markdown(off) == "— (no detector is looking)"
+
+    # the head tracking: whom it follows and that user's state, a lost pin, off
+    assert head_tracking_markdown(view) == "### Head tracking: following #3"
+    assert head_tracking_markdown(lost) == (
+        "### Head tracking: following nobody (watching, pinned #3 lost) · focus"
+    )
+    assert head_tracking_markdown(off) == "### Head tracking: off"
