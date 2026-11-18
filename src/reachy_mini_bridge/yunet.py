@@ -30,10 +30,12 @@ if TYPE_CHECKING:
 __all__ = ["DETECT_WIDTH", "YuNetDetector"]
 
 
-def _upstream_detector() -> Any:
+def _upstream_detector(score_threshold: float | None = None) -> Any:
     from reachy_mini.vision.face_detector import FaceDetector as UpstreamYuNet
 
-    return UpstreamYuNet()
+    if score_threshold is None:
+        return UpstreamYuNet()
+    return UpstreamYuNet(score_threshold=score_threshold)
 
 
 class YuNetDetector:
@@ -41,8 +43,10 @@ class YuNetDetector:
 
     ``upstream`` builds the detector object to wrap — anything with
     ``detect(frame_bgr) -> faces`` whose faces carry ``bbox``, ``nose``, ``right_eye``
-    and ``left_eye`` in pixels; the default builds upstream's ``FaceDetector`` with its
-    default thresholds (tests inject a stub so no model loads). ``width`` is the width it
+    and ``left_eye`` in pixels; the default builds upstream's ``FaceDetector`` at
+    ``score_threshold`` (``face_detection.score_threshold``: the confidence a face is kept
+    from; ``None``, upstream's own default) and upstream's other defaults (tests inject a
+    stub so no model loads). ``width`` is the width it
     detects at (``face_detection.width``), ``DETECT_WIDTH`` by default; ``None`` detects on
     the full frame. Its box runs about from the brow to the chin: ``box_height_m`` is
     ``FACE_BOX_HEIGHT_M``, what turns its faces' sizes into distances.
@@ -55,9 +59,12 @@ class YuNetDetector:
         upstream: Callable[[], Any] | None = None,
         *,
         width: int | None = DETECT_WIDTH,
+        score_threshold: float | None = None,
     ) -> None:
         self._width = width
-        self._detector = (_upstream_detector if upstream is None else upstream)()
+        self._detector = (
+            _upstream_detector(score_threshold) if upstream is None else upstream()
+        )
 
     def detect(
         self, frame_bgr: npt.NDArray[np.uint8], ts: float

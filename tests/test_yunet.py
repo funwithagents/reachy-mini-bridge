@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
+import pytest
 
 from reachy_mini_bridge.face_detection import PixelFace
 from reachy_mini_bridge.yunet import YuNetDetector
@@ -98,3 +99,29 @@ def test_a_small_frame_is_detected_whole() -> None:
             bbox=(1.0, 2.0, 3.0, 4.0), nose=(2.5, 4.0), eyes=((1.5, 3.0), (3.5, 3.0))
         )
     ]
+
+
+@pytest.mark.parametrize(
+    ("score_threshold", "kwargs"),
+    [(None, {}), (0.8, {"score_threshold": 0.8})],
+)
+def test_the_score_threshold_reaches_upstreams_detector(
+    monkeypatch: pytest.MonkeyPatch,
+    score_threshold: float | None,
+    kwargs: dict[str, float],
+) -> None:
+    """`face_detection.score_threshold` is upstream's `score_threshold`; `None` leaves
+    upstream's own default in place. Upstream's class is replaced by a recorder: no
+    weights load."""
+    import reachy_mini.vision.face_detector as upstream
+
+    calls: list[dict[str, Any]] = []
+
+    class _Recorder(_UpstreamStub):
+        def __init__(self, **given: Any) -> None:
+            calls.append(given)
+            super().__init__([])
+
+    monkeypatch.setattr(upstream, "FaceDetector", _Recorder)
+    YuNetDetector(score_threshold=score_threshold)
+    assert calls == [kwargs]

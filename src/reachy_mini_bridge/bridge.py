@@ -670,6 +670,7 @@ class ReachyMiniBridge:
                 feed=camera,
                 detector_factory=self._face_detector,
                 width=cfg.face_detection.width,
+                score_threshold=cfg.face_detection.score_threshold,
                 target_fps=cfg.face_detection.target_fps,
                 new_track_id=self._new_face_track_id,
                 camera=camera_model,

@@ -664,13 +664,16 @@ def report_from_pixels(
     )
 
 
-def _yunet_factory(width: int | None = DETECT_WIDTH) -> FaceDetector:
+def _yunet_factory(
+    width: int | None = DETECT_WIDTH, score_threshold: float | None = None
+) -> FaceDetector:
     """The shipped detector's factory (specs/vision/user_perception.md "The shipped detector"),
-    at the config's ``width`` (``None``: the full frame); imported here, not at module load,
-    since `yunet.py` imports this module."""
+    at the config's ``width`` (``None``: the full frame) and ``score_threshold`` (``None``:
+    upstream's own); imported here, not at module load, since `yunet.py` imports this
+    module."""
     from .yunet import YuNetDetector
 
-    return YuNetDetector(width=width)
+    return YuNetDetector(width=width, score_threshold=score_threshold)
 
 
 # --- the loop -------------------------------------------------------------------------------
@@ -701,6 +704,7 @@ class FaceDetection:
         feed: CameraFeed | None = None,
         detector_factory: FaceDetectorFactory | None = None,
         width: int | None = DETECT_WIDTH,
+        score_threshold: float | None = None,
         target_fps: float | None = None,
         new_track_id: Callable[[], int] | None = None,
         camera: CameraModel | None = None,
@@ -713,6 +717,7 @@ class FaceDetection:
         self._camera = camera
         self._geometry = geometry
         self._width = width
+        self._score_threshold = score_threshold
         self._target_fps = target_fps
         self._faces = faces
         self._users = users
@@ -802,10 +807,10 @@ class FaceDetection:
                 '"yunet", the shipped detector, or "custom" with a registered factory'
             )
         if self._name == "yunet":
-            width = self._width
+            width, score_threshold = self._width, self._score_threshold
 
             def factory() -> FaceDetector:
-                return _yunet_factory(width)
+                return _yunet_factory(width, score_threshold)
 
         elif self._name == "custom":
             if self._detector_factory is None:

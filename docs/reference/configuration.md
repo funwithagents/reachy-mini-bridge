@@ -32,6 +32,7 @@ Every field of the bridge's declarative config: its default, what it does, and t
     "detector": "yunet",
     "enabled": true,
     "width": 1280,
+    "score_threshold": null,
     "target_fps": null
   },
 
@@ -181,6 +182,7 @@ Omit the block and `say` raises unless you pass your own `SpeechSynthesizer`. A 
 | `detector` | `null` | Which detector the bridge runs on the camera feed's frames: `null` none (no detection, no tracking — `enabled` or `tracking.enabled` on is then a config error); `yunet` the shipped detector, upstream's model run by the bridge (nothing to install; the weights download into the Hugging Face cache on first use); `custom` your own, registered from code with `FaceDetectionSettings(face_detector=...)` or `set_face_detector(...)` (see [../guides/custom-face-detector.md](../guides/custom-face-detector.md)); session entry refuses `custom` with none registered | — the name is config-only; `set_face_detector` registers the `custom` factory |
 | `enabled` | `false` | Runs the detection loop from session entry, so `bridge.faces` reports who is there. Needs no motors, needs a `detector`. The loop also runs whenever `motion.tracking.enabled` is on, whatever this says | `set_face_detection` |
 | `width` | `640` | The width the shipped detector works at — its cost per frame against its precision. 640 px costs about four times upstream's own 320 and is where YuNet's eye-line roll becomes usable within about half a metre of the Lite, which the tracker's mirroring reads; `320` is the floor for small onboard compute, at the price of the mirror; `null` detects on the full frame. A custom detector's width is its author's | — |
+| `score_threshold` | `null` | The confidence the shipped detector keeps a face from, strictly between 0 and 1 — who counts as a face at all. `null` uses upstream's own (0.6 today). Raise it (say `0.75`) when posters, reflections or profiles are taken for people; lower it (say `0.45`) to catch faces farther away or in dim light, at the price of more false detections. A custom detector's threshold is its author's | — |
 | `target_fps` | `null` | A ceiling on detections per second, for any detector: the loop skips frames. `null` detects once per new camera frame. The lever for the wireless robot, whose camera streams at 30 fps. The loop logs the detector's mean time and rate once, 10 s in | — |
 
 `face_detector` is a Python-only field (`FaceDetectionSettings(face_detector=MyDetector)`): a JSON file names the mode, code supplies the detector; the key in a file is a `ConfigError`.
@@ -255,6 +257,6 @@ Every `from_*` constructor path validates identically, as it parses — before t
 - `motion.base_following` is an object; its numbers are finite and within the bounds the table gives.
 - `daemon.sim_displays` entries `true` with `daemon.headless: true` is an error naming both.
 - `robot.host`, when the bridge manages the daemon, must be `127.0.0.1` or `localhost`; `robot.use_sim` and `robot.spawn_daemon` are refused.
-- Numbers are finite: `daemon.startup_timeout` positive, `face_detection.width` a positive integer, `face_detection.target_fps` positive, `daemon.camera.hfov_deg` strictly between 1 and 179.
+- Numbers are finite: `daemon.startup_timeout` positive, `face_detection.width` a positive integer, `face_detection.score_threshold` strictly between 0 and 1, `face_detection.target_fps` positive, `daemon.camera.hfov_deg` strictly between 1 and 179.
 - A `ReachyMiniConfig` assembled in code is not validated by the config layer; the bridge raises `ValueError` for the detector contradiction at session entry.
 - The `tts` block is tts-engine's to validate, and it does so when the bridge is **constructed** — the provider is built then, a local model's weights loaded with it — reporting a failure through `bridge.synthesizer_error` rather than raising ([api.md](api.md#construction)). Everything else that can fail at run time — the daemon, the connection, the detector's build — fails in `start()`.
