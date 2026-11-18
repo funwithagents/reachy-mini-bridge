@@ -82,7 +82,7 @@ The example apps in the repo's `examples/` directory.
 
 | Spec | Description | Status |
 |---|---|---|
-| [control_panel.md](examples/control_panel.md) | `examples/control_panel` — a Gradio control panel over `ReachyMiniBridge` started from a config file: a gradio-free `ControlPanelController` (the bridge session on a background loop, sync verbs, stoppable `say` / `play_sound` / `play_emotion`, `snapshot()` — with the face count and the detection mode — mic meter) plus the Blocks UI (state on a timer, one control group per verb group, a Detection checkbox); `demo` dependency group; tested on the `fake` | Implemented |
+| [control_panel.md](examples/control_panel.md) | `examples/control_panel` — a Gradio control panel over `ReachyMiniBridge` started from a config file: a gradio-free `ControlPanelController` (the bridge session on a background loop, sync verbs, stoppable `say` / `play_sound` / `play_emotion`, `snapshot()` — with the face count and the detection mode — mic meter) plus the Blocks UI (state on a timer, one control group per verb group, a Detection checkbox, each face's `#track_id` on the camera, the users present with whom the head follows and a tracking-events log); `demo` dependency group; tested on the `fake` | Implemented |
 
 _(add concept specs under the folder of their subsystem — see [_spec-template.md](_spec-template.md) — and a row here.)_
 
