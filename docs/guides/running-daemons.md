@@ -1,6 +1,6 @@
-# Running a Reachy Mini daemon (for e2e / dev)
+# Running a Reachy Mini daemon
 
-How to bring up a `reachy_mini` daemon — for the e2e tests, or for developing against a live daemon. Like [upstream-sdk-notes.md](../internals/upstream-sdk-notes.md), this is a reference note about the upstream SDK, not a spec. It's the operational companion to the e2e **strategy** in [../specs/testing/testing.md](../../specs/testing/testing.md) ("E2E targets & capabilities"), which owns the capability matrix; this file records the concrete launch recipes and *why* they work.
+How to bring up a `reachy_mini` daemon — the bridge's own launchers or upstream's — and connect the bridge to it: one the bridge starts from a config, one you start by hand for the bridge to borrow, and the e2e tests' targets. What each setup gives, and how far it is validated, is the one matrix in [reference/backends-and-capabilities.md](../reference/backends-and-capabilities.md); the launchers' design is in [../specs/daemon/daemon.md](../../specs/daemon/daemon.md), the e2e strategy in [../specs/testing/testing.md](../../specs/testing/testing.md) ("E2E targets & capabilities"); this page records the concrete launch recipes and *why* they work.
 
 ## Launch modes
 
