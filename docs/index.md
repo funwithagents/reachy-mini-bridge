@@ -16,7 +16,7 @@ The bridge's documentation, by what you want to do. The [README](../README.md) i
 | drive the robot from an LLM agent | [getting-started.md](getting-started.md#driving-it-from-an-agent) — tools as one-line wrappers over the verbs |
 | test my project against the bridge | [guides/testing.md](guides/testing.md) — unit tests on the fake, live tests with the shipped pytest harness and its sim scene |
 | find out why it does not connect, see, move or speak | [guides/troubleshooting.md](guides/troubleshooting.md) — the checks for each symptom, routed to the page that explains it |
-| measure how long the robot took to speak or move | [reference/api.md](reference/api.md#tracing) — an OpenTelemetry span per verb, with the moment the sound or the motion started |
+| measure how long the robot took to speak or move | [guides/tracing.md](guides/tracing.md) — an OpenTelemetry span per call, with the moment the sound or the motion started; the names in [reference/api.md](reference/api.md#tracing) |
 | look up a verb, a value, an error or a contract | [reference/api.md](reference/api.md) |
 | look up a config field | [reference/configuration.md](reference/configuration.md) |
 | try it without writing code | the Gradio [control panel](../examples/control_panel/) — every verb a button ([README](../README.md#try-it-from-a-browser)) |

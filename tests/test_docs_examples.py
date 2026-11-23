@@ -3,13 +3,15 @@
 The first code a new user runs is extracted from its Markdown file and executed on the
 ``fake`` so none of it can drift from the bridge: the README's quick start, the
 getting-started application (with its beep synthesizer), the custom idle move guide's
-move, the custom face detector guide's program, and the testing guide's unit-test example (specs/core/bridge.md "Front door";
+move, the custom face detector guide's program, the tracing guide's program, and the testing guide's unit-test example (specs/core/bridge.md "Front door";
 docs/guides/testing.md "Unit tests").
 """
 
 from __future__ import annotations
 
 import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +57,33 @@ def test_the_custom_face_detector_guide_runs_on_the_fake() -> None:
     _run_as_main(
         ROOT / "docs" / "guides" / "custom-face-detector.md", "## A complete program"
     )
+
+
+def test_the_tracing_guide_prints_each_span_with_its_steps() -> None:
+    # In a process of its own: the program installs the OpenTelemetry SDK's provider,
+    # which a process can set once. What it prints is what the guide then reads.
+    code = _first_python_block(
+        ROOT / "docs" / "guides" / "tracing.md", "## See the spans"
+    )
+    assert "asyncio.run(main())" in code
+    done = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+    )
+    lines = {line.split(":")[0]: line for line in done.stdout.splitlines()}
+
+    assert list(lines)[-1] == "reaction"  # the caller's span closes over the bridge's
+    say = lines["reachy_mini_bridge.say"]
+    assert " completed | first_push +" in say and ", playback_ended +" in say
+    emotion = lines["reachy_mini_bridge.play_emotion"]
+    steps = ["queued", "motion_started", "trajectory_started", "trajectory_ended"]
+    assert [emotion.index(step) for step in steps] == sorted(
+        emotion.index(step) for step in steps
+    )
+    assert " completed | queued +" in emotion
 
 
 def test_the_testing_guide_unit_example_passes() -> None:

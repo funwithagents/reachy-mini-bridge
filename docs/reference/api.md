@@ -248,7 +248,7 @@ What runs together, and who wins:
 
 ## Tracing
 
-A verb returns when its effect is over; when the effect *started* is inside the call. The bridge reports it as **OpenTelemetry spans** ([specs/core/tracing.md](../../specs/core/tracing.md)): one span per call of a verb that makes the robot sound or move, with an event at each moment you cannot see from outside. Measuring how long someone waited for the robot's reaction is reading those events.
+A verb returns when its effect is over; when the effect *started* is inside the call. The bridge reports it as **OpenTelemetry spans** ([specs/core/tracing.md](../../specs/core/tracing.md)): one span per call of a verb that makes the robot sound or move, with an event at each moment you cannot see from outside. Measuring how long someone waited for the robot's reaction is reading those events; [../guides/tracing.md](../guides/tracing.md) walks through a program that prints them.
 
 The package depends on `opentelemetry-api` alone, so the spans cost nothing and go nowhere until your application installs an OpenTelemetry SDK and an exporter; there is nothing to configure on the bridge. The tracer is named `reachy_mini_bridge`.
 

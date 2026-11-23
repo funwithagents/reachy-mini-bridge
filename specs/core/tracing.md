@@ -6,6 +6,7 @@ code:
   - src/reachy_mini_bridge/motion.py
 tests:
   - tests/test_tracing.py
+  - tests/test_docs_examples.py
 ---
 
 # Verb tracing (`tracing.py`)
