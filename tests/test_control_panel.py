@@ -721,6 +721,7 @@ def test_the_users_table_marks_the_followed_user_and_who_is_out_of_view() -> Non
             seen=in_view and not missing_s,
             in_view=in_view,
             last_seen_ts=1.0,
+            first_seen_ts=0.0,
             missing_s=missing_s,
             face=face,
         )

@@ -1337,6 +1337,8 @@ def test_a_person_out_of_view_stays_present_and_keeps_their_id() -> None:
     person = report.users[0]
     assert (person.track_id, person.seen, person.in_view) == (1, False, False)
     assert person.last_seen_ts == pytest.approx(0.5)
+    # their track's first sighting, three observations before they were confirmed
+    assert person.first_seen_ts == pytest.approx(0.125)
     geometry.shift = 0.0
     report = presence.see(face)  # the head back on them
     assert [p.track_id for p in report.users] == [1] and report.users[0].in_view

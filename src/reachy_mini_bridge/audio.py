@@ -45,6 +45,7 @@ import numpy as np
 import numpy.typing as npt
 import samplerate
 
+from . import tracing
 from .errors import BridgeError, SoundInterruptedError, SpeechInterruptedError
 from .fake_reachy_mini import FakeReachyMini
 
@@ -321,6 +322,7 @@ class MediaSession:
         :class:`SpeechInterruptedError` in its own task, then plays.
         """
         self._require_open("say")
+        tracing.set_attribute(tracing.ATTR_STREAMED, False)
         await self._utter(lambda: synth.synthesize(text), synth.sample_rate)
 
     async def say_stream(
@@ -348,7 +350,9 @@ class MediaSession:
                 f"not {type(text_stream).__name__}"
             )
         self._require_open("say_stream")
-        source = text_stream.__aiter__()
+        source = _FirstTextMarked(text_stream.__aiter__())
+        streamed = isinstance(synth, StreamingSpeechSynthesizer)
+        tracing.set_attribute(tracing.ATTR_STREAMED, streamed)
         if isinstance(synth, StreamingSpeechSynthesizer):
 
             def chunks() -> AsyncIterator[npt.NDArray[np.float32]]:
@@ -427,20 +431,35 @@ class MediaSession:
         out_channels = media.get_output_channels()
         resampler = _StreamResampler(rate, out_rate)
         tracker = _PlaybackTracker(out_rate)
+
+        def push(mono: npt.NDArray[np.float32]) -> None:
+            frames = self._push(mono, out_channels)
+            if frames:
+                # The utterance's effect start (specs/core/tracing.md): stamped as the
+                # first audio is handed to the speaker.
+                tracing.mark(tracing.EVENT_FIRST_PUSH)
+            tracker.push(frames)
+
         try:
-            async for chunk in chunks:
-                mono = resampler.process(
-                    np.asarray(chunk, dtype=np.float32).reshape(-1)
-                )
-                tracker.push(self._push(mono, out_channels))
+            try:
+                async for chunk in chunks:
+                    push(
+                        resampler.process(
+                            np.asarray(chunk, dtype=np.float32).reshape(-1)
+                        )
+                    )
+            finally:
+                # Closed before anything else ends: the synthesizer's own cleanup (and,
+                # for `say_stream`, its hold on the text stream) runs first.
+                await _aclose(chunks)
+            push(resampler.flush())
         finally:
-            # Closed before anything else ends: the synthesizer's own cleanup (and,
-            # for `say_stream`, its hold on the text stream) runs first.
-            await _aclose(chunks)
-        tracker.push(self._push(resampler.flush(), out_channels))
+            tracing.set_attribute(tracing.ATTR_AUDIO_SECONDS, tracker.seconds)
         remaining = tracker.remaining()
         if remaining > 0:
             await asyncio.sleep(remaining)
+        if tracker.end is not None:
+            tracing.mark(tracing.EVENT_PLAYBACK_ENDED, at=tracker.end)
 
     def _push(self, mono: npt.NDArray[np.float32], out_channels: int) -> int:
         """Push one mono chunk (fanned out to ``out_channels``); return its frame count."""
@@ -517,9 +536,11 @@ class MediaSession:
         self._require_open("play_sound")
         path = await asyncio.to_thread(_resolve_sound_file, sound_file)
         duration = await asyncio.to_thread(_sound_duration, path)
+        tracing.set_attribute(tracing.ATTR_AUDIO_SECONDS, duration)
         token = await cancel_safe_step(
             lambda: self.start_sound(path), self._stop_sound_logged
         )
+        tracing.mark(tracing.EVENT_SOUND_STARTED)
         try:
             await self._wait_heard(token, duration)
         except SoundInterruptedError:
@@ -795,6 +816,28 @@ async def _whole_text(
         await _aclose(chunks)
 
 
+class _FirstTextMarked:
+    """``source``, with its first non-empty piece stamped on the span of the verb that
+    built this (specs/core/tracing.md): when the text of a ``say_stream`` started to
+    arrive. Closing it closes ``source``."""
+
+    def __init__(self, source: AsyncIterator[str]) -> None:
+        self._source = source
+        self._span = tracing.current()
+
+    def __aiter__(self) -> AsyncIterator[str]:
+        return self
+
+    async def __anext__(self) -> str:
+        piece = await self._source.__anext__()
+        if piece and self._span is not None:
+            self._span.mark(tracing.EVENT_FIRST_TEXT)
+        return piece
+
+    async def aclose(self) -> None:
+        await _aclose(self._source)
+
+
 async def _aclose(iterator: object) -> None:
     """Await ``iterator.aclose()`` when it has one (an async generator's ``finally``
     runs then); idempotent on a generator already closed."""
@@ -838,6 +881,7 @@ class _PlaybackTracker:
         self._now = now
         self._end = 0.0
         self._pushed = False
+        self._frames = 0
 
     def push(self, frames: int) -> None:
         """Account for ``frames`` frames just queued (a no-op for ``frames <= 0``)."""
@@ -845,6 +889,18 @@ class _PlaybackTracker:
             return
         self._end = max(self._end, self._now()) + frames / self._sample_rate
         self._pushed = True
+        self._frames += frames
+
+    @property
+    def end(self) -> float | None:
+        """The estimated end of playback on the tracker's clock, without the tail
+        margin; ``None`` if nothing was pushed."""
+        return self._end if self._pushed else None
+
+    @property
+    def seconds(self) -> float:
+        """The duration of the audio pushed so far."""
+        return self._frames / self._sample_rate
 
     def remaining(self) -> float:
         """Seconds until the queued audio has been heard (``0.0`` if nothing was pushed)."""

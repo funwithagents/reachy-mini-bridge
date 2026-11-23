@@ -11,6 +11,9 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "numpy>=1.26",
+    # The tracing API alone (specs/core/tracing.md): the verbs' spans are no-ops until the
+    # application installs an SDK. Small and pure Python; the same bound as tts-engine's.
+    "opentelemetry-api>=1.20,<2",
     "reachy-mini>=1.11",
     # Streaming, stateful resampler for the TTS output path (synth rate -> speaker
     # rate); MIT, wraps BSD-2-Clause libsamplerate, ships prebuilt wheels. Permissive
@@ -118,6 +121,9 @@ dev = [
     # Rotations in the fast tier's pose assertions. reachy-mini 1.11 no longer requires it;
     # the tests import it themselves, so they declare it.
     "scipy>=1.18.1",
+    # The in-memory span exporter the tracing tests read the verbs' spans from
+    # (specs/core/tracing.md); the package itself depends on the API alone.
+    "opentelemetry-sdk>=1.20,<2",
 ]
 # The TTS provider (specs/project.md "Dependency groups"): phonon, a local model with no
 # key and no torch, so the real-TTS live test, the greeter and the example voices run

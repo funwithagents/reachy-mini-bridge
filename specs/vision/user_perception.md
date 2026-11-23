@@ -170,6 +170,7 @@ class User:
     in_view: bool        # the camera framed where they were on the latest observation (the
                          # tracks' in-view rule); False while a move of the robot's own looks away
     last_seen_ts: float  # the frame time of their last sighting (the bridge's clock)
+    first_seen_ts: float # the frame time of their track's first sighting, before it was confirmed
     missing_s: float     # missing time: how long the camera has framed where they were without
                          # seeing them since that sighting (out of view not counted); 0.0 while seen
     face: Face           # their face at that sighting; its bbox in pixels of that sighting's frame
@@ -190,7 +191,7 @@ class UsersReport:
 
 `bridge.users` is an `Observable[UsersReport]` keeping `CHANGE_HISTORY` values ([observable.md](../core/observable.md)).
 
-- **Arrival: a confirmed track.** A new track joins `users` once it has been seen on `USER_CONFIRM_OBSERVATIONS = 3` observations and at least `USER_CONFIRM_S = 0.3` s after its first sighting, misses in between allowed; its id is in that report's `arrived`. A one-frame false detection — a reflection, a poster seen once — opens a track that is dropped before it is confirmed, and publishes nothing; a detector's blink on a real face does not restart the count. The confirmation is the counterpart of `FACE_ABSENT_S`, which debounces the other direction, and costs a real arrival about 0.3 s.
+- **Arrival: a confirmed track.** A new track joins `users` once it has been seen on `USER_CONFIRM_OBSERVATIONS = 3` observations and at least `USER_CONFIRM_S = 0.3` s after its first sighting, misses in between allowed; its id is in that report's `arrived`. A one-frame false detection — a reflection, a poster seen once — opens a track that is dropped before it is confirmed, and publishes nothing; a detector's blink on a real face does not restart the count. The confirmation is the counterpart of `FACE_ABSENT_S`, which debounces the other direction, and costs a real arrival about 0.3 s. `User.first_seen_ts` keeps that first sighting's frame time for as long as the user is present, so a client measuring how fast it reacted to an arrival tells the detection from the confirmation: the arrival's report comes `USER_CONFIRM_S` or more after it ([tracing.md](../core/tracing.md) "Continuous work carries stamps").
 - **Departure: a dropped track**, its id and reason in that report's `left`:
   - `"left"` — the track ran out of its miss window while in view: the camera looked where the person was and did not see them for `TRACK_LOST_S` (2 s), over at least `TRACK_MIN_MISSES` looks.
   - `"unseen"` — the `UNOBSERVABLE_MAX_S` net: not seen for 20 s, the camera not looking (they may still be there, the robot has not looked).
