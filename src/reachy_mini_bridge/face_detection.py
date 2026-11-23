@@ -196,6 +196,9 @@ class User:
     # rule); False while a move of the robot's own has the camera looking elsewhere
     in_view: bool
     last_seen_ts: float  # the frame time of their last sighting (the bridge's clock)
+    # the frame time of their track's first sighting, before it was confirmed: the
+    # arrival's report comes USER_CONFIRM_S or more after it
+    first_seen_ts: float
     # how long the camera has framed where they were without seeing them, since their
     # last sighting (the time out of view not counted); 0.0 while seen. They leave as
     # "left" at TRACK_LOST_S
@@ -237,6 +240,7 @@ class _Users:
         self._confirmed: set[int] = set()
         self._candidates: dict[int, tuple[float, int]] = {}  # first sighting, count
         self._last: dict[int, tuple[Face, float]] = {}  # last face and its frame time
+        self._first: dict[int, float] = {}  # each confirmed user's first sighting
         self._identity: dict[int, str | None] = {}  # each confirmed user's key
 
     def observe(
@@ -249,6 +253,7 @@ class _Users:
         for track_id, reason in tracks.dropped:
             self._candidates.pop(track_id, None)
             self._last.pop(track_id, None)
+            self._first.pop(track_id, None)
             self._identity.pop(track_id, None)
             if track_id in self._confirmed:
                 self._confirmed.discard(track_id)
@@ -266,6 +271,7 @@ class _Users:
             if count >= USER_CONFIRM_OBSERVATIONS and ts - first >= USER_CONFIRM_S:
                 self._candidates.pop(track_id, None)
                 self._confirmed.add(track_id)
+                self._first[track_id] = first
                 arrived.append(track_id)
             else:
                 self._candidates[track_id] = (first, count)
@@ -284,6 +290,7 @@ class _Users:
                 seen=track_id in seen,
                 in_view=tracks.in_view.get(track_id, True),
                 last_seen_ts=self._last[track_id][1],
+                first_seen_ts=self._first[track_id],
                 missing_s=tracks.missing_s.get(track_id, 0.0),
                 face=self._last[track_id][0],
                 identity=self._identity[track_id],
@@ -302,6 +309,7 @@ class _Users:
         self._confirmed.clear()
         self._candidates.clear()
         self._last.clear()
+        self._first.clear()
         self._identity.clear()
         return UsersReport(users=(), arrived=(), left=left, ts=ts, active=active)
 

@@ -33,9 +33,10 @@ from http.client import HTTPException
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self, cast
 
+from opentelemetry.util.types import AttributeValue
 from reachy_mini.motion.move import Move
 
-from . import audio_devices
+from . import audio_devices, tracing
 from . import daemon as _daemon
 from . import robot as _robot
 from .audio import MediaSession, SoundToken, TTSEngineSynthesizer, cancel_safe_step
@@ -915,6 +916,12 @@ class ReachyMiniBridge:
         at once while the command completes as a whole, in order with the motor
         commands around it, and teardown waits for it.
         """
+        with tracing.verb_span(
+            tracing.SPAN_SET_MOTORS_STATE, {tracing.ATTR_MOTORS_STATE: str(state)}
+        ):
+            await self._set_motors_state(state)
+
+    async def _set_motors_state(self, state: str) -> None:
         robot = self.robot
         motion = self._require_motion()
         if state == "enabled":
@@ -998,6 +1005,12 @@ class ReachyMiniBridge:
         :class:`MotorsNotEnabledError` otherwise). Raises ``ValueError`` for an unknown
         emotion name.
         """
+        with tracing.verb_span(
+            tracing.SPAN_PLAY_EMOTION, {tracing.ATTR_EMOTION: str(name)}
+        ) as span:
+            await self._play_emotion(name, span)
+
+    async def _play_emotion(self, name: str, span: tracing.VerbSpan) -> None:
         await self._require_motors_enabled("play_emotion")
         moves = await self._get_recorded_moves()
         move = moves.get(name)  # ValueError on unknown name
@@ -1020,6 +1033,7 @@ class ReachyMiniBridge:
             primary = motion.submit(
                 move, None if sound_path is None else Path(sound_path)
             )
+            span.mark(tracing.EVENT_QUEUED)
             await asyncio.wrap_future(primary.done)
         except BaseException:
             if primary is not None:
@@ -1030,6 +1044,15 @@ class ReachyMiniBridge:
                 await asyncio.to_thread(primary.dropped.wait, _DROP_ACK_S)
             raise
         finally:
+            if primary is not None:
+                # The loop's steps, stamped by its thread at the tick that took them.
+                for event, at in (
+                    (tracing.EVENT_MOTION_STARTED, primary.motion_started_at),
+                    (tracing.EVENT_TRAJECTORY_STARTED, primary.trajectory_started_at),
+                    (tracing.EVENT_TRAJECTORY_ENDED, primary.trajectory_ended_at),
+                ):
+                    if at is not None:
+                        span.mark(event, at=at)
             wobbling.leases -= 1
             if wobbling.leases == 0:
                 if pause is not None and not pause.done():
@@ -1122,13 +1145,19 @@ class ReachyMiniBridge:
         (``face_detection.detector``; ``ValueError`` with none), and a detector that cannot be
         built raises ``BridgeError`` and leaves tracking off.
         """
-        if track_id is not None:
-            self._require_user(track_id)
-        settings = replace(self._tracking, enabled=True)
-        if focus is not None:
-            settings = replace(settings, focus=focus)
-        await self.set_tracking(settings)
-        self._require_tracker().pin(track_id)
+        attributes: dict[str, AttributeValue] = {}
+        if isinstance(focus, bool):
+            attributes[tracing.ATTR_FOCUS] = focus
+        if isinstance(track_id, int):
+            attributes[tracing.ATTR_TRACK_ID] = track_id
+        with tracing.verb_span(tracing.SPAN_START_HEAD_TRACKING, attributes):
+            if track_id is not None:
+                self._require_user(track_id)
+            settings = replace(self._tracking, enabled=True)
+            if focus is not None:
+                settings = replace(settings, focus=focus)
+            await self.set_tracking(settings)
+            self._require_tracker().pin(track_id)
 
     def _require_user(self, track_id: object) -> None:
         if isinstance(track_id, bool) or not isinstance(track_id, int):
@@ -1148,7 +1177,8 @@ class ReachyMiniBridge:
         """Stop the head tracker: the aim is withdrawn and the head eases back onto the
         idle move. The detection loop keeps running while :attr:`face_detection` is on,
         and stops otherwise. The settings in force with ``enabled`` off."""
-        await self.set_tracking(replace(self._tracking, enabled=False))
+        with tracing.verb_span(tracing.SPAN_STOP_HEAD_TRACKING):
+            await self.set_tracking(replace(self._tracking, enabled=False))
 
     async def set_tracking(self, settings: TrackingSettings) -> None:
         """Apply the whole tracking behaviour (specs/core/config.md "`motion.tracking`",
@@ -1375,8 +1405,10 @@ class ReachyMiniBridge:
         explicit ``synthesizer=`` or the config's ``tts`` block). Raises
         :class:`BridgeError` if neither is available. Needs no motors.
         """
-        chosen = self._resolve_synthesizer("say", synth)
-        await self._require_media().say(text, chosen)
+        with tracing.verb_span(tracing.SPAN_SAY, {tracing.ATTR_INPUT: "text"}) as span:
+            chosen = self._resolve_synthesizer("say", synth)
+            span.set_attribute(tracing.ATTR_SYNTHESIZER, type(chosen).__name__)
+            await self._require_media().say(text, chosen)
 
     async def say_stream(
         self,
@@ -1396,8 +1428,12 @@ class ReachyMiniBridge:
         raises, and its own exception propagates unchanged. ``TypeError`` for a
         ``str`` (use :meth:`say`). Needs no motors.
         """
-        chosen = self._resolve_synthesizer("say_stream", synth)
-        await self._require_media().say_stream(text_stream, chosen)
+        with tracing.verb_span(
+            tracing.SPAN_SAY, {tracing.ATTR_INPUT: "text_stream"}
+        ) as span:
+            chosen = self._resolve_synthesizer("say_stream", synth)
+            span.set_attribute(tracing.ATTR_SYNTHESIZER, type(chosen).__name__)
+            await self._require_media().say_stream(text_stream, chosen)
 
     def _resolve_synthesizer(
         self, verb: str, synth: SpeechSynthesizer | None
@@ -1428,7 +1464,10 @@ class ReachyMiniBridge:
         alongside ``say``. ``FileNotFoundError`` / ``ValueError`` for a file that cannot
         be found or read, before anything plays. Needs no motors.
         """
-        await self._require_media().play_sound(sound_file)
+        with tracing.verb_span(
+            tracing.SPAN_PLAY_SOUND, {tracing.ATTR_SOUND_FILE: str(sound_file)}
+        ):
+            await self._require_media().play_sound(sound_file)
 
     # --- audio-reactive motion (head wobbling) ---
 

@@ -163,7 +163,7 @@ config = ReachyMiniConfig(motion=MotionSettings(idle="custom", idle_move=SlowNod
 
 ### Emotions through the loop
 
-`play_emotion(name)` ([bridge.md](../core/bridge.md)) resolves the move, then hands it to the loop as a primary; the loop plays it — this is the orchestration:
+`play_emotion(name)` ([bridge.md](../core/bridge.md)) resolves the move, then hands it to the loop as a primary; the loop plays it — this is the orchestration. The loop records on the primary the time of the tick that took each step — out of the queue and into the blend (step 2), into the trajectory (step 3), at its end — on its own clock, and the bridge places them on the call's span as `motion_started`, `trajectory_started` and `trajectory_ended` ([tracing.md](../core/tracing.md)); `motion.py` itself imports no tracing:
 
 1. **Queue.** Primaries are FIFO. A second `play_emotion` while one plays waits its turn; cancelling a waiting one removes it from the queue.
 2. **Enter.** When the move becomes current, the loop blends from the source pose to `move.evaluate(0)` over `BLEND_S` (this replaces upstream's `initial_goto_duration`, which covers only the entry and would be a daemon-side move anyway).
@@ -234,6 +234,7 @@ The body yaw is pinned the same way, the fake recording the body yaw of every ta
 - **[config.md](../core/config.md):** the `motion` block (`presence`, `idle`, the Python-only `idle_move`, and `base_following`) sets the modes' initial values; `max_tilt_deg` bounds the gaze layer's poses for the session.
 - **[robot.md](../core/robot.md):** the consumed slice grows `set_target` and the two pose readers, and drops `async_play_move`; the fake records targets.
 - **[audio.md](../audio/audio.md):** the move's sound starts and stops through the media session's file player (`start_sound` / `stop_sound(token)`), shared with `play_sound` under its newest-wins rule; wobbling is paused around an emotion.
+- **[tracing.md](../core/tracing.md):** the step times the loop records on a primary are the events of the `play_emotion` span.
 - **[testing.md](../testing/testing.md):** smoothness and drift cannot be asserted by a test; the live tier asserts what it can (breathing moves z; an emotion returns to neutral; a cancel stops it) and the implementation plan carries the on-robot checks.
 
 ## Open questions

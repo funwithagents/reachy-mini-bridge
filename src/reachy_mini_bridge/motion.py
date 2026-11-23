@@ -835,6 +835,12 @@ class _Primary:
         default_factory=concurrent.futures.Future
     )
     dropped: threading.Event = field(default_factory=threading.Event)
+    # When the loop took each step of the primary, on its clock (``time.perf_counter()``);
+    # None for a step not reached. Written by the loop's thread, read by the bridge for
+    # the verb's span (specs/core/tracing.md).
+    motion_started_at: float | None = None  # out of the queue, the entry blend begins
+    trajectory_started_at: float | None = None  # the move itself begins, with its sound
+    trajectory_ended_at: float | None = None  # the move has played to its end
 
 
 @dataclass
@@ -1318,9 +1324,12 @@ class MotionSession:
                 playing.stage += 1
                 playing.stage_start = now
                 t = 0.0
+                primary = playing.primary
+                if primary is not None and playing.stage == 1:
+                    primary.trajectory_started_at = now
                 if playing.stage >= len(playing.stages):
-                    primary = playing.primary
                     if primary is not None and not primary.done.done():
+                        primary.trajectory_ended_at = now
                         primary.done.set_result(None)
                     exit_blend = playing.exit_blend
                     playing = None
@@ -1362,6 +1371,8 @@ class MotionSession:
                 stage_start=now,
             )
             self._playing = playing
+            if primary is not None:
+                primary.motion_started_at = now
             t = 0.0
 
         stage = playing.stages[playing.stage]

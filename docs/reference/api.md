@@ -2,7 +2,7 @@
 
 The public surface of the bridge: what you import, the verbs and the values, the errors, and the contracts that hold across them — lifecycle, cancellation, concurrency, units, and the three extension points. This page is the consumer's home for those contracts; the normative design, with its rationale, is in the specs it links.
 
-On this page: [Imports](#imports) · [Construction](#construction) · [Lifecycle](#lifecycle) · [Verbs](#verbs) · [Properties and reports](#properties-and-reports) · [Errors](#errors) · [Cancellation and concurrency](#cancellation-and-concurrency) · [Units](#units) · [Extension contracts](#extension-contracts) · [The escape hatch](#the-escape-hatch).
+On this page: [Imports](#imports) · [Construction](#construction) · [Lifecycle](#lifecycle) · [Verbs](#verbs) · [Properties and reports](#properties-and-reports) · [Errors](#errors) · [Cancellation and concurrency](#cancellation-and-concurrency) · [Tracing](#tracing) · [Units](#units) · [Extension contracts](#extension-contracts) · [The escape hatch](#the-escape-hatch).
 
 All verbs are `async`. What they take is human — named emotions, `"enabled"` motors, seconds, degrees and millimetres for a motion offset; what the reports carry states its own unit on each field ("Units" below). The underlying `reachy_mini.ReachyMini` stays reachable as `bridge.robot` for anything the bridge does not cover ("The escape hatch" below).
 
@@ -26,7 +26,7 @@ From `reachy_mini_bridge`:
 | `IdleMove`, `IdleOffsets` | The base class and the value type of a custom idle move |
 | `BridgeError`, `MotorsNotEnabledError`, `GravityCompensationUnsupportedError`, `SpeechInterruptedError`, `SoundInterruptedError`, `ConfigError` | The errors a caller catches |
 
-From `reachy_mini_bridge.errors`: `DaemonError` (a managed daemon that could not be started or found). From `reachy_mini_bridge.config`: `FaceDetectionSettings`, `MotionSettings`, `DaemonConfig`, `AudioSettings` — the blocks, for a config assembled in code. From `reachy_mini_bridge.audio`: `int16_to_float32`, `float32_to_int16`, `downmix_to_mono` — the conversion helpers for a synthesizer or an ASR path. From `reachy_mini_bridge.fake_reachy_mini`: `FakeReachyMini`, to narrow `bridge.robot` in a test. From `reachy_mini_bridge.testing`: the live-test harness ([../guides/testing.md](../guides/testing.md)).
+From `reachy_mini_bridge.errors`: `DaemonError` (a managed daemon that could not be started or found). From `reachy_mini_bridge.config`: `FaceDetectionSettings`, `MotionSettings`, `DaemonConfig`, `AudioSettings` — the blocks, for a config assembled in code. From `reachy_mini_bridge.audio`: `int16_to_float32`, `float32_to_int16`, `downmix_to_mono` — the conversion helpers for a synthesizer or an ASR path. From `reachy_mini_bridge.tracing`: the span, event and attribute names of the verbs' traces and `wall_clock` ("Tracing" below). From `reachy_mini_bridge.fake_reachy_mini`: `FakeReachyMini`, to narrow `bridge.robot` in a test. From `reachy_mini_bridge.testing`: the live-test harness ([../guides/testing.md](../guides/testing.md)).
 
 ## Construction
 
@@ -246,6 +246,50 @@ What runs together, and who wins:
 
 **Blocking SDK calls run off the event loop** (`asyncio.to_thread`), and the motion loop's 60 Hz target stream runs on its own thread, so moving never stalls audio. A detector's `detect` runs on a worker thread, one call at a time.
 
+## Tracing
+
+A verb returns when its effect is over; when the effect *started* is inside the call. The bridge reports it as **OpenTelemetry spans** ([specs/core/tracing.md](../../specs/core/tracing.md)): one span per call of a verb that makes the robot sound or move, with an event at each moment you cannot see from outside. Measuring how long someone waited for the robot's reaction is reading those events; [../guides/tracing.md](../guides/tracing.md) walks through a program that prints them.
+
+The package depends on `opentelemetry-api` alone, so the spans cost nothing and go nowhere until your application installs an OpenTelemetry SDK and an exporter; there is nothing to configure on the bridge. The tracer is named `reachy_mini_bridge`.
+
+| Span | Verb | Events, in order | Attributes (each prefixed `reachy_mini_bridge.`) |
+|---|---|---|---|
+| `reachy_mini_bridge.say` | `say`, `say_stream` | `first_text` (`say_stream`: the first non-empty piece of text arrived) · **`first_push`** (the first audio handed to the speaker) · `playback_ended` (the estimated end of what was heard) | `input` (`"text"` \| `"text_stream"`), `synthesizer` (its class name), `streamed` (the text synthesized as it arrived), `audio_seconds` (the audio handed to the speaker) |
+| `reachy_mini_bridge.play_emotion` | `play_emotion` | `queued` (handed to the motion loop, after the motors check and the library load) · **`motion_started`** (out of the queue, the blend into the move begins) · `trajectory_started` (the recorded move begins, with its sound) · `trajectory_ended` | `emotion` |
+| `reachy_mini_bridge.play_sound` | `play_sound` | **`sound_started`** (the player started the file) · `playback_ended` (the file's estimated end) | `sound_file`, `audio_seconds` (the file's duration) |
+| `reachy_mini_bridge.set_motors_state` | `set_motors_state` | — | `motors_state` |
+| `reachy_mini_bridge.start_head_tracking` | `start_head_tracking` | — | `focus`, `track_id` (each when given) |
+| `reachy_mini_bridge.stop_head_tracking` | `stop_head_tracking` | — | — |
+
+The event in bold is the verb's **effect start**: the moment the robot first sounds or first moves. An event the call did not reach is absent — an emotion cancelled while it waited has `queued` alone.
+
+Every span also carries `reachy_mini_bridge.outcome`, on every way out of the call:
+
+| Outcome | The call |
+|---|---|
+| `completed` | returned |
+| `interrupted` | was replaced by a newer one (`SpeechInterruptedError`, `SoundInterruptedError`) |
+| `cancelled` | had its task cancelled — the *call's* outcome: an instant verb's accepted command still completes ("Cancellation and concurrency") |
+| `failed` | raised anything else; the exception is recorded on the span, its status `ERROR` |
+
+**How the spans join yours.** A verb's span is a child of the span current when you await the verb, and a span opened by what the verb runs — a synthesizer tracing its own utterance, as tts-engine does — is a child of the verb's. Wrap a reaction in a span of your own and the trace holds every step under it:
+
+```python
+from opentelemetry import trace
+
+tracer = trace.get_tracer("my_app")
+
+with tracer.start_as_current_span("reaction"):
+    await bridge.play_emotion("happy")  # reachy_mini_bridge.play_emotion, under "reaction"
+    await bridge.say("hello")  # reachy_mini_bridge.say, the synthesizer's span under it
+```
+
+**The names are stable.** Read them from `reachy_mini_bridge.tracing` (`TRACER_NAME`, `SPAN_SAY`, `EVENT_FIRST_PUSH`, `ATTR_OUTCOME`, …) instead of typing the strings; a name changes only as a breaking change.
+
+**Times.** Span and event times are UTC wall clock, comparable with any other package's spans. The reports of continuous work — frames, mic chunks, faces, users — are no spans: they carry a `ts` on the bridge's clock ("Units"), and `reachy_mini_bridge.tracing.wall_clock(ts)` converts one to a UTC `datetime` to place it on a trace. For an arrival, `User.first_seen_ts` is when the detector first saw the person and the arrival's report is when they were confirmed, 0.3 s or more later.
+
+`first_push` is the moment the audio enters the speaker's queue; the delay from there to the sound in the room (a few tens of milliseconds on a robot connected to this machine, more over WebRTC) is outside what the bridge measures.
+
 ## Units
 
 | Value | Unit |
@@ -255,7 +299,7 @@ What runs together, and who wins:
 | A face's box (`Face.bbox`, `PixelFace.bbox`) | pixels of the full camera frame |
 | A face's head angles (`roll`, `pitch`, `yaw`; `PixelFace.orientation`) | **radians**, as seen from the camera |
 | A head pose (`CameraFrame.head_pose`, `FaceReport.head_pose`) | a 4×4 matrix in metres, world frame (x forward, y left, z up) |
-| Times (`ts`) | seconds on the bridge's monotonic clock, `time.perf_counter()` — the same clock as `time.monotonic()` on macOS and Linux, and finer than it on Windows before Python 3.13 |
+| Times (`ts`) | seconds on the bridge's monotonic clock, `time.perf_counter()` — the same clock as `time.monotonic()` on macOS and Linux, and finer than it on Windows before Python 3.13; `reachy_mini_bridge.tracing.wall_clock(ts)` gives the UTC wall-clock time ("Tracing") |
 | Camera image | `uint8` BGR, H×W×3 |
 | Mic chunks (`audio_input`) | `bytes` of int16 little-endian PCM, mono by default, at `mic_sample_rate` (16 kHz) |
 | Synthesizer output (`SpeechSynthesizer.synthesize`, `synthesize_stream`) | `float32` mono numpy in [-1, 1], shape `(n,)`, at `synth.sample_rate` |

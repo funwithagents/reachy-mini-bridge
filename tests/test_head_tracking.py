@@ -67,6 +67,7 @@ def _present(report: FaceReport) -> UsersReport:
                 seen=True,
                 in_view=True,
                 last_seen_ts=report.ts,
+                first_seen_ts=report.ts,
                 missing_s=0.0,
                 face=f,
             )
@@ -144,6 +145,7 @@ class _Tracks:
                     seen=track_id in seen,
                     in_view=True,
                     last_seen_ts=user["seen"],
+                    first_seen_ts=user["seen"],
                     missing_s=user["missing"],
                     face=user["face"],
                 )
