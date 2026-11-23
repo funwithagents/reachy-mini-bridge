@@ -39,7 +39,11 @@ RATE = 16000
 SILENCE_S = 0.15  # what the slow synthesizer waits before its first audio
 TONE_S = 0.2  # the audio of one utterance
 NS = 1e9
-ANCHOR_NS = 1e6  # two spans' wall-clock anchors agree to well within a millisecond
+# Two spans anchor on the wall clock separately, so their stamps agree to its resolution:
+# microseconds on macOS and Linux, up to a 15.6 ms system tick on Windows.
+ANCHOR_NS = 0.02 * NS
+# A sleep may return a timer tick early on Windows; two in a row, two ticks.
+EARLY_NS = 0.035 * NS
 
 
 @pytest.fixture
@@ -196,7 +200,7 @@ def test_say_is_one_span_under_the_callers_with_its_first_push_and_playback_end(
     # duration between it and the estimated end of playback, the call's return after.
     assert abs(_start(span) - before) < 0.05 * NS
     first_push = events[tracing.EVENT_FIRST_PUSH]
-    assert first_push - _start(span) >= SILENCE_S * NS
+    assert first_push - _start(span) >= SILENCE_S * NS - EARLY_NS
     played = events[tracing.EVENT_PLAYBACK_ENDED] - first_push
     assert played == pytest.approx(TONE_S * NS, abs=0.05 * NS)
     assert _end(span) >= events[tracing.EVENT_PLAYBACK_ENDED]
@@ -224,7 +228,7 @@ def test_say_stream_stamps_the_first_text_before_the_first_push(
         tracing.EVENT_PLAYBACK_ENDED,
     ]
     # The first piece is empty: the text started with the second, 0.2 s in.
-    assert events[tracing.EVENT_FIRST_TEXT] - _start(span) >= 0.2 * NS
+    assert events[tracing.EVENT_FIRST_TEXT] - _start(span) >= 0.2 * NS - EARLY_NS
     assert _attr(span, tracing.ATTR_INPUT) == "text_stream"
     assert _attr(span, tracing.ATTR_STREAMED) is True
     assert _outcome(span) == "completed"
@@ -244,7 +248,7 @@ def test_say_stream_through_a_whole_text_synthesizer_is_not_streamed(
     assert _attr(span, tracing.ATTR_STREAMED) is False
     # Speech waits for the whole text: both pieces, then the synthesizer's silence.
     waited = events[tracing.EVENT_FIRST_PUSH] - events[tracing.EVENT_FIRST_TEXT]
-    assert waited >= (0.1 + SILENCE_S) * NS
+    assert waited >= (0.1 + SILENCE_S) * NS - EARLY_NS
 
 
 def test_a_synthesizers_own_span_nests_under_the_says(
@@ -557,7 +561,7 @@ def test_head_tracking_verbs_are_one_span_each(spans: InMemorySpanExporter) -> N
     assert _attr(started, tracing.ATTR_TRACK_ID) is None  # the automatic target
     assert _outcome(started) == "completed"
     assert _outcome(stopped) == "completed"
-    assert _end(started) <= _start(stopped)
+    assert _end(started) <= _start(stopped) + ANCHOR_NS
     assert _attr(refused, tracing.ATTR_TRACK_ID) == 7
     assert _outcome(refused) == "failed"
 
