@@ -55,8 +55,9 @@ An event marks a moment inside the call. Each is stamped once per span, at the m
 | `play_emotion` | `trajectory_started` | the blend ended and the recorded move began, with its sound |
 | `play_emotion` | `trajectory_ended` | the recorded move played to its end; present when it did |
 | `play_sound` | `sound_started` | the file player started the file: **the sound's effect start** |
+| `play_sound` | `playback_ended` | the estimated end of what was heard — the file's duration after its start, before the tail margin; present when the file played to its end |
 
-A step the call did not reach has no event: a `say` cancelled before any audio has no `first_push`, an emotion cancelled in the queue has `queued` alone. `set_motors_state` and the head-tracking verbs have no event — their span's start and end are what there is to know; the head turns toward a face when one is seen, which belongs to no call.
+A step the call did not reach has no event: a `say` cancelled before any audio has no `first_push`, a sound file replaced or cancelled has no `playback_ended`, an emotion cancelled in the queue has `queued` alone. `set_motors_state` and the head-tracking verbs have no event — their span's start and end are what there is to know; the head turns toward a face when one is seen, which belongs to no call.
 
 The three loop events of an emotion are stamped by the motion loop at the tick that took the step — the tick's own time, so `motion_started` of a call queued behind another equals the `trajectory_ended` of the one before it — and placed on the span by the bridge when the call ends.
 

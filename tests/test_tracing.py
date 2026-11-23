@@ -455,8 +455,11 @@ def test_play_sound_stamps_the_start_of_the_file(
     span = _one(spans, tracing.SPAN_PLAY_SOUND)
     events = _events(span)
 
-    assert list(events) == [tracing.EVENT_SOUND_STARTED]
-    assert _end(span) - events[tracing.EVENT_SOUND_STARTED] >= 0.2 * NS
+    assert list(events) == [tracing.EVENT_SOUND_STARTED, tracing.EVENT_PLAYBACK_ENDED]
+    # The file's estimated end: its duration after its start, the call's return after.
+    played = events[tracing.EVENT_PLAYBACK_ENDED] - events[tracing.EVENT_SOUND_STARTED]
+    assert played == pytest.approx(0.2 * NS, abs=1e3)
+    assert _end(span) >= events[tracing.EVENT_PLAYBACK_ENDED]
     assert _attr(span, tracing.ATTR_SOUND_FILE) == str(sound)
     assert _attr(span, tracing.ATTR_AUDIO_SECONDS) == pytest.approx(0.2)
     assert _outcome(span) == "completed"
@@ -482,7 +485,9 @@ def test_a_replaced_and_a_cancelled_sound_end_their_spans_so(
 
     assert _outcome(first) == "interrupted"
     assert _outcome(second) == "cancelled"
-    assert tracing.EVENT_SOUND_STARTED in _events(second)
+    # Started, and neither heard to its end.
+    assert list(_events(first)) == [tracing.EVENT_SOUND_STARTED]
+    assert list(_events(second)) == [tracing.EVENT_SOUND_STARTED]
 
 
 def test_a_missing_sound_file_ends_its_span_failed_before_any_start(

@@ -256,7 +256,7 @@ The package depends on `opentelemetry-api` alone, so the spans cost nothing and 
 |---|---|---|---|
 | `reachy_mini_bridge.say` | `say`, `say_stream` | `first_text` (`say_stream`: the first non-empty piece of text arrived) · **`first_push`** (the first audio handed to the speaker) · `playback_ended` (the estimated end of what was heard) | `input` (`"text"` \| `"text_stream"`), `synthesizer` (its class name), `streamed` (the text synthesized as it arrived), `audio_seconds` (the audio handed to the speaker) |
 | `reachy_mini_bridge.play_emotion` | `play_emotion` | `queued` (handed to the motion loop, after the motors check and the library load) · **`motion_started`** (out of the queue, the blend into the move begins) · `trajectory_started` (the recorded move begins, with its sound) · `trajectory_ended` | `emotion` |
-| `reachy_mini_bridge.play_sound` | `play_sound` | **`sound_started`** (the player started the file) | `sound_file`, `audio_seconds` (the file's duration) |
+| `reachy_mini_bridge.play_sound` | `play_sound` | **`sound_started`** (the player started the file) · `playback_ended` (the file's estimated end) | `sound_file`, `audio_seconds` (the file's duration) |
 | `reachy_mini_bridge.set_motors_state` | `set_motors_state` | — | `motors_state` |
 | `reachy_mini_bridge.start_head_tracking` | `start_head_tracking` | — | `focus`, `track_id` (each when given) |
 | `reachy_mini_bridge.stop_head_tracking` | `stop_head_tracking` | — | — |

@@ -540,7 +540,8 @@ class MediaSession:
         token = await cancel_safe_step(
             lambda: self.start_sound(path), self._stop_sound_logged
         )
-        tracing.mark(tracing.EVENT_SOUND_STARTED)
+        started = time.perf_counter()
+        tracing.mark(tracing.EVENT_SOUND_STARTED, at=started)
         try:
             await self._wait_heard(token, duration)
         except SoundInterruptedError:
@@ -549,6 +550,9 @@ class MediaSession:
             # Cancelled (or failed): stop our file before the exception propagates.
             await asyncio.shield(asyncio.to_thread(self._stop_sound_logged, token))
             raise
+        # Heard to its end: the file's estimated end, before the tail margin — the
+        # event `say` stamps for an utterance (specs/core/tracing.md).
+        tracing.mark(tracing.EVENT_PLAYBACK_ENDED, at=started + duration)
         self.release(token)
 
     async def _wait_heard(self, token: SoundToken, duration: float) -> None:
