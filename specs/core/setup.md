@@ -106,7 +106,7 @@ Makes every preparable missing item ready, through the same upstream calls the b
 A light, real run: it connects, reads, and lets go; it never moves the robot and never speaks.
 
 - **The robot**: a `ReachyMiniBridge` built from the config with no voice, presence and wobbling off, face detection and head tracking off — a session entered, the motor state read (`get_motors_state()`), the session left. With `fake` it is immediate; with `sim` and a daemon to spawn it starts MuJoCo and takes seconds; with `real` it reaches the daemon (a USB robot's spawned, a wireless robot's borrowed). The daemon it spawned is stopped when the session ends.
-- **The voice**, when the config has a `tts` block: `tts_engine.setup.probe` over the block with its `player` replaced by a discarding one, so nothing is played on this machine's speakers: what tts-engine proves (the key, the model, the provider) without a sound in the room.
+- **The voice**, when the config has a `tts` block: `tts_engine.setup.probe` over the block, tts-engine's own light check (a hosted voice's list read with the key, the configured voice looked up there; a local model loaded and released). It synthesizes nothing and opens no device, so no sound is made in the room.
 - It returns `{"ok", "message", "duration_s"}`: `ok` when both parts succeeded, the message saying what was done ("Connected to the sim robot (motors enabled), then disconnected. Voice: …") or what failed. It never raises; it runs on a thread of its own, so it can be called from a thread that already runs an event loop; it releases what it built before it returns.
 
 ### Keys passed in code: `secrets`

@@ -455,7 +455,8 @@ def _probe(config: dict[str, Any]) -> tuple[bool, str]:
     tts = _tts_block(config)
     if tts is None:
         return True, message
-    voice = tts_setup.probe({**tts, "player": {"discard": True}})
+    # The voice's own light check: it plays nothing.
+    voice = tts_setup.probe(tts)
     return bool(voice["ok"]), f"{message} Voice: {voice['message']}"
 
 

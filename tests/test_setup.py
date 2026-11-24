@@ -454,7 +454,7 @@ def test_the_probe_connects_reads_and_leaves_without_moving_the_robot(
     assert ("media.stop_recording", {}) in robot.commands  # the session was left
 
 
-def test_the_probe_runs_the_voices_own_check_played_nowhere(
+def test_the_probe_runs_the_voices_own_check_after_the_robot_s(
     fakes: list[FakeReachyMini],
 ) -> None:
     config = {"backend": "fake", "tts": {"module": {"type": "tone"}}}
@@ -462,7 +462,7 @@ def test_the_probe_runs_the_voices_own_check_played_nowhere(
     result = setup.probe(config)
 
     assert result["ok"], result
-    assert "nothing was played on a device" in result["message"]
+    assert result["message"].endswith("then disconnected. Voice: Built the module.")
 
 
 def test_a_voice_that_cannot_build_fails_the_probe_without_raising(
