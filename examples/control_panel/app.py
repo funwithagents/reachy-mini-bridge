@@ -44,11 +44,12 @@ from reachy_mini_bridge.config import IDLE_MODES
 
 log = logging.getLogger(__name__)
 
-# The app's default config, a committed file app-setup writes into an empty folder:
-# the offline fake, which needs nothing installed, no robot and no key, so the page — and
-# a session started at launch — works before any choice.
-DEFAULT_CONFIG_FILE = Path(__file__).with_name("default_config.json")
-DEFAULT_CONFIG = json.loads(DEFAULT_CONFIG_FILE.read_text(encoding="utf-8"))
+# The app's default config, which app-setup writes into an empty folder: the repo's
+# full example config (every field, the headless sim with the webcam, a Phonon voice), as
+# the panel used before, under the app's one section. On a fresh install the Setup tab
+# shows what it needs (the sim extra, the voice's extra and model, the datasets).
+DEFAULT_CONFIG_FILE = Path(__file__).parents[1] / "configs" / "full.json"
+DEFAULT_CONFIG = {SECTION: json.loads(DEFAULT_CONFIG_FILE.read_text(encoding="utf-8"))}
 
 APP = App(
     name="reachy-mini-bridge-control-panel",

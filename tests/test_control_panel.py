@@ -367,7 +367,8 @@ def test_the_page_builds_over_a_session_and_its_ticks_read_the_state(
     with ControlPanelController(_faces_config(scene)) as controller:
         # A session on a Python-only detector, which no saved config can name.
         session.controller = controller
-        demo = build_page(_model(tmp_path, session), session)
+        # The session already runs: the config is locked, so nothing is saved.
+        demo = build_page(_model(tmp_path, session, saved=None), session)
         assert isinstance(demo, gr.Blocks)
         assert refresh_session(session, [])[0] == refresh(controller, [])[0]
         scene.show(0.5, -0.5)
@@ -401,17 +402,31 @@ def test_the_page_builds_over_a_session_and_its_ticks_read_the_state(
         assert f"#{tid} arrived" in events_text
 
 
-def _model(folder: Path, session: RobotSession | None = None) -> AppModel:
-    """The panel's model over a folder of its own, its secrets kept off os.environ."""
+# The offline fake: what the tests run a session on (the app's default is the full
+# example config, the headless sim).
+FAKE = {"reachy": {"backend": "fake"}}
+
+
+def _model(
+    folder: Path,
+    session: RobotSession | None = None,
+    *,
+    saved: dict[str, object] | None = FAKE,
+) -> AppModel:
+    """The panel's model over a folder of its own, its secrets kept off os.environ, the
+    fake saved as its config (`saved=None` keeps the app's default)."""
     from examples.control_panel.app import APP
 
     config_folder = ConfigFolder(folder, APP.default_config)
-    return AppModel(
+    model = AppModel(
         APP,
         config_folder,
         SecretStore(config_folder.env_path, {}),
         locked=session.locked if session is not None else None,
     )
+    if saved is not None:
+        model.save(saved)
+    return model
 
 
 def test_a_session_starts_from_the_saved_config_and_locks_it_until_stopped(
@@ -469,17 +484,25 @@ def test_a_bring_up_that_fails_is_a_reason_and_leaves_nothing_running(
     assert session.controller is None and not session.locked()
 
 
-def test_the_default_config_is_the_committed_file_ready_and_started_at_launch(
+def test_the_default_config_is_the_full_example_valid_and_started_at_launch(
     tmp_path: Path,
 ) -> None:
     from examples.control_panel.app import APP, DEFAULT_CONFIG, DEFAULT_CONFIG_FILE
 
-    model = _model(tmp_path)  # an empty folder: module-setup writes the default
+    model = _model(
+        tmp_path, saved=None
+    )  # an empty folder: app-setup writes the default
 
-    assert DEFAULT_CONFIG == json.loads(DEFAULT_CONFIG_FILE.read_text("utf-8"))
-    assert APP.default_config == {"reachy": {"backend": "fake"}}
+    # The repo's full example config, under the app's section.
+    assert DEFAULT_CONFIG_FILE.name == "full.json"
+    assert DEFAULT_CONFIG == {
+        "reachy": json.loads(DEFAULT_CONFIG_FILE.read_text("utf-8"))
+    }
+    assert APP.default_config == DEFAULT_CONFIG
     assert model.saved_config() == DEFAULT_CONFIG
-    assert model.blockers(DEFAULT_CONFIG) == []
+    # What the machine needs for it (the sim, the voice, the datasets) depends on the
+    # machine; the config itself is valid.
+    assert model.check_config(DEFAULT_CONFIG) == []
     assert starts_at_launch(model, None)
     assert not starts_at_launch(model, False)
     assert [section.name for section in APP.sections] == ["reachy"]

@@ -28,7 +28,7 @@ Implements `specs/examples/control_panel.md` as updated: the control panel rebui
 
 Three changes from testing the demo, done on the same branch:
 
-- The default config is a committed file, `examples/control_panel/default_config.json`, loaded into `App(default_config=...)`.
+- The default config is a committed file, loaded into `App(default_config=...)`: first `examples/control_panel/default_config.json` (the fake), then, at the user's request, the repo's full example config `examples/configs/full.json` itself, as the panel used it before (no copy to keep in step).
 - The page opens on the Robot tab when the session starts at launch, else on Setup.
 - Start and Stop are greyed by the session's status (`RobotSession.status`, `session_buttons`): refreshed by each press, its outcome, and the 0.5 s timer.
 
