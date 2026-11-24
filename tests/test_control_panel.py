@@ -432,7 +432,7 @@ def _model(
 def test_the_session_reads_relative_paths_against_the_apps_folder(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The folder module-setup passes to the setup functions as `base_dir` is the one
+    """The folder app-setup passes to the setup functions as `base_dir` is the one
     the session's config is loaded with: a voice file next to config.json is found."""
     with wave.open(str(tmp_path / "hi.wav"), "wb") as out:
         out.setnchannels(1)
@@ -491,6 +491,43 @@ def test_a_config_with_blockers_starts_nothing_and_says_why(tmp_path: Path) -> N
     assert reasons and "/reachy/backend" in reasons[0]
     assert session.reasons == reasons
     assert session.controller is None and not session.locked()
+
+
+def test_a_missing_item_a_session_gets_itself_does_not_block_the_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Blockers count required items only: the face detector's weights, missing and
+    not required, leave Start free (the session fetches them itself); a required one
+    blocks it."""
+    from reachy_mini_bridge import setup as bridge_setup
+
+    monkeypatch.setattr(bridge_setup, "_yunet_cached", lambda: False)
+    session = RobotSession()
+    model = _model(tmp_path, session)
+    model.save({"reachy": {"backend": "fake", "face_detection": {"detector": "yunet"}}})
+
+    [item] = model.check_setup(model.saved_config())
+    assert (item.id, item.status, item.required) == ("weights:yunet", "missing", False)
+    assert session.start(model) == []
+    session.stop()
+
+    monkeypatch.delenv("KEYED_MISSING_KEY", raising=False)
+    model.save(
+        {
+            "reachy": {
+                "backend": "fake",
+                "tts": {
+                    "module": {
+                        "type": "gradium",
+                        "voice_id": "v",
+                        "api_key_env": "KEYED_MISSING_KEY",
+                    }
+                },
+            }
+        }
+    )
+    reasons = session.start(model)
+    assert reasons and session.controller is None
 
 
 def test_a_bring_up_that_fails_is_a_reason_and_leaves_nothing_running(

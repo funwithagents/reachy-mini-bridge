@@ -34,3 +34,4 @@ Three changes from testing the demo, done on the same branch:
 
 Tests: the default file, the tab opened, the buttons per status. Verified with the same gate.
 - Relative paths: the session's config is loaded with the app's folder as `base_dir` (`model.path`), the folder module-setup passes to the setup functions; tested with a voice file next to `config.json`.
+- Rebased onto app-setup's contract (2026-11-24): `module-setup` renamed `app-setup`; Start's blockers count required items only, so an item a session gets itself (the face detector's weights, the emotions library, GStreamer's registry) no longer blocks it; tested both ways.
