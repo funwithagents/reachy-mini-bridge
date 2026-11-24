@@ -23,3 +23,13 @@ Implements `specs/examples/control_panel.md` as updated: the control panel rebui
 ## Verification
 
 `uv run ruff check .`, `uv run ruff format src tests tests-e2e examples`, `uv run pyright`, `uv run pytest`; the page run once by hand on the fake.
+
+## After review (2026-11-24)
+
+Three changes from testing the demo, done on the same branch:
+
+- The default config is a committed file, `examples/control_panel/default_config.json`, loaded into `App(default_config=...)`.
+- The page opens on the Robot tab when the session starts at launch, else on Setup.
+- Start and Stop are greyed by the session's status (`RobotSession.status`, `session_buttons`): refreshed by each press, its outcome, and the 0.5 s timer.
+
+Tests: the default file, the tab opened, the buttons per status. Verified with the same gate.

@@ -8,13 +8,17 @@ for it, and stops it at Stop. It tells app-setup's model when the config is in u
 from __future__ import annotations
 
 import threading
+from typing import Literal
 
 from app_setup.app import AppModel
 
 from examples.control_panel.controller import ControlPanelController
 from reachy_mini_bridge import BridgeError, ReachyMiniConfig
 
-__all__ = ["SECTION", "RobotSession"]
+__all__ = ["SECTION", "RobotSession", "Status"]
+
+# Where the session is: what the Start and Stop buttons follow.
+Status = Literal["stopped", "starting", "running", "stopping"]
 
 # The app's section holding the bridge's config document.
 SECTION = "reachy"
@@ -25,20 +29,31 @@ class RobotSession:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()  # one Start or Stop at a time
-        self._busy = False  # a Start or a Stop in progress
+        self._status: Status = "stopped"
         self.controller: ControlPanelController | None = None
         # Why the last Start started nothing (empty once a session runs).
         self.reasons: list[str] = []
 
+    @property
+    def status(self) -> Status:
+        """`starting` from a Start until the session runs (or did not start),
+        `running`, `stopping` from a Stop until it is stopped, else `stopped`."""
+        return self._status
+
     def locked(self) -> bool:
         """Whether the saved config is in use: from Start until the stop finished."""
-        return self._busy or self.controller is not None
+        return self._status != "stopped" or self.controller is not None
 
     def start(self, model: AppModel, *, timeout: float | None = None) -> list[str]:
         """Start a session on the saved config; why it cannot, as a list, instead (kept
         on `reasons`). Already running: nothing to do."""
         with self._lock:
-            self.reasons = self._start(model, timeout)
+            if self.controller is None:
+                self._status = "starting"
+            try:
+                self.reasons = self._start(model, timeout)
+            finally:
+                self._status = "running" if self.controller is not None else "stopped"
             return self.reasons
 
     def _start(self, model: AppModel, timeout: float | None) -> list[str]:
@@ -48,7 +63,6 @@ class RobotSession:
         blockers = model.blockers(saved)
         if blockers:
             return blockers
-        self._busy = True
         try:
             config = ReachyMiniConfig.from_dict(model.used_config(saved)[SECTION])
             controller = ControlPanelController(config)
@@ -56,8 +70,6 @@ class RobotSession:
             self.controller = controller
         except Exception as exc:  # noqa: BLE001 - said on the page
             return [f"The session could not start: {str(exc) or type(exc).__name__}"]
-        finally:
-            self._busy = False
         return []
 
     def stop(self) -> bool:
@@ -67,12 +79,12 @@ class RobotSession:
             controller = self.controller
             if controller is None:
                 return False
-            self._busy = True
+            self._status = "stopping"
             try:
                 controller.stop()
             finally:
                 self.controller = None
-                self._busy = False
+                self._status = "stopped"
             return True
 
     def require(self) -> ControlPanelController:

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import json
 import logging
 import math
 import time
@@ -43,9 +44,11 @@ from reachy_mini_bridge.config import IDLE_MODES
 
 log = logging.getLogger(__name__)
 
-# The offline fake: it needs nothing installed, no robot and no key, so the page — and a
-# session started at launch — works before any choice.
-DEFAULT_CONFIG = {SECTION: {"backend": "fake"}}
+# The app's default config, a committed file app-setup writes into an empty folder:
+# the offline fake, which needs nothing installed, no robot and no key, so the page — and
+# a session started at launch — works before any choice.
+DEFAULT_CONFIG_FILE = Path(__file__).with_name("default_config.json")
+DEFAULT_CONFIG = json.loads(DEFAULT_CONFIG_FILE.read_text(encoding="utf-8"))
 
 APP = App(
     name="reachy-mini-bridge-control-panel",
@@ -235,8 +238,23 @@ def refresh_camera(
     return marked, text
 
 
+def session_buttons(session: RobotSession) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Start and Stop, greyed by the session's status: Start only while it is stopped,
+    Stop only while it runs."""
+    status = session.status
+    return (
+        gr.update(interactive=status == "stopped"),
+        gr.update(interactive=status == "running"),
+    )
+
+
 def session_markdown(session: RobotSession) -> str:
-    """The session line: the backend running, or why the last Start started nothing."""
+    """The session line: starting or stopping, the backend running, or why the last
+    Start started nothing."""
+    if session.status == "starting":
+        return "**Session:** starting…"
+    if session.status == "stopping":
+        return "**Session:** stopping…"
     controller = session.controller
     if controller is not None and controller.running:
         return (
@@ -335,8 +353,15 @@ def _robot_tab(model: AppModel, session: RobotSession) -> None:
         return run
 
     with gr.Row(equal_height=True):
-        start = gr.Button("Start", variant="primary", scale=0)
-        stop = gr.Button("Stop", variant="stop", scale=0)
+        start = gr.Button(
+            "Start",
+            variant="primary",
+            scale=0,
+            interactive=session.status == "stopped",
+        )
+        stop = gr.Button(
+            "Stop", variant="stop", scale=0, interactive=session.status == "running"
+        )
         session_md = gr.Markdown(session_markdown(session))
     with gr.Accordion("Config (read-only)", open=False):
         config_json = gr.JSON(value=dataclasses.asdict(config))
@@ -449,27 +474,43 @@ def _robot_tab(model: AppModel, session: RobotSession) -> None:
     def on_start() -> list[Any]:
         reasons = session.start(model)
         controller = session.controller
+        line = [session_markdown(session), *session_buttons(session)]
         if reasons or controller is None:
             log_line(log_lines, "start: not started")
-            return [session_markdown(session), *[gr.update() for _ in controls]]
+            return [*line, *[gr.update() for _ in controls]]
         log_line(log_lines, "start: running")
-        return [
-            session_markdown(session),
-            *_control_values(controller.bridge.config, controller),
-        ]
+        return [*line, *_control_values(controller.bridge.config, controller)]
 
-    def on_stop() -> str:
+    def on_stop() -> list[Any]:
         if session.stop():
             log_line(log_lines, "stop: done")
-        return session_markdown(session)
+        return [session_markdown(session), *session_buttons(session)]
 
-    start.click(on_start, outputs=[session_md, *controls], api_name="start")
-    stop.click(on_stop, outputs=[session_md], api_name="stop")
+    def pressed(starting: bool) -> list[Any]:
+        """Both buttons greyed at once, before the Start or Stop runs."""
+        verb = "starting" if starting else "stopping"
+        return [
+            f"**Session:** {verb}…",
+            gr.update(interactive=False),
+            gr.update(interactive=False),
+        ]
+
+    line = [session_md, start, stop]
+    start.click(lambda: pressed(True), outputs=line, queue=False).then(
+        on_start, outputs=[*line, *controls], api_name="start"
+    )
+    stop.click(lambda: pressed(False), outputs=line, queue=False).then(
+        on_stop, outputs=line, api_name="stop"
+    )
 
     timer = gr.Timer(REFRESH_S)
     timer.tick(
-        lambda: (session_markdown(session), *refresh_session(session, log_lines)),
-        outputs=[session_md, state_md, mic_level, log_box],
+        lambda: (
+            session_markdown(session),
+            *session_buttons(session),
+            *refresh_session(session, log_lines),
+        ),
+        outputs=[*line, state_md, mic_level, log_box],
         show_progress="hidden",
         api_name="refresh",
     )
@@ -542,12 +583,14 @@ def refresh_session_users(session: RobotSession) -> tuple[str, str, str]:
     return refresh_users(controller)
 
 
-def build_page(model: AppModel, session: RobotSession) -> gr.Blocks:
+def build_page(
+    model: AppModel, session: RobotSession, *, started_at_launch: bool = False
+) -> gr.Blocks:
     """The panel's page: its Robot tab, then app-setup's Setup and Secrets panels. It
-    opens on Setup."""
+    opens on Robot when the session started at launch, else on Setup."""
     with gr.Blocks(title=model.title) as page:
         gr.Markdown(f"# {model.title}")
-        with gr.Tabs(selected="setup"):
+        with gr.Tabs(selected="robot" if started_at_launch else "setup"):
             with gr.Tab("Robot", id="robot"):
                 _robot_tab(model, session)
             with gr.Tab("Setup", id="setup"):
@@ -588,11 +631,12 @@ def main(argv: Sequence[str] | None = None) -> None:
         APP, ConfigFolder(options.folder, APP.default_config), locked=session.locked
     )
     log.info("folder: %s", model.path)
-    if starts_at_launch(model, options.start):
+    at_launch = starts_at_launch(model, options.start)
+    if at_launch:
         for reason in session.start(model):
             log.warning("the session did not start at launch: %s", reason)
     try:
-        build_page(model, session).launch(
+        build_page(model, session, started_at_launch=at_launch).launch(
             server_name=options.host, server_port=options.port
         )
     finally:

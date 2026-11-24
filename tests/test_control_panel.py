@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures as cf
+import json
 import math
 import time
 import wave
@@ -468,11 +469,15 @@ def test_a_bring_up_that_fails_is_a_reason_and_leaves_nothing_running(
     assert session.controller is None and not session.locked()
 
 
-def test_the_default_config_is_ready_and_starts_at_launch(tmp_path: Path) -> None:
-    from examples.control_panel.app import APP, DEFAULT_CONFIG
+def test_the_default_config_is_the_committed_file_ready_and_started_at_launch(
+    tmp_path: Path,
+) -> None:
+    from examples.control_panel.app import APP, DEFAULT_CONFIG, DEFAULT_CONFIG_FILE
 
-    model = _model(tmp_path)
+    model = _model(tmp_path)  # an empty folder: module-setup writes the default
 
+    assert DEFAULT_CONFIG == json.loads(DEFAULT_CONFIG_FILE.read_text("utf-8"))
+    assert APP.default_config == {"reachy": {"backend": "fake"}}
     assert model.saved_config() == DEFAULT_CONFIG
     assert model.blockers(DEFAULT_CONFIG) == []
     assert starts_at_launch(model, None)
@@ -505,11 +510,91 @@ def test_the_page_puts_robot_first_opens_on_setup_and_ticks_without_a_session(
         "Secrets",
     ]
     assert tabs[0] == "Robot"
-    assert "setup" in selected
+    assert "setup" in selected and "robot" not in selected
     assert refresh_session(session, [])[0] == NO_SESSION
     assert refresh_session_camera(session, [])[0] is None
     assert refresh_session_users(session)[0] == NO_SESSION
     assert "press Start" in session_markdown(session)
+
+
+def test_the_page_opens_on_robot_when_the_session_started_at_launch(
+    tmp_path: Path,
+) -> None:
+    gr = pytest.importorskip("gradio")
+    from examples.control_panel.app import build_page
+
+    session = RobotSession()
+    page = build_page(_model(tmp_path, session), session, started_at_launch=True)
+
+    selected = [
+        getattr(b, "selected", None)
+        for b in page.blocks.values()
+        if isinstance(b, gr.Tabs)
+    ]
+    assert "robot" in selected and "setup" not in selected
+
+
+def _interactive(update: dict[str, object]) -> object:
+    return update["interactive"]
+
+
+def test_start_and_stop_are_greyed_by_the_sessions_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("gradio")
+    from examples.control_panel import session as session_module
+    from examples.control_panel.app import session_buttons, session_markdown
+
+    session = RobotSession()
+    model = _model(tmp_path, session)
+    seen: dict[str, object] = {}
+    real_start = session_module.ControlPanelController.start
+
+    def start(self: ControlPanelController, *, timeout: float | None = None) -> None:
+        # Mid-start: what the page shows while the session comes up.
+        seen["starting"] = (
+            session.status,
+            *map(_interactive, session_buttons(session)),
+        )
+        seen["line"] = session_markdown(session)
+        real_start(self, timeout=timeout)
+
+    monkeypatch.setattr(session_module.ControlPanelController, "start", start)
+    assert (session.status, *map(_interactive, session_buttons(session))) == (
+        "stopped",
+        True,
+        False,
+    )
+
+    assert session.start(model) == []
+    try:
+        assert seen["starting"] == ("starting", False, False)
+        assert seen["line"] == "**Session:** starting…"
+        assert (session.status, *map(_interactive, session_buttons(session))) == (
+            "running",
+            False,
+            True,
+        )
+    finally:
+        session.stop()
+    assert (session.status, *map(_interactive, session_buttons(session))) == (
+        "stopped",
+        True,
+        False,
+    )
+
+
+def test_a_start_that_starts_nothing_leaves_start_enabled(tmp_path: Path) -> None:
+    pytest.importorskip("gradio")
+    from examples.control_panel.app import session_buttons
+
+    session = RobotSession()
+    model = _model(tmp_path, session)
+    model.save({"reachy": {"backend": "moon"}})
+
+    assert session.start(model)
+    assert session.status == "stopped"
+    assert [_interactive(u) for u in session_buttons(session)] == [True, False]
 
 
 # --- faces ----------------------------------------------------------------------------
