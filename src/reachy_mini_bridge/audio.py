@@ -664,22 +664,11 @@ def _stop_sound_file(robot: AnyReachyMini) -> None:
     from reachy_mini.media.webrtc_client_gstreamer import GstWebRTCClient
 
     if isinstance(audio, GStreamerAudio):
-        # The bridge's one reach into SDK internals: the exact body of the daemon-side
-        # MediaServer.stop_sound(), pinned by tests/test_robot.py. Replace with
+        # The bridge's one reach into SDK internals: upstream's SoundPlaybin, the
+        # play_sound player — its stop() is the exact body of the daemon-side
+        # MediaServer.stop_sound(). Pinned by tests/test_robot.py; replace with
         # media.stop_sound() once upstream ships it.
-        playbin = audio._playbin
-        if playbin is not None:
-            # gi ships inside the gstreamer wheel's own site-packages, which pyright
-            # does not index.
-            import gi  # pyright: ignore[reportMissingImports]
-
-            gi.require_version("Gst", "1.0")
-            from gi.repository import (  # pyright: ignore[reportMissingImports]
-                Gst,  # pyright: ignore[reportAttributeAccessIssue]
-            )
-
-            playbin.set_state(Gst.State.NULL)
-            audio._playbin = None
+        audio._sound.stop()
     elif isinstance(audio, GstWebRTCClient):
         if audio.daemon_url:
             _post(f"{audio.daemon_url}/api/media/stop_sound")

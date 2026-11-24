@@ -313,10 +313,14 @@ def test_daemon_kinematics_engine_is_a_config_choice() -> None:
     assert UPSTREAM_KINEMATICS_ENGINES == {
         "analytical": "AnalyticalKinematics",
         "placo": "Placo",
-        "nn": "NN",
     }
+    # `nn` left with upstream's NN engine (removed in reachy-mini 1.14).
+    with pytest.raises(ConfigError, match="kinematics_engine.*analytical.*placo"):
+        ReachyMiniConfig.from_dict(
+            {"backend": "sim", "daemon": {"kinematics_engine": "nn"}}
+        )
     # Upstream's own name is not a bridge word: the error names the field and the words.
-    with pytest.raises(ConfigError, match="kinematics_engine.*analytical.*placo.*nn"):
+    with pytest.raises(ConfigError, match="kinematics_engine.*analytical.*placo"):
         ReachyMiniConfig.from_dict(
             {"backend": "sim", "daemon": {"kinematics_engine": "AnalyticalKinematics"}}
         )

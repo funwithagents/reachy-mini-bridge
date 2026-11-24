@@ -14,7 +14,7 @@ dependencies = [
     # The tracing API alone (specs/core/tracing.md): the verbs' spans are no-ops until the
     # application installs an SDK. Small and pure Python; the same bound as tts-engine's.
     "opentelemetry-api>=1.20,<2",
-    "reachy-mini>=1.11",
+    "reachy-mini>=1.15.1",
     # Streaming, stateful resampler for the TTS output path (synth rate -> speaker
     # rate); MIT, wraps BSD-2-Clause libsamplerate, ships prebuilt wheels. Permissive
     # and small, so it sits in the core rather than an extra (see specs/audio/audio.md).

@@ -56,6 +56,7 @@ def start_daemon(
     host: str = "127.0.0.1",
     port: int = 8000,
     backend: str = "sim",
+    env: Mapping[str, str] | None = None,
 ) -> DaemonHandle: ...
 
 
@@ -66,10 +67,11 @@ def managed_daemon(
     host: str = "127.0.0.1",
     port: int = 8000,
     backend: str = "sim",
+    env: Mapping[str, str] | None = None,
 ) -> Iterator[DaemonHandle]: ...
 ```
 
-`backend` is `"sim"` (the default) or `"real"` and selects the launch recipe below; anything else is a `ValueError`. `start_daemon` and `DaemonHandle.stop()` are the lifecycle pair — the daemon's counterpart of the `start()` / `stop()` every session of the bridge has ([bridge.md](../core/bridge.md) "Lifecycle"), **synchronous** because they are subprocess and socket work; the bridge runs each off the event loop with `asyncio.to_thread`. `managed_daemon` is the context-manager form over the pair — `start_daemon` on entry, the handle's `stop()` on exit, on every exit path — for the testing harness and any synchronous caller. `DaemonConfig` is [config.md](../core/config.md)'s block — `daemon.py` imports `config.py`, a one-way dependency.
+`backend` is `"sim"` (the default) or `"real"` and selects the launch recipe below; anything else is a `ValueError`. `start_daemon` and `DaemonHandle.stop()` are the lifecycle pair — the daemon's counterpart of the `start()` / `stop()` every session of the bridge has ([bridge.md](../core/bridge.md) "Lifecycle"), **synchronous** because they are subprocess and socket work; the bridge runs each off the event loop with `asyncio.to_thread`. `managed_daemon` is the context-manager form over the pair — `start_daemon` on entry, the handle's `stop()` on exit, on every exit path — for the testing harness and any synchronous caller. `env` names variables set in a spawned daemon's environment over the one it inherits (below); a borrowed daemon keeps its own. `DaemonConfig` is [config.md](../core/config.md)'s block — `daemon.py` imports `config.py`, a one-way dependency.
 
 ### Own it or borrow it
 
@@ -103,7 +105,7 @@ For `real` — a robot attached to this machine (USB):
 
 - **hardware**: `<this interpreter> -m reachy_mini_bridge.real_daemon --[no-]preload-datasets --kinematics-engine <engine> [address flags]` — the bridge's **real daemon launcher** ([real_daemon.md](real_daemon.md)): upstream's hardware daemon, run in-process with the macOS camera check that makes the robot's camera open reliably. No `--sim`; the daemon finds the robot's serial port itself, wakes the robot on start and puts it to sleep on stop. `headless`, `scene`, `camera`, `audio` and `sim_displays` are sim knobs and play no part.
 
-- **engine flag** (`config.kinematics_engine`, every recipe — sim and real alike): `--kinematics-engine <engine>`, `<engine>` being upstream's name for the config's word (`UPSTREAM_KINEMATICS_ENGINES` in [config.md](../core/config.md): `AnalyticalKinematics`, `Placo`, `NN`), right after the preload flag. Always explicit, like the preload flag, so the engine a bridge-spawned daemon runs is the config's whatever upstream's default becomes. It goes to the sim recipes because upstream's MuJoCo backend takes the same engine as its hardware backend and solves every target through it — a Placo sim rejects the poses Placo rejects, which is what the live tier's per-engine runs rely on ([../testing/testing.md](../testing/testing.md) "One engine per run"). The launchers forward the flag to upstream unchanged, like the address flags. `placo` with no `placo` package importable is a `DaemonError` naming the extra (`reachy-mini-bridge[placo]`), raised by `launch_command` before anything is spawned — the same shape as the missing-sim-extra error below; the check stands for the child because every recipe runs the bridge's own interpreter (`mjpython` on macOS is the same environment's). Gravity compensation needs the daemon on `Placo` ([bridge.md](../core/bridge.md) "Motors"); the engine is the config's choice and never follows from what is installed.
+- **engine flag** (`config.kinematics_engine`, every recipe — sim and real alike): `--kinematics-engine <engine>`, `<engine>` being upstream's name for the config's word (`UPSTREAM_KINEMATICS_ENGINES` in [config.md](../core/config.md): `AnalyticalKinematics`, `Placo`), right after the preload flag. Always explicit, like the preload flag, so the engine a bridge-spawned daemon runs is the config's whatever upstream's default becomes. It goes to the sim recipes because upstream's MuJoCo backend takes the same engine as its hardware backend and solves every target through it — a Placo sim rejects the poses Placo rejects, which is what the live tier's per-engine runs rely on ([../testing/testing.md](../testing/testing.md) "One engine per run"). The launchers forward the flag to upstream unchanged, like the address flags. `placo` with no `placo` package importable is a `DaemonError` naming the extra (`reachy-mini-bridge[placo]`), raised by `launch_command` before anything is spawned — the same shape as the missing-sim-extra error below; the check stands for the child because every recipe runs the bridge's own interpreter (`mjpython` on macOS is the same environment's). Gravity compensation needs the daemon on `Placo` ([bridge.md](../core/bridge.md) "Motors"); the engine is the config's choice and never follows from what is installed.
 
 - **scene file** (`config.scene` ending in `.xml`, either launch mode): `<viewer interpreter> -m reachy_mini_bridge.testing.sim_scene --scene-path <abs> --[no-]preload-datasets --kinematics-engine <engine> [camera flags] [audio flags] [display flags] [address flags]` for the viewer, `<this interpreter> -m reachy_mini_bridge.testing.sim_scene --scene-path <abs> --headless --[no-]preload-datasets --kinematics-engine <engine> [camera flags] [audio flags] [address flags]` headless — the test scene's launcher (shipped in the testing package), which is the sim daemon launcher with the scene's extension installed: upstream's daemon on a scene *file* the bridge wrote (hidden-by-default props — images on planes — with a director and an HTTP endpoint to show/place/hide them: [sim_scene.md](../testing/sim_scene.md)), with the same corrections and camera choice as every other sim. The path is made absolute at launch; the launcher checks the file exists. Any other `scene` value is an upstream scene *name*, passed as `--scene`.
 
@@ -116,6 +118,8 @@ The sim launchers (`mjpython` for the viewer on macOS; every `sim` recipe also n
 ### The child's environment is scrubbed
 
 The spawned process runs with the GStreamer-bundle variables removed from its inherited environment: `GST_PLUGIN_PATH_1_0`, `GST_PLUGIN_SYSTEM_PATH_1_0`, `GST_REGISTRY_1_0`, `GST_PLUGIN_SCANNER_1_0`, `GI_TYPELIB_PATH`, `PYGI_DLL_DIRS`, `XDG_DATA_DIRS`, `XDG_CONFIG_DIRS`. `reachy_mini`'s `gstreamer_bundle.pth` *prepends* to these at every Python startup, so a parent that has imported `reachy_mini` (every bridge process — `robot.py` imports it at module load) would hand the child already-set values that its own `.pth` doubles into paths GStreamer cannot exec, and the daemon segfaults in the in-process plugin scan. Scrubbing lets the child set fresh, correct values — the same thing upstream's own app launcher does.
+
+The caller's `env` is applied over the scrubbed environment. The testing harness passes `REACHY_MINI_TELEMETRY=0`, turning off upstream's anonymous usage reporting for the daemons a test run spawns ([../testing/testing_support.md](../testing/testing_support.md)); the bridge itself passes nothing, so a daemon spawned for a session follows upstream's default and whatever the bridge's own environment sets (`REACHY_MINI_TELEMETRY=0` or `DO_NOT_TRACK=1` there turns the reporting off for every daemon it spawns).
 
 ### The child's output reaches the bridge's log
 
@@ -141,7 +145,7 @@ The daemon a session runs on is the authority on how it runs, spawned or borrowe
 
 | Field | Comes from | On a daemon no bridge launcher started |
 |---|---|---|
-| `kinematics_engine` | upstream's `GET /api/kinematics/info`, upstream's name for it (`AnalyticalKinematics`, `Placo`, `NN`) | known |
+| `kinematics_engine` | upstream's `GET /api/kinematics/info`, upstream's name for it (`AnalyticalKinematics`, `Placo`) | known |
 | `launcher` | `GET /api/bridge/daemon` — `"sim"` or `"real"` | `None` |
 | `camera` (`SimCameraSettings`), `audio` (`SimAudioSettings`), `scene`, `headless`, `preload_datasets`, `sim_displays` | `GET /api/bridge/daemon`, sim launcher | `None`; upstream exposes none of them |
 

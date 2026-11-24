@@ -124,10 +124,13 @@ def test_fake_signatures_match_upstream(path: str, upstream: type, name: str) ->
     assert params(getattr(owner, name)) == params(getattr(upstream, name))
 
 
-def test_local_audio_backend_keeps_the_playbin_the_bridge_stops() -> None:
+def test_local_audio_backend_keeps_the_player_the_bridge_stops() -> None:
     """The bridge's one reach into SDK internals (specs/audio/audio.md "Stopping a sound
-    file"): `GStreamerAudio` must keep the play_sound playbin as `_playbin`."""
+    file"): `GStreamerAudio` hands every play_sound playbin to its `_sound`, upstream's
+    `SoundPlaybin`, whose `stop()` the bridge calls."""
     from reachy_mini.media.audio_gstreamer import GStreamerAudio
+    from reachy_mini.media.gstreamer_utils import SoundPlaybin
 
-    assert "self._playbin = playbin" in inspect.getsource(GStreamerAudio.play_sound)
-    assert "self._playbin" in inspect.getsource(GStreamerAudio.stop_playing)
+    assert "self._sound.play(playbin)" in inspect.getsource(GStreamerAudio.play_sound)
+    assert "self._sound = SoundPlaybin(" in inspect.getsource(GStreamerAudio.__init__)
+    assert callable(SoundPlaybin.stop)

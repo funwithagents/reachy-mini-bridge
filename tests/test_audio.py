@@ -638,9 +638,24 @@ def test_a_released_file_is_not_stopped() -> None:
     assert _command_names(robot) == ["media.play_sound"]
 
 
+class _StubBus:
+    def __init__(self) -> None:
+        self.watched = False
+
+    def add_watch(self, *args: object) -> None:
+        self.watched = True
+
+    def remove_watch(self) -> None:
+        self.watched = False
+
+
 class _StubPlaybin:
     def __init__(self) -> None:
         self.states: list[object] = []
+        self.bus = _StubBus()
+
+    def get_bus(self) -> _StubBus:
+        return self.bus
 
     def set_state(self, state: object) -> None:
         self.states.append(state)
@@ -653,8 +668,12 @@ def _robot_with_audio(audio: object) -> Any:
 def test_stop_sound_stops_the_local_playbin_and_clears_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The local backend's file player is upstream's `SoundPlaybin` (specs/audio/audio.md
+    "Stopping a sound file, per backend"): the stop takes the playing playbin to `NULL`,
+    drops its bus watch and empties the slot — the pipeline is never touched."""
     import gi  # pyright: ignore[reportMissingImports]
     from reachy_mini.media.audio_gstreamer import GStreamerAudio
+    from reachy_mini.media.gstreamer_utils import SoundPlaybin
 
     gi.require_version("Gst", "1.0")
     from gi.repository import (  # pyright: ignore[reportMissingImports]
@@ -664,16 +683,19 @@ def test_stop_sound_stops_the_local_playbin_and_clears_it(
     # The stand-in skips the SDK constructor; silence its __del__ on the missing state.
     monkeypatch.setattr(GStreamerAudio, "__del__", lambda self: None)
     audio = GStreamerAudio.__new__(GStreamerAudio)
+    audio._sound = SoundPlaybin(logging.getLogger("test"))
     playbin = _StubPlaybin()
-    audio._playbin = cast("Any", playbin)
+    audio._sound.play(cast("Any", playbin))
+    assert playbin.states == [Gst.State.PLAYING] and playbin.bus.watched
 
     audio_module._stop_sound_file(_robot_with_audio(audio))
-    assert playbin.states == [Gst.State.NULL]
-    assert audio._playbin is None
+    assert playbin.states == [Gst.State.PLAYING, Gst.State.NULL]
+    assert not playbin.bus.watched
+    assert audio._sound.current is None
 
     # Nothing playing: a no-op.
     audio_module._stop_sound_file(_robot_with_audio(audio))
-    assert playbin.states == [Gst.State.NULL]
+    assert playbin.states == [Gst.State.PLAYING, Gst.State.NULL]
 
 
 def test_stop_sound_on_the_webrtc_backend_posts_to_the_daemon(
