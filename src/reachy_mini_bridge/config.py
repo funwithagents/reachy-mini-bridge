@@ -918,7 +918,7 @@ class ReachyMiniConfig:
         (specs/core/config.md "Relative paths"): a relative ``daemon.scene`` file is
         resolved against it, and it becomes the ``tts`` block's ``module.base_dir``
         (tts-engine's own resolution of a voice file). ``None``: the working
-        directory, as before."""
+        directory. ``from_json_file`` defaults it to the file's folder."""
         top = _require_object(data, "config")
         _reject_unknown_keys(
             top,
@@ -1008,7 +1008,12 @@ class ReachyMiniConfig:
     def from_json_file(
         cls, path: str | Path, *, base_dir: str | Path | None = None
     ) -> ReachyMiniConfig:
-        """Read a JSON file, then delegate to :meth:`from_dict` (errors name the path)."""
+        """Read a JSON file, then delegate to :meth:`from_dict` (errors name the path).
+
+        Its relative paths are the file's: ``base_dir`` defaults to the file's own
+        folder, whatever the working directory; an explicit one wins."""
+        if base_dir is None:
+            base_dir = Path(path).resolve().parent
         return cls.from_dict(_load_file(path), base_dir=base_dir)
 
     # --- derived views the bridge uses ---

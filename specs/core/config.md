@@ -74,7 +74,7 @@ Both config classes that a caller builds directly (`ReachyMiniConfig`, and `Daem
 - **`daemon.scene`** ending in `.xml`: a relative one is made absolute against `base_dir` at load (`resolve_scene`); an absolute file and an upstream scene name are left as they are.
 - **The `tts` block**: `base_dir` becomes its `module.base_dir`, tts-engine's own key for resolving a voice file or a local model path — set when the block names none, a relative one made absolute against it — exactly what `TTSEngineConfig.from_dict(block, base_dir=...)` does. The caller's dict is not changed.
 
-`None`, the default — and `from_json_file`'s too, unlike tts-engine's, which defaults to the file's folder — leaves both to the working directory, as before.
+**A config file's relative paths are the file's:** `from_json_file(path)` defaults `base_dir` to the file's own folder, so a relative scene file or voice file next to the config is found from any working directory — as tts-engine's, wica's and asr-engine's file loaders do; an explicit `base_dir=` wins. `from_dict` and `from_json`, which have no file, default to `None`: the working directory. `ReachyMiniBridge.from_json_file(path, *, base_dir=None)` passes it through.
 
 ### `backend`
 

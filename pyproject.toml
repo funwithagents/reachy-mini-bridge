@@ -154,10 +154,8 @@ demo = [
 [tool.uv.sources]
 # Self-reference for the groups above that pull in the package's own extras.
 reachy-mini-bridge = { workspace = true }
-# First-party, from GitHub (dev and demo groups only, never a runtime dependency). On
-# module-setup's `base-dir` branch for now, whose contract carries `base_dir` and whose
-# `check_contract` requires it: back to `main` once module-setup #7 is merged.
-module-setup = { git = "https://github.com/funwithagents/module-setup", rev = "base-dir" }
+# First-party, from GitHub (dev and demo groups only, never a runtime dependency).
+module-setup = { git = "https://github.com/funwithagents/module-setup", rev = "main" }
 
 [tool.uv]
 # Every group installs by default — a sync is exact, so a group left out of a sync is

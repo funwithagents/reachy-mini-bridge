@@ -500,10 +500,12 @@ class ReachyMiniBridge:
         *,
         synthesizer: SpeechSynthesizer | None = None,
         secrets: Mapping[str, str] | None = None,
+        base_dir: str | Path | None = None,
     ) -> ReachyMiniBridge:
-        """Build the bridge from a JSON config file."""
+        """Build the bridge from a JSON config file, its relative paths the file's
+        (``base_dir`` defaults to its folder; an explicit one wins)."""
         return cls(
-            ReachyMiniConfig.from_json_file(path),
+            ReachyMiniConfig.from_json_file(path, base_dir=base_dir),
             synthesizer=synthesizer,
             secrets=secrets,
         )

@@ -4,6 +4,8 @@ Every field of the bridge's declarative config: its default, what it does, and t
 
 `ReachyMiniConfig` is one declarative object, buildable from a dict, a JSON string or a JSON file — `ReachyMiniBridge.from_dict(...)`, `.from_json(...)`, `.from_json_file(...)` take the same input; `ReachyMiniBridge("fake")` is the backend-string shorthand for a config with everything else at its default. **Every block is optional** — `ReachyMiniConfig()` is a valid config: the real robot, upstream's connection defaults, no daemon management, no voice, everything at rest switched on, no detector. Unknown keys in a bridge-owned block are a `ConfigError`, so a typo is caught at load time.
 
+**Relative paths** — a `daemon.scene` file, the `tts` block's files — are relative to the config file's own folder when it is loaded with `from_json_file`, whatever the working directory; from a dict or a JSON string, to the working directory. `base_dir=` on any of the three names another folder.
+
 ```json
 {
   "backend": "sim",
