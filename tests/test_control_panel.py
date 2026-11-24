@@ -404,7 +404,7 @@ def test_the_page_builds_over_a_session_and_its_ticks_read_the_state(
 
 # The offline fake: what the tests run a session on (the app's default is the full
 # example config, the headless sim).
-FAKE = {"reachy": {"backend": "fake"}}
+FAKE: dict[str, object] = {"reachy": {"backend": "fake"}}
 
 
 def _model(
@@ -427,6 +427,34 @@ def _model(
     if saved is not None:
         model.save(saved)
     return model
+
+
+def test_the_session_reads_relative_paths_against_the_apps_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The folder module-setup passes to the setup functions as `base_dir` is the one
+    the session's config is loaded with: a voice file next to config.json is found."""
+    with wave.open(str(tmp_path / "hi.wav"), "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(16000)
+        out.writeframes(b"\0\0" * 160)
+    monkeypatch.chdir(Path(__file__).parent)  # the working directory has no hi.wav
+    session = RobotSession()
+    model = _model(tmp_path, session)
+    voice = {
+        "module": {"type": "audiofile", "files": [{"text": "hi", "file": "hi.wav"}]}
+    }
+    model.save({"reachy": {"backend": "fake", "tts": voice}})
+
+    assert session.start(model) == []
+    try:
+        bridge = session.require().bridge
+        assert bridge.synthesizer_error is None
+        assert bridge.config.tts is not None
+        assert bridge.config.tts["module"]["base_dir"] == str(model.path.resolve())
+    finally:
+        session.stop()
 
 
 def test_a_session_starts_from_the_saved_config_and_locks_it_until_stopped(

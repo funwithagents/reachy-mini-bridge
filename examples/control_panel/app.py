@@ -276,7 +276,7 @@ def _shown_config(model: AppModel, session: RobotSession) -> ReachyMiniConfig:
         return controller.bridge.config
     try:
         section = model.used_config(model.saved_config()).get(SECTION, {})
-        return ReachyMiniConfig.from_dict(section)
+        return ReachyMiniConfig.from_dict(section, base_dir=model.path)
     except (ValueError, KeyError):
         return ReachyMiniConfig()
 

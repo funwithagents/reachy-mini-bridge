@@ -64,7 +64,11 @@ class RobotSession:
         if blockers:
             return blockers
         try:
-            config = ReachyMiniConfig.from_dict(model.used_config(saved)[SECTION])
+            # The app's folder is the base of the config's relative paths, as it is
+            # for the setup functions module-setup calls (a scene file, a voice file).
+            config = ReachyMiniConfig.from_dict(
+                model.used_config(saved)[SECTION], base_dir=model.path
+            )
             controller = ControlPanelController(config)
             controller.start(timeout=timeout)
             self.controller = controller

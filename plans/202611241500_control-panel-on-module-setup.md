@@ -33,3 +33,4 @@ Three changes from testing the demo, done on the same branch:
 - Start and Stop are greyed by the session's status (`RobotSession.status`, `session_buttons`): refreshed by each press, its outcome, and the 0.5 s timer.
 
 Tests: the default file, the tab opened, the buttons per status. Verified with the same gate.
+- Relative paths: the session's config is loaded with the app's folder as `base_dir` (`model.path`), the folder module-setup passes to the setup functions; tested with a voice file next to `config.json`.
