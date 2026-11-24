@@ -1,6 +1,6 @@
 # Setup items one by one, and a daemon's cold first start
 
-**Status:** In progress
+**Status:** Done
 
 Implements `specs/core/setup.md` as updated for app-setup's contract (every item `required` or not, `prepare` of one item with its progress), `specs/core/config.md` (`daemon.startup_timeout` 120 s) and `specs/daemon/daemon.md` (the startup-timeout message naming a first start after an install first), plus a preparable item warming GStreamer's plugin registry before a spawned daemon's first start.
 

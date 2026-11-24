@@ -4438,7 +4438,7 @@ wheels = [
 [[package]]
 name = "tts-engine"
 version = "0.1.0"
-source = { git = "https://github.com/funwithagents/tts-engine?rev=setup-contract#75cc2a19947f434c581499835ba3179e5bde0dc4" }
+source = { git = "https://github.com/funwithagents/tts-engine?rev=setup-contract#fad219748fd6a858b39b39f7420f4cbaac7266f7" }
 dependencies = [
     { name = "numpy", version = "2.3.5", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'win32'" },
     { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'win32'" },

@@ -10,7 +10,7 @@ tests:
 
 # Setup (`reachy_mini_bridge.setup`)
 
-**Status:** Updated
+**Status:** Implemented
 
 ## Purpose
 
@@ -100,7 +100,7 @@ What this machine is missing to run the config, each item `{"id", "title", "stat
    An upstream lookup that fails (an upstream change) is `unknown`, never a raise.
 
    And, for a daemon the bridge spawns (`daemon.spawn` not `never`, `sim` or `real`):
-   - `media:gstreamer-registry` — GStreamer's plugin registry, which the daemon's media pipeline and the bridge's own load. Its first build after an install is slow: on a Mac, loading every freshly installed plugin library for the first time took 155 s in a fresh environment (a rebuild afterwards, under 2 s), which delayed a daemon's first start past its timeout and lost its media pipeline. `ready` when the registry file the GStreamer bundle names (`GST_REGISTRY_1_0`, under the environment's prefix) is there, `missing` when it is not, `unknown` when GStreamer keeps it elsewhere (a system install on Linux); preparable, **not required**: the daemon's first start builds it itself.
+   - `media:gstreamer-registry` — GStreamer's plugin registry, which the daemon's media pipeline and the bridge's own load. Its first build after an install is slow: on a Mac, loading every freshly installed plugin library for the first time took 145–155 s in a fresh environment (a rebuild afterwards, under 2 s). Measured on a headless sim daemon in two fresh environments (2026-11-24): its first start was ready after 83 s cold, 20 s once the registry had been prepared — a cold first start had outlasted the old 45 s timeout and lost its media pipeline. `ready` when the registry file the GStreamer bundle names (`GST_REGISTRY_1_0`, under the environment's prefix) is there, `missing` when it is not, `unknown` when GStreamer keeps it elsewhere (a system install on Linux); preparable, **not required**: the daemon's first start builds it itself.
 3. **The `tts` block's items**, when the block is present: `tts_engine.setup.check_setup`'s, unchanged (the provider's extra as `extra:tts-engine[<extra>]`, its key variable as `key:<VARIABLE>`, its files).
 
 The bridge itself names no key variable: the only keys are the voice's, reported by tts-engine.
