@@ -19,6 +19,10 @@ from pathlib import Path
 import numpy as np
 import numpy.typing as npt
 import pytest
+from app_setup.app import AppModel
+from app_setup.autostart import starts_at_launch
+from app_setup.folder import ConfigFolder
+from app_setup.secrets import SecretStore
 
 from examples.control_panel.controller import (
     FACE_MARKER_RGB,
@@ -27,6 +31,7 @@ from examples.control_panel.controller import (
     describe_users_change,
     draw_faces,
 )
+from examples.control_panel.session import RobotSession
 from reachy_mini_bridge import (
     BridgeError,
     HeadTrackingReport,
@@ -344,19 +349,26 @@ def test_stop_cancels_the_verbs_in_flight() -> None:
 # --- the Gradio layer (smoke) ---------------------------------------------------------
 
 
-def test_build_app_constructs_the_blocks_and_refresh_reads_the_state() -> None:
+def test_the_page_builds_over_a_session_and_its_ticks_read_the_state(
+    tmp_path: Path,
+) -> None:
     gr = pytest.importorskip("gradio")
     from examples.control_panel.app import (
-        build_app,
+        build_page,
         refresh,
         refresh_camera,
+        refresh_session,
         refresh_users,
     )
 
     scene = _Scene()
+    session = RobotSession()
     with ControlPanelController(_faces_config(scene)) as controller:
-        demo = build_app(controller)
+        # A session on a Python-only detector, which no saved config can name.
+        session.controller = controller
+        demo = build_page(_model(tmp_path, session), session)
         assert isinstance(demo, gr.Blocks)
+        assert refresh_session(session, [])[0] == refresh(controller, [])[0]
         scene.show(0.5, -0.5)
         _wait_until(lambda: controller.snapshot().faces == 1)
         _wait_until(lambda: controller.face_rate is not None)  # the meter's first look
@@ -386,6 +398,118 @@ def test_build_app_constructs_the_blocks_and_refresh_reads_the_state() -> None:
         assert f"| **#{tid}** ● | yes | yes |" in users_text
         assert head_text == f"### Head tracking: following #{tid}"
         assert f"#{tid} arrived" in events_text
+
+
+def _model(folder: Path, session: RobotSession | None = None) -> AppModel:
+    """The panel's model over a folder of its own, its secrets kept off os.environ."""
+    from examples.control_panel.app import APP
+
+    config_folder = ConfigFolder(folder, APP.default_config)
+    return AppModel(
+        APP,
+        config_folder,
+        SecretStore(config_folder.env_path, {}),
+        locked=session.locked if session is not None else None,
+    )
+
+
+def test_a_session_starts_from_the_saved_config_and_locks_it_until_stopped(
+    tmp_path: Path,
+) -> None:
+    session = RobotSession()
+    model = _model(tmp_path, session)
+    model.save({"reachy": {"backend": "fake", "motion": {"idle": "hold"}}})
+
+    assert session.start(model) == []
+    try:
+        controller = session.require()
+        assert controller.running
+        assert controller.bridge.config.motion.idle == "hold"
+        assert session.start(model) == [] and session.require() is controller
+        with pytest.raises(RuntimeError):
+            model.save({"reachy": {"backend": "fake"}})  # in use: refused
+    finally:
+        assert session.stop()
+    assert not controller.running and not session.locked()
+    model.save({"reachy": {"backend": "fake"}})  # free again
+    assert not session.stop()
+    with pytest.raises(BridgeError, match="press Start"):
+        session.require()
+
+
+def test_a_config_with_blockers_starts_nothing_and_says_why(tmp_path: Path) -> None:
+    session = RobotSession()
+    model = _model(tmp_path, session)
+    model.save({"reachy": {"backend": "moon"}})
+
+    reasons = session.start(model)
+
+    assert reasons and "/reachy/backend" in reasons[0]
+    assert session.reasons == reasons
+    assert session.controller is None and not session.locked()
+
+
+def test_a_bring_up_that_fails_is_a_reason_and_leaves_nothing_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from reachy_mini_bridge import bridge as bridge_module
+
+    def unreachable(backend: str, **opts: object) -> FakeReachyMini:
+        raise ConnectionError("no robot here")
+
+    monkeypatch.setattr(bridge_module, "build_robot", unreachable)
+    session = RobotSession()
+    model = _model(tmp_path, session)
+
+    [reason] = session.start(model)
+
+    assert reason.startswith("The session could not start:")
+    assert "no robot here" in reason
+    assert session.controller is None and not session.locked()
+
+
+def test_the_default_config_is_ready_and_starts_at_launch(tmp_path: Path) -> None:
+    from examples.control_panel.app import APP, DEFAULT_CONFIG
+
+    model = _model(tmp_path)
+
+    assert model.saved_config() == DEFAULT_CONFIG
+    assert model.blockers(DEFAULT_CONFIG) == []
+    assert starts_at_launch(model, None)
+    assert not starts_at_launch(model, False)
+    assert [section.name for section in APP.sections] == ["reachy"]
+
+
+def test_the_page_puts_robot_first_opens_on_setup_and_ticks_without_a_session(
+    tmp_path: Path,
+) -> None:
+    gr = pytest.importorskip("gradio")
+    from examples.control_panel.app import (
+        NO_SESSION,
+        build_page,
+        refresh_session,
+        refresh_session_camera,
+        refresh_session_users,
+        session_markdown,
+    )
+
+    session = RobotSession()
+    page = build_page(_model(tmp_path, session), session)
+
+    blocks = list(page.blocks.values())
+    tabs = [getattr(b, "label", None) for b in blocks if isinstance(b, gr.Tab)]
+    selected = [getattr(b, "selected", None) for b in blocks if isinstance(b, gr.Tabs)]
+    assert [t for t in tabs if t in ("Robot", "Setup", "Secrets")] == [
+        "Robot",
+        "Setup",
+        "Secrets",
+    ]
+    assert tabs[0] == "Robot"
+    assert "setup" in selected
+    assert refresh_session(session, [])[0] == NO_SESSION
+    assert refresh_session_camera(session, [])[0] is None
+    assert refresh_session_users(session)[0] == NO_SESSION
+    assert "press Start" in session_markdown(session)
 
 
 # --- faces ----------------------------------------------------------------------------

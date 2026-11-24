@@ -1,6 +1,6 @@
 # The control panel on module-setup
 
-**Status:** Todo
+**Status:** Done
 
 Implements `specs/examples/control_panel.md` as updated: the control panel rebuilt on module-setup's Setup and Secrets panels over `reachy_mini_bridge.setup` — its config set up in the page, a session started at launch (module-setup's autostart) and from a Start button, stopped by Stop, the config locked while it runs. The controller and the Robot tab's controls are kept as they are.
 

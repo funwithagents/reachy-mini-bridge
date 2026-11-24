@@ -139,12 +139,15 @@ tts = [
     "reachy-mini-bridge[tts-phonon]",
 ]
 # The Gradio control panel in examples/control_panel (specs/examples/control_panel.md): a
-# manual test/demo app, not part of the package. Its own group so a consumer can leave
+# manual test/demo app built on app-setup's panels, not part of the package. Its own group so a consumer can leave
 # it out (`uv sync --no-group demo`); pulled in by default (see `default-groups` below)
 # so `uv run pyright` covers examples/ in a normal dev env. The panel's voice comes from
 # the config's `tts` block, whose provider the `tts` group installs — not from here.
 demo = [
     "gradio>=5",
+    # The panel's Setup and Secrets tabs, its folder and its launch at start
+    # (specs/examples/control_panel.md), gradio 6 included.
+    "app-setup[ui]",
     "reachy-mini-bridge[sim]",
 ]
 

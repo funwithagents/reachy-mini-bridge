@@ -107,11 +107,12 @@ The greeter and the voice tour each have a README on how to run them and how the
 The repo ships a Gradio **control panel** — every action a button, the bridge's state on screen and refreshed twice a second (motor state, attention, the mode flags, a mic level meter, the camera frame, a log), with a Stop button next to `say` and `play_emotion` that interrupts it mid-flight. It runs from a checkout (it needs the `demo` dependency group, and its voice the `tts` group — both installed by a plain `uv sync`):
 
 ```
-uv run python -m examples.control_panel --config examples/configs/full.json   # the sim viewer, spawned for you
-uv run python -m examples.control_panel                                # no config: the offline fake
+uv run python -m examples.control_panel   # [--folder PATH] [--port N] [--start | --no-start]
 ```
 
-then open `http://127.0.0.1:7860`. The example config opens the MuJoCo viewer window next to the panel and uses your **webcam** as the robot's camera, shown in the corner of that window: enable the motors and the simulated robot turns to follow you ([docs/guides/running-daemons.md](docs/guides/running-daemons.md)). It needs an unlocked GUI session and, on macOS, camera permission for the terminal that runs it. Set the config's `daemon.camera.source` to `"sim"` for the rendered scene instead. Point `--config` at a `real` config to drive the robot. Design and limits: [specs/examples/control_panel.md](specs/examples/control_panel.md).
+then open `http://127.0.0.1:7860`. The robot is set up in the page itself: the **Setup** tab chooses the backend and the voice, edits the other blocks as JSON, checks the config, installs the extras it needs and downloads its models; the **Secrets** tab holds the voice's key; the **Robot** tab starts and stops the session (Stop it to change the config). It starts on the offline fake, and starts its session at launch unless you turn that off on the Setup tab or pass `--no-start`. The config and keys live in `~/.config/reachy-mini-bridge-control-panel`.
+
+Paste [examples/configs/full.json](examples/configs/full.json) into the Setup tab's section to get the MuJoCo viewer window next to the panel, with your **webcam** as the robot's camera in the corner of that window: enable the motors and the simulated robot turns to follow you ([docs/guides/running-daemons.md](docs/guides/running-daemons.md)). It needs an unlocked GUI session and, on macOS, camera permission for the terminal that runs it. Set `daemon.camera.source` to `"sim"` for the rendered scene instead, and `backend` to `real` to drive the robot. Design and limits: [specs/examples/control_panel.md](specs/examples/control_panel.md).
 
 ## Documentation
 
