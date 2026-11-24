@@ -30,10 +30,12 @@ The config's `tts` block is a tts-engine engine block ([config.md](config.md)), 
 def config_schema() -> dict: ...
 def required_extras(config: dict) -> list[str]: ...
 def check_config(config: dict) -> list[dict]: ...
-def check_setup(config: dict) -> list[dict]: ...
-def prepare(config: dict, on_progress: Callable[[dict], None] | None = None) -> None: ...
-def options(name: str, config: dict) -> list[dict]: ...
-def probe(config: dict) -> dict: ...
+def check_setup(config: dict, *, base_dir: str | None = None) -> list[dict]: ...
+def prepare(
+    config: dict, on_progress: Callable[[dict], None] | None = None, *, base_dir: str | None = None
+) -> None: ...
+def options(name: str, config: dict, *, base_dir: str | None = None) -> list[dict]: ...
+def probe(config: dict, *, base_dir: str | None = None) -> dict: ...
 ```
 
 They take and return JSON-compatible data, are synchronous, and import neither `tts_engine` providers nor any extra at module level. `config_schema`, `required_extras` and `check_config` read nothing but the config and run on the base install with no network; `check_setup` also tries the extras' imports, reads the environment and looks into the Hugging Face cache, still with no network; `prepare`, `options` and `probe` may use the network.
@@ -80,12 +82,19 @@ Every problem that makes the bridge refuse this config, each `{"path": <JSON Poi
 
 It constructs nothing and reads no environment. The `robot` keys are checked against upstream's `ReachyMini` signature, a base dependency, as the loader does.
 
+### Relative paths: `base_dir`
+
+The four functions that look at the machine take `base_dir`, the folder the config's relative paths are relative to — an app passes the folder its `config.json` lives in, and builds its bridge with the same folder (`ReachyMiniConfig.from_dict(data, base_dir=...)`, [config.md](config.md) "Relative paths"), so a check, a download, a test and a session all look at the same file. `None` is the working directory. They pass it on, unchanged, to tts-engine's functions for the `tts` block (a voice file, a local model path), and resolve the bridge's own one relative path against it: a `daemon.scene` file (`.xml`). The bridge's other blocks name no file. `config_schema`, `required_extras` and `check_config` take none: whether a value is well formed does not depend on where it points.
+
 ### `check_setup`
 
 What this machine is missing to run the config, each item `{"id", "title", "status", "detail", "preparable"}`, asked only about a config `check_config` accepts. In this order:
 
 1. **The bridge's extras** — one item per requirement of `required_extras` on this distribution, never preparable, found by trying the imports the extra provides (`mujoco` for `sim`, `placo` for `placo`): `ready` ("Installed."), else `missing` with the install hint (`install reachy-mini-bridge[sim]`). On Windows the `placo` item says the engine has no Windows wheels.
-2. **The bridge's files**, looked up in the Hugging Face cache without network:
+2. **The bridge's files**:
+   - `file:daemon.scene` — the scene file a sim the bridge spawns loads (`backend: "sim"`, `daemon.spawn` not `never`, `daemon.scene` ending in `.xml`), resolved against `base_dir`: `ready` when the file is there, else `missing` naming the path; never preparable.
+
+   Then, looked up in the Hugging Face cache without network:
    - `weights:yunet` — the shipped face detector's weights, when `face_detection.detector` is `yunet`: `ready` when upstream's model file is in the cache, else `missing`, preparable.
    - `dataset:emotions` — the recorded emotions library, when `backend` is `real` or `sim` (the `fake` plays a stub library): `ready` when the dataset is in the cache, else `missing`, preparable. The bridge loads it in its own process at the first `play_emotion`, whatever the daemon preloads.
    An upstream lookup that fails (an upstream change) is `unknown`, never a raise.
@@ -125,6 +134,7 @@ A light, real run: it connects, reads, and lets go; it never moves the robot and
 - `prepare` fetches only what is missing, reports progress, and propagates a failure.
 - `options("voices")` over a fixture voice, `[]` for an unknown name and with no `tts` block.
 - `probe` on the `fake`: `ok`, the motor state in the message, the robot never moved and the session closed; with a `tone` voice, the voice's probe ok too; a voice that fails to build reported `ok: false`, never raised.
+- `base_dir` reaches the `tts` block's `check_setup`, `prepare`, `options` and `probe`; a relative scene file is `ready` against the folder given and `missing` against the working directory; the loader's `base_dir` becomes the `tts` block's, so a relative voice file is found against it.
 - The secrets reach the engine: a stub module with a key field builds with a key passed in `secrets` and the variable unset.
 
 ## Open questions

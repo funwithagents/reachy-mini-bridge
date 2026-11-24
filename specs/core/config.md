@@ -67,6 +67,15 @@ Both config classes that a caller builds directly (`ReachyMiniConfig`, and `Daem
 
 `ReachyMiniBridge` mirrors the trio (`ReachyMiniBridge.from_dict` / `from_json` / `from_json_file`), each building the config and then the bridge — see [bridge.md](bridge.md) "Constructed from a config". The bridge has no free `load_config` function.
 
+### Relative paths
+
+`from_dict(data, *, base_dir=None)` (and `from_json(text, *, base_dir=None)` / `from_json_file(path, *, base_dir=None)`) take the folder the config's relative paths are relative to — an application that keeps its config in a folder of its own passes that folder, the same one it gives the setup contract ([setup.md](setup.md) "Relative paths"). Two things in the config name a file:
+
+- **`daemon.scene`** ending in `.xml`: a relative one is made absolute against `base_dir` at load (`resolve_scene`); an absolute file and an upstream scene name are left as they are.
+- **The `tts` block**: `base_dir` becomes its `module.base_dir`, tts-engine's own key for resolving a voice file or a local model path — set when the block names none, a relative one made absolute against it — exactly what `TTSEngineConfig.from_dict(block, base_dir=...)` does. The caller's dict is not changed.
+
+`None`, the default — and `from_json_file`'s too, unlike tts-engine's, which defaults to the file's folder — leaves both to the working directory, as before.
+
 ### `backend`
 
 One of `"real"`, `"sim"`, `"fake"` (the three backends in [robot.md](robot.md)); default `"real"`. Any other value is a `ConfigError`.

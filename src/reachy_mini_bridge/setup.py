@@ -26,11 +26,12 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 import tts_engine.setup as tts_setup
 
-from .config import BACKENDS, ReachyMiniConfig
+from .config import BACKENDS, ReachyMiniConfig, resolve_scene
 from .errors import BridgeError
 from .fields import Field, fields_schema
 
@@ -361,12 +362,40 @@ def _file_item(item_id: str) -> dict[str, Any]:
     }
 
 
-def check_setup(config: dict[str, Any]) -> list[dict[str, Any]]:
+def _scene_item(config: dict[str, Any], base_dir: str | None) -> list[dict[str, Any]]:
+    """The scene file a sim the bridge spawns loads (``daemon.scene`` ending in
+    ``.xml``), resolved against ``base_dir`` as the loader resolves it: ``ready`` when
+    it exists, else ``missing``; never preparable. None for anything else."""
+    daemon = config.get("daemon")
+    if not isinstance(daemon, dict) or config.get("backend", "real") != "sim":
+        return []
+    scene = daemon.get("scene")
+    if daemon.get("spawn", "never") == "never" or not isinstance(scene, str):
+        return []
+    if not scene.endswith(".xml"):
+        return []
+    path = Path(resolve_scene(scene, base_dir))
+    found = path.is_file()
+    return [
+        {
+            "id": "file:daemon.scene",
+            "title": "Scene file",
+            "status": "ready" if found else "missing",
+            "detail": f"{path}" if found else f"No file at {path}.",
+            "preparable": False,
+        }
+    ]
+
+
+def check_setup(
+    config: dict[str, Any], *, base_dir: str | None = None
+) -> list[dict[str, Any]]:
     items = [_extra_item(extra) for extra in _bridge_extras(config)]
+    items += _scene_item(config, base_dir)
     items += [_file_item(item_id) for item_id in _file_ids(config)]
     tts = _tts_block(config)
     if tts is not None:
-        items += tts_setup.check_setup(tts)
+        items += tts_setup.check_setup(tts, base_dir=base_dir)
     return items
 
 
@@ -376,6 +405,8 @@ def check_setup(config: dict[str, Any]) -> list[dict[str, Any]]:
 def prepare(
     config: dict[str, Any],
     on_progress: Callable[[dict[str, Any]], None] | None = None,
+    *,
+    base_dir: str | None = None,
 ) -> None:
     for item_id in _file_ids(config):
         item = _file_item(item_id)
@@ -393,17 +424,19 @@ def prepare(
             raise BridgeError(f"Could not download the {title}: {exc}") from exc
     tts = _tts_block(config)
     if tts is not None:
-        tts_setup.prepare(tts, on_progress)
+        tts_setup.prepare(tts, on_progress, base_dir=base_dir)
 
 
 # --- options -----------------------------------------------------------------------
 
 
-def options(name: str, config: dict[str, Any]) -> list[dict[str, Any]]:
+def options(
+    name: str, config: dict[str, Any], *, base_dir: str | None = None
+) -> list[dict[str, Any]]:
     tts = _tts_block(config)
     if name != "voices" or tts is None:
         return []
-    return tts_setup.options(name, tts)
+    return tts_setup.options(name, tts, base_dir=base_dir)
 
 
 # --- probe -------------------------------------------------------------------------
@@ -437,13 +470,15 @@ def _connect(config: ReachyMiniConfig) -> str:
     return asyncio.run(run())
 
 
-def _probe(config: dict[str, Any]) -> tuple[bool, str]:
+def _probe(config: dict[str, Any], base_dir: str | None) -> tuple[bool, str]:
     problems = check_config(config)
     if problems:
         first = problems[0]
         where = f" at {first['path']}" if first["path"] else ""
         return False, f"The config has a problem{where}: {first['message']}"
-    loaded = ReachyMiniConfig.from_dict({k: v for k, v in config.items() if k != "tts"})
+    loaded = ReachyMiniConfig.from_dict(
+        {k: v for k, v in config.items() if k != "tts"}, base_dir=base_dir
+    )
     try:
         state = _connect(_quiet(loaded))
     except Exception as exc:  # noqa: BLE001 - reported
@@ -456,18 +491,18 @@ def _probe(config: dict[str, Any]) -> tuple[bool, str]:
     if tts is None:
         return True, message
     # The voice's own light check: it plays nothing.
-    voice = tts_setup.probe(tts)
+    voice = tts_setup.probe(tts, base_dir=base_dir)
     return bool(voice["ok"]), f"{message} Voice: {voice['message']}"
 
 
-def probe(config: dict[str, Any]) -> dict[str, Any]:
+def probe(config: dict[str, Any], *, base_dir: str | None = None) -> dict[str, Any]:
     """Connect, read the robot's state, disconnect; and the voice's own probe, played
     nowhere. Never raises."""
     outcome: dict[str, Any] = {}
 
     def work() -> None:
         try:
-            outcome["ok"], outcome["message"] = _probe(config)
+            outcome["ok"], outcome["message"] = _probe(config, base_dir)
         except Exception as exc:  # noqa: BLE001 - a probe reports, it never raises
             outcome["ok"], outcome["message"] = False, str(exc) or type(exc).__name__
 

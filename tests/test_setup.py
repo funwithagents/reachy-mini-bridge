@@ -497,3 +497,81 @@ def test_a_key_passed_in_secrets_builds_the_voice(keyed_tone: str) -> None:
 
     assert "KEYED_TONE_KEY" in str(without.synthesizer_error)
     assert with_key.synthesizer_error is None
+
+
+# --- relative paths: base_dir -------------------------------------------------------
+
+
+def test_base_dir_reaches_the_tts_blocks_functions(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _Cache(monkeypatch, cached=set())
+    seen: dict[str, object] = {}
+
+    def recorder(name: str, result: object) -> Any:
+        def record(*args: object, base_dir: str | None = None) -> object:
+            seen[name] = base_dir
+            return result
+
+        return record
+
+    monkeypatch.setattr(tts_setup, "check_setup", recorder("check_setup", []))
+    monkeypatch.setattr(tts_setup, "prepare", recorder("prepare", None))
+    monkeypatch.setattr(tts_setup, "options", recorder("options", []))
+    monkeypatch.setattr(
+        tts_setup, "probe", recorder("probe", {"ok": True, "message": "fine"})
+    )
+    config = {"backend": "fake", "tts": {"module": {"type": "tone"}}}
+    folder = str(tmp_path)
+
+    setup.check_setup(config, base_dir=folder)
+    setup.prepare(config, base_dir=folder)
+    setup.options("voices", config, base_dir=folder)
+    assert setup.probe(config, base_dir=folder)["ok"]
+
+    assert seen == dict.fromkeys(("check_setup", "prepare", "options", "probe"), folder)
+
+
+def test_a_relative_scene_file_is_found_against_base_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _Cache(monkeypatch, cached={"emotions"})
+    monkeypatch.setitem(sys.modules, "mujoco", object())
+    monkeypatch.chdir(_ROOT)  # the working directory holds no such file
+    (tmp_path / "props.xml").write_text("<mujoco/>")
+    config = {
+        "backend": "sim",
+        "daemon": {"spawn": "auto", "scene": "props.xml"},
+    }
+
+    found = _statuses(setup.check_setup(config, base_dir=str(tmp_path)))
+    not_found = _statuses(setup.check_setup(config))
+
+    assert found["file:daemon.scene"] == "ready"
+    assert not_found["file:daemon.scene"] == "missing"
+    loaded = ReachyMiniConfig.from_dict(config, base_dir=tmp_path)
+    assert loaded.daemon.scene == str(tmp_path.resolve() / "props.xml")
+    assert ReachyMiniConfig.from_dict(config).daemon.scene == "props.xml"
+
+
+def test_the_loaders_base_dir_is_the_voices(tmp_path: Path) -> None:
+    """A relative voice file is found against the folder the bridge's config is loaded
+    with, as tts-engine finds it against its own loader's."""
+    import wave
+
+    with wave.open(str(tmp_path / "hi.wav"), "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(16000)
+        out.writeframes(b"\0\0" * 160)
+    block = {
+        "module": {"type": "audiofile", "files": [{"text": "hi", "file": "hi.wav"}]}
+    }
+    data = {"backend": "fake", "tts": block}
+
+    config = ReachyMiniConfig.from_dict(data, base_dir=tmp_path)
+
+    assert config.tts is not None
+    assert config.tts["module"]["base_dir"] == str(tmp_path.resolve())
+    assert "base_dir" not in block["module"]  # the caller's dict is left alone
+    assert ReachyMiniBridge(config).synthesizer_error is None

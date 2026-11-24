@@ -909,8 +909,16 @@ class ReachyMiniConfig:
     motion: MotionSettings = field(default_factory=MotionSettings)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> ReachyMiniConfig:
-        """Build (and validate) a config from a parsed dict — the one validation path."""
+    def from_dict(
+        cls, data: dict[str, Any], *, base_dir: str | Path | None = None
+    ) -> ReachyMiniConfig:
+        """Build (and validate) a config from a parsed dict — the one validation path.
+
+        ``base_dir`` is the folder the config's relative paths are relative to
+        (specs/core/config.md "Relative paths"): a relative ``daemon.scene`` file is
+        resolved against it, and it becomes the ``tts`` block's ``module.base_dir``
+        (tts-engine's own resolution of a voice file). ``None``: the working
+        directory, as before."""
         top = _require_object(data, "config")
         _reject_unknown_keys(
             top,
@@ -926,6 +934,9 @@ class ReachyMiniConfig:
         _validate_robot_keys(robot)
 
         daemon = DaemonConfig.from_dict(top.get("daemon", {}))
+        loader_dir = Path(base_dir).resolve() if base_dir is not None else None
+        if loader_dir is not None and daemon.scene is not None:
+            daemon.scene = resolve_scene(daemon.scene, loader_dir)
         if daemon.spawn != "never":
             if backend not in DAEMON_BACKENDS:
                 raise ConfigError(
@@ -951,6 +962,8 @@ class ReachyMiniConfig:
             if not module_type or not isinstance(module_type, str):
                 raise ConfigError("'tts.module.type' must be a non-empty string")
             tts = dict(tts_block)
+            if loader_dir is not None:
+                tts["module"] = _with_base_dir(module, loader_dir)
 
         audio = AudioSettings.from_dict(top.get("audio", {}))
 
@@ -985,14 +998,18 @@ class ReachyMiniConfig:
         )
 
     @classmethod
-    def from_json(cls, text: str) -> ReachyMiniConfig:
+    def from_json(
+        cls, text: str, *, base_dir: str | Path | None = None
+    ) -> ReachyMiniConfig:
         """Parse a JSON string, then delegate to :meth:`from_dict`."""
-        return cls.from_dict(_loads(text))
+        return cls.from_dict(_loads(text), base_dir=base_dir)
 
     @classmethod
-    def from_json_file(cls, path: str | Path) -> ReachyMiniConfig:
+    def from_json_file(
+        cls, path: str | Path, *, base_dir: str | Path | None = None
+    ) -> ReachyMiniConfig:
         """Read a JSON file, then delegate to :meth:`from_dict` (errors name the path)."""
-        return cls.from_dict(_load_file(path))
+        return cls.from_dict(_load_file(path), base_dir=base_dir)
 
     # --- derived views the bridge uses ---
 
@@ -1007,6 +1024,28 @@ class ReachyMiniConfig:
         if not self.manages_daemon:
             return dict(self.robot)
         return {**_MANAGED_DAEMON_ROBOT_DEFAULTS, **self.robot}
+
+
+def resolve_scene(scene: str, base_dir: str | Path | None) -> str:
+    """A ``daemon.scene`` file (``.xml``) relative to ``base_dir`` made absolute; an
+    absolute file or an upstream scene name unchanged. ``None``: the working
+    directory (specs/core/config.md "Relative paths")."""
+    if not scene.endswith(".xml") or Path(scene).is_absolute():
+        return scene
+    return str(Path(base_dir or ".").resolve() / scene)
+
+
+def _with_base_dir(module: dict[str, Any], base_dir: Path) -> dict[str, Any]:
+    """The ``tts`` block's module with tts-engine's ``base_dir`` set: the loader's
+    folder when the block names none, a relative one absolutized against it — what
+    ``TTSEngineConfig.from_dict(block, base_dir=...)`` does."""
+    module = dict(module)
+    raw = module.get("base_dir")
+    if raw is None:
+        module["base_dir"] = str(base_dir)
+    elif isinstance(raw, str) and raw and not Path(raw).is_absolute():
+        module["base_dir"] = str((base_dir / raw).resolve())
+    return module
 
 
 def _validate_robot_keys(robot: dict[str, Any]) -> None:
