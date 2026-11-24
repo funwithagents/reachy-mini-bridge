@@ -103,7 +103,7 @@ How the bridge brings up the daemon the robot client talks to — the MuJoCo dae
 | `audio` | object → `SimAudioSettings` | `{}` | `sim` only. The simulated robot's microphone and speaker ([sim_daemon.md](../daemon/sim_daemon.md) "Audio devices"): `input_device` / `output_device`, a device name as the operating system shows it, or `null` for upstream's choice — the robot's sound card when one is plugged in, else the system default; `discard_output`, no speaker at all. The daemon opens them, reports them, and every bridge on this machine follows the report ([audio.md](../audio/audio.md) "The robot's audio devices"), so the bridge's own process opens the same ones. See the table below. |
 | `sim_displays` | object → `SimDisplaySettings` | `{}` | `sim` only, viewer only. What the MuJoCo viewer window shows besides the scene: one boolean per display, all off by default — `camera_overlay`, `robot_gaze`, `face_markers` ([sim_displays.md](../daemon/sim_displays.md)). A display on with `headless: true` is a `ConfigError`. See the table below. |
 | `preload_datasets` | bool | `true` | `true` passes `--preload-datasets`: the daemon downloads the recorded-move datasets (emotions, dances) in the background after it starts, so the first `play_emotion` does not wait on a download; readiness is not delayed. `false` passes `--no-preload-datasets` (the datasets then load on first use). |
-| `startup_timeout` | number | `45.0` | Seconds to wait for a spawned or booting daemon to become ready — a positive, finite number (`Infinity` / `NaN`, which JSON parsers may accept, would make the wait unbounded). |
+| `startup_timeout` | number | `120.0` | Seconds to wait for a spawned or booting daemon to become ready — enough for a daemon's first start after an install, when GStreamer builds its plugin registry (measured 84 s for a whole daemon on a Mac, 155 s for the registry alone in a fresh environment; [setup.md](setup.md) "`check_setup`" prepares it ahead) — a positive, finite number (`Infinity` / `NaN`, which JSON parsers may accept, would make the wait unbounded). |
 
 ```python
 @dataclass
@@ -115,7 +115,7 @@ class DaemonConfig:
     audio: SimAudioSettings = field(default_factory=SimAudioSettings)
     sim_displays: SimDisplaySettings = field(default_factory=SimDisplaySettings)
     preload_datasets: bool = True
-    startup_timeout: float = 45.0
+    startup_timeout: float = 120.0
 ```
 
 The `camera` object (`SimCameraSettings`, with the same `from_dict` / `from_json` / `from_json_file` trio):

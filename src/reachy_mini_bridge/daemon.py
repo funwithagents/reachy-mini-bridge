@@ -233,6 +233,14 @@ _VIEWER_HINT = (
     " — the viewer (daemon.headless = false) needs an unlocked GUI session with a "
     "display; a locked screen makes the viewer hang or crash"
 )
+# The likeliest cause of a spawned daemon that is not ready in time: its first start
+# after an install, when GStreamer builds its plugin registry (minutes on macOS, the
+# bundle's libraries checked one by one) — named first, before the display hint.
+_FIRST_START_HINT = (
+    ": a first start after an install is the usual cause (GStreamer building its "
+    "plugin registry can take minutes; prepare the setup's media item, or raise "
+    "daemon.startup_timeout, and start again)"
+)
 
 
 @dataclass(frozen=True)
@@ -703,8 +711,9 @@ def _wait_until_ready(
                 if proc is not None
                 else f"port {port} on {host} is open but no ready Reachy Mini daemon answers"
             )
+            first = _FIRST_START_HINT if proc is not None else ""
             raise DaemonError(
-                f"{what} within {config.startup_timeout:g}s{hint}{tail()}"
+                f"{what} within {config.startup_timeout:g}s{first}{hint}{tail()}"
             )
         _sleep(_POLL_INTERVAL_S)
 

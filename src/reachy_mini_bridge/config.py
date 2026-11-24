@@ -304,7 +304,7 @@ class DaemonConfig:
     audio: SimAudioSettings = field(default_factory=SimAudioSettings)
     sim_displays: SimDisplaySettings = field(default_factory=SimDisplaySettings)
     preload_datasets: bool = True
-    startup_timeout: float = 45.0
+    startup_timeout: float = 120.0
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> DaemonConfig:
@@ -352,7 +352,7 @@ class DaemonConfig:
         preload = block.get("preload_datasets", True)
         if not isinstance(preload, bool):
             raise ConfigError("'daemon.preload_datasets' must be a boolean")
-        timeout = block.get("startup_timeout", 45.0)
+        timeout = block.get("startup_timeout", 120.0)
         # Finite as well as positive: Python's JSON parser accepts `Infinity` / `NaN`,
         # and either would make the readiness deadline unreachable (specs/core/config.md).
         if not _is_number(timeout) or not math.isfinite(timeout) or timeout <= 0:

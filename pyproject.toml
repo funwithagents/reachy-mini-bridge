@@ -127,10 +127,10 @@ dev = [
     # The in-memory span exporter the tracing tests read the verbs' spans from
     # (specs/core/tracing.md); the package itself depends on the API alone.
     "opentelemetry-sdk>=1.20,<2",
-    # The setup contract's conformance check (`module_setup.contract.check_contract`) the
+    # The setup contract's conformance check (`app_setup.contract.check_contract`) the
     # fast tier runs over `reachy_mini_bridge.setup` (specs/core/setup.md). A test-time
     # dependency only: the contract itself is plain data and imports nothing from it.
-    "module-setup",
+    "app-setup",
 ]
 # The TTS provider (specs/project.md "Dependency groups"): phonon, a local model with no
 # key and no torch, so the real-TTS live test, the greeter and the example voices run
@@ -155,7 +155,7 @@ demo = [
 # Self-reference for the groups above that pull in the package's own extras.
 reachy-mini-bridge = { workspace = true }
 # First-party, from GitHub (dev and demo groups only, never a runtime dependency).
-module-setup = { git = "https://github.com/funwithagents/module-setup", rev = "main" }
+app-setup = { git = "https://github.com/funwithagents/app-setup", rev = "main" }
 
 [tool.uv]
 # Every group installs by default — a sync is exact, so a group left out of a sync is

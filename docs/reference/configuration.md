@@ -88,7 +88,7 @@ Two keys are **reserved**: `use_sim` (derived from `backend`) and `spawn_daemon`
 | `audio` | both `null` | *sim only.* The simulated robot's microphone and speaker, by name — see the table below |
 | `sim_displays` | all `false` | *sim viewer only.* What the viewer window draws besides the scene — see the table below |
 | `preload_datasets` | `true` | Downloads the recorded-move datasets in the background at startup, so the first `play_emotion` doesn't wait on a download. Readiness isn't delayed either way |
-| `startup_timeout` | `45.0` | Seconds to wait for a spawned daemon to become ready (a positive, finite number) |
+| `startup_timeout` | `120.0` | Seconds to wait for a spawned daemon to become ready (a positive, finite number). Generous for a daemon's first start after an install, when GStreamer builds its plugin registry (prepared ahead by the setup's media item, `media:gstreamer-registry`) |
 
 `spawn` other than `"never"` needs `backend` `"sim"` or `"real"` (`fake` has no daemon). On `real` it starts the hardware daemon of a robot plugged into **this machine** over USB — it wakes the robot, and puts it to sleep on exit. `headless`, `scene`, `camera`, `audio` and `sim_displays` are MuJoCo knobs and play no part on `real`; `kinematics_engine` applies to both. Every field here describes a daemon the bridge starts: a daemon you run yourself, a wireless robot's included, keeps whatever it was started with. The commands the bridge runs, for starting a daemon by hand: [../guides/running-daemons.md](../guides/running-daemons.md).
 

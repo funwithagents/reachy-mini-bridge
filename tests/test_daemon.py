@@ -902,17 +902,28 @@ def test_spawn_timeout_stops_the_child(harness: _Harness) -> None:
     assert harness.proc.calls == [_EXIT_REQUEST, "wait"]
 
 
-def test_viewer_timeout_mentions_the_gui_session(harness: _Harness) -> None:
+def test_viewer_timeout_names_a_first_start_then_the_gui_session(
+    harness: _Harness,
+) -> None:
     clock = iter([0.0, 5.0])
     with (
         pytest.MonkeyPatch.context() as mp,
-        pytest.raises(DaemonError, match="GUI session"),
+        pytest.raises(DaemonError, match="GUI session") as excinfo,
     ):
         mp.setattr(daemon.time, "perf_counter", lambda: next(clock))
         with daemon.managed_daemon(
             DaemonConfig(spawn="auto", headless=False, startup_timeout=1.0)
         ):
             pass
+    message = str(excinfo.value)
+    first = message.index("first start after an install")
+    assert first < message.index("GUI session")
+    assert "startup_timeout" in message[first:]
+
+
+def test_the_default_startup_timeout_outlasts_a_first_start() -> None:
+    assert DaemonConfig().startup_timeout == 120.0
+    assert DaemonConfig.from_dict({}).startup_timeout == 120.0
 
 
 def test_booting_daemon_timeout_names_the_port(harness: _Harness) -> None:
@@ -920,12 +931,13 @@ def test_booting_daemon_timeout_names_the_port(harness: _Harness) -> None:
     clock = iter([0.0, 5.0])
     with (
         pytest.MonkeyPatch.context() as mp,
-        pytest.raises(DaemonError, match="port 8000"),
+        pytest.raises(DaemonError, match="port 8000") as excinfo,
     ):
         mp.setattr(daemon.time, "perf_counter", lambda: next(clock))
         with daemon.managed_daemon(DaemonConfig(spawn="auto", startup_timeout=1.0)):
             pass
     assert harness.spawned == []
+    assert "first start" not in str(excinfo.value)  # nothing was spawned
 
 
 def test_teardown_kills_after_terminate_timeout(harness: _Harness) -> None:

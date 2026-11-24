@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
+import threading
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 import pytest
 import tts_engine.setup as tts_setup
-from module_setup.contract import check_contract, parse_description
+from app_setup.contract import check_contract, parse_description
 from tts_engine.modules import REGISTRY
 from tts_engine.modules.base import VoiceInfo, key_env_field
 from tts_engine.modules.tone.module import ToneModule
@@ -221,15 +223,21 @@ def test_a_tts_player_is_still_accepted() -> None:
 
 class _Cache:
     """The two cache lookups and downloads, scripted: what is cached, what was
-    fetched."""
+    fetched. A download drives the progress bars the way Hugging Face's do: one file's
+    bytes for the weights, a snapshot's files and bytes for the dataset. `together`,
+    when set, is a barrier every download waits on: two downloads pass it only if they
+    run at the same time."""
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch, cached: set[str]) -> None:
         self.cached = set(cached)
         self.fetched: list[str] = []
         self.fail: str | None = None
+        self.together: threading.Barrier | None = None
         for name in ("yunet", "emotions"):
             monkeypatch.setattr(setup, f"_{name}_cached", self._lookup(name))
             monkeypatch.setattr(setup, f"_fetch_{name}", self._fetch(name))
+        # No spawned daemon in these configs unless a test says so: the registry built.
+        monkeypatch.setattr(setup, "_gstreamer_ready", lambda: True)
 
     def _lookup(self, name: str) -> Any:
         def cached() -> bool:
@@ -240,9 +248,23 @@ class _Cache:
         return cached
 
     def _fetch(self, name: str) -> Any:
-        def fetch() -> None:
+        def fetch(progress: Any) -> None:
+            if self.together is not None:
+                self.together.wait(timeout=5)
             if self.fail == name:
                 raise OSError("no network")
+            if name == "yunet":
+                with progress.bar_class(total=300_000, unit="B") as bar:
+                    bar.update(100_000)
+                    bar.update(200_000)
+            else:
+                files = progress.bar_class(total=4)
+                size = progress.bar_class(total=0, unit="B")
+                for _ in range(4):
+                    size.update(2_000_000)
+                    files.update(1)
+                files.close()
+                size.close()
             self.fetched.append(name)
             self.cached.add(name)
 
@@ -298,8 +320,9 @@ def test_an_extra_is_ready_when_its_import_works_and_missing_with_its_hint_else(
         "extra:reachy-mini-bridge[sim]",
         "extra:reachy-mini-bridge[placo]",
         "dataset:emotions",
+        "media:gstreamer-registry",
     ]
-    sim, placo, _ = items
+    sim, placo, *_ = items
     assert sim["status"] == "ready"
     assert placo["status"] == "missing" and not placo["preparable"]
     if sys.platform != "win32":
@@ -347,22 +370,119 @@ def test_the_voices_items_come_after_the_bridges(
     assert _statuses(after)["key:KEYED_TONE_KEY"] == "ready"
 
 
-def test_prepare_fetches_only_what_is_missing_and_reports_it(
+def test_each_item_says_whether_a_session_needs_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, keyed_tone: str
+) -> None:
+    """Extras, the scene file and the voice's key are required; what a session fetches
+    itself (the weights, the dataset, the media registry) is preparable and not."""
+    _Cache(monkeypatch, cached=set())
+    monkeypatch.setattr(setup, "_gstreamer_ready", lambda: False)
+    monkeypatch.setitem(sys.modules, "mujoco", object())
+    config = {
+        "backend": "sim",
+        "daemon": {"spawn": "auto", "scene": "props.xml"},
+        "face_detection": {"detector": "yunet"},
+        "tts": {"module": {"type": keyed_tone}},
+    }
+
+    items = setup.check_setup(config, base_dir=str(tmp_path))
+
+    assert {i["id"]: (i["required"], i["preparable"]) for i in items} == {
+        "extra:reachy-mini-bridge[sim]": (True, False),
+        "file:daemon.scene": (True, False),
+        "weights:yunet": (False, True),
+        "dataset:emotions": (False, True),
+        "media:gstreamer-registry": (False, True),
+        "key:KEYED_TONE_KEY": (True, False),
+    }
+    assert all(set(i) >= {"id", "title", "status", "detail"} for i in items)
+
+
+def test_the_media_registry_is_an_item_only_for_a_daemon_the_bridge_spawns(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cache = _Cache(monkeypatch, cached={"emotions"})
+    _Cache(monkeypatch, cached={"emotions"})
+    monkeypatch.setattr(setup, "_gstreamer_ready", lambda: False)
+    monkeypatch.setitem(sys.modules, "mujoco", object())
+
+    def ids(config: dict[str, Any]) -> list[str]:
+        return [i["id"] for i in setup.check_setup(config)]
+
+    assert "media:gstreamer-registry" in ids(
+        {"backend": "sim", "daemon": {"spawn": "auto"}}
+    )
+    assert "media:gstreamer-registry" in ids(
+        {"backend": "real", "daemon": {"spawn": "auto"}}
+    )
+    assert "media:gstreamer-registry" not in ids({"backend": "sim"})  # borrowed
+    assert "media:gstreamer-registry" not in ids({"backend": "fake"})
+
+
+def test_preparing_one_item_fetches_it_alone_with_its_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = _Cache(monkeypatch, cached=set())
     config = {"backend": "sim", "face_detection": {"detector": "yunet"}}
     progress: list[dict[str, Any]] = []
 
-    setup.prepare(config, progress.append)
-    setup.prepare(config, progress.append)  # idempotent
+    setup.prepare(config, "weights:yunet", on_progress=progress.append)
 
-    assert cache.fetched == ["yunet"]
-    assert [p["id"] for p in progress] == ["weights:yunet"]
+    assert cache.fetched == ["yunet"]  # the dataset left alone
+    fractions = [p["fraction"] for p in progress]
+    assert fractions[0] == 0.0 and fractions[-1] == 1.0
+    assert pytest.approx(1 / 3) in fractions  # bytes received against the size
+    assert "Downloading 0.1 MB of 0.3 MB" in [p["message"] for p in progress]
+    assert all(set(p) == {"fraction", "message"} for p in progress)
     assert _statuses(setup.check_setup(config)) == {
         "weights:yunet": "ready",
-        "dataset:emotions": "ready",
+        "dataset:emotions": "missing",
     }
+
+    progress.clear()
+    setup.prepare(config, "weights:yunet", on_progress=progress.append)  # idempotent
+    assert cache.fetched == ["yunet"]
+    assert [p["fraction"] for p in progress] == [1.0]
+
+
+def test_a_snapshot_reports_its_files_done_against_their_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _Cache(monkeypatch, cached=set())
+    progress: list[dict[str, Any]] = []
+
+    setup.prepare({"backend": "real"}, "dataset:emotions", on_progress=progress.append)
+
+    files = [p for p in progress if p["message"].startswith("Downloading files")]
+    assert [p["fraction"] for p in files][-1] == 1.0
+    assert "Downloading files: 2 of 4 (4.0 MB)" in [p["message"] for p in files]
+    assert pytest.approx(0.5) in [p["fraction"] for p in files]
+
+
+def test_two_items_are_prepared_at_the_same_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = _Cache(monkeypatch, cached=set())
+    cache.together = threading.Barrier(2)  # each download waits for the other
+    config = {"backend": "sim", "face_detection": {"detector": "yunet"}}
+    errors: list[BaseException] = []
+
+    def run(item: str) -> None:
+        try:
+            setup.prepare(config, item)
+        except BaseException as exc:  # noqa: BLE001 - collected for the assert
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=run, args=(item,))
+        for item in ("weights:yunet", "dataset:emotions")
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(10)
+
+    assert errors == []
+    assert sorted(cache.fetched) == ["emotions", "yunet"]
 
 
 def test_prepare_raises_with_a_message_when_a_download_fails(
@@ -372,7 +492,96 @@ def test_prepare_raises_with_a_message_when_a_download_fails(
     cache.fail = "emotions"  # an unknown lookup is fetched too, and the fetch fails
 
     with pytest.raises(BridgeError, match="Could not download the Emotions library"):
-        setup.prepare({"backend": "real"})
+        setup.prepare({"backend": "real"}, "dataset:emotions")
+
+
+def test_an_id_that_is_no_preparable_item_raises_value_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _Cache(monkeypatch, cached=set())
+
+    with pytest.raises(ValueError, match="weights:yunet"):
+        setup.prepare({"backend": "real"}, "weights:yunet")  # no detector configured
+    with pytest.raises(ValueError, match="extra:reachy-mini-bridge"):
+        setup.prepare(
+            {"backend": "sim", "daemon": {"spawn": "auto"}},
+            "extra:reachy-mini-bridge[sim]",
+        )
+
+
+def test_a_voice_item_is_handed_to_the_tts_blocks_prepare(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _Cache(monkeypatch, cached=set())
+    calls: list[tuple[object, ...]] = []
+
+    def prepare(
+        config: dict[str, Any],
+        item: str,
+        *,
+        on_progress: Any = None,
+        base_dir: str | None = None,
+    ) -> None:
+        calls.append((config, item, on_progress, base_dir))
+
+    monkeypatch.setattr(tts_setup, "prepare", prepare)
+    block = {"module": {"type": "kokoro"}}
+
+    setup.prepare(
+        {"backend": "real", "tts": block},
+        "weights:kokoro/model",
+        on_progress=print,
+        base_dir="/app",
+    )
+
+    assert calls == [(block, "weights:kokoro/model", print, "/app")]
+
+
+def test_the_media_registry_is_built_once_in_a_daemons_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The warm-up loads GStreamer in a child with the environment a spawned daemon
+    gets; the registry the bundle names is then there."""
+    registry = tmp_path / "registry.bin"
+    monkeypatch.setenv("GST_REGISTRY_1_0", str(registry))
+    monkeypatch.setenv("GST_PLUGIN_PATH_1_0", "/the/bridge/process/s")
+    runs: list[dict[str, str]] = []
+
+    def run(cmd: list[str], *, env: dict[str, str], **kwargs: Any) -> Any:
+        runs.append(env)
+        registry.write_bytes(b"built")
+        return subprocess.CompletedProcess(cmd, 0, "257\n", "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    config = {"backend": "sim", "daemon": {"spawn": "auto"}}
+    progress: list[dict[str, Any]] = []
+
+    assert setup._gstreamer_item()["status"] == "missing"
+    setup.prepare(config, "media:gstreamer-registry", on_progress=progress.append)
+    setup.prepare(config, "media:gstreamer-registry")  # idempotent: no second run
+
+    assert len(runs) == 1
+    assert "GST_PLUGIN_PATH_1_0" not in runs[0]  # the daemon's scrubbed environment
+    assert [p["fraction"] for p in progress] == [None, 1.0]
+    assert setup._gstreamer_item()["status"] == "ready"
+
+
+def test_a_media_registry_that_cannot_be_built_raises_with_its_cause(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("GST_REGISTRY_1_0", str(tmp_path / "registry.bin"))
+
+    def run(cmd: list[str], **kwargs: Any) -> Any:
+        return subprocess.CompletedProcess(
+            cmd, 1, "", "ValueError: Namespace Gst not available"
+        )
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    with pytest.raises(BridgeError, match="Namespace Gst not available"):
+        setup.prepare(
+            {"backend": "sim", "daemon": {"spawn": "auto"}}, "media:gstreamer-registry"
+        )
 
 
 def test_the_cache_lookups_read_the_hugging_face_cache(
@@ -509,7 +718,7 @@ def test_base_dir_reaches_the_tts_blocks_functions(
     seen: dict[str, object] = {}
 
     def recorder(name: str, result: object) -> Any:
-        def record(*args: object, base_dir: str | None = None) -> object:
+        def record(*args: object, base_dir: str | None = None, **_: object) -> object:
             seen[name] = base_dir
             return result
 
@@ -525,7 +734,7 @@ def test_base_dir_reaches_the_tts_blocks_functions(
     folder = str(tmp_path)
 
     setup.check_setup(config, base_dir=folder)
-    setup.prepare(config, base_dir=folder)
+    setup.prepare(config, "weights:tone", base_dir=folder)
     setup.options("voices", config, base_dir=folder)
     assert setup.probe(config, base_dir=folder)["ok"]
 

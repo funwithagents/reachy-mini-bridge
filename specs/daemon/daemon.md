@@ -89,7 +89,7 @@ def managed_daemon(
 
 **The probe has no side effect on the daemon.** It is one HTTP read, never an SDK client: a `reachy_mini.ReachyMini` built with `media_backend="no_media"` (upstream 1.10 / 1.11) calls `release_media()` on the daemon at construction and `acquire_media()` at exit, and the daemon answers each pair by stopping and rebuilding its whole media pipeline — WebRTC peers dropped, audio interrupted, and on macOS the camera drawn again by the unstable `avfvideosrc` index ([real_daemon.md](real_daemon.md)). A readiness probe that rebuilt the daemon's media on every successful poll was one of the two ways a real robot's camera came up dead.
 
-After spawning, `start_daemon` polls `is_daemon_ready` once per second until `startup_timeout`. If the child exits first, it raises `DaemonError` with the exit code and the launch command; on timeout it stops the child and raises `DaemonError` (the message includes the viewer hint below for a `sim` daemon with `headless` `false`).
+After spawning, `start_daemon` polls `is_daemon_ready` once per second until `startup_timeout`. If the child exits first, it raises `DaemonError` with the exit code and the launch command; on timeout it stops the child and raises `DaemonError`. For a daemon it spawned, the message first names the usual cause — a first start after an install, GStreamer building its plugin registry (minutes on macOS), which the setup contract prepares ahead ([setup.md](../core/setup.md)) or a longer `startup_timeout` absorbs — then the viewer hint below for a `sim` daemon with `headless` `false`.
 
 ### The launch command
 

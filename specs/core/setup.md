@@ -10,13 +10,13 @@ tests:
 
 # Setup (`reachy_mini_bridge.setup`)
 
-**Status:** Implemented
+**Status:** Updated
 
 ## Purpose
 
 Everything an application needs to set a bridge up for a user without knowing the bridge: what its config looks like, which extras a config needs, what is wrong in it, what this machine is missing to run it (an extra, a key, a model to download), and whether it works. An application draws a form from it, installs what is missing, downloads what can be downloaded, tries it, and only then builds a `ReachyMiniBridge`.
 
-The functions implement version 1 of the **module contract** defined by `module-setup`, a dev dependency only (its conformance check runs in the tests): the contract is plain data, and the bridge imports nothing from it at runtime. This spec says what the bridge puts in the shapes the contract exchanges.
+The functions implement version 1 of the **module contract** defined by `app-setup`, a dev dependency only (its conformance check runs in the tests): the contract is plain data, and the bridge imports nothing from it at runtime. This spec says what the bridge puts in the shapes the contract exchanges.
 
 The config's `tts` block is a tts-engine engine block ([config.md](config.md)), and tts-engine implements the same contract (`tts_engine.setup`): the bridge's contract **composes** it, delegating that block to it, so a form for the bridge offers every voice tts-engine offers, with its checks, its downloads and its keys.
 
@@ -32,7 +32,7 @@ def required_extras(config: dict) -> list[str]: ...
 def check_config(config: dict) -> list[dict]: ...
 def check_setup(config: dict, *, base_dir: str | None = None) -> list[dict]: ...
 def prepare(
-    config: dict, on_progress: Callable[[dict], None] | None = None, *, base_dir: str | None = None
+    config: dict, item: str, *, on_progress: Callable[[dict], None] | None = None, base_dir: str | None = None
 ) -> None: ...
 def options(name: str, config: dict, *, base_dir: str | None = None) -> list[dict]: ...
 def probe(config: dict, *, base_dir: str | None = None) -> dict: ...
@@ -88,23 +88,35 @@ The four functions that look at the machine take `base_dir`, the folder the conf
 
 ### `check_setup`
 
-What this machine is missing to run the config, each item `{"id", "title", "status", "detail", "preparable"}`, asked only about a config `check_config` accepts. In this order:
+What this machine is missing to run the config, each item `{"id", "title", "status", "detail", "preparable", "required"}`, asked only about a config `check_config` accepts. `required` says whether a session can start without the item: `true` for what only the user can fix (an extra, the scene file, the voice's key), `false` for what a session gets by itself, slower, which `prepare` can get ahead of time. In this order:
 
-1. **The bridge's extras** — one item per requirement of `required_extras` on this distribution, never preparable, found by trying the imports the extra provides (`mujoco` for `sim`, `placo` for `placo`): `ready` ("Installed."), else `missing` with the install hint (`install reachy-mini-bridge[sim]`). On Windows the `placo` item says the engine has no Windows wheels.
+1. **The bridge's extras** — one item per requirement of `required_extras` on this distribution, never preparable, found by trying the imports the extra provides (`mujoco` for `sim`, `placo` for `placo`), required: `ready` ("Installed."), else `missing` with the install hint (`install reachy-mini-bridge[sim]`). On Windows the `placo` item says the engine has no Windows wheels.
 2. **The bridge's files**:
-   - `file:daemon.scene` — the scene file a sim the bridge spawns loads (`backend: "sim"`, `daemon.spawn` not `never`, `daemon.scene` ending in `.xml`), resolved against `base_dir`: `ready` when the file is there, else `missing` naming the path; never preparable.
+   - `file:daemon.scene` — the scene file a sim the bridge spawns loads (`backend: "sim"`, `daemon.spawn` not `never`, `daemon.scene` ending in `.xml`), resolved against `base_dir`: `ready` when the file is there, else `missing` naming the path; never preparable, required.
 
    Then, looked up in the Hugging Face cache without network:
-   - `weights:yunet` — the shipped face detector's weights, when `face_detection.detector` is `yunet`: `ready` when upstream's model file is in the cache, else `missing`, preparable.
-   - `dataset:emotions` — the recorded emotions library, when `backend` is `real` or `sim` (the `fake` plays a stub library): `ready` when the dataset is in the cache, else `missing`, preparable. The bridge loads it in its own process at the first `play_emotion`, whatever the daemon preloads.
+   - `weights:yunet` — the shipped face detector's weights, when `face_detection.detector` is `yunet`: `ready` when upstream's model file is in the cache, else `missing`; preparable, **not required**: upstream's `FaceDetector` downloads them when the session builds it.
+   - `dataset:emotions` — the recorded emotions library, when `backend` is `real` or `sim` (the `fake` plays a stub library): `ready` when the dataset is in the cache, else `missing`; preparable, **not required**: a spawned daemon preloads it (`daemon.preload_datasets`, on by default), and the bridge's process fetches it at the first `play_emotion` when it is still missing.
    An upstream lookup that fails (an upstream change) is `unknown`, never a raise.
+
+   And, for a daemon the bridge spawns (`daemon.spawn` not `never`, `sim` or `real`):
+   - `media:gstreamer-registry` — GStreamer's plugin registry, which the daemon's media pipeline and the bridge's own load. Its first build after an install is slow: on a Mac, loading every freshly installed plugin library for the first time took 155 s in a fresh environment (a rebuild afterwards, under 2 s), which delayed a daemon's first start past its timeout and lost its media pipeline. `ready` when the registry file the GStreamer bundle names (`GST_REGISTRY_1_0`, under the environment's prefix) is there, `missing` when it is not, `unknown` when GStreamer keeps it elsewhere (a system install on Linux); preparable, **not required**: the daemon's first start builds it itself.
 3. **The `tts` block's items**, when the block is present: `tts_engine.setup.check_setup`'s, unchanged (the provider's extra as `extra:tts-engine[<extra>]`, its key variable as `key:<VARIABLE>`, its files).
 
 The bridge itself names no key variable: the only keys are the voice's, reported by tts-engine.
 
 ### `prepare`
 
-Makes every preparable missing item ready, through the same upstream calls the bridge makes when it runs: upstream's YuNet `FaceDetector` (which downloads its weights; built, then released) and upstream's `RecordedMoves` over the emotions dataset (which downloads it). Then the `tts` block's own `prepare`. Blocking, idempotent — an item already `ready` is not fetched again — and raising with a message for the user on failure. `on_progress` receives `{"id", "fraction": None, "message"}` before each of the bridge's downloads; the `tts` block's progress is tts-engine's.
+`prepare(config, item, *, on_progress=None, base_dir=None)` makes **one** preparable item ready — an id `check_setup` returned:
+
+- `weights:yunet`: upstream's own download of its model (the repository, file and revision its `FaceDetector` fetches, `hf_hub_download`).
+- `dataset:emotions`: upstream's own download of the dataset (`RecordedMoves`' `snapshot_download`).
+- `media:gstreamer-registry`: GStreamer loaded once in a child process with the environment a spawned daemon gets (`scrubbed_env`, the same interpreter), which builds the registry; no daemon is started. A child that fails raises with its last error lines; one taking more than 15 minutes is stopped.
+- Any other id, when the config has a `tts` block, is handed to tts-engine's `prepare(tts, item, on_progress=…, base_dir=…)`, which raises `ValueError` for an id that is none of its items; with no `tts` block, `ValueError` names it.
+
+Blocking and idempotent — an item already `ready` reports `1.0` and returns. Two calls for two different items may run at the same time: each uses its own call and its own progress, nothing shared. A failure raises with a message for the user (a `BridgeError` for the bridge's items).
+
+**Progress** (`on_progress({"fraction", "message"})`, about the item): `0.0` as a download starts, `None` for the registry, whose build has no measure; then, for a download, what the Hugging Face progress bars count — the call's own `tqdm_class` hook: the weights' bytes received against the file's size ("Downloading 0.1 MB of 0.3 MB"), the dataset's files done against their count with the bytes so far ("Downloading files: 12 of 40 (35.2 MB)"; a snapshot's byte total grows as each file starts, so it is shown, not divided); then `1.0` when ready.
 
 ### `options`
 
@@ -126,12 +138,13 @@ A light, real run: it connects, reads, and lets go; it never moves the robot and
 
 `tests/test_setup.py`:
 
-- `module_setup.contract.check_contract` passes over the repo's example configs (`examples/configs/*.json`, the greeter's and the voice tour's, each voice config wrapped onto the `fake`), plus a block for every tts module no example covers.
+- `app_setup.contract.check_contract` passes over the repo's example configs (`examples/configs/*.json`, the greeter's and the voice tour's, each voice config wrapped onto the `fake`), plus a block for every tts module no example covers.
 - `config_schema()` is stable across calls; `backend` is the one declared field; the five blocks are free-form; the `tts` property is tts-engine's schema without `player`.
 - `required_extras` on each rule (`sim` spawned or borrowed, `placo` spawned or borrowed, a voice), and on malformed input without raising.
 - `check_config`: the example configs pass; a table of broken configs, each reported at its pointer with the loader's message; a `tts` problem at `/tts/module/...`; an `api_key` in the block refused; a `tts` block that is not an object.
 - `check_setup` on each branch: an extra `ready` when its import works and `missing` with its hint when it does not; the YuNet and emotions items only when the config uses them, `ready` / `missing` from a cache lookup seam, `unknown` when the lookup fails; the `tts` items after the bridge's, a key variable `missing` until it is set.
-- `prepare` fetches only what is missing, reports progress, and propagates a failure.
+- Each item's `required` and `preparable`; the registry item only for a daemon the bridge spawns.
+- `prepare` on one item fetches it alone, with fractions from the bars (`0.0`, a third of the bytes, `1.0`) and is idempotent; a snapshot reports its files against their count; two items prepared on two threads at once both pass a barrier only together; a failed download raises; an id that is no preparable item raises `ValueError`; a voice item is handed to tts-engine's `prepare` with its progress and `base_dir`; the registry is built once, in the daemon's scrubbed environment, and a child that fails raises with its error.
 - `options("voices")` over a fixture voice, `[]` for an unknown name and with no `tts` block.
 - `probe` on the `fake`: `ok`, the motor state in the message, the robot never moved and the session closed; with a `tone` voice, the voice's probe ok too; a voice that fails to build reported `ok: false`, never raised.
 - `base_dir` reaches the `tts` block's `check_setup`, `prepare`, `options` and `probe`; a relative scene file is `ready` against the folder given and `missing` against the working directory; the loader's `base_dir` becomes the `tts` block's, so a relative voice file is found against it.

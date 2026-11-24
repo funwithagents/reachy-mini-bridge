@@ -230,6 +230,14 @@ wheels = [
 ]
 
 [[package]]
+name = "app-setup"
+version = "0.1.0"
+source = { git = "https://github.com/funwithagents/app-setup?rev=main#63470d8889d4b1423c20d0214f11c0e6340abb38" }
+dependencies = [
+    { name = "packaging" },
+]
+
+[[package]]
 name = "asttokens"
 version = "3.0.2"
 source = { registry = "https://pypi.org/simple" }
@@ -2156,14 +2164,6 @@ wheels = [
 ]
 
 [[package]]
-name = "module-setup"
-version = "0.1.0"
-source = { git = "https://github.com/funwithagents/module-setup?rev=main#d28ff373407cc765d552d131f2dbd9dbd4c976f0" }
-dependencies = [
-    { name = "packaging" },
-]
-
-[[package]]
 name = "mpmath"
 version = "1.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3711,7 +3711,7 @@ demo = [
     { name = "reachy-mini-bridge", extra = ["sim"] },
 ]
 dev = [
-    { name = "module-setup" },
+    { name = "app-setup" },
     { name = "opentelemetry-sdk" },
     { name = "pyright" },
     { name = "pytest" },
@@ -3762,7 +3762,7 @@ demo = [
     { name = "reachy-mini-bridge", extras = ["sim"], editable = "." },
 ]
 dev = [
-    { name = "module-setup", git = "https://github.com/funwithagents/module-setup?rev=main" },
+    { name = "app-setup", git = "https://github.com/funwithagents/app-setup?rev=main" },
     { name = "opentelemetry-sdk", specifier = ">=1.20,<2" },
     { name = "pyright", specifier = ">=1.1.411" },
     { name = "pytest", specifier = ">=9.1.1" },

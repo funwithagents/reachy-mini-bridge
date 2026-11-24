@@ -48,8 +48,8 @@ A string is the backend-name shorthand for a config with everything else at its 
 | `config_schema()` | the config as a JSON Schema: `backend` a choice, the `tts` block tts-engine's own schema (a module choice and its fields), every other block raw JSON |
 | `required_extras(config)` | the extras the config needs: `reachy-mini-bridge[sim]` for a sim the bridge spawns, `reachy-mini-bridge[placo]` for the Placo engine on a spawned daemon, the voice's (`tts-engine[gradium]`, installed as `reachy-mini-bridge[tts-gradium]`) |
 | `check_config(config)` | what is wrong in it, each `{"path", "message"}`, the path a JSON Pointer (`/daemon/camera/source`, `/tts/module/voice_id`) |
-| `check_setup(config)` | what this machine is missing: the extras, the face detector's weights and the emotions library (in the Hugging Face cache), the voice's extra, key and model |
-| `prepare(config, on_progress=None)` | downloads what `check_setup` reports missing and downloadable |
+| `check_setup(config)` | what this machine is missing, each item `required` or not: the extras and the scene file (required), the face detector's weights, the emotions library and GStreamer's plugin registry (not required: a session gets them itself, slower), the voice's extra, key and model |
+| `prepare(config, item, *, on_progress=None)` | prepares one item `check_setup` reported: downloads the face detector's weights or the emotions library, builds GStreamer's plugin registry ahead of a daemon's first start, or hands a voice item to its provider; reports `{"fraction", "message"}` as it goes |
 | `options("voices", config)` | the voices of the `tts` block's provider |
 | `probe(config)` | connects with the configured backend, reads the motor state and disconnects — nothing moves, nothing is said — and runs the voice's own check with nothing played; `{"ok", "message", "duration_s"}`, never raises |
 
