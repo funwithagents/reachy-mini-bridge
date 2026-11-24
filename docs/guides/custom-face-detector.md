@@ -144,18 +144,20 @@ order, with the frame they were found in, its time and — when the feed knows i
 pose it was taken from, so the tracker aims each face against the pose it was actually seen
 from. `source` reads `"custom"`. The head tracker then chooses whom to follow — the biggest
 face, kept while seen, a vanished face waited for before switching — and publishes that
-choice, by `track_id`, on `bridge.head_tracking`. The fields are in
-[specs/vision/user_perception.md](../../specs/vision/user_perception.md) "The face report" and
+choice, by `track_id`, on `bridge.head_tracking`. The fields of both reports are in
+[reference/api.md](../reference/api.md#the-values); why the tracker chooses as it does, in
 [specs/motion/head_tracking.md](../../specs/motion/head_tracking.md) "Whom the head follows".
 
 The live test [tests-e2e/test_custom_faces.py](../../tests-e2e/test_custom_faces.py) registers
-the shipped `YuNetDetector` through this path on the viewer sim's camera and checks the
-head converges on the test scene's portrait with the same convergence kit the config-named
+the shipped `YuNetDetector` through this path on the sim's camera and checks the head
+converges on the test scene's portrait with the same convergence kit the config-named
 detector is tested with (`reachy_mini_bridge.testing.gaze`) — the registration and the
-runner under test, not the model:
+runner under test, not the model. It runs wherever the sim has a camera: headless on Linux
+(as in CI), with the viewer elsewhere:
 
 ```
-REACHY_MINI_E2E_SIM_VIEWER=1 uv run pytest tests-e2e -rs -k custom
+uv run pytest tests-e2e -rs -k custom                            # Linux, headless
+REACHY_MINI_E2E_SIM_VIEWER=1 uv run pytest tests-e2e -rs -k custom   # macOS, the viewer
 ```
 
 ## A complete program

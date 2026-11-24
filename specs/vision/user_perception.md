@@ -111,7 +111,7 @@ One asyncio task owned by the bridge, running while **anyone needs faces**: the 
 
 - a face **new** to the set — a `track_id` the last published report did not have — is published on the first report that shows it, whatever the count: someone replacing someone at the same count is a change;
 - a face **gone** from the set is published once its absence has held for `FACE_ABSENT_S = 0.3` s — a detector misses a face on a single frame now and then, and the debounce is what keeps *left the frame* from firing on a blink of the detector. (The tracks' miss window is longer and separate: one serves the frame's event, the other the presence the head follows.)
-- `active` flips are published at once: when the loop starts and its detector is built, when it stops, and when the detector cannot look (below).
+- `active` flips are published at once: on the run's first observation — a detector built but given no frame is not looking yet —, when the loop stops, and when the detector cannot look (below).
 
 **Every observation reaches the observer.** The loop's observer — the bridge, feeding the head tracker — hears every observation with the users present after it, `on_observation(report, users)`, and every clearing of the tracks that had users, `on_observation(None, users)` with the users gone ("The users present": `"stopped"`). A poll that produced no observation reaches nobody: with no observation the tracks learn nothing, and a camera silent for long reads as the detector down, which clears them.
 
