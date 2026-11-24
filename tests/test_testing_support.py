@@ -589,8 +589,13 @@ def test_kinematics_engine_reads_env_with_the_analytical_default(
     for engine in KINEMATICS_ENGINES:
         monkeypatch.setenv("REACHY_MINI_E2E_KINEMATICS", f" {engine.upper()} ")
         assert _daemon.kinematics_engine() == engine
+    # `nn` left with upstream's NN engine (removed in reachy-mini 1.14).
+    for word in ("AnalyticalKinematics", "nn"):
+        monkeypatch.setenv("REACHY_MINI_E2E_KINEMATICS", word)
+        with pytest.raises(pytest.fail.Exception, match="analytical, placo$"):
+            _daemon.kinematics_engine()
     monkeypatch.setenv("REACHY_MINI_E2E_KINEMATICS", "AnalyticalKinematics")
-    with pytest.raises(pytest.fail.Exception, match="analytical, placo, nn"):
+    with pytest.raises(pytest.fail.Exception, match="analytical, placo$"):
         _daemon.kinematics_engine()
 
 
@@ -612,13 +617,21 @@ class _RecordedSpawns:
     def __init__(self, error: Exception | None = None) -> None:
         self.calls: list[tuple[str, str, int]] = []
         self.configs: list[DaemonConfig] = []
+        self.envs: list[object] = []
         self.error = error
 
     @contextmanager
     def __call__(
-        self, config: DaemonConfig, *, host: str, port: int, backend: str
+        self,
+        config: DaemonConfig,
+        *,
+        host: str,
+        port: int,
+        backend: str,
+        env: object = None,
     ) -> Iterator[daemon.DaemonHandle]:
         self.calls.append((backend, host, port))
+        self.envs.append(env)
         self.configs.append(config)
         if self.error is not None:
             raise self.error
@@ -642,6 +655,8 @@ def test_real_target_spawns_a_real_daemon_on_loopback(monkeypatch: pytest.Monkey
     assert spawns.calls == [("real", "127.0.0.1", 8000)]
     # The run's engine reaches the hardware daemon too: the gravity-compensation run.
     assert spawns.configs[0].kinematics_engine == "placo"
+    # Upstream's usage reporting is off for every daemon the harness spawns.
+    assert spawns.envs == [{"REACHY_MINI_TELEMETRY": "0"}]
 
 
 def test_real_target_borrows_a_ready_daemon(monkeypatch: pytest.MonkeyPatch):
@@ -770,7 +785,9 @@ def test_a_spawned_sim_runs_the_test_scene_for_the_daemon_lifetime(
         monkeypatch.setenv("REACHY_MINI_E2E_SIM_VIEWER", "1")
     else:
         monkeypatch.delenv("REACHY_MINI_E2E_SIM_VIEWER", raising=False)
-    monkeypatch.setenv("REACHY_MINI_E2E_KINEMATICS", "nn" if viewer else "analytical")
+    monkeypatch.setenv(
+        "REACHY_MINI_E2E_KINEMATICS", "placo" if viewer else "analytical"
+    )
     spawns = _RecordedSpawns()
     _patch_lifecycle(monkeypatch, ready=False, spawns=spawns)
 
@@ -779,7 +796,7 @@ def test_a_spawned_sim_runs_the_test_scene_for_the_daemon_lifetime(
     (config,) = spawns.configs
     assert spawns.calls == [("sim", "127.0.0.1", 8000)]
     assert config.spawn == "auto" and config.headless is not viewer
-    assert config.kinematics_engine == ("nn" if viewer else "analytical")
+    assert config.kinematics_engine == ("placo" if viewer else "analytical")
     # The viewer sim draws the faces the bridge sends it; headless has no viewer.
     assert config.sim_displays.enabled() == (["face_markers"] if viewer else [])
     assert config.scene is not None and config.scene.endswith("scene.xml")

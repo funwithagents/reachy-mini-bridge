@@ -4,7 +4,7 @@
 Resolves the *target* from the environment (`REACHY_MINI_E2E_TARGET` = `sim` default |
 `real`), the daemon address (`REACHY_MINI_HOST` / `REACHY_MINI_PORT`) and the kinematics
 engine the spawned daemon runs (`REACHY_MINI_E2E_KINEMATICS` = `analytical` default |
-`placo` | `nn`, specs/testing/testing.md "One engine per run") and its audio devices
+`placo`, specs/testing/testing.md "One engine per run") and its audio devices
 (`REACHY_MINI_E2E_AUDIO_INPUT` / `_OUTPUT`, `REACHY_MINI_E2E_DISCARD_AUDIO_OUTPUT`),
 then hands the daemon work to the library's [daemon.py](../daemon.py) (specs/daemon/daemon.md): reuse a daemon
 already ready at the address (never torn down), else spawn one and own its teardown — a
@@ -50,6 +50,11 @@ from reachy_mini_bridge.testing.support import check_capability_names
 
 _DEFAULT_HOST = "127.0.0.1"
 _DEFAULT_PORT = 8000
+# Set in the environment of every daemon the harness spawns: a test run's daemons are
+# no one's use of a robot, and a CI runner's would each count as a new installation, so
+# upstream's anonymous usage reporting is off for them (specs/testing/testing_support.md
+# "The daemon lifecycle"). A borrowed daemon keeps its own setting.
+HARNESS_DAEMON_ENV: dict[str, str] = {"REACHY_MINI_TELEMETRY": "0"}
 
 
 # --- target / connection config (from the environment) ---
@@ -106,7 +111,7 @@ def kinematics_engine() -> str:
     """The `daemon.kinematics_engine` of the daemon the harness spawns, sim or real, from
     `REACHY_MINI_E2E_KINEMATICS` (case-insensitive; unset or empty: `analytical`,
     upstream's default). A word outside `KINEMATICS_ENGINES` *fails* — never skips —
-    naming the three: a typo must not run the suite on the wrong engine. A borrowed
+    naming the two: a typo must not run the suite on the wrong engine. A borrowed
     daemon runs its own engine; `tests-e2e/test_motion.py` checks it is this one."""
     raw = os.environ.get("REACHY_MINI_E2E_KINEMATICS", "").strip().lower()
     engine = raw or "analytical"
@@ -251,7 +256,7 @@ def _spawned(
 ) -> Iterator[tuple[str, int]]:
     try:
         with daemon.managed_daemon(
-            config, host=host, port=port, backend=backend_
+            config, host=host, port=port, backend=backend_, env=HARNESS_DAEMON_ENV
         ) as handle:
             yield handle.host, handle.port
     except DaemonError as e:

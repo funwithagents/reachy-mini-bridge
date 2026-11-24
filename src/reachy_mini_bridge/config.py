@@ -54,11 +54,10 @@ SPAWN_MODES = ("never", "auto", "always")
 # each — what `--kinematics-engine` takes and `GET /api/kinematics/info` reports. The
 # launch command passes the upstream name; the gravity-compensation guard compares
 # against UPSTREAM_KINEMATICS_ENGINES["placo"] (specs/core/bridge.md "Motors").
-KINEMATICS_ENGINES = ("analytical", "placo", "nn")
+KINEMATICS_ENGINES = ("analytical", "placo")
 UPSTREAM_KINEMATICS_ENGINES = {
     "analytical": "AnalyticalKinematics",
     "placo": "Placo",
-    "nn": "NN",
 }
 # What the sim daemon's camera stream carries (specs/daemon/sim_daemon.md "Camera sources").
 CAMERA_SOURCES = ("sim", "webcam")

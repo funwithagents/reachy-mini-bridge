@@ -116,12 +116,29 @@ class _Control:
 _SUPPORTED = uvc.CameraTerminal(terminal_id=1, ae_priority=True)
 
 
-class _FakePipeline:
-    def __init__(self) -> None:
-        self.states: list[Any] = []
+class _FakeServer:
+    """Upstream's `GstMediaServer` as the check sees it: the camera path, the sender
+    pipeline the opened device is read from, and `stop()`."""
 
-    def set_state(self, state: Any) -> None:
-        self.states.append(state)
+    def __init__(self, cam_path: str) -> None:
+        self._cam_path = cam_path
+        self._pipeline_sender = object()
+        self.stops = 0
+
+    def stop(self) -> None:
+        self.stops += 1
+
+
+def _starts(log: list[str], results: list[bool] | None = None) -> Any:
+    """Upstream's start as a recorder: each call logs the camera path it started on and
+    returns the next scripted result (True when the script runs out)."""
+    outcomes = iter(results or [])
+
+    def start(server: _FakeServer) -> bool:
+        log.append(server._cam_path)
+        return next(outcomes, True)
+
+    return start
 
 
 def _macos(
@@ -136,7 +153,6 @@ def _macos(
     opened = iter(names)
     monkeypatch.setattr(real_daemon.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(real_daemon, "_video_device_count", lambda: count)
-    monkeypatch.setattr(real_daemon, "_gst_null", lambda: "NULL")
     monkeypatch.setattr(
         real_daemon, "_opened_device_name", lambda pipeline: next(opened)
     )
@@ -158,10 +174,10 @@ def test_checked_start_enables_the_exposure_priority_after_the_selection(
         return control, _SUPPORTED
 
     _macos(monkeypatch, ["Caméra du MacBook Pro", "Reachy Mini Camera"], 2, finder)
-    server = SimpleNamespace(_cam_path="1", _pipeline_sender=_FakePipeline())
+    server = _FakeServer("1")
     # the decision's own line comes from uvc.py: capture the package
     with caplog.at_level(logging.INFO, logger="reachy_mini_bridge"):
-        real_daemon._checked_start(server, lambda s: starts.append(s._cam_path))
+        assert real_daemon._checked_start(server, _starts(starts))
     assert [r[0] for r in control.requests] == ["get", "set", "get"]
     assert control.closed
     assert "auto-exposure priority enabled" in caplog.records[-1].getMessage()
@@ -174,10 +190,10 @@ def test_checked_start_runs_on_when_the_camera_cannot_be_reached_over_usb(
         raise RuntimeError("No backend available")
 
     _macos(monkeypatch, ["Reachy Mini Camera"], 1, finder)
-    server = SimpleNamespace(_cam_path="0", _pipeline_sender=_FakePipeline())
+    server = _FakeServer("0")
     starts: list[str] = []
     with caplog.at_level(logging.DEBUG, logger=_LOGGER):
-        real_daemon._checked_start(server, lambda s: starts.append(s._cam_path))
+        assert real_daemon._checked_start(server, _starts(starts))
     assert starts == ["0"]
     assert [r.levelno for r in caplog.records] == [logging.WARNING]
     assert "No backend available" in caplog.records[0].getMessage()
@@ -187,9 +203,9 @@ def test_checked_start_says_nothing_without_a_robot_camera_on_usb(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     _macos(monkeypatch, ["Reachy Mini Camera"], 1, camera=None)
-    server = SimpleNamespace(_cam_path="0", _pipeline_sender=_FakePipeline())
+    server = _FakeServer("0")
     with caplog.at_level(logging.INFO, logger=_LOGGER):
-        real_daemon._checked_start(server, lambda s: None)
+        assert real_daemon._checked_start(server, _starts([]))
     assert caplog.records == []
 
 
@@ -197,11 +213,11 @@ def test_checked_start_rebuilds_the_media_server_on_the_next_index(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _macos(monkeypatch, ["Caméra du MacBook Pro", "Reachy Mini Camera"], count=2)
-    server = SimpleNamespace(_cam_path="1", _pipeline_sender=_FakePipeline())
+    server = _FakeServer("1")
     starts: list[str] = []
-    real_daemon._checked_start(server, lambda s: starts.append(s._cam_path))
+    assert real_daemon._checked_start(server, _starts(starts))
     assert starts == ["1", "0"]  # the detected index, then the next one
-    assert server._pipeline_sender.states == ["NULL"]  # torn down before the rebuild
+    assert server.stops == 1  # upstream's stop() before the rebuild, so it builds anew
     assert server._cam_path == "0"  # the index the daemon now runs on
 
 
@@ -209,11 +225,41 @@ def test_checked_start_is_satisfied_by_a_first_build_that_opened_the_robot_camer
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _macos(monkeypatch, ["Reachy Mini Camera"], count=2)
-    server = SimpleNamespace(_cam_path="0", _pipeline_sender=_FakePipeline())
+    server = _FakeServer("0")
     starts: list[str] = []
-    real_daemon._checked_start(server, lambda s: starts.append(s._cam_path))
+    assert real_daemon._checked_start(server, _starts(starts))
     assert starts == ["0"]
-    assert server._pipeline_sender.states == []
+    assert server.stops == 0
+
+
+def test_checked_start_returns_a_refused_start_unchecked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Upstream's start returning False left the pipeline stopped: the wrapper hands the
+    False back for upstream's callers to retry, and reads no device and touches no camera
+    (specs/daemon/real_daemon.md "The camera check")."""
+    monkeypatch.setattr(real_daemon.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(
+        real_daemon, "_opened_device_name", lambda pipeline: pytest.fail("probed")
+    )
+    monkeypatch.setattr(real_daemon, "robot_camera", lambda names: pytest.fail("USB"))
+    server = _FakeServer("1")
+    starts: list[str] = []
+    assert not real_daemon._checked_start(server, _starts(starts, [False]))
+    assert starts == ["1"] and server.stops == 0
+
+
+def test_checked_start_returns_the_result_of_the_last_rebuild(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rebuild upstream refuses to start leaves the media stopped: the wrapper returns
+    that build's False, not the first build's True, so upstream retries it."""
+    # The refused rebuild opens nothing: no name, which the selection accepts.
+    _macos(monkeypatch, ["Caméra du MacBook Pro", None], count=2)
+    server = _FakeServer("1")
+    starts: list[str] = []
+    assert not real_daemon._checked_start(server, _starts(starts, [True, False]))
+    assert starts == ["1", "0"] and server.stops == 1
 
 
 @pytest.mark.parametrize(
@@ -228,9 +274,9 @@ def test_checked_start_leaves_other_platforms_and_sources_alone(
         real_daemon, "_opened_device_name", lambda pipeline: pytest.fail("probed")
     )
     monkeypatch.setattr(real_daemon, "robot_camera", lambda names: pytest.fail("USB"))
-    server = SimpleNamespace(_cam_path=cam_path, _pipeline_sender=_FakePipeline())
+    server = _FakeServer(cam_path)
     starts: list[str] = []
-    real_daemon._checked_start(server, lambda s: starts.append(s._cam_path))
+    assert real_daemon._checked_start(server, _starts(starts))
     assert starts == [cam_path]
 
 
@@ -249,10 +295,12 @@ def test_install_macos_camera_check_wraps_upstreams_start_once(
     monkeypatch.setattr(
         real_daemon,
         "_checked_start",
-        lambda server, start: calls.append((server, start)),
+        lambda server, start: calls.append((server, start)) or False,
     )
     server = object()
-    wrapped(server)
+    assert (
+        wrapped(server) is False
+    )  # upstream's callers read the wrapped start's result
     assert calls == [(server, original)]
 
 

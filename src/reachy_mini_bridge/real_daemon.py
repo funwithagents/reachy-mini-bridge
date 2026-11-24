@@ -192,35 +192,37 @@ def _video_device_count() -> int:
         return 0
 
 
-def _gst_null() -> Any:
-    from gi.repository import (  # pyright: ignore[reportMissingImports]
-        Gst,  # pyright: ignore[reportAttributeAccessIssue]
-    )
-
-    return Gst.State.NULL
-
-
-def _checked_start(server: Any, original_start: Callable[[Any], None]) -> None:
+def _checked_start(server: Any, original_start: Callable[[Any], bool]) -> bool:
     """``GstMediaServer.start`` with both corrections: start, keep rebuilding on the next
     index while the device that opened is not the robot's camera, then enable the Lite
-    camera's auto-exposure priority."""
-    original_start(server)
+    camera's auto-exposure priority. Returns what upstream's start returned for the
+    pipeline left running — ``False`` when it refused to start, which upstream's callers
+    retry (specs/daemon/real_daemon.md "The camera check")."""
+    started = original_start(server)
+    if not started:
+        return False  # upstream left it stopped: no camera open to check
     if platform.system() != "Darwin" or not str(server._cam_path).isdigit():
-        return  # avfvideosrc is macOS-only; a non-numeric path is the sim or a webcam
+        return (
+            True  # avfvideosrc is macOS-only; a non-numeric path is the sim or a webcam
+        )
     first = int(server._cam_path)
 
     def opened() -> str | None:
         return _opened_device_name(server._pipeline_sender)
 
     def restart(index: int) -> None:
-        server._pipeline_sender.set_state(_gst_null())
+        nonlocal started
+        # Upstream's stop(): releases the camera and marks the pipeline for a rebuild —
+        # its start() reuses a pipeline it has not stopped, whatever the camera path.
+        server.stop()
         server._cam_path = str(index)
-        original_start(server)
+        started = original_start(server)
 
     select_camera(
         opened, restart, first=first, count=max(_video_device_count(), first + 1)
     )
     _camera_ae_priority()
+    return started
 
 
 def install_macos_camera_check() -> None:
@@ -232,8 +234,8 @@ def install_macos_camera_check() -> None:
     if getattr(original_start, "_bridge_camera_check", False):
         return
 
-    def start(self: Any) -> None:
-        _checked_start(self, original_start)
+    def start(self: Any) -> bool:
+        return _checked_start(self, original_start)
 
     start._bridge_camera_check = True  # type: ignore[attr-defined]
     upstream.GstMediaServer.start = start

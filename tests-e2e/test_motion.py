@@ -261,7 +261,9 @@ def test_cancelled_emotion_stops_motion_and_sound(
                 await asyncio.sleep(0.05)
             stacked = np.stack(samples)
             travel = float((stacked.max(axis=0) - stacked.min(axis=0)).max())
-            playbin = getattr(robot.media.audio, "_playbin", "not-local")
+            # The local backend's file player (upstream's SoundPlaybin): empty once stopped.
+            player = getattr(robot.media.audio, "_sound", None)
+            playbin = "not-local" if player is None else player.current
             return latency, travel, playbin
         finally:
             await bridge.set_idle("breathing")

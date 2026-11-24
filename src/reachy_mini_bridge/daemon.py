@@ -609,11 +609,15 @@ def start_daemon(
     host: str = "127.0.0.1",
     port: int = 8000,
     backend: str = "sim",
+    env: Mapping[str, str] | None = None,
 ) -> DaemonHandle:
     """A ready daemon at ``host:port`` per ``config.spawn`` (``auto`` | ``always``), as a
     handle whose ``stop()`` ends what this call started.
 
     ``backend`` picks the launch recipe: ``sim`` (MuJoCo) or ``real`` (a USB-attached robot).
+    ``env``: variables set in a spawned daemon's environment, over this process's
+    (``scrubbed_env()``) — the testing harness turns upstream's usage reporting off this
+    way; a borrowed daemon keeps its own.
 
     ``auto``: borrow a daemon already ready (or still booting) at the address, else
     spawn one and own it. ``always``: spawn and own; the port already open is an error.
@@ -636,7 +640,7 @@ def start_daemon(
         return DaemonHandle(host=host, port=port, owned=False, pid=None)
 
     cmd = launch_command(config, backend=backend, host=host, port=port)
-    proc = _spawn(cmd, scrubbed_env())
+    proc = _spawn(cmd, {**scrubbed_env(), **(env or {})})
     output = _ChildOutput(proc.stdout)
     try:
         _wait_until_ready(
@@ -660,11 +664,12 @@ def managed_daemon(
     host: str = "127.0.0.1",
     port: int = 8000,
     backend: str = "sim",
+    env: Mapping[str, str] | None = None,
 ) -> Iterator[DaemonHandle]:
     """``start_daemon`` on entry, the handle's ``stop()`` on exit — on every exit path.
     The context-manager form of the pair, for the testing harness and any synchronous
     caller."""
-    handle = start_daemon(config, host=host, port=port, backend=backend)
+    handle = start_daemon(config, host=host, port=port, backend=backend, env=env)
     try:
         yield handle
     finally:

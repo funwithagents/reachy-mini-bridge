@@ -466,7 +466,7 @@ def test_launch_command_real_robot(
     ]
 
 
-@pytest.mark.parametrize("engine", ["analytical", "placo", "nn"])
+@pytest.mark.parametrize("engine", ["analytical", "placo"])
 def test_launch_command_passes_the_configured_engine_on_every_recipe(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, engine: str
 ) -> None:
@@ -506,13 +506,12 @@ def test_launch_command_placo_needs_the_placo_package(
 ) -> None:
     """`placo` with no `placo` package importable is a `DaemonError` naming the extra,
     before anything is spawned (specs/daemon/daemon.md) — the same shape as the missing
-    sim extra; the two other engines need nothing beyond base reachy-mini."""
+    sim extra; `analytical` needs nothing beyond base reachy-mini."""
     monkeypatch.setattr(daemon.shutil, "which", lambda name: f"/bin/{name}")
     monkeypatch.setattr(daemon, "_placo_available", lambda: False)
     with pytest.raises(DaemonError, match=r"reachy-mini-bridge\[placo\]"):
         daemon.launch_command(DaemonConfig(kinematics_engine="placo"), backend=backend)
-    for engine in ("analytical", "nn"):
-        daemon.launch_command(DaemonConfig(kinematics_engine=engine), backend=backend)
+    daemon.launch_command(DaemonConfig(kinematics_engine="analytical"), backend=backend)
 
 
 def test_launch_command_binds_the_daemon_to_the_address_it_is_given(
@@ -756,6 +755,24 @@ def test_auto_spawns_the_real_recipe_for_a_real_backend(harness: _Harness) -> No
     assert cmd == [*_REAL_LAUNCHER, "--preload-datasets", *_ENGINE, *_ADDRESS]
     assert not any(k in env for k in daemon._GST_BUNDLE_ENV)
     assert harness.proc.calls == [_EXIT_REQUEST, "wait"]
+
+
+def test_spawn_sets_the_callers_variables_over_this_process_environment(
+    harness: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`env` reaches the spawned daemon over this process's environment — how the testing
+    harness turns upstream's usage reporting off (specs/daemon/daemon.md "The
+    lifecycle") — and a spawn without it inherits this process's value unchanged."""
+    monkeypatch.setenv("REACHY_MINI_TELEMETRY", "1")
+    harness.ready = iter([False, True, False, True])
+    with daemon.managed_daemon(_AUTO, env={"REACHY_MINI_TELEMETRY": "0"}):
+        pass
+    with daemon.managed_daemon(_AUTO):
+        pass
+    (_, with_env), (_, without) = harness.spawned
+    assert with_env["REACHY_MINI_TELEMETRY"] == "0"
+    assert without["REACHY_MINI_TELEMETRY"] == "1"
+    assert with_env["PATH"] == without["PATH"]  # the rest of the environment is kept
 
 
 def test_real_startup_errors_name_the_real_daemon(harness: _Harness) -> None:
