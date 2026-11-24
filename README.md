@@ -107,7 +107,7 @@ The greeter and the voice tour each have a README on how to run them and how the
 The repo ships a Gradio **control panel** — every action a button, the bridge's state on screen and refreshed twice a second (motor state, attention, the mode flags, a mic level meter, the camera frame, a log), with a Stop button next to `say` and `play_emotion` that interrupts it mid-flight. It runs from a checkout (it needs the `demo` dependency group, and its voice the `tts` group — both installed by a plain `uv sync`):
 
 ```
-uv run python -m examples.control_panel --config config.example.json   # the sim viewer, spawned for you
+uv run python -m examples.control_panel --config examples/configs/full.json   # the sim viewer, spawned for you
 uv run python -m examples.control_panel                                # no config: the offline fake
 ```
 

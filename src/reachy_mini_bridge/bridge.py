@@ -77,7 +77,7 @@ from .robot import build_robot
 from .sim_displays import FaceMarkerPublisher, face_markers_url
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterable, AsyncIterator, Callable
+    from collections.abc import AsyncIterable, AsyncIterator, Callable, Mapping
 
     import numpy as np
     import numpy.typing as npt
@@ -373,7 +373,12 @@ class ReachyMiniBridge:
         config: ReachyMiniConfig | str = "real",
         *,
         synthesizer: SpeechSynthesizer | None = None,
+        secrets: Mapping[str, str] | None = None,
     ) -> None:
+        # `secrets` (variable name -> key): API keys the application holds in code,
+        # handed to the default synthesizer's engine, which looks the variable its
+        # `api_key_env` names up there before the environment (specs/core/setup.md
+        # "Keys passed in code"). The config never holds a key.
         self._config = (
             ReachyMiniConfig(backend=config) if isinstance(config, str) else config
         )
@@ -384,7 +389,7 @@ class ReachyMiniBridge:
             self._synthesizer, self._synthesizer_error = synthesizer, None
         else:
             self._synthesizer, self._synthesizer_error = _default_synthesizer(
-                self._config.tts
+                self._config.tts, secrets
             )
             if self._synthesizer_error is not None:
                 _logger.warning(
@@ -464,24 +469,44 @@ class ReachyMiniBridge:
 
     @classmethod
     def from_dict(
-        cls, data: dict[str, Any], *, synthesizer: SpeechSynthesizer | None = None
+        cls,
+        data: dict[str, Any],
+        *,
+        synthesizer: SpeechSynthesizer | None = None,
+        secrets: Mapping[str, str] | None = None,
     ) -> ReachyMiniBridge:
         """Build the bridge from a parsed config dict (see :meth:`ReachyMiniConfig.from_dict`)."""
-        return cls(ReachyMiniConfig.from_dict(data), synthesizer=synthesizer)
+        return cls(
+            ReachyMiniConfig.from_dict(data), synthesizer=synthesizer, secrets=secrets
+        )
 
     @classmethod
     def from_json(
-        cls, text: str, *, synthesizer: SpeechSynthesizer | None = None
+        cls,
+        text: str,
+        *,
+        synthesizer: SpeechSynthesizer | None = None,
+        secrets: Mapping[str, str] | None = None,
     ) -> ReachyMiniBridge:
         """Build the bridge from a JSON config string."""
-        return cls(ReachyMiniConfig.from_json(text), synthesizer=synthesizer)
+        return cls(
+            ReachyMiniConfig.from_json(text), synthesizer=synthesizer, secrets=secrets
+        )
 
     @classmethod
     def from_json_file(
-        cls, path: str | Path, *, synthesizer: SpeechSynthesizer | None = None
+        cls,
+        path: str | Path,
+        *,
+        synthesizer: SpeechSynthesizer | None = None,
+        secrets: Mapping[str, str] | None = None,
     ) -> ReachyMiniBridge:
         """Build the bridge from a JSON config file."""
-        return cls(ReachyMiniConfig.from_json_file(path), synthesizer=synthesizer)
+        return cls(
+            ReachyMiniConfig.from_json_file(path),
+            synthesizer=synthesizer,
+            secrets=secrets,
+        )
 
     @property
     def config(self) -> ReachyMiniConfig:
@@ -1641,19 +1666,21 @@ class ReachyMiniBridge:
 
 def _default_synthesizer(
     tts_block: dict[str, Any] | None,
+    secrets: Mapping[str, str] | None = None,
 ) -> tuple[SpeechSynthesizer | None, Exception | None]:
     """The config's `tts` block as a ``TTSEngineSynthesizer``, and any build error.
 
     ``(None, None)`` without a block. Any exception from building the adapter — a
     ``BridgeError`` for a provider whose extra is not installed (its message names the
     ``reachy-mini-bridge[tts-<provider>]`` to install), a tts-engine ``ConfigError``
-    for a bad block, an unset ``api_key_env``, a model that fails to load — is caught
-    and returned as the cause, so a `tts` block that cannot be built degrades to no
-    voice rather than failing construction.
+    for a bad block, a key found neither in ``secrets`` nor in the environment
+    (tts-engine's ``MissingSecretError``), a model that fails to load — is caught and
+    returned as the cause, so a `tts` block that cannot be built degrades to no voice
+    rather than failing construction.
     """
     if tts_block is None:
         return None, None
     try:
-        return TTSEngineSynthesizer(tts_block), None
+        return TTSEngineSynthesizer(tts_block, secrets=secrets), None
     except Exception as e:  # noqa: BLE001 - recorded, not swallowed; see synthesizer_error
         return None, e

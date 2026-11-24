@@ -64,9 +64,11 @@ def test_defaults() -> None:
 
 
 def test_the_repo_example_parses() -> None:
-    """`config.example.json` is a valid config; tests/test_docs_consistency.py checks it
+    """`examples/configs/full.json` is a valid config; tests/test_docs_consistency.py checks it
     names every field."""
-    cfg = ReachyMiniConfig.from_json_file(_REPO_ROOT / "config.example.json")
+    cfg = ReachyMiniConfig.from_json_file(
+        _REPO_ROOT / "examples" / "configs" / "full.json"
+    )
     assert cfg.backend == "sim"
 
 

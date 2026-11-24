@@ -2156,6 +2156,14 @@ wheels = [
 ]
 
 [[package]]
+name = "module-setup"
+version = "0.1.0"
+source = { git = "https://github.com/funwithagents/module-setup?rev=main#44b8537f5166ae88c8b9e40488482adfc0c9fdda" }
+dependencies = [
+    { name = "packaging" },
+]
+
+[[package]]
 name = "mpmath"
 version = "1.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3703,6 +3711,7 @@ demo = [
     { name = "reachy-mini-bridge", extra = ["sim"] },
 ]
 dev = [
+    { name = "module-setup" },
     { name = "opentelemetry-sdk" },
     { name = "pyright" },
     { name = "pytest" },
@@ -3727,7 +3736,7 @@ requires-dist = [
     { name = "reachy-mini", specifier = ">=1.15.1" },
     { name = "reachy-mini", extras = ["placo-kinematics"], marker = "extra == 'placo'" },
     { name = "samplerate", specifier = ">=0.2" },
-    { name = "tts-engine", git = "https://github.com/funwithagents/tts-engine?rev=main" },
+    { name = "tts-engine", git = "https://github.com/funwithagents/tts-engine?rev=setup-contract" },
     { name = "tts-engine", extras = ["all-modules"], marker = "extra == 'tts-all'" },
     { name = "tts-engine", extras = ["cartesia"], marker = "extra == 'tts-cartesia'" },
     { name = "tts-engine", extras = ["deepgram"], marker = "extra == 'tts-deepgram'" },
@@ -3753,6 +3762,7 @@ demo = [
     { name = "reachy-mini-bridge", extras = ["sim"], editable = "." },
 ]
 dev = [
+    { name = "module-setup", git = "https://github.com/funwithagents/module-setup?rev=main" },
     { name = "opentelemetry-sdk", specifier = ">=1.20,<2" },
     { name = "pyright", specifier = ">=1.1.411" },
     { name = "pytest", specifier = ">=9.1.1" },
@@ -4428,10 +4438,11 @@ wheels = [
 [[package]]
 name = "tts-engine"
 version = "0.1.0"
-source = { git = "https://github.com/funwithagents/tts-engine?rev=main#3d71789fc3bc3a184bb3ad9f71612356d125d7f4" }
+source = { git = "https://github.com/funwithagents/tts-engine?rev=setup-contract#a2ddfd485c587eac1d0c6e44fb6574fdae202a07" }
 dependencies = [
     { name = "numpy", version = "2.3.5", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'win32'" },
     { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'win32'" },
+    { name = "opentelemetry-api" },
     { name = "sounddevice" },
 ]
 

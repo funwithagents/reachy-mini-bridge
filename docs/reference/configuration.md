@@ -1,6 +1,6 @@
 # Configuration reference — `ReachyMiniConfig`
 
-Every field of the bridge's declarative config: its default, what it does, and the verb that changes it at run time. This is the consumer's home for the config; the design and the validation rules behind each block are in [specs/core/config.md](../../specs/core/config.md). [config.example.json](../../config.example.json) is the inventory with placeholder values, and [examples/configs/](../../examples/configs/) holds a short profile per setup.
+Every field of the bridge's declarative config: its default, what it does, and the verb that changes it at run time. This is the consumer's home for the config; the design and the validation rules behind each block are in [specs/core/config.md](../../specs/core/config.md). [examples/configs/full.json](../../examples/configs/full.json) is the inventory with placeholder values, and [examples/configs/](../../examples/configs/) holds a short profile per setup.
 
 `ReachyMiniConfig` is one declarative object, buildable from a dict, a JSON string or a JSON file — `ReachyMiniBridge.from_dict(...)`, `.from_json(...)`, `.from_json_file(...)` take the same input; `ReachyMiniBridge("fake")` is the backend-string shorthand for a config with everything else at its default. **Every block is optional** — `ReachyMiniConfig()` is a valid config: the real robot, upstream's connection defaults, no daemon management, no voice, everything at rest switched on, no detector. Unknown keys in a bridge-owned block are a `ConfigError`, so a typo is caught at load time.
 
@@ -140,7 +140,7 @@ A local model (`tts-phonon`), no key, no torch, and no network once its model is
 }
 ```
 
-A hosted provider (`tts-elevenlabs`), whose key is read from the named environment variable:
+A hosted provider (`tts-elevenlabs`), whose key is read from the environment variable `api_key_env` names — the provider's usual one when the field is absent — or from the `secrets` your code passes to the bridge ([api.md](api.md#construction)). A key is never written in the config: an `api_key` field is refused.
 
 ```json
 "tts": {

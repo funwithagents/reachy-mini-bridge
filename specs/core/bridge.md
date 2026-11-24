@@ -16,7 +16,7 @@ tests:
 
 # The bridge (`ReachyMiniBridge`)
 
-**Status:** Updated
+**Status:** Implemented
 
 ## Purpose
 

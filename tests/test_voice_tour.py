@@ -26,7 +26,7 @@ WINDOWS_TIMER_TICK_S = 0.0156
 
 FAKE = ReachyMiniConfig.from_dict({"backend": "fake"})
 # The test signal, a file player, and the adapter to a server of your own: no voice of theirs.
-NOT_SPEECH_VOICES = {"tone", "audiofile", "openai-compatible"}
+NOT_SPEECH_VOICES = {"tone", "audiofile", "openai-speech-compatible"}
 
 
 def write_voice(voices_dir: Path, name: str, module: dict[str, object]) -> None:

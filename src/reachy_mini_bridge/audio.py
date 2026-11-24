@@ -50,7 +50,7 @@ from .errors import BridgeError, SoundInterruptedError, SpeechInterruptedError
 from .fake_reachy_mini import FakeReachyMini
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Coroutine
+    from collections.abc import AsyncIterator, Callable, Coroutine, Mapping
 
     from .microphone import MicFeed
     from .robot import AnyReachyMini
@@ -942,9 +942,10 @@ def _missing_provider_error(
     """A :class:`BridgeError` naming the bridge's extra when ``error`` is a missing provider.
 
     tts-engine reports a provider whose library is absent as a ``ConfigError`` raised
-    from the ``ImportError``, with its own ``tts-engine[<type>]`` install hint. A bridge
-    consumer installs the provider as ``reachy-mini-bridge[tts-<type>]`` (one alias per
-    provider, kept in step by ``tests/test_tts_extras.py``), so that case is reworded;
+    from the ``ImportError``, with its own ``tts-engine[<extra>]`` install hint. A bridge
+    consumer installs the provider as ``reachy-mini-bridge[tts-<extra>]``, the extra the
+    module declares (one alias per provider, kept in step by
+    ``tests/test_tts_extras.py``), so that case is reworded;
     ``None`` for every other build error, which the caller re-raises unchanged.
     """
     from tts_engine.modules import REGISTRY
@@ -956,9 +957,10 @@ def _missing_provider_error(
         or not isinstance(error.__cause__, ImportError)
     ):
         return None
+    extra = getattr(module, "extra", None) or module_type
     return BridgeError(
         f"The {module_type!r} TTS provider is not installed: install "
-        f"reachy-mini-bridge[tts-{module_type}] (tts-engine: {error})"
+        f"reachy-mini-bridge[tts-{extra}] (tts-engine: {error})"
     )
 
 
@@ -968,7 +970,7 @@ class TTSEngineSynthesizer:
     :meth:`synthesize_stream` over ``TTSEngine.say_stream``.
 
     ``tts-engine`` is a base dependency; the provider the block's ``module.type``
-    names comes from the matching ``reachy-mini-bridge[tts-<module.type>]`` extra. A
+    names comes from the matching ``reachy-mini-bridge[tts-<extra>]`` extra. A
     provider whose extra is missing raises a :class:`BridgeError` naming that extra,
     chained to tts-engine's ``ConfigError``. The import stays local to the constructor
     so importing this module stays cheap for a caller who supplies their own
@@ -977,7 +979,11 @@ class TTSEngineSynthesizer:
     a thread-safe queue, converting int16 -> float32 with :func:`int16_to_float32`.
     """
 
-    def __init__(self, config: object) -> None:
+    def __init__(
+        self, config: object, *, secrets: Mapping[str, str] | None = None
+    ) -> None:
+        # `secrets`: API keys held in code, handed to the engine, which looks the
+        # variable `api_key_env` names up there before the environment.
         # Local import: only constructing the default adapter needs tts-engine loaded.
         from tts_engine.config import ConfigError, TTSEngineConfig
         from tts_engine.engine import TTSEngine
@@ -989,7 +995,7 @@ class TTSEngineSynthesizer:
         )
         self._sink = _QueueSink()
         try:
-            self._engine = TTSEngine(engine_config, sink=self._sink)
+            self._engine = TTSEngine(engine_config, sink=self._sink, secrets=secrets)
         except ConfigError as e:
             hint = _missing_provider_error(engine_config.module.get("type"), e)
             if hint is None:
@@ -1016,7 +1022,7 @@ class TTSEngineSynthesizer:
         return self._run(lambda: self._engine.say_stream(text_stream))
 
     async def _run(
-        self, produce: Callable[[], Coroutine[Any, Any, None]]
+        self, produce: Callable[[], Coroutine[Any, Any, object]]
     ) -> AsyncIterator[npt.NDArray[np.float32]]:
         """Run one engine utterance into the sink and yield its chunks as float32."""
         await self._stream_lock.acquire()
@@ -1043,7 +1049,7 @@ class TTSEngineSynthesizer:
             # binding until the producer can no longer call feed()/drain().
             await asyncio.shield(cleanup)
 
-    async def _finish_stream(self, producer: asyncio.Task[None]) -> None:
+    async def _finish_stream(self, producer: asyncio.Task[object]) -> None:
         try:
             await asyncio.gather(producer, return_exceptions=True)
         finally:

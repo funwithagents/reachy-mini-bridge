@@ -267,7 +267,7 @@ def test_tts_block_builds_the_default_synthesizer(
     built: list[object] = []
 
     class _Adapter(_ToneSynth):
-        def __init__(self, block: object) -> None:
+        def __init__(self, block: object, **_: object) -> None:
             built.append(block)
 
     monkeypatch.setattr(bridge_module, "TTSEngineSynthesizer", _Adapter)
@@ -308,13 +308,12 @@ def test_tts_block_for_a_missing_provider_names_the_bridge_extra(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A registered provider whose library is absent: the recorded error names the
-    `reachy-mini-bridge[tts-<type>]` extra, chained to tts-engine's own error."""
+    `reachy-mini-bridge[tts-<extra>]` extra, chained to tts-engine's own error."""
     from tts_engine.config import ConfigError as TTSEngineConfigError
 
     monkeypatch.setitem(sys.modules, "gradium", None)  # importing it now fails
-    bridge = ReachyMiniBridge(
-        ReachyMiniConfig(backend="fake", tts={"module": {"type": "gradium"}})
-    )
+    block = {"module": {"type": "gradium", "voice_id": "v"}}
+    bridge = ReachyMiniBridge(ReachyMiniConfig(backend="fake", tts=block))
     error = bridge.synthesizer_error
     assert isinstance(error, BridgeError)
     assert "reachy-mini-bridge[tts-gradium]" in str(error)
@@ -328,12 +327,29 @@ def test_tts_block_for_a_missing_provider_names_the_bridge_extra(
     asyncio.run(run())
 
 
+def test_a_missing_provider_is_named_by_the_extra_its_module_declares(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`openai-speech-compatible` installs through its extra, `openai-compatible`."""
+    monkeypatch.setitem(sys.modules, "openai", None)
+    block = {
+        "module": {
+            "type": "openai-speech-compatible",
+            "base_url": "http://127.0.0.1:8880/v1",
+            "voice": "af_heart",
+        }
+    }
+    bridge = ReachyMiniBridge(ReachyMiniConfig(backend="fake", tts=block))
+
+    assert "reachy-mini-bridge[tts-openai-compatible]" in str(bridge.synthesizer_error)
+
+
 def test_tts_block_build_failure_degrades_to_no_voice(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cause = ValueError("environment variable 'X' is unset")
 
-    def failing(_block: object) -> object:
+    def failing(_block: object, **_: object) -> object:
         raise cause
 
     monkeypatch.setattr(bridge_module, "TTSEngineSynthesizer", failing)

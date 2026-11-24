@@ -10,7 +10,7 @@ tests:
 
 # Setup (`reachy_mini_bridge.setup`)
 
-**Status:** Stable
+**Status:** Implemented
 
 ## Purpose
 

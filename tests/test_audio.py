@@ -1392,6 +1392,7 @@ def test_adapter_cleanup_cannot_drain_or_feed_the_replacement(
         produced: list[str] = []
 
         class Provider:
+            kind = "fixture"
             sample_rate = 16000
 
             async def synthesize_text(
@@ -1412,7 +1413,9 @@ def test_adapter_cleanup_cannot_drain_or_feed_the_replacement(
                         callback(np.full(16, value, dtype=np.int16).tobytes())
                         await asyncio.sleep(0)
 
-        monkeypatch.setattr(engine_module, "load_module", lambda config: Provider())
+        monkeypatch.setattr(
+            engine_module, "load_module", lambda config, **_: Provider()
+        )
         synth = TTSEngineSynthesizer({"module": {"type": "tone"}})
         robot = FakeReachyMini()
         output: list[npt.NDArray[np.float32]] = []
@@ -1483,6 +1486,7 @@ def test_adapter_provider_failure_and_cancel_leave_it_usable(
         started = asyncio.Event()
 
         class Provider:
+            kind = "fixture"
             sample_rate = 16000
 
             async def synthesize_text(
@@ -1495,7 +1499,9 @@ def test_adapter_provider_failure_and_cancel_leave_it_usable(
                     started.set()
                     await asyncio.Event().wait()
 
-        monkeypatch.setattr(engine_module, "load_module", lambda config: Provider())
+        monkeypatch.setattr(
+            engine_module, "load_module", lambda config, **_: Provider()
+        )
         synth = TTSEngineSynthesizer({"module": {"type": "tone"}})
         robot = FakeReachyMini()
         async with _open(MediaSession(robot)) as session:
