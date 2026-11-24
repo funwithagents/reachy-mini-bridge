@@ -144,7 +144,9 @@ tts = [
 # so `uv run pyright` covers examples/ in a normal dev env. The panel's voice comes from
 # the config's `tts` block, whose provider the `tts` group installs — not from here.
 demo = [
-    "gradio>=5",
+    # 6.32 at least: on earlier 6.x, the first switch to the Setup tab, drawn lazily,
+    # froze the page when it opened on the Robot tab.
+    "gradio>=6.32",
     # The panel's Setup and Secrets tabs, its folder and its launch at start
     # (specs/examples/control_panel.md), gradio 6 included.
     "app-setup[ui]",
