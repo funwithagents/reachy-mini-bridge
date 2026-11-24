@@ -11,7 +11,7 @@ tests:
 
 # Real daemon launcher (`real_daemon.py`)
 
-**Status:** Updated
+**Status:** Implemented
 
 ## Purpose
 

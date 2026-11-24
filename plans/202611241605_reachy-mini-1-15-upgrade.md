@@ -1,6 +1,6 @@
 # Upgrade to reachy-mini 1.15.1
 
-**Status:** In progress
+**Status:** Done
 
 Implements the 1.15 alignment of `specs/audio/audio.md` ("Stopping a sound file, per backend"), `specs/daemon/real_daemon.md` ("The camera check"), `specs/core/config.md` ("Kinematics engines"), `specs/daemon/daemon.md` ("The launch command", "The lifecycle"), `specs/testing/testing.md` and `specs/testing/testing_support.md`. The bridge moves from `reachy-mini>=1.11` (locked on 1.11.0) to `reachy-mini>=1.15.1`: the sound file stopped through upstream's new `SoundPlaybin`, the macOS camera check following upstream's reusing, bool-returning `GstMediaServer.start()`, the `nn` engine removed with upstream's, and upstream's anonymous usage reporting off for the daemons the testing harness spawns. It leaves out the upstream additions the bridge does not use (NFC, `MoveBusyError`, the app-server origin check) and the daemons a developer spawns outside the harness, which keep upstream's default.
 

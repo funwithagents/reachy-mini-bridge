@@ -9,7 +9,7 @@ tests:
 
 # Configuration (`ReachyMiniConfig`)
 
-**Status:** Updated
+**Status:** Implemented
 
 ## Purpose
 
