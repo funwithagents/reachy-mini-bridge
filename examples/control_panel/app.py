@@ -28,7 +28,7 @@ import numpy.typing as npt
 from app_setup.app import App, AppModel, Section
 from app_setup.autostart import add_start_arguments, starts_at_launch
 from app_setup.folder import ConfigFolder, default_folder
-from app_setup.ui import secrets_panel, setup_panel
+from app_setup.ui import secrets_panel, setup_panel, unsaved_notice
 
 import reachy_mini_bridge.setup
 from examples.control_panel.controller import (
@@ -311,7 +311,7 @@ def _control_values(
     ]
 
 
-def _robot_tab(model: AppModel, session: RobotSession) -> None:
+def _robot_tab(model: AppModel, session: RobotSession) -> gr.Markdown:
     """Start / Stop and the session line, then the panel over the running session."""
     log_lines: Log = []
     config = _shown_config(model, session)
@@ -364,6 +364,8 @@ def _robot_tab(model: AppModel, session: RobotSession) -> None:
             "Stop", variant="stop", scale=0, interactive=session.status == "running"
         )
         session_md = gr.Markdown(session_markdown(session))
+    # Start runs the saved config: say so while the Setup tab holds unsaved edits.
+    notice = gr.Markdown()
     with gr.Accordion("Config (read-only)", open=False):
         config_json = gr.JSON(value=dataclasses.asdict(config))
 
@@ -553,6 +555,7 @@ def _robot_tab(model: AppModel, session: RobotSession) -> None:
     bind(presence.input, "set_presence", "set_presence", presence)
     bind(idle.input, "set_idle", "set_idle", idle)
     bind(detection.input, "set_face_detection", "set_face_detection", detection)
+    return notice
 
 
 NO_SESSION = "— (no session)"
@@ -593,11 +596,18 @@ def build_page(
         gr.Markdown(f"# {model.title}")
         with gr.Tabs(selected="robot" if started_at_launch else "setup"):
             with gr.Tab("Robot", id="robot"):
-                _robot_tab(model, session)
+                notice = _robot_tab(model, session)
             with gr.Tab("Setup", id="setup"):
                 setup = setup_panel(model)
             with gr.Tab("Secrets", id="secrets"):
                 secrets_panel(model, setup.draft)
+        for changed in (setup.draft.change, setup.saved.change):
+            changed(
+                lambda draft: unsaved_notice(model, draft),
+                inputs=[setup.draft],
+                outputs=[notice],
+                show_progress="hidden",
+            )
     return page
 
 
