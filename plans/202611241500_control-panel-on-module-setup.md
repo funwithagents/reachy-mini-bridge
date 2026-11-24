@@ -6,7 +6,7 @@ Implements `specs/examples/control_panel.md` as updated: the control panel rebui
 
 ## Scope
 
-- `pyproject.toml`, `uv.lock` — `module-setup[ui]` in the `demo` group; module-setup from its `autostart` branch (back to `main` once it is merged)
+- `pyproject.toml`, `uv.lock` — `module-setup[ui]` in the `demo` group; module-setup from its `autostart` branch until it was merged, then from `main`
 - `examples/control_panel/session.py` — new: `RobotSession`
 - `examples/control_panel/app.py` — `APP`, `DEFAULT_CONFIG`, `build_page(model, session)` (the Robot tab with Start / Stop, then the Setup and Secrets panels), the ticks with no session, `main` on `--folder` / `--host` / `--port` / `--start`
 - `tests/test_control_panel.py` — the session, the page, the smoke test over a started session
