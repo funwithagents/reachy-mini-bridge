@@ -28,7 +28,7 @@
       "face_markers": true
     },
     "preload_datasets": true,
-    "startup_timeout": 45.0
+    "startup_timeout": 120.0
   },
   "tts": {
     "module": {

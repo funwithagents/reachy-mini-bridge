@@ -40,6 +40,7 @@ def test_every_tts_engine_extra_has_its_alias() -> None:
 
 
 def test_every_provider_installs_through_its_module_type() -> None:
-    """The alias rule the adapter's install hint relies on: `tts-<module.type>`."""
-    providers = {name for name, module in REGISTRY.items() if module.kind != "fixture"}
-    assert {f"tts-{p}" for p in providers} <= set(_bridge_tts_extras())
+    """The alias rule the adapter's install hint relies on: `tts-<extra>`, the extra
+    each provider's module declares."""
+    extras = {module.extra for module in REGISTRY.values() if module.kind != "fixture"}
+    assert {f"tts-{extra}" for extra in extras} <= set(_bridge_tts_extras())

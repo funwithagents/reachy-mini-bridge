@@ -230,6 +230,14 @@ wheels = [
 ]
 
 [[package]]
+name = "app-setup"
+version = "0.1.0"
+source = { git = "https://github.com/funwithagents/app-setup?rev=main#63470d8889d4b1423c20d0214f11c0e6340abb38" }
+dependencies = [
+    { name = "packaging" },
+]
+
+[[package]]
 name = "asttokens"
 version = "3.0.2"
 source = { registry = "https://pypi.org/simple" }
@@ -3703,6 +3711,7 @@ demo = [
     { name = "reachy-mini-bridge", extra = ["sim"] },
 ]
 dev = [
+    { name = "app-setup" },
     { name = "opentelemetry-sdk" },
     { name = "pyright" },
     { name = "pytest" },
@@ -3753,6 +3762,7 @@ demo = [
     { name = "reachy-mini-bridge", extras = ["sim"], editable = "." },
 ]
 dev = [
+    { name = "app-setup", git = "https://github.com/funwithagents/app-setup?rev=main" },
     { name = "opentelemetry-sdk", specifier = ">=1.20,<2" },
     { name = "pyright", specifier = ">=1.1.411" },
     { name = "pytest", specifier = ">=9.1.1" },
@@ -4428,10 +4438,11 @@ wheels = [
 [[package]]
 name = "tts-engine"
 version = "0.1.0"
-source = { git = "https://github.com/funwithagents/tts-engine?rev=main#3d71789fc3bc3a184bb3ad9f71612356d125d7f4" }
+source = { git = "https://github.com/funwithagents/tts-engine?rev=main#3a69ead2c6123fdd1f7984dac216ba7c4135bbc5" }
 dependencies = [
     { name = "numpy", version = "2.3.5", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'win32'" },
     { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'win32'" },
+    { name = "opentelemetry-api" },
     { name = "sounddevice" },
 ]
 

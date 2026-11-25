@@ -2,7 +2,7 @@
 code:
   - src/reachy_mini_bridge/config.py
   - src/reachy_mini_bridge/errors.py
-  - config.example.json
+  - examples/configs/full.json
 tests:
   - tests/test_config.py
 ---
@@ -33,7 +33,7 @@ The shape and the constructor trio mirror [`tts-engine`'s configuration](https:/
 }
 ```
 
-Every block is optional: `ReachyMiniConfig()` is a valid config — the `real` backend, upstream's connection defaults, no daemon management, no default synthesizer, firmware audio defaults, the `face_detection` defaults (no detector, detection off, a 640 px detection width, upstream's score threshold, no rate ceiling) and the `motion` defaults (presence and wobbling on, tracking off — it needs a detector — with its posture behaviours on for when it runs, the body yaw on, the idle mode `"breathing"`). `config.example.json` in the repo root documents every field with placeholder values and is kept in sync with this spec. It describes the **sim viewer seeing through the host webcam** (`backend: "sim"`, `daemon.spawn: "auto"`, `daemon.headless: false`, `daemon.camera.source: "webcam"`): the configuration that shows the most — the robot moving in the MuJoCo window, and its camera on the person in front of the computer, whom it follows (`face_detection.detector: "yunet"`, detection and tracking on — every tracking field spelled out with values tuned on a Lite with a person in front of it (a 20° roll cap, a 15 mm lean, a 20 mm retreat over 0.2 m, leaving the personal space 0.2 m beyond it) — detecting at `width: 1280`, the full frame of the sim's camera and the finer roll the mirror reads, at about four times the default's cost) — so it is what the README and the [control panel](../examples/control_panel.md) start from — with every sim display on (`daemon.sim_displays`: `camera_overlay`, `robot_gaze`, `face_markers`), so the viewer window also shows what the camera sees, where the robot looks and where the bridge places each face. Set `source` to `"sim"` for the rendered eye camera instead.
+Every block is optional: `ReachyMiniConfig()` is a valid config — the `real` backend, upstream's connection defaults, no daemon management, no default synthesizer, firmware audio defaults, the `face_detection` defaults (no detector, detection off, a 640 px detection width, upstream's score threshold, no rate ceiling) and the `motion` defaults (presence and wobbling on, tracking off — it needs a detector — with its posture behaviours on for when it runs, the body yaw on, the idle mode `"breathing"`). `examples/configs/full.json` documents every field with placeholder values and is kept in sync with this spec. It describes the **sim viewer seeing through the host webcam** (`backend: "sim"`, `daemon.spawn: "auto"`, `daemon.headless: false`, `daemon.camera.source: "webcam"`): the configuration that shows the most — the robot moving in the MuJoCo window, and its camera on the person in front of the computer, whom it follows (`face_detection.detector: "yunet"`, detection and tracking on — every tracking field spelled out with values tuned on a Lite with a person in front of it (a 20° roll cap, a 15 mm lean, a 20 mm retreat over 0.2 m, leaving the personal space 0.2 m beyond it) — detecting at `width: 1280`, the full frame of the sim's camera and the finer roll the mirror reads, at about four times the default's cost) — so it is what the README and the [control panel](../examples/control_panel.md) start from — with every sim display on (`daemon.sim_displays`: `camera_overlay`, `robot_gaze`, `face_markers`), so the viewer window also shows what the camera sees, where the robot looks and where the bridge places each face. Set `source` to `"sim"` for the rendered eye camera instead.
 
 ```python
 @dataclass
@@ -67,6 +67,15 @@ Both config classes that a caller builds directly (`ReachyMiniConfig`, and `Daem
 
 `ReachyMiniBridge` mirrors the trio (`ReachyMiniBridge.from_dict` / `from_json` / `from_json_file`), each building the config and then the bridge — see [bridge.md](bridge.md) "Constructed from a config". The bridge has no free `load_config` function.
 
+### Relative paths
+
+`from_dict(data, *, base_dir=None)` (and `from_json(text, *, base_dir=None)` / `from_json_file(path, *, base_dir=None)`) take the folder the config's relative paths are relative to — an application that keeps its config in a folder of its own passes that folder, the same one it gives the setup contract ([setup.md](setup.md) "Relative paths"). Two things in the config name a file:
+
+- **`daemon.scene`** ending in `.xml`: a relative one is made absolute against `base_dir` at load (`resolve_scene`); an absolute file and an upstream scene name are left as they are.
+- **The `tts` block**: `base_dir` becomes its `module.base_dir`, tts-engine's own key for resolving a voice file or a local model path — set when the block names none, a relative one made absolute against it — exactly what `TTSEngineConfig.from_dict(block, base_dir=...)` does. The caller's dict is not changed.
+
+**A config file's relative paths are the file's:** `from_json_file(path)` defaults `base_dir` to the file's own folder, so a relative scene file or voice file next to the config is found from any working directory — as tts-engine's, wica's and asr-engine's file loaders do; an explicit `base_dir=` wins. `from_dict` and `from_json`, which have no file, default to `None`: the working directory. `ReachyMiniBridge.from_json_file(path, *, base_dir=None)` passes it through.
+
 ### `backend`
 
 One of `"real"`, `"sim"`, `"fake"` (the three backends in [robot.md](robot.md)); default `"real"`. Any other value is a `ConfigError`.
@@ -94,7 +103,7 @@ How the bridge brings up the daemon the robot client talks to — the MuJoCo dae
 | `audio` | object → `SimAudioSettings` | `{}` | `sim` only. The simulated robot's microphone and speaker ([sim_daemon.md](../daemon/sim_daemon.md) "Audio devices"): `input_device` / `output_device`, a device name as the operating system shows it, or `null` for upstream's choice — the robot's sound card when one is plugged in, else the system default; `discard_output`, no speaker at all. The daemon opens them, reports them, and every bridge on this machine follows the report ([audio.md](../audio/audio.md) "The robot's audio devices"), so the bridge's own process opens the same ones. See the table below. |
 | `sim_displays` | object → `SimDisplaySettings` | `{}` | `sim` only, viewer only. What the MuJoCo viewer window shows besides the scene: one boolean per display, all off by default — `camera_overlay`, `robot_gaze`, `face_markers` ([sim_displays.md](../daemon/sim_displays.md)). A display on with `headless: true` is a `ConfigError`. See the table below. |
 | `preload_datasets` | bool | `true` | `true` passes `--preload-datasets`: the daemon downloads the recorded-move datasets (emotions, dances) in the background after it starts, so the first `play_emotion` does not wait on a download; readiness is not delayed. `false` passes `--no-preload-datasets` (the datasets then load on first use). |
-| `startup_timeout` | number | `45.0` | Seconds to wait for a spawned or booting daemon to become ready — a positive, finite number (`Infinity` / `NaN`, which JSON parsers may accept, would make the wait unbounded). |
+| `startup_timeout` | number | `120.0` | Seconds to wait for a spawned or booting daemon to become ready — enough for a daemon's first start after an install, when GStreamer builds its plugin registry (measured 84 s for a whole daemon on a Mac, 155 s for the registry alone in a fresh environment; [setup.md](setup.md) "`check_setup`" prepares it ahead) — a positive, finite number (`Infinity` / `NaN`, which JSON parsers may accept, would make the wait unbounded). |
 
 ```python
 @dataclass
@@ -106,7 +115,7 @@ class DaemonConfig:
     audio: SimAudioSettings = field(default_factory=SimAudioSettings)
     sim_displays: SimDisplaySettings = field(default_factory=SimDisplaySettings)
     preload_datasets: bool = True
-    startup_timeout: float = 45.0
+    startup_timeout: float = 120.0
 ```
 
 The `camera` object (`SimCameraSettings`, with the same `from_dict` / `from_json` / `from_json_file` trio):
@@ -185,9 +194,10 @@ The fields that apply depend on the backend: `spawn`, `preload_datasets` and `st
 The default synthesizer for `say`. When present, it is exactly a tts-engine **`engine` block** (`module` + optional `player`, *not* wrapped under an `"engine"` key), carried as a raw `dict` and handed to `TTSEngineSynthesizer` ([audio.md](../audio/audio.md)) at `ReachyMiniBridge` construction — which runs it through `TTSEngineConfig.from_dict`, tts-engine's own validation. The config layer checks only the shape it can without importing tts-engine: the block is an object whose `module` is an object with a non-empty string `type`.
 
 - The key is `tts`, not `synthesizer`: it configures the shipped tts-engine adapter specifically. A custom `SpeechSynthesizer` is code, passed as `ReachyMiniBridge(config, synthesizer=...)`, and an explicit synthesizer wins over the block (the block is then not consumed, and tts-engine is not imported).
-- The extra for the provider `module.type` names must be installed (`reachy-mini-bridge[tts-<module.type>]`, see [project.md](../project.md)); otherwise the adapter build fails with a `BridgeError` naming that extra, which — like any other adapter-build failure, typically the module's `api_key_env` unset — degrades to no voice, see [bridge.md](bridge.md) "Constructed from a config".
+- The extra of the provider `module.type` names must be installed (`reachy-mini-bridge[tts-<extra>]`, the extra the module declares — its `module.type` but for `openai-speech-compatible`, whose extra is `openai-compatible` — see [project.md](../project.md)); otherwise the adapter build fails with a `BridgeError` naming that extra, which — like any other adapter-build failure, typically the module's `api_key_env` unset — degrades to no voice, see [bridge.md](bridge.md) "Constructed from a config".
 - `player` is accepted for symmetry with a tts-engine file and has no effect: the bridge feeds tts-engine a robot-speaker sink in place of its local player.
-- No environment variables are read at config time; a module's `api_key_env` is resolved by the module at engine construction, as in tts-engine.
+- No environment variables are read at config time; a module's `api_key_env` is resolved by the module at engine construction, as in tts-engine: in the `secrets` the application passed to the bridge, else in the environment ([setup.md](setup.md) "Keys passed in code"). A key is never written in the block: tts-engine refuses an `api_key` field, and `api_key_env` defaults to the provider's usual variable.
+- An application sets the block up through the bridge's setup contract ([setup.md](setup.md)), which delegates it to tts-engine's.
 
 ### `audio` block → `AudioSettings`
 

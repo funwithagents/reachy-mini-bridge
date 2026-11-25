@@ -219,10 +219,12 @@ def _block(data: dict[str, object], path: str) -> dict[str, object]:
 
 
 def test_the_example_config_names_every_field_once() -> None:
-    data = json.loads((ROOT / "config.example.json").read_text(encoding="utf-8"))
+    data = json.loads(
+        (ROOT / "examples" / "configs" / "full.json").read_text(encoding="utf-8")
+    )
     for path, cls in _BLOCKS.items():
         assert set(_block(data, path)) == _fields(cls), (
-            f"config.example.json block {path or '<top level>'} must list exactly the "
+            f"examples/configs/full.json block {path or '<top level>'} must list exactly the "
             f"fields of {cls.__name__}"
         )
 

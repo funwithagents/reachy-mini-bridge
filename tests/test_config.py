@@ -64,9 +64,11 @@ def test_defaults() -> None:
 
 
 def test_the_repo_example_parses() -> None:
-    """`config.example.json` is a valid config; tests/test_docs_consistency.py checks it
+    """`examples/configs/full.json` is a valid config; tests/test_docs_consistency.py checks it
     names every field."""
-    cfg = ReachyMiniConfig.from_json_file(_REPO_ROOT / "config.example.json")
+    cfg = ReachyMiniConfig.from_json_file(
+        _REPO_ROOT / "examples" / "configs" / "full.json"
+    )
     assert cfg.backend == "sim"
 
 
@@ -779,3 +781,75 @@ def test_the_frame_delay_is_a_number_or_estimate(value: object) -> None:
 def test_a_frame_delay_is_within_the_estimate_s_range(value: object) -> None:
     with pytest.raises(ConfigError, match=r"motion\.tracking\.frame_delay_s"):
         ReachyMiniConfig.from_dict({"motion": {"tracking": {"frame_delay_s": value}}})
+
+
+def _write_voice(folder: Path) -> None:
+    import wave
+
+    with wave.open(str(folder / "hi.wav"), "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(16000)
+        out.writeframes(b"\0\0" * 160)
+
+
+def test_a_config_files_relative_paths_are_found_next_to_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """From another working directory, a relative scene file and a relative voice file
+    of a config file resolve against the file's own folder."""
+    from reachy_mini_bridge import ReachyMiniBridge
+
+    folder = tmp_path / "robot"
+    folder.mkdir()
+    _write_voice(folder)
+    (folder / "props.xml").write_text("<mujoco/>")
+    data = {
+        "backend": "sim",
+        "daemon": {"scene": "props.xml"},
+        "tts": {
+            "module": {"type": "audiofile", "files": [{"text": "hi", "file": "hi.wav"}]}
+        },
+    }
+    path = folder / "robot.json"
+    path.write_text(json.dumps(data))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    config = ReachyMiniConfig.from_json_file("../robot/robot.json")
+
+    assert config.daemon.scene == str(folder.resolve() / "props.xml")
+    assert config.tts is not None
+    assert config.tts["module"]["base_dir"] == str(folder.resolve())
+    bridge = ReachyMiniBridge.from_json_file(path)
+    assert bridge.synthesizer_error is None  # hi.wav found next to the file
+    # From a dict, the working directory: the voice file is not there.
+    assert ReachyMiniConfig.from_dict(data).daemon.scene == "props.xml"
+    assert ReachyMiniBridge.from_dict(data).synthesizer_error is not None
+
+
+def test_an_explicit_base_dir_wins_over_the_files_folder(tmp_path: Path) -> None:
+    from reachy_mini_bridge import ReachyMiniBridge
+
+    elsewhere = tmp_path / "assets"
+    elsewhere.mkdir()
+    _write_voice(elsewhere)
+    data = {
+        "backend": "sim",
+        "daemon": {"scene": "props.xml"},
+        "tts": {
+            "module": {"type": "audiofile", "files": [{"text": "hi", "file": "hi.wav"}]}
+        },
+    }
+    path = tmp_path / "robot.json"
+    path.write_text(json.dumps(data))
+
+    config = ReachyMiniConfig.from_json_file(path, base_dir=elsewhere)
+
+    assert config.daemon.scene == str(elsewhere.resolve() / "props.xml")
+    assert ReachyMiniBridge.from_json_file(path).synthesizer_error is not None
+    assert (
+        ReachyMiniBridge.from_json_file(path, base_dir=elsewhere).synthesizer_error
+        is None
+    )

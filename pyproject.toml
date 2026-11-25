@@ -52,7 +52,7 @@ sim = ["mujoco>=3.3.1,<3.4"]
 # tts-engine's provider extras and module bundles, mirrored one-to-one as `tts-<extra>`
 # -> `tts-engine[<extra>]`, a bundle's `-modules` suffix dropped (specs/project.md
 # "Optional extras"): the `tts` block's `module.type` picks the provider, and
-# `tts-<module.type>` installs it; `tts-hosted` installs every hosted provider,
+# `tts-<extra>`, the extra its module declares, installs it; `tts-hosted` installs every hosted provider,
 # `tts-all` every provider.
 # tts-engine's transports and its `all` bundle (which adds them) are not mirrored: the
 # bridge runs no tts-engine server. tts-engine is a git dependency, so these aliases
@@ -124,6 +124,10 @@ dev = [
     # The in-memory span exporter the tracing tests read the verbs' spans from
     # (specs/core/tracing.md); the package itself depends on the API alone.
     "opentelemetry-sdk>=1.20,<2",
+    # The setup contract's conformance check (`app_setup.contract.check_contract`) the
+    # fast tier runs over `reachy_mini_bridge.setup` (specs/core/setup.md). A test-time
+    # dependency only: the contract itself is plain data and imports nothing from it.
+    "app-setup",
 ]
 # The TTS provider (specs/project.md "Dependency groups"): phonon, a local model with no
 # key and no torch, so the real-TTS live test, the greeter and the example voices run
@@ -147,6 +151,8 @@ demo = [
 [tool.uv.sources]
 # Self-reference for the groups above that pull in the package's own extras.
 reachy-mini-bridge = { workspace = true }
+# First-party, from GitHub (dev and demo groups only, never a runtime dependency).
+app-setup = { git = "https://github.com/funwithagents/app-setup", rev = "main" }
 
 [tool.uv]
 # Every group installs by default — a sync is exact, so a group left out of a sync is

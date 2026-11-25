@@ -1,8 +1,10 @@
 # Configuration reference — `ReachyMiniConfig`
 
-Every field of the bridge's declarative config: its default, what it does, and the verb that changes it at run time. This is the consumer's home for the config; the design and the validation rules behind each block are in [specs/core/config.md](../../specs/core/config.md). [config.example.json](../../config.example.json) is the inventory with placeholder values, and [examples/configs/](../../examples/configs/) holds a short profile per setup.
+Every field of the bridge's declarative config: its default, what it does, and the verb that changes it at run time. This is the consumer's home for the config; the design and the validation rules behind each block are in [specs/core/config.md](../../specs/core/config.md). [examples/configs/full.json](../../examples/configs/full.json) is the inventory with placeholder values, and [examples/configs/](../../examples/configs/) holds a short profile per setup.
 
 `ReachyMiniConfig` is one declarative object, buildable from a dict, a JSON string or a JSON file — `ReachyMiniBridge.from_dict(...)`, `.from_json(...)`, `.from_json_file(...)` take the same input; `ReachyMiniBridge("fake")` is the backend-string shorthand for a config with everything else at its default. **Every block is optional** — `ReachyMiniConfig()` is a valid config: the real robot, upstream's connection defaults, no daemon management, no voice, everything at rest switched on, no detector. Unknown keys in a bridge-owned block are a `ConfigError`, so a typo is caught at load time.
+
+**Relative paths** — a `daemon.scene` file, the `tts` block's files — are relative to the config file's own folder when it is loaded with `from_json_file`, whatever the working directory; from a dict or a JSON string, to the working directory. `base_dir=` on any of the three names another folder.
 
 ```json
 {
@@ -86,7 +88,7 @@ Two keys are **reserved**: `use_sim` (derived from `backend`) and `spawn_daemon`
 | `audio` | both `null` | *sim only.* The simulated robot's microphone and speaker, by name — see the table below |
 | `sim_displays` | all `false` | *sim viewer only.* What the viewer window draws besides the scene — see the table below |
 | `preload_datasets` | `true` | Downloads the recorded-move datasets in the background at startup, so the first `play_emotion` doesn't wait on a download. Readiness isn't delayed either way |
-| `startup_timeout` | `45.0` | Seconds to wait for a spawned daemon to become ready (a positive, finite number) |
+| `startup_timeout` | `120.0` | Seconds to wait for a spawned daemon to become ready (a positive, finite number). Generous for a daemon's first start after an install, when GStreamer builds its plugin registry (prepared ahead by the setup's media item, `media:gstreamer-registry`) |
 
 `spawn` other than `"never"` needs `backend` `"sim"` or `"real"` (`fake` has no daemon). On `real` it starts the hardware daemon of a robot plugged into **this machine** over USB — it wakes the robot, and puts it to sleep on exit. `headless`, `scene`, `camera`, `audio` and `sim_displays` are MuJoCo knobs and play no part on `real`; `kinematics_engine` applies to both. Every field here describes a daemon the bridge starts: a daemon you run yourself, a wireless robot's included, keeps whatever it was started with. The commands the bridge runs, for starting a daemon by hand: [../guides/running-daemons.md](../guides/running-daemons.md).
 
@@ -140,7 +142,7 @@ A local model (`tts-phonon`), no key, no torch, and no network once its model is
 }
 ```
 
-A hosted provider (`tts-elevenlabs`), whose key is read from the named environment variable:
+A hosted provider (`tts-elevenlabs`), whose key is read from the environment variable `api_key_env` names — the provider's usual one when the field is absent — or from the `secrets` your code passes to the bridge ([api.md](api.md#construction)). A key is never written in the config: an `api_key` field is refused.
 
 ```json
 "tts": {

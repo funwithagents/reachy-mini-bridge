@@ -31,13 +31,29 @@ From `reachy_mini_bridge.errors`: `DaemonError` (a managed daemon that could not
 ## Construction
 
 ```python
-ReachyMiniBridge(config: ReachyMiniConfig | str = "real", *, synthesizer: SpeechSynthesizer | None = None)
-ReachyMiniBridge.from_dict(data, *, synthesizer=None)
-ReachyMiniBridge.from_json(text, *, synthesizer=None)
-ReachyMiniBridge.from_json_file(path, *, synthesizer=None)
+ReachyMiniBridge(config: ReachyMiniConfig | str = "real", *, synthesizer: SpeechSynthesizer | None = None, secrets: Mapping[str, str] | None = None)
+ReachyMiniBridge.from_dict(data, *, synthesizer=None, secrets=None)
+ReachyMiniBridge.from_json(text, *, synthesizer=None, secrets=None)
+ReachyMiniBridge.from_json_file(path, *, synthesizer=None, secrets=None, base_dir=None)
 ```
 
-A string is the backend-name shorthand for a config with everything else at its default. An explicit `synthesizer` wins over the config's `tts` block, which is then not consumed. Construction opens no connection to the robot and starts no thread. The config is validated as the `from_*` constructors build it — a `ConfigError` is raised there, before the bridge exists; a `ReachyMiniConfig` assembled in code is not validated ([configuration.md](configuration.md#validation)). Construction then builds the observables (`faces`, `head_tracking`) and the camera feed object, so a consumer can subscribe before the session starts, and the voice: a `tts` block has its tts-engine provider built here — a local model such as `pocket` loads its weights at this point, before any session — and a provider that fails to build leaves the bridge without a voice rather than failing construction. `bridge.config` is the config it was built from; `bridge.synthesizer_error` the cause when the `tts` block failed to build a voice (`None` otherwise) — `say` then raises `BridgeError` chained to that cause; a host that wants hard failure checks it after construction. Everything else — the daemon, the connection, the media session, the detector's model — comes up in `start()`, below.
+A string is the backend-name shorthand for a config with everything else at its default. An explicit `synthesizer` wins over the config's `tts` block, which is then not consumed. `secrets` are API keys your application holds in code, by variable name (`{"GRADIUM_API_KEY": key}`): the `tts` block's provider looks the variable its `api_key_env` names up there first, then in the environment. A config never holds a key. A config file's relative paths (a `daemon.scene` file, the voice's files) are relative to the file's own folder, whatever the working directory; `base_dir=` names another folder. From a dict or a JSON string they are relative to the working directory unless `base_dir=` is given. Construction opens no connection to the robot and starts no thread. The config is validated as the `from_*` constructors build it — a `ConfigError` is raised there, before the bridge exists; a `ReachyMiniConfig` assembled in code is not validated ([configuration.md](configuration.md#validation)). Construction then builds the observables (`faces`, `head_tracking`) and the camera feed object, so a consumer can subscribe before the session starts, and the voice: a `tts` block has its tts-engine provider built here — a local model such as `pocket` loads its weights at this point, before any session — and a provider that fails to build leaves the bridge without a voice rather than failing construction. `bridge.config` is the config it was built from; `bridge.synthesizer_error` the cause when the `tts` block failed to build a voice (`None` otherwise) — `say` then raises `BridgeError` chained to that cause; a host that wants hard failure checks it after construction. Everything else — the daemon, the connection, the media session, the detector's model — comes up in `start()`, below.
+
+## Setting up from an application
+
+`reachy_mini_bridge.setup` describes the config to an application that sets the bridge up for a user, without knowing it ([specs/core/setup.md](../../specs/core/setup.md)): seven functions over the config document, all plain data.
+
+| Function | Returns |
+|---|---|
+| `config_schema()` | the config as a JSON Schema: `backend` a choice, the `tts` block tts-engine's own schema (a module choice and its fields), every other block raw JSON |
+| `required_extras(config)` | the extras the config needs: `reachy-mini-bridge[sim]` for a sim the bridge spawns, `reachy-mini-bridge[placo]` for the Placo engine on a spawned daemon, the voice's (`tts-engine[gradium]`, installed as `reachy-mini-bridge[tts-gradium]`) |
+| `check_config(config)` | what is wrong in it, each `{"path", "message"}`, the path a JSON Pointer (`/daemon/camera/source`, `/tts/module/voice_id`) |
+| `check_setup(config)` | what this machine is missing, each item `required` or not: the extras and the scene file (required), the face detector's weights, the emotions library and GStreamer's plugin registry (not required: a session gets them itself, slower), the voice's extra, key and model |
+| `prepare(config, item, *, on_progress=None)` | prepares one item `check_setup` reported: downloads the face detector's weights or the emotions library, builds GStreamer's plugin registry ahead of a daemon's first start, or hands a voice item to its provider; reports `{"fraction", "message"}` as it goes |
+| `options("voices", config)` | the voices of the `tts` block's provider |
+| `probe(config)` | connects with the configured backend, reads the motor state and disconnects — nothing moves, nothing is said — and runs the voice's own check with nothing played; `{"ok", "message", "duration_s"}`, never raises |
+
+`check_setup`, `prepare`, `options` and `probe` take `base_dir=`, the folder the config's relative paths are relative to (a `daemon.scene` file, the voice's files); build the bridge from the same folder, `ReachyMiniConfig.from_dict(data, base_dir=folder)`, so the checks and the session look at the same files.
 
 ## Lifecycle
 
