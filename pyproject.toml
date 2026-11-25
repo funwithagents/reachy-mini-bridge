@@ -26,10 +26,7 @@ dependencies = [
     # direct git reference, so a downstream project inherits the source; tracks main
     # for now, to be pinned to a tag or commit once it settles (specs/project.md). A
     # downstream that wants its own checkout of tts-engine overrides it (see there).
-    # On tts-engine's `setup-contract` branch for now, the one with `tts_engine.setup`
-    # and `TTSEngine(config, secrets=...)` (specs/core/setup.md): back to `main` once
-    # tts-engine #47 is merged.
-    "tts-engine @ git+https://github.com/funwithagents/tts-engine@setup-contract",
+    "tts-engine @ git+https://github.com/funwithagents/tts-engine@main",
     # The motion loop catches websockets' ConnectionClosed to tell a lost daemon from a
     # bad tick (specs/motion/motion.md "Lifecycle"). Already resolved through reachy-mini
     # (websockets<16,>=12); declared because the bridge imports it directly.
