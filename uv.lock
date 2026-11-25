@@ -232,7 +232,7 @@ wheels = [
 [[package]]
 name = "app-setup"
 version = "0.1.0"
-source = { git = "https://github.com/funwithagents/app-setup?rev=draft-and-saved#8da0d7636fb65a1110bb9a55ff651e7b3a9793f8" }
+source = { git = "https://github.com/funwithagents/app-setup?rev=main#b6b12e9ca5b98b7369e39185ad7754621cecc4a8" }
 dependencies = [
     { name = "packaging" },
 ]
@@ -3791,12 +3791,12 @@ provides-extras = ["sim", "tts-cartesia", "tts-deepgram", "tts-elevenlabs", "tts
 
 [package.metadata.requires-dev]
 demo = [
-    { name = "app-setup", extras = ["ui"], git = "https://github.com/funwithagents/app-setup?rev=draft-and-saved" },
+    { name = "app-setup", extras = ["ui"], git = "https://github.com/funwithagents/app-setup?rev=main" },
     { name = "gradio", specifier = ">=6.32" },
     { name = "reachy-mini-bridge", extras = ["sim"], editable = "." },
 ]
 dev = [
-    { name = "app-setup", git = "https://github.com/funwithagents/app-setup?rev=draft-and-saved" },
+    { name = "app-setup", git = "https://github.com/funwithagents/app-setup?rev=main" },
     { name = "opentelemetry-sdk", specifier = ">=1.20,<2" },
     { name = "pyright", specifier = ">=1.1.411" },
     { name = "pytest", specifier = ">=9.1.1" },
