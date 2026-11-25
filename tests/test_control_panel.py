@@ -16,6 +16,7 @@ import time
 import wave
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import numpy.typing as npt
@@ -48,6 +49,9 @@ from reachy_mini_bridge.config import (
     TrackingSettings,
 )
 from reachy_mini_bridge.fake_reachy_mini import FakeReachyMini
+
+if TYPE_CHECKING:
+    from examples.control_panel.app import Launch
 
 
 class _SlowSynth:
@@ -558,19 +562,131 @@ def test_the_default_config_is_the_full_example_valid_and_started_at_launch(
         tmp_path, saved=None
     )  # an empty folder: app-setup writes the default
 
-    # The repo's full example config, under the app's section.
+    # The repo's full example config, the bridge's document as it is (the app is bare):
+    # written into the folder so, and wrapped in the app's section for the panels only.
     assert DEFAULT_CONFIG_FILE.name == "full.json"
-    assert DEFAULT_CONFIG == {
-        "reachy": json.loads(DEFAULT_CONFIG_FILE.read_text("utf-8"))
-    }
-    assert APP.default_config == DEFAULT_CONFIG
-    assert model.saved_config() == DEFAULT_CONFIG
+    full = json.loads(DEFAULT_CONFIG_FILE.read_text("utf-8"))
+    assert APP.bare and APP.default_config == DEFAULT_CONFIG == full
+    assert json.loads((tmp_path / "config.json").read_text("utf-8")) == full
+    assert model.saved_config() == {"reachy": full}
     # What the machine needs for it (the sim, the voice, the datasets) depends on the
     # machine; the config itself is valid.
-    assert model.check_config(DEFAULT_CONFIG) == []
+    assert model.check_config(model.saved_config()) == []
     assert starts_at_launch(model, None)
     assert not starts_at_launch(model, False)
     assert [section.name for section in APP.sections] == ["reachy"]
+
+
+def test_a_saved_config_is_the_bridge_document_in_the_folder(tmp_path: Path) -> None:
+    _model(tmp_path, saved={"reachy": {"backend": "fake", "motion": {}}})
+
+    stored = json.loads((tmp_path / "config.json").read_text("utf-8"))
+    assert stored == {"backend": "fake", "motion": {}}
+
+
+def _panel_from_file(path: Path, *args: str) -> Launch:
+    """The panel launched on a config file (with no .env next to it)."""
+    pytest.importorskip("gradio")
+    from examples.control_panel.app import open_panel
+
+    return open_panel(["--config", str(path), *args])
+
+
+def test_the_panel_runs_a_config_file_as_it_is_and_starts_at_launch(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "robot.json"
+    document = {"backend": "fake", "motion": {"idle": "hold"}}
+    config.write_text(json.dumps(document), encoding="utf-8")
+
+    launch = _panel_from_file(config)
+    try:
+        assert launch.started_at_launch
+        controller = launch.session.require()
+        assert controller.bridge.config.backend == "fake"
+        assert controller.bridge.config.motion.idle == "hold"
+        model = launch.model
+        assert not model.editable
+        assert model.path == tmp_path  # relative paths resolve next to the file
+        assert model.saved_config() == {"reachy": document}
+    finally:
+        launch.session.stop()
+    with pytest.raises(RuntimeError):
+        launch.model.save({"reachy": {"backend": "fake"}})  # never written
+    assert json.loads(config.read_text("utf-8")) == document
+    assert not (tmp_path / "config.json").exists()
+
+
+def test_a_config_file_run_with_no_start_starts_nothing(tmp_path: Path) -> None:
+    config = tmp_path / "robot.json"
+    config.write_text(json.dumps({"backend": "fake"}), encoding="utf-8")
+
+    launch = _panel_from_file(config, "--no-start")
+
+    assert not launch.started_at_launch
+    assert launch.session.controller is None
+
+
+def test_a_missing_config_file_stops_the_launch_with_the_reason(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from examples.control_panel.app import open_panel
+
+    missing = tmp_path / "nowhere.json"
+    with pytest.raises(SystemExit):
+        open_panel(["--config", str(missing)])
+
+    assert "nowhere.json" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "profile",
+    sorted((Path(__file__).parents[1] / "examples" / "configs").glob("*.json")),
+    ids=lambda p: p.name,
+)
+def test_every_example_config_is_a_file_the_panel_can_run(
+    profile: Path,
+) -> None:
+    pytest.importorskip("gradio")
+    from app_setup.config_file import ConfigFile
+
+    from examples.control_panel.app import APP
+
+    source = ConfigFile(profile)
+    model = AppModel(APP, source, SecretStore(source.env_path, {}))
+
+    assert model.check_config(model.saved_config()) == []
+
+
+def test_the_config_app_saves_a_bare_document_to_its_file(tmp_path: Path) -> None:
+    pytest.importorskip("gradio")
+    from app_setup.ui import config_page
+
+    from examples.config_app import open_model
+
+    config = tmp_path / "robot.json"
+    config.write_text(json.dumps({"backend": "fake"}), encoding="utf-8")
+    keys = tmp_path / "keys.env"
+
+    _, model = open_model([str(config), "--env", str(keys)])
+    config_page(model)  # the page builds over it
+
+    assert model.editable and model.source.env_path == keys
+    assert model.saved_config() == {"reachy": {"backend": "fake"}}
+    model.save({"reachy": {"backend": "fake", "motion": {"idle": "hold"}}})
+    saved = json.loads(config.read_text("utf-8"))
+    assert saved == {"backend": "fake", "motion": {"idle": "hold"}}
+
+
+def test_the_config_app_refuses_a_missing_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from examples.config_app import open_model
+
+    with pytest.raises(SystemExit):
+        open_model([str(tmp_path / "nowhere.json")])
+
+    assert "nowhere.json" in capsys.readouterr().err
 
 
 def test_the_page_puts_robot_first_opens_on_setup_and_ticks_without_a_session(

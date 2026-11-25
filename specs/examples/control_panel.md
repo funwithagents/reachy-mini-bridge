@@ -14,7 +14,7 @@ tests:
 
 # Control panel (`examples/control_panel`)
 
-**Status:** Updated
+**Status:** Implemented
 
 ## Purpose
 

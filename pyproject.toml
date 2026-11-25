@@ -157,7 +157,9 @@ demo = [
 # Self-reference for the groups above that pull in the package's own extras.
 reachy-mini-bridge = { workspace = true }
 # First-party, from GitHub (dev and demo groups only, never a runtime dependency).
-app-setup = { git = "https://github.com/funwithagents/app-setup", rev = "main" }
+# On its `config-file` branch (a config file as the source, bare apps, a config app): back
+# to `main` once that branch is merged.
+app-setup = { git = "https://github.com/funwithagents/app-setup", rev = "config-file" }
 
 [tool.uv]
 # Every group installs by default — a sync is exact, so a group left out of a sync is

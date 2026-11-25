@@ -3,11 +3,12 @@
 `build_page(model, session)` is the page: the Robot tab, wiring components to
 `ControlPanelController` calls and adding nothing the controller cannot do, then
 app-setup's Setup and Secrets panels over the bridge's setup contract. `main(argv)` is
-the `python -m examples.control_panel` entry: the app's folder in, a web server out, the
-session started at launch unless the launch choice says otherwise.
+the `python -m examples.control_panel` entry: the app's folder (or a config file run as it
+is) in, a web server out, the session started at launch unless the launch choice says
+otherwise.
 
-    uv run python -m examples.control_panel [--folder PATH] [--host ADDRESS] [--port N]
-        [--start | --no-start]
+    uv run python -m examples.control_panel [--folder DIR | --config FILE] [--env PATH]
+        [--host ADDRESS] [--port N] [--start | --no-start]
 """
 
 from __future__ import annotations
@@ -27,7 +28,8 @@ import numpy as np
 import numpy.typing as npt
 from app_setup.app import App, AppModel, Section
 from app_setup.autostart import add_start_arguments, starts_at_launch
-from app_setup.folder import ConfigFolder, default_folder
+from app_setup.config_file import ConfigFileError
+from app_setup.launch import add_config_arguments, open_source
 from app_setup.ui import secrets_panel, setup_panel, unsaved_notice
 
 import reachy_mini_bridge.setup
@@ -45,11 +47,13 @@ from reachy_mini_bridge.config import IDLE_MODES
 log = logging.getLogger(__name__)
 
 # The app's default config, which app-setup writes into an empty folder: the repo's
-# full example config (every field, the headless sim with the webcam, a Phonon voice), as
-# the panel used before, under the app's one section. On a fresh install the Setup tab
-# shows what it needs (the sim extra, the voice's extra and model, the datasets).
+# full example config (every field, the sim viewer with the webcam, a Phonon voice), as
+# the panel used before. The app is bare: its folder's config.json, a --config file and
+# this default are the bridge's config document itself, with no section around it. On a
+# fresh install the Setup tab shows what it needs (the sim extra, the voice's extra and
+# model, the datasets).
 DEFAULT_CONFIG_FILE = Path(__file__).parents[1] / "configs" / "full.json"
-DEFAULT_CONFIG = {SECTION: json.loads(DEFAULT_CONFIG_FILE.read_text(encoding="utf-8"))}
+DEFAULT_CONFIG = json.loads(DEFAULT_CONFIG_FILE.read_text(encoding="utf-8"))
 
 APP = App(
     name="reachy-mini-bridge-control-panel",
@@ -58,6 +62,7 @@ APP = App(
     sections=(Section(SECTION, reachy_mini_bridge.setup, title="Reachy Mini"),),
     default_config=DEFAULT_CONFIG,
     autostart=True,
+    bare=True,
 )
 
 REFRESH_S = 0.5
@@ -611,44 +616,60 @@ def build_page(
     return page
 
 
-def _arguments(argv: Sequence[str] | None) -> argparse.Namespace:
-    folder = default_folder(APP.name)
+@dataclasses.dataclass
+class Launch:
+    """What one launch opened: the options, the model over the folder or the file, the
+    session (running when it started at launch) and whether it was asked to start."""
+
+    options: argparse.Namespace
+    model: AppModel
+    session: RobotSession
+    started_at_launch: bool
+
+
+def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m examples.control_panel",
         description="A Gradio control panel over ReachyMiniBridge: the robot set up in "
         "the page, every verb a button, the robot's state on screen.",
     )
-    parser.add_argument(
-        "--folder",
-        type=Path,
-        default=folder,
-        help=f"the panel's folder: its config, its keys (default: {folder})",
-    )
+    add_config_arguments(parser, APP)
     parser.add_argument("--host", default="127.0.0.1", help="web server address")
     parser.add_argument("--port", type=int, default=7860, help="web server port")
     add_start_arguments(parser)
-    return parser.parse_args(argv)
+    return parser
 
 
-def main(argv: Sequence[str] | None = None) -> None:
-    options = _arguments(argv)
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
-    )
+def open_panel(argv: Sequence[str] | None = None) -> Launch:
+    """The launch the command line asks for, short of the web server: the folder or the
+    file opened (its .env loaded), the session started when it starts at launch. A
+    missing or unreadable --config file stops here, with the reason (`SystemExit`)."""
+    parser = _parser()
+    options = parser.parse_args(argv)
+    try:
+        source = open_source(options, APP)
+    except ConfigFileError as exc:
+        parser.error(str(exc))
     session = RobotSession()
-    # Building the model makes the folder ready and loads its .env; the session locks
+    # Building the model makes the source ready and loads its .env; the session locks
     # the config while it runs.
-    model = AppModel(
-        APP, ConfigFolder(options.folder, APP.default_config), locked=session.locked
-    )
-    log.info("folder: %s", model.path)
+    model = AppModel(APP, source, locked=session.locked)
+    log.info("config: %s", model.source.config_path)
     at_launch = starts_at_launch(model, options.start)
     if at_launch:
         for reason in session.start(model):
             log.warning("the session did not start at launch: %s", reason)
+    return Launch(options, model, session, at_launch)
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
+    launch = open_panel(argv)
     try:
-        build_page(model, session, started_at_launch=at_launch).launch(
-            server_name=options.host, server_port=options.port
-        )
+        build_page(
+            launch.model, launch.session, started_at_launch=launch.started_at_launch
+        ).launch(server_name=launch.options.host, server_port=launch.options.port)
     finally:
-        session.stop()
+        launch.session.stop()

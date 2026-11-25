@@ -92,11 +92,12 @@ Face detection and tracking are opt-in: name a detector in the config's `face_de
 
 ## Examples
 
-Three runnable examples under [examples/](examples/), run from a checkout:
+Four runnable examples under [examples/](examples/), run from a checkout:
 
 | | |
 |---|---|
 | [control_panel](examples/control_panel/) | A Gradio control panel: every action a button, the bridge's state on screen ([below](#try-it-from-a-browser)) |
+| [config_app](examples/config_app/) | The panel's Setup and Secrets tabs over one config file, with no session ([below](#try-it-from-a-browser)) |
 | [greeter](examples/greeter/) | The robot breathes until a face shows up, greets it with an emotion and a "Hello there" while the head follows it, and says goodbye when it leaves: one loop over the head tracker's events |
 | [voice_tour](examples/voice_tour/) | The robot performs a slam in twelve voices, one per tts-engine speech module, local models and hosted APIs, through one bridge; each voice is a config file whose `tts` block you can copy |
 
@@ -107,10 +108,24 @@ The greeter and the voice tour each have a README on how to run them and how the
 The repo ships a Gradio **control panel** — every action a button, the bridge's state on screen and refreshed twice a second (motor state, attention, the mode flags, a mic level meter, the camera frame, a log), with a Stop button next to `say` and `play_emotion` that interrupts it mid-flight. It runs from a checkout (it needs the `demo` dependency group, and its voice the `tts` group — both installed by a plain `uv sync`):
 
 ```
-uv run python -m examples.control_panel   # [--folder PATH] [--port N] [--start | --no-start]
+uv run python -m examples.control_panel   # [--folder DIR] [--env PATH] [--port N] [--start | --no-start]
 ```
 
-then open `http://127.0.0.1:7860`. The robot is set up in the page itself: the **Setup** tab chooses the backend and the voice, edits the other blocks as JSON, checks the config, installs the extras it needs and prepares what a first session would otherwise fetch or build itself (the models, GStreamer's plugin registry); the **Secrets** tab holds the voice's key; the **Robot** tab starts and stops the session (Stop it to change the config). Its first config is the full example below (set `backend` to `fake` for the offline fake), and it starts its session at launch unless you turn that off on the Setup tab or pass `--no-start`. The config and keys live in `~/.config/reachy-mini-bridge-control-panel`.
+then open `http://127.0.0.1:7860`. The robot is set up in the page itself: the **Setup** tab chooses the backend and the voice, edits the other blocks as JSON, checks the config, installs the extras it needs and prepares what a first session would otherwise fetch or build itself (the models, GStreamer's plugin registry); the **Secrets** tab holds the voice's key; the **Robot** tab starts and stops the session (Stop it to change the config). Its first config is the full example below (set `backend` to `fake` for the offline fake), and it starts its session at launch unless you turn that off on the Setup tab or pass `--no-start`. The config (`config.json`, a bridge config as `ReachyMiniBridge.from_json_file` reads it) and the keys (`.env`) live in its folder, `~/.config/reachy-mini-bridge-control-panel` by default. A folder made by an earlier version of the panel holds its config under a `"reachy"` key, which the bridge now refuses: delete the folder once.
+
+To run a config file as it is — read, never written; the session starts at launch unless `--no-start` — pass it instead of the folder:
+
+```
+uv run python -m examples.control_panel --config examples/configs/sim-webcam.json   # [--env PATH] [--no-start]
+```
+
+To edit a config file without running it, the **config app** serves the Setup and Secrets tabs over it (Save writes it back; copy a file of [examples/configs/](examples/configs/) to start):
+
+```
+uv run python -m examples.config_app my-robot.json   # [--env PATH] [--port N]
+```
+
+Either way the keys are in the `.env` next to the config (the folder's, or the file's directory), unless `--env` names another file; a variable set in the shell wins.
 
 That config, [examples/configs/full.json](examples/configs/full.json), gives the MuJoCo viewer window next to the panel, with your **webcam** as the robot's camera in the corner of that window: enable the motors and the simulated robot turns to follow you ([docs/guides/running-daemons.md](docs/guides/running-daemons.md)). It needs an unlocked GUI session and, on macOS, camera permission for the terminal that runs it. Set `daemon.camera.source` to `"sim"` for the rendered scene instead, and `backend` to `real` to drive the robot. Design and limits: [specs/examples/control_panel.md](specs/examples/control_panel.md).
 

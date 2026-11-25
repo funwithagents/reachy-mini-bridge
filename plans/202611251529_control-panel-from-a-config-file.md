@@ -1,6 +1,6 @@
 # Control panel from a config file, and a config app
 
-**Status:** Todo
+**Status:** Done
 
 Implements the settled behavior in `specs/examples/control_panel.md` ("Layout and how it runs", "The UI", "Tests"): the panel's app bare (its config is the bridge's document, in the folder and in a file), the panel run from a config file (`--config FILE`, `--env PATH`; read-only, the session started at launch), and a config app editing one file with no session. It leaves the greeter and the voice tour as they are (their own `--config`, keys from the shell).
 
