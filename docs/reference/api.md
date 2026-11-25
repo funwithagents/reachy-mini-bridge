@@ -55,6 +55,8 @@ A string is the backend-name shorthand for a config with everything else at its 
 
 `check_setup`, `prepare`, `options` and `probe` take `base_dir=`, the folder the config's relative paths are relative to (a `daemon.scene` file, the voice's files); build the bridge from the same folder, `ReachyMiniConfig.from_dict(data, base_dir=folder)`, so the checks and the session look at the same files.
 
+The [control panel](../../examples/control_panel/) is built on it, through app-setup's Setup and Secrets panels.
+
 ## Lifecycle
 
 The bridge is a session. `await bridge.start()` brings everything up in order — the managed daemon when configured, the robot connection, the media session, the camera feed, wobbling, the detection loop with the head tracker, the motion loop — and `await bridge.stop()` tears it down in reverse: the motion loop eases the head to neutral, detection stops, wobbling is turned back off (the setting is shared by every app on the daemon), the camera feed, the media session, the connection and an owned daemon close, each even when another fails; the modes reset to the config's values so `start()` may follow.

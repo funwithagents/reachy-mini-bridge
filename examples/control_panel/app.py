@@ -1,25 +1,38 @@
 """The Gradio layer of the control panel (specs/examples/control_panel.md "The UI").
 
-`build_app(controller)` wires components to `ControlPanelController` calls and adds
-nothing the controller cannot do; `main(argv)` is the `python -m examples.control_panel`
-entry: a config file in, a web server out.
+`build_page(model, session)` is the page: the Robot tab, wiring components to
+`ControlPanelController` calls and adding nothing the controller cannot do, then
+app-setup's Setup and Secrets panels over the bridge's setup contract. `main(argv)` is
+the `python -m examples.control_panel` entry: the app's folder (or a config file run as it
+is) in, a web server out, the session started at launch unless the launch choice says
+otherwise.
+
+    uv run python -m examples.control_panel [--folder DIR | --config FILE] [--env PATH]
+        [--host ADDRESS] [--port N] [--start | --no-start]
 """
 
 from __future__ import annotations
 
 import argparse
 import dataclasses
+import json
 import logging
 import math
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
 import gradio as gr
 import numpy as np
 import numpy.typing as npt
+from app_setup.app import App, AppModel, Section
+from app_setup.autostart import add_start_arguments, starts_at_launch
+from app_setup.config_file import ConfigFileError
+from app_setup.launch import add_config_arguments, open_source
+from app_setup.ui import secrets_panel, setup_panel, unsaved_notice
 
+import reachy_mini_bridge.setup
 from examples.control_panel.controller import (
     ControlPanelController,
     FaceView,
@@ -27,8 +40,30 @@ from examples.control_panel.controller import (
     UsersView,
     draw_faces,
 )
+from examples.control_panel.session import SECTION, RobotSession
 from reachy_mini_bridge import BridgeError, ReachyMiniConfig
 from reachy_mini_bridge.config import IDLE_MODES
+
+log = logging.getLogger(__name__)
+
+# The app's default config, which app-setup writes into an empty folder: the repo's
+# full example config (every field, the sim viewer with the webcam, a Phonon voice), as
+# the panel used before. The app is bare: its folder's config.json, a --config file and
+# this default are the bridge's config document itself, with no section around it. On a
+# fresh install the Setup tab shows what it needs (the sim extra, the voice's extra and
+# model, the datasets).
+DEFAULT_CONFIG_FILE = Path(__file__).parents[1] / "configs" / "full.json"
+DEFAULT_CONFIG = json.loads(DEFAULT_CONFIG_FILE.read_text(encoding="utf-8"))
+
+APP = App(
+    name="reachy-mini-bridge-control-panel",
+    title="Reachy Mini control panel",
+    host="reachy-mini-bridge",
+    sections=(Section(SECTION, reachy_mini_bridge.setup, title="Reachy Mini"),),
+    default_config=DEFAULT_CONFIG,
+    autostart=True,
+    bare=True,
+)
 
 REFRESH_S = 0.5
 # The camera has its own, faster timer so the face markers follow a moving face.
@@ -209,238 +244,432 @@ def refresh_camera(
     return marked, text
 
 
-def build_app(controller: ControlPanelController) -> gr.Blocks:
-    """The panel over a started controller."""
-    config = controller.bridge.config
-    log: Log = []
+def session_buttons(session: RobotSession) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Start and Stop, greyed by the session's status: Start only while it is stopped,
+    Stop only while it runs."""
+    status = session.status
+    return (
+        gr.update(interactive=status == "stopped"),
+        gr.update(interactive=status == "running"),
+    )
 
-    def guarded(verb: str, fn: Callable[..., Any]) -> Callable[..., None]:
-        """Run a controller call from a handler: outcomes to the log, errors to a toast."""
+
+def session_markdown(session: RobotSession) -> str:
+    """The session line: starting or stopping, the backend running, or why the last
+    Start started nothing."""
+    if session.status == "starting":
+        return "**Session:** starting…"
+    if session.status == "stopping":
+        return "**Session:** stopping…"
+    controller = session.controller
+    if controller is not None and controller.running:
+        return (
+            f"**Session:** running on the `{controller.bridge.config.backend}` backend"
+        )
+    if session.reasons:
+        return "**Session:** not started:\n\n" + "\n".join(
+            f"- {reason}" for reason in session.reasons
+        )
+    return "**Session:** none — press Start"
+
+
+def _shown_config(model: AppModel, session: RobotSession) -> ReachyMiniConfig:
+    """The config the controls start from: the session's, else the saved one, else the
+    defaults (a saved config the bridge refuses)."""
+    controller = session.controller
+    if controller is not None:
+        return controller.bridge.config
+    try:
+        section = model.used_config(model.saved_config()).get(SECTION, {})
+        return ReachyMiniConfig.from_dict(section, base_dir=model.path)
+    except (ValueError, KeyError):
+        return ReachyMiniConfig()
+
+
+def _control_values(
+    config: ReachyMiniConfig, controller: ControlPanelController | None
+) -> list[Any]:
+    """The controls' values for a config (the order of `_robot_tab`'s `controls`): the
+    config as JSON, the emotions, the modes, the posture, the motor state read."""
+    emotions = controller.emotions if controller is not None else []
+    motors: str | None = None
+    if controller is not None:
+        try:
+            motors = controller.get_motors_state()
+        except BridgeError:
+            motors = None
+    tracking = config.motion.tracking
+    return [
+        dataclasses.asdict(config),
+        gr.update(choices=emotions, value=emotions[0] if emotions else None),
+        tracking.enabled,
+        tracking.focus,
+        config.motion.wobbling,
+        config.motion.presence,
+        config.face_detection.enabled,
+        config.motion.idle,
+        tracking.mirroring.enabled,
+        tracking.approach.enabled,
+        tracking.personal_space.enabled,
+        config.motion.base_following.enabled,
+        motors,
+    ]
+
+
+def _robot_tab(model: AppModel, session: RobotSession) -> gr.Markdown:
+    """Start / Stop and the session line, then the panel over the running session."""
+    log_lines: Log = []
+    config = _shown_config(model, session)
+    (
+        _,
+        _,
+        tracking_on,
+        focus_on,
+        wobbling_on,
+        presence_on,
+        detection_on,
+        idle_mode,
+        mirroring_on,
+        approach_on,
+        personal_on,
+        following_on,
+        motors_now,
+    ) = _control_values(config, session.controller)
+    emotions = session.controller.emotions if session.controller is not None else []
+
+    def guarded(verb: str, name: str) -> Callable[..., None]:
+        """A controller call from a handler, on the running session: outcomes to the
+        log, errors (no session included) to a toast."""
 
         def run(*args: Any) -> None:
             try:
-                result = fn(*args)
+                result = getattr(session.require(), name)(*args)
             except (BridgeError, ValueError, FileNotFoundError) as exc:
-                log_line(log, f"{verb}: error: {exc}")
+                log_line(log_lines, f"{verb}: error: {exc}")
                 raise gr.Error(str(exc), title=verb, print_exception=False) from exc
             if result is True:
-                log_line(log, f"{verb}: done")
+                log_line(log_lines, f"{verb}: done")
             elif result is False:
-                log_line(log, f"{verb}: stopped")
+                log_line(log_lines, f"{verb}: stopped")
             elif isinstance(result, int):
-                log_line(log, f"{verb}: stopped {result}")
+                log_line(log_lines, f"{verb}: stopped {result}")
             else:
-                log_line(log, f"{verb}: ok")
+                log_line(log_lines, f"{verb}: ok")
 
         return run
 
-    emotions = controller.emotions
-    try:
-        motors_now: str | None = controller.get_motors_state()
-    except BridgeError:
-        motors_now = None
+    with gr.Row(equal_height=True):
+        start = gr.Button(
+            "Start",
+            variant="primary",
+            scale=0,
+            interactive=session.status == "stopped",
+        )
+        stop = gr.Button(
+            "Stop", variant="stop", scale=0, interactive=session.status == "running"
+        )
+        session_md = gr.Markdown(session_markdown(session))
+    # Start runs the saved config: say so while the Setup tab holds unsaved edits.
+    notice = gr.Markdown()
+    with gr.Accordion("Config (read-only)", open=False):
+        config_json = gr.JSON(value=dataclasses.asdict(config))
 
-    with gr.Blocks(title=f"Reachy Mini control panel · {config.backend}") as demo:
-        gr.Markdown(f"# Reachy Mini control panel — `{config.backend}` backend")
-        with gr.Accordion("Config (read-only)", open=False):
-            gr.JSON(value=dataclasses.asdict(config))
-
-        # The controls first: one column per verb group, then the modes, then the
-        # motors on one line.
-        with gr.Row():
-            with gr.Column():
-                gr.Markdown("## Expression")
-                emotion = gr.Dropdown(
-                    emotions,
-                    value=emotions[0] if emotions else None,
-                    label="Emotion",
-                )
-                with gr.Row():
-                    play_emotion = gr.Button("Play")
-                    stop_emotion = gr.Button("Stop", variant="stop")
-
-            with gr.Column():
-                gr.Markdown("## Speech")
-                text = gr.Textbox(label="Text", value="Hello, I am Reachy Mini.")
-                with gr.Row():
-                    say = gr.Button("Say")
-                    stop_say = gr.Button("Stop", variant="stop")
-
-            with gr.Column():
-                gr.Markdown("## Sound")
-                sound_file = gr.Textbox(label="Sound file (path)")
-                with gr.Row():
-                    play_sound = gr.Button("Play sound")
-                    stop_sound = gr.Button("Stop sound", variant="stop")
-
-        gr.Markdown("## Modes")
-        with gr.Row(equal_height=True):
-            tracking_config = config.motion.tracking
-            tracking = gr.Checkbox(tracking_config.enabled, label="Tracking")
-            focus = gr.Checkbox(tracking_config.focus, label="Focus")
-            wobbling = gr.Checkbox(config.motion.wobbling, label="Wobbling")
-            presence = gr.Checkbox(config.motion.presence, label="Presence")
-            detection = gr.Checkbox(config.face_detection.enabled, label="Detection")
-            idle = gr.Dropdown(list(IDLE_MODES), value=config.motion.idle, label="Idle")
-        with gr.Row(equal_height=True):
-            mirroring = gr.Checkbox(
-                tracking_config.mirroring.enabled, label="Mirroring"
+    # The controls first: one column per verb group, then the modes, then the
+    # motors on one line.
+    with gr.Row():
+        with gr.Column():
+            gr.Markdown("## Expression")
+            emotion = gr.Dropdown(
+                emotions, value=emotions[0] if emotions else None, label="Emotion"
             )
-            approach = gr.Checkbox(tracking_config.approach.enabled, label="Approach")
-            personal = gr.Checkbox(
-                tracking_config.personal_space.enabled, label="Personal space"
+            with gr.Row():
+                play_emotion = gr.Button("Play")
+                stop_emotion = gr.Button("Stop", variant="stop")
+
+        with gr.Column():
+            gr.Markdown("## Speech")
+            text = gr.Textbox(label="Text", value="Hello, I am Reachy Mini.")
+            with gr.Row():
+                say = gr.Button("Say")
+                stop_say = gr.Button("Stop", variant="stop")
+
+        with gr.Column():
+            gr.Markdown("## Sound")
+            sound_file = gr.Textbox(label="Sound file (path)")
+            with gr.Row():
+                play_sound = gr.Button("Play sound")
+                stop_sound = gr.Button("Stop sound", variant="stop")
+
+    gr.Markdown("## Modes")
+    with gr.Row(equal_height=True):
+        tracking = gr.Checkbox(tracking_on, label="Tracking")
+        focus = gr.Checkbox(focus_on, label="Focus")
+        wobbling = gr.Checkbox(wobbling_on, label="Wobbling")
+        presence = gr.Checkbox(presence_on, label="Presence")
+        detection = gr.Checkbox(detection_on, label="Detection")
+        idle = gr.Dropdown(list(IDLE_MODES), value=idle_mode, label="Idle")
+    with gr.Row(equal_height=True):
+        mirroring = gr.Checkbox(mirroring_on, label="Mirroring")
+        approach = gr.Checkbox(approach_on, label="Approach")
+        personal = gr.Checkbox(personal_on, label="Personal space")
+        following = gr.Checkbox(following_on, label="Base following")
+    gr.Markdown(
+        "*Focus: while tracking, the head is held on the face, no idle motion. "
+        "Mirroring, approach, personal space: the posture the head takes toward "
+        "the person it follows — their head roll mirrored, a lean toward them, a "
+        "step back from someone too close. Base following: the base turns toward "
+        "the person, every move played around that body yaw, held after they "
+        "leave.*"
+    )
+
+    gr.Markdown("## Motors")
+    with gr.Row(equal_height=True):
+        motors_radio = gr.Radio(
+            list(MOTOR_STATES), value=motors_now, label="Torque", scale=4
+        )
+        apply_motors = gr.Button("Apply", scale=1)
+
+    controls = [
+        config_json,
+        emotion,
+        tracking,
+        focus,
+        wobbling,
+        presence,
+        detection,
+        idle,
+        mirroring,
+        approach,
+        personal,
+        following,
+        motors_radio,
+    ]
+    # Then what the robot sees and hears (left) beside what it detects: the faces
+    # in view, the users present, whom the head follows (right), each heading
+    # carrying its live summary.
+    with gr.Row():
+        with gr.Column():
+            gr.Markdown("## Camera")
+            camera = gr.Image(label="Camera", interactive=False, height=240)
+            mic_level = gr.Slider(
+                0, 1, value=0, step=0.001, label="Mic level", interactive=False
             )
-            following = gr.Checkbox(
-                config.motion.base_following.enabled, label="Base following"
+
+        with gr.Column():
+            gr.Markdown("## Detection and tracking")
+            faces_md = gr.Markdown("### Faces")
+            gr.Markdown("### Users")
+            users_md = gr.Markdown()
+            head_md = gr.Markdown("### Head tracking")
+
+    # Last, the state (left) and the logs (right): the verbs' outcomes in one
+    # tab, how the ids went in the other.
+    with gr.Row():
+        with gr.Column():
+            gr.Markdown("## State")
+            state_md = gr.Markdown()
+
+        with gr.Column():
+            gr.Markdown("## Logs")
+            with gr.Tabs():
+                with gr.Tab("Log"):
+                    log_box = gr.Textbox(show_label=False, lines=12, interactive=False)
+                with gr.Tab("Tracking events"):
+                    events_box = gr.Textbox(
+                        show_label=False, lines=12, interactive=False
+                    )
+
+    def on_start() -> list[Any]:
+        reasons = session.start(model)
+        controller = session.controller
+        line = [session_markdown(session), *session_buttons(session)]
+        if reasons or controller is None:
+            log_line(log_lines, "start: not started")
+            return [*line, *[gr.update() for _ in controls]]
+        log_line(log_lines, "start: running")
+        return [*line, *_control_values(controller.bridge.config, controller)]
+
+    def on_stop() -> list[Any]:
+        if session.stop():
+            log_line(log_lines, "stop: done")
+        return [session_markdown(session), *session_buttons(session)]
+
+    def pressed(starting: bool) -> list[Any]:
+        """Both buttons greyed at once, before the Start or Stop runs."""
+        verb = "starting" if starting else "stopping"
+        return [
+            f"**Session:** {verb}…",
+            gr.update(interactive=False),
+            gr.update(interactive=False),
+        ]
+
+    line = [session_md, start, stop]
+    start.click(lambda: pressed(True), outputs=line, queue=False).then(
+        on_start, outputs=[*line, *controls], api_name="start"
+    )
+    stop.click(lambda: pressed(False), outputs=line, queue=False).then(
+        on_stop, outputs=line, api_name="stop"
+    )
+
+    timer = gr.Timer(REFRESH_S)
+    timer.tick(
+        lambda: (
+            session_markdown(session),
+            *session_buttons(session),
+            *refresh_session(session, log_lines),
+        ),
+        outputs=[*line, state_md, mic_level, log_box],
+        show_progress="hidden",
+        api_name="refresh",
+    )
+    camera_timer = gr.Timer(CAMERA_REFRESH_S)
+    camera_timer.tick(
+        lambda: refresh_session_camera(session, log_lines),
+        outputs=[camera, faces_md],
+        show_progress="hidden",
+        api_name="refresh_camera",
+    )
+    camera_timer.tick(
+        lambda: refresh_session_users(session),
+        outputs=[users_md, head_md, events_box],
+        show_progress="hidden",
+        api_name="refresh_users",
+    )
+
+    def bind(
+        event: Callable[..., Any],
+        verb: str,
+        name: str,
+        inputs: Any = None,
+    ) -> None:
+        event(guarded(verb, name), inputs=inputs, api_name=verb)
+
+    bind(apply_motors.click, "set_motors_state", "set_motors_state", motors_radio)
+    bind(play_emotion.click, "play_emotion", "play_emotion", emotion)
+    bind(stop_emotion.click, "stop_emotion", "stop_emotion")
+    bind(say.click, "say", "say", text)
+    bind(stop_say.click, "stop_saying", "stop_saying")
+    bind(play_sound.click, "play_sound", "play_sound", sound_file)
+    bind(stop_sound.click, "stop_sound", "stop_sound")
+    for box in (tracking, focus):
+        bind(box.input, "set_head_tracking", "set_head_tracking", [tracking, focus])
+    for box in (mirroring, approach, personal):
+        bind(box.input, "set_posture", "set_posture", [mirroring, approach, personal])
+    bind(following.input, "set_base_following", "set_base_following", following)
+    bind(wobbling.input, "set_wobbling", "set_wobbling", wobbling)
+    bind(presence.input, "set_presence", "set_presence", presence)
+    bind(idle.input, "set_idle", "set_idle", idle)
+    bind(detection.input, "set_face_detection", "set_face_detection", detection)
+    return notice
+
+
+NO_SESSION = "— (no session)"
+
+
+def refresh_session(session: RobotSession, log: Log) -> tuple[str, float, str]:
+    """One state tick over the session: `refresh`, or the empty state with none."""
+    controller = session.controller
+    if controller is None or not controller.running:
+        return NO_SESSION, 0.0, "\n".join(log)
+    return refresh(controller, log)
+
+
+def refresh_session_camera(
+    session: RobotSession, log: Log
+) -> tuple[npt.NDArray[np.uint8] | None, str]:
+    """One camera tick over the session: `refresh_camera`, or nothing with none."""
+    controller = session.controller
+    if controller is None or not controller.running:
+        return None, f"### Faces\n\n{NO_SESSION}"
+    return refresh_camera(controller, log)
+
+
+def refresh_session_users(session: RobotSession) -> tuple[str, str, str]:
+    """One users tick over the session: `refresh_users`, or nothing with none."""
+    controller = session.controller
+    if controller is None or not controller.running:
+        return NO_SESSION, "### Head tracking", ""
+    return refresh_users(controller)
+
+
+def build_page(
+    model: AppModel, session: RobotSession, *, started_at_launch: bool = False
+) -> gr.Blocks:
+    """The panel's page: its Robot tab, then app-setup's Setup and Secrets panels. It
+    opens on Robot when the session started at launch, else on Setup."""
+    with gr.Blocks(title=model.title) as page:
+        gr.Markdown(f"# {model.title}")
+        with gr.Tabs(selected="robot" if started_at_launch else "setup"):
+            with gr.Tab("Robot", id="robot"):
+                notice = _robot_tab(model, session)
+            with gr.Tab("Setup", id="setup"):
+                setup = setup_panel(model)
+            with gr.Tab("Secrets", id="secrets"):
+                secrets_panel(model, setup.draft)
+        for changed in (setup.draft.change, setup.saved.change):
+            changed(
+                lambda draft: unsaved_notice(model, draft),
+                inputs=[setup.draft],
+                outputs=[notice],
+                show_progress="hidden",
             )
-        gr.Markdown(
-            "*Focus: while tracking, the head is held on the face, no idle motion. "
-            "Mirroring, approach, personal space: the posture the head takes toward "
-            "the person it follows — their head roll mirrored, a lean toward them, a "
-            "step back from someone too close. Base following: the base turns toward "
-            "the person, every move played around that body yaw, held after they "
-            "leave.*"
-        )
-
-        gr.Markdown("## Motors")
-        with gr.Row(equal_height=True):
-            motors_radio = gr.Radio(
-                list(MOTOR_STATES), value=motors_now, label="Torque", scale=4
-            )
-            apply_motors = gr.Button("Apply", scale=1)
-
-        # Then what the robot sees and hears (left) beside what it detects: the faces
-        # in view, the users present, whom the head follows (right), each heading
-        # carrying its live summary.
-        with gr.Row():
-            with gr.Column():
-                gr.Markdown("## Camera")
-                camera = gr.Image(label="Camera", interactive=False, height=240)
-                mic_level = gr.Slider(
-                    0, 1, value=0, step=0.001, label="Mic level", interactive=False
-                )
-
-            with gr.Column():
-                gr.Markdown("## Detection and tracking")
-                faces_md = gr.Markdown("### Faces")
-                gr.Markdown("### Users")
-                users_md = gr.Markdown()
-                head_md = gr.Markdown("### Head tracking")
-
-        # Last, the state (left) and the logs (right): the verbs' outcomes in one
-        # tab, how the ids went in the other.
-        with gr.Row():
-            with gr.Column():
-                gr.Markdown("## State")
-                state_md = gr.Markdown()
-
-            with gr.Column():
-                gr.Markdown("## Logs")
-                with gr.Tabs():
-                    with gr.Tab("Log"):
-                        log_box = gr.Textbox(
-                            show_label=False, lines=12, interactive=False
-                        )
-                    with gr.Tab("Tracking events"):
-                        events_box = gr.Textbox(
-                            show_label=False, lines=12, interactive=False
-                        )
-
-        timer = gr.Timer(REFRESH_S)
-        timer.tick(
-            lambda: refresh(controller, log),
-            outputs=[state_md, mic_level, log_box],
-            show_progress="hidden",
-            api_name="refresh",
-        )
-        camera_timer = gr.Timer(CAMERA_REFRESH_S)
-        camera_timer.tick(
-            lambda: refresh_camera(controller, log),
-            outputs=[camera, faces_md],
-            show_progress="hidden",
-            api_name="refresh_camera",
-        )
-        camera_timer.tick(
-            lambda: refresh_users(controller),
-            outputs=[users_md, head_md, events_box],
-            show_progress="hidden",
-            api_name="refresh_users",
-        )
-
-        def bind(
-            event: Callable[..., Any],
-            verb: str,
-            fn: Callable[..., Any],
-            inputs: Any = None,
-        ) -> None:
-            event(guarded(verb, fn), inputs=inputs, api_name=verb)
-
-        bind(
-            apply_motors.click,
-            "set_motors_state",
-            controller.set_motors_state,
-            motors_radio,
-        )
-        bind(play_emotion.click, "play_emotion", controller.play_emotion, emotion)
-        bind(stop_emotion.click, "stop_emotion", controller.stop_emotion)
-        bind(say.click, "say", controller.say, text)
-        bind(stop_say.click, "stop_saying", controller.stop_saying)
-        bind(play_sound.click, "play_sound", controller.play_sound, sound_file)
-        bind(stop_sound.click, "stop_sound", controller.stop_sound)
-        for box in (tracking, focus):
-            bind(
-                box.input,
-                "set_head_tracking",
-                controller.set_head_tracking,
-                [tracking, focus],
-            )
-        for box in (mirroring, approach, personal):
-            bind(
-                box.input,
-                "set_posture",
-                controller.set_posture,
-                [mirroring, approach, personal],
-            )
-        bind(
-            following.input,
-            "set_base_following",
-            controller.set_base_following,
-            following,
-        )
-        bind(wobbling.input, "set_wobbling", controller.set_wobbling, wobbling)
-        bind(presence.input, "set_presence", controller.set_presence, presence)
-        bind(idle.input, "set_idle", controller.set_idle, idle)
-        bind(
-            detection.input,
-            "set_face_detection",
-            controller.set_face_detection,
-            detection,
-        )
-
-    return demo
+    return page
 
 
-def main(argv: list[str] | None = None) -> None:
+@dataclasses.dataclass
+class Launch:
+    """What one launch opened: the options, the model over the folder or the file, the
+    session (running when it started at launch) and whether it was asked to start."""
+
+    options: argparse.Namespace
+    model: AppModel
+    session: RobotSession
+    started_at_launch: bool
+
+
+def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m examples.control_panel",
-        description="A Gradio control panel over ReachyMiniBridge: every verb a button, "
-        "the robot's state on screen.",
+        description="A Gradio control panel over ReachyMiniBridge: the robot set up in "
+        "the page, every verb a button, the robot's state on screen.",
     )
-    parser.add_argument(
-        "--config",
-        type=Path,
-        help="JSON config file (specs/core/config.md). Without it: the offline fake.",
-    )
+    add_config_arguments(parser, APP)
     parser.add_argument("--host", default="127.0.0.1", help="web server address")
     parser.add_argument("--port", type=int, default=7860, help="web server port")
-    args = parser.parse_args(argv)
+    add_start_arguments(parser)
+    return parser
+
+
+def open_panel(argv: Sequence[str] | None = None) -> Launch:
+    """The launch the command line asks for, short of the web server: the folder or the
+    file opened (its .env loaded), the session started when it starts at launch. A
+    missing or unreadable --config file stops here, with the reason (`SystemExit`)."""
+    parser = _parser()
+    options = parser.parse_args(argv)
+    try:
+        source = open_source(options, APP)
+    except ConfigFileError as exc:
+        parser.error(str(exc))
+    session = RobotSession()
+    # Building the model makes the source ready and loads its .env; the session locks
+    # the config while it runs.
+    model = AppModel(APP, source, locked=session.locked)
+    log.info("config: %s", model.source.config_path)
+    at_launch = starts_at_launch(model, options.start)
+    if at_launch:
+        for reason in session.start(model):
+            log.warning("the session did not start at launch: %s", reason)
+    return Launch(options, model, session, at_launch)
+
+
+def main(argv: Sequence[str] | None = None) -> None:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
-    config = (
-        ReachyMiniConfig.from_json_file(args.config)
-        if args.config is not None
-        else ReachyMiniConfig(backend="fake")
-    )
-    with ControlPanelController(config) as controller:
-        build_app(controller).launch(server_name=args.host, server_port=args.port)
+    launch = open_panel(argv)
+    try:
+        build_page(
+            launch.model, launch.session, started_at_launch=launch.started_at_launch
+        ).launch(server_name=launch.options.host, server_port=launch.options.port)
+    finally:
+        launch.session.stop()

@@ -10,15 +10,21 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures as cf
+import json
 import math
 import time
 import wave
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import numpy.typing as npt
 import pytest
+from app_setup.app import AppModel
+from app_setup.autostart import starts_at_launch
+from app_setup.folder import ConfigFolder
+from app_setup.secrets import SecretStore
 
 from examples.control_panel.controller import (
     FACE_MARKER_RGB,
@@ -27,6 +33,7 @@ from examples.control_panel.controller import (
     describe_users_change,
     draw_faces,
 )
+from examples.control_panel.session import RobotSession
 from reachy_mini_bridge import (
     BridgeError,
     HeadTrackingReport,
@@ -42,6 +49,9 @@ from reachy_mini_bridge.config import (
     TrackingSettings,
 )
 from reachy_mini_bridge.fake_reachy_mini import FakeReachyMini
+
+if TYPE_CHECKING:
+    from examples.control_panel.app import Launch
 
 
 class _SlowSynth:
@@ -344,19 +354,27 @@ def test_stop_cancels_the_verbs_in_flight() -> None:
 # --- the Gradio layer (smoke) ---------------------------------------------------------
 
 
-def test_build_app_constructs_the_blocks_and_refresh_reads_the_state() -> None:
+def test_the_page_builds_over_a_session_and_its_ticks_read_the_state(
+    tmp_path: Path,
+) -> None:
     gr = pytest.importorskip("gradio")
     from examples.control_panel.app import (
-        build_app,
+        build_page,
         refresh,
         refresh_camera,
+        refresh_session,
         refresh_users,
     )
 
     scene = _Scene()
+    session = RobotSession()
     with ControlPanelController(_faces_config(scene)) as controller:
-        demo = build_app(controller)
+        # A session on a Python-only detector, which no saved config can name.
+        session.controller = controller
+        # The session already runs: the config is locked, so nothing is saved.
+        demo = build_page(_model(tmp_path, session, saved=None), session)
         assert isinstance(demo, gr.Blocks)
+        assert refresh_session(session, [])[0] == refresh(controller, [])[0]
         scene.show(0.5, -0.5)
         _wait_until(lambda: controller.snapshot().faces == 1)
         _wait_until(lambda: controller.face_rate is not None)  # the meter's first look
@@ -386,6 +404,401 @@ def test_build_app_constructs_the_blocks_and_refresh_reads_the_state() -> None:
         assert f"| **#{tid}** ● | yes | yes |" in users_text
         assert head_text == f"### Head tracking: following #{tid}"
         assert f"#{tid} arrived" in events_text
+
+
+# The offline fake: what the tests run a session on (the app's default is the full
+# example config, the headless sim).
+FAKE: dict[str, object] = {"reachy": {"backend": "fake"}}
+
+
+def _model(
+    folder: Path,
+    session: RobotSession | None = None,
+    *,
+    saved: dict[str, object] | None = FAKE,
+) -> AppModel:
+    """The panel's model over a folder of its own, its secrets kept off os.environ, the
+    fake saved as its config (`saved=None` keeps the app's default)."""
+    from examples.control_panel.app import APP
+
+    config_folder = ConfigFolder(folder, APP.default_config)
+    model = AppModel(
+        APP,
+        config_folder,
+        SecretStore(config_folder.env_path, {}),
+        locked=session.locked if session is not None else None,
+    )
+    if saved is not None:
+        model.save(saved)
+    return model
+
+
+def test_the_session_reads_relative_paths_against_the_apps_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The folder app-setup passes to the setup functions as `base_dir` is the one
+    the session's config is loaded with: a voice file next to config.json is found."""
+    with wave.open(str(tmp_path / "hi.wav"), "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(16000)
+        out.writeframes(b"\0\0" * 160)
+    monkeypatch.chdir(Path(__file__).parent)  # the working directory has no hi.wav
+    session = RobotSession()
+    model = _model(tmp_path, session)
+    voice = {
+        "module": {"type": "audiofile", "files": [{"text": "hi", "file": "hi.wav"}]}
+    }
+    model.save({"reachy": {"backend": "fake", "tts": voice}})
+
+    assert session.start(model) == []
+    try:
+        bridge = session.require().bridge
+        assert bridge.synthesizer_error is None
+        assert bridge.config.tts is not None
+        assert bridge.config.tts["module"]["base_dir"] == str(model.path.resolve())
+    finally:
+        session.stop()
+
+
+def test_a_session_starts_from_the_saved_config_and_locks_it_until_stopped(
+    tmp_path: Path,
+) -> None:
+    session = RobotSession()
+    model = _model(tmp_path, session)
+    model.save({"reachy": {"backend": "fake", "motion": {"idle": "hold"}}})
+
+    assert session.start(model) == []
+    try:
+        controller = session.require()
+        assert controller.running
+        assert controller.bridge.config.motion.idle == "hold"
+        assert session.start(model) == [] and session.require() is controller
+        with pytest.raises(RuntimeError):
+            model.save({"reachy": {"backend": "fake"}})  # in use: refused
+    finally:
+        assert session.stop()
+    assert not controller.running and not session.locked()
+    model.save({"reachy": {"backend": "fake"}})  # free again
+    assert not session.stop()
+    with pytest.raises(BridgeError, match="press Start"):
+        session.require()
+
+
+def test_a_config_with_blockers_starts_nothing_and_says_why(tmp_path: Path) -> None:
+    session = RobotSession()
+    model = _model(tmp_path, session)
+    model.save({"reachy": {"backend": "moon"}})
+
+    reasons = session.start(model)
+
+    assert reasons and "/reachy/backend" in reasons[0]
+    assert session.reasons == reasons
+    assert session.controller is None and not session.locked()
+
+
+def test_a_missing_item_a_session_gets_itself_does_not_block_the_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Blockers count required items only: the face detector's weights, missing and
+    not required, leave Start free (the session fetches them itself); a required one
+    blocks it."""
+    from reachy_mini_bridge import setup as bridge_setup
+
+    monkeypatch.setattr(bridge_setup, "_yunet_cached", lambda: False)
+    session = RobotSession()
+    model = _model(tmp_path, session)
+    model.save({"reachy": {"backend": "fake", "face_detection": {"detector": "yunet"}}})
+
+    [item] = model.check_setup(model.saved_config())
+    assert (item.id, item.status, item.required) == ("weights:yunet", "missing", False)
+    assert session.start(model) == []
+    session.stop()
+
+    monkeypatch.delenv("KEYED_MISSING_KEY", raising=False)
+    model.save(
+        {
+            "reachy": {
+                "backend": "fake",
+                "tts": {
+                    "module": {
+                        "type": "gradium",
+                        "voice_id": "v",
+                        "api_key_env": "KEYED_MISSING_KEY",
+                    }
+                },
+            }
+        }
+    )
+    reasons = session.start(model)
+    assert reasons and session.controller is None
+
+
+def test_a_bring_up_that_fails_is_a_reason_and_leaves_nothing_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from reachy_mini_bridge import bridge as bridge_module
+
+    def unreachable(backend: str, **opts: object) -> FakeReachyMini:
+        raise ConnectionError("no robot here")
+
+    monkeypatch.setattr(bridge_module, "build_robot", unreachable)
+    session = RobotSession()
+    model = _model(tmp_path, session)
+
+    [reason] = session.start(model)
+
+    assert reason.startswith("The session could not start:")
+    assert "no robot here" in reason
+    assert session.controller is None and not session.locked()
+
+
+def test_the_default_config_is_the_full_example_valid_and_started_at_launch(
+    tmp_path: Path,
+) -> None:
+    from examples.control_panel.app import APP, DEFAULT_CONFIG, DEFAULT_CONFIG_FILE
+
+    model = _model(
+        tmp_path, saved=None
+    )  # an empty folder: app-setup writes the default
+
+    # The repo's full example config, the bridge's document as it is (the app is bare):
+    # written into the folder so, and wrapped in the app's section for the panels only.
+    assert DEFAULT_CONFIG_FILE.name == "full.json"
+    full = json.loads(DEFAULT_CONFIG_FILE.read_text("utf-8"))
+    assert APP.bare and APP.default_config == DEFAULT_CONFIG == full
+    assert json.loads((tmp_path / "config.json").read_text("utf-8")) == full
+    assert model.saved_config() == {"reachy": full}
+    # What the machine needs for it (the sim, the voice, the datasets) depends on the
+    # machine; the config itself is valid.
+    assert model.check_config(model.saved_config()) == []
+    assert starts_at_launch(model, None)
+    assert not starts_at_launch(model, False)
+    assert [section.name for section in APP.sections] == ["reachy"]
+
+
+def test_a_saved_config_is_the_bridge_document_in_the_folder(tmp_path: Path) -> None:
+    _model(tmp_path, saved={"reachy": {"backend": "fake", "motion": {}}})
+
+    stored = json.loads((tmp_path / "config.json").read_text("utf-8"))
+    assert stored == {"backend": "fake", "motion": {}}
+
+
+def _panel_from_file(path: Path, *args: str) -> Launch:
+    """The panel launched on a config file (with no .env next to it)."""
+    pytest.importorskip("gradio")
+    from examples.control_panel.app import open_panel
+
+    return open_panel(["--config", str(path), *args])
+
+
+def test_the_panel_runs_a_config_file_as_it_is_and_starts_at_launch(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "robot.json"
+    document = {"backend": "fake", "motion": {"idle": "hold"}}
+    config.write_text(json.dumps(document), encoding="utf-8")
+
+    launch = _panel_from_file(config)
+    try:
+        assert launch.started_at_launch
+        controller = launch.session.require()
+        assert controller.bridge.config.backend == "fake"
+        assert controller.bridge.config.motion.idle == "hold"
+        model = launch.model
+        assert not model.editable
+        assert model.path == tmp_path  # relative paths resolve next to the file
+        assert model.saved_config() == {"reachy": document}
+    finally:
+        launch.session.stop()
+    with pytest.raises(RuntimeError):
+        launch.model.save({"reachy": {"backend": "fake"}})  # never written
+    assert json.loads(config.read_text("utf-8")) == document
+    assert not (tmp_path / "config.json").exists()
+
+
+def test_a_config_file_run_with_no_start_starts_nothing(tmp_path: Path) -> None:
+    config = tmp_path / "robot.json"
+    config.write_text(json.dumps({"backend": "fake"}), encoding="utf-8")
+
+    launch = _panel_from_file(config, "--no-start")
+
+    assert not launch.started_at_launch
+    assert launch.session.controller is None
+
+
+def test_a_missing_config_file_stops_the_launch_with_the_reason(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from examples.control_panel.app import open_panel
+
+    missing = tmp_path / "nowhere.json"
+    with pytest.raises(SystemExit):
+        open_panel(["--config", str(missing)])
+
+    assert "nowhere.json" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "profile",
+    sorted((Path(__file__).parents[1] / "examples" / "configs").glob("*.json")),
+    ids=lambda p: p.name,
+)
+def test_every_example_config_is_a_file_the_panel_can_run(
+    profile: Path,
+) -> None:
+    pytest.importorskip("gradio")
+    from app_setup.config_file import ConfigFile
+
+    from examples.control_panel.app import APP
+
+    source = ConfigFile(profile)
+    model = AppModel(APP, source, SecretStore(source.env_path, {}))
+
+    assert model.check_config(model.saved_config()) == []
+
+
+def test_the_config_app_saves_a_bare_document_to_its_file(tmp_path: Path) -> None:
+    pytest.importorskip("gradio")
+    from app_setup.ui import config_page
+
+    from examples.config_app import open_model
+
+    config = tmp_path / "robot.json"
+    config.write_text(json.dumps({"backend": "fake"}), encoding="utf-8")
+    keys = tmp_path / "keys.env"
+
+    _, model = open_model([str(config), "--env", str(keys)])
+    config_page(model)  # the page builds over it
+
+    assert model.editable and model.source.env_path == keys
+    assert model.saved_config() == {"reachy": {"backend": "fake"}}
+    model.save({"reachy": {"backend": "fake", "motion": {"idle": "hold"}}})
+    saved = json.loads(config.read_text("utf-8"))
+    assert saved == {"backend": "fake", "motion": {"idle": "hold"}}
+
+
+def test_the_config_app_refuses_a_missing_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from examples.config_app import open_model
+
+    with pytest.raises(SystemExit):
+        open_model([str(tmp_path / "nowhere.json")])
+
+    assert "nowhere.json" in capsys.readouterr().err
+
+
+def test_the_page_puts_robot_first_opens_on_setup_and_ticks_without_a_session(
+    tmp_path: Path,
+) -> None:
+    gr = pytest.importorskip("gradio")
+    from examples.control_panel.app import (
+        NO_SESSION,
+        build_page,
+        refresh_session,
+        refresh_session_camera,
+        refresh_session_users,
+        session_markdown,
+    )
+
+    session = RobotSession()
+    page = build_page(_model(tmp_path, session), session)
+
+    blocks = list(page.blocks.values())
+    tabs = [getattr(b, "label", None) for b in blocks if isinstance(b, gr.Tab)]
+    selected = [getattr(b, "selected", None) for b in blocks if isinstance(b, gr.Tabs)]
+    assert [t for t in tabs if t in ("Robot", "Setup", "Secrets")] == [
+        "Robot",
+        "Setup",
+        "Secrets",
+    ]
+    assert tabs[0] == "Robot"
+    assert "setup" in selected and "robot" not in selected
+    assert refresh_session(session, [])[0] == NO_SESSION
+    assert refresh_session_camera(session, [])[0] is None
+    assert refresh_session_users(session)[0] == NO_SESSION
+    assert "press Start" in session_markdown(session)
+
+
+def test_the_page_opens_on_robot_when_the_session_started_at_launch(
+    tmp_path: Path,
+) -> None:
+    gr = pytest.importorskip("gradio")
+    from examples.control_panel.app import build_page
+
+    session = RobotSession()
+    page = build_page(_model(tmp_path, session), session, started_at_launch=True)
+
+    selected = [
+        getattr(b, "selected", None)
+        for b in page.blocks.values()
+        if isinstance(b, gr.Tabs)
+    ]
+    assert "robot" in selected and "setup" not in selected
+
+
+def _interactive(update: dict[str, object]) -> object:
+    return update["interactive"]
+
+
+def test_start_and_stop_are_greyed_by_the_sessions_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("gradio")
+    from examples.control_panel import session as session_module
+    from examples.control_panel.app import session_buttons, session_markdown
+
+    session = RobotSession()
+    model = _model(tmp_path, session)
+    seen: dict[str, object] = {}
+    real_start = session_module.ControlPanelController.start
+
+    def start(self: ControlPanelController, *, timeout: float | None = None) -> None:
+        # Mid-start: what the page shows while the session comes up.
+        seen["starting"] = (
+            session.status,
+            *map(_interactive, session_buttons(session)),
+        )
+        seen["line"] = session_markdown(session)
+        real_start(self, timeout=timeout)
+
+    monkeypatch.setattr(session_module.ControlPanelController, "start", start)
+    assert (session.status, *map(_interactive, session_buttons(session))) == (
+        "stopped",
+        True,
+        False,
+    )
+
+    assert session.start(model) == []
+    try:
+        assert seen["starting"] == ("starting", False, False)
+        assert seen["line"] == "**Session:** starting…"
+        assert (session.status, *map(_interactive, session_buttons(session))) == (
+            "running",
+            False,
+            True,
+        )
+    finally:
+        session.stop()
+    assert (session.status, *map(_interactive, session_buttons(session))) == (
+        "stopped",
+        True,
+        False,
+    )
+
+
+def test_a_start_that_starts_nothing_leaves_start_enabled(tmp_path: Path) -> None:
+    pytest.importorskip("gradio")
+    from examples.control_panel.app import session_buttons
+
+    session = RobotSession()
+    model = _model(tmp_path, session)
+    model.save({"reachy": {"backend": "moon"}})
+
+    assert session.start(model)
+    assert session.status == "stopped"
+    assert [_interactive(u) for u in session_buttons(session)] == [True, False]
 
 
 # --- faces ----------------------------------------------------------------------------
